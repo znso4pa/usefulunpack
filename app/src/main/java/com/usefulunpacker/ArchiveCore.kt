@@ -1,0 +1,14 @@
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  UsefulUnpack — znso4pa (锌帕) — JNI bridge                   ║
+// ╚══════════════════════════════════════════════════════════════╝
+package com.usefulunpacker
+
+object ArchiveCore {
+    init { System.loadLibrary("archive_core") }
+
+    /** tool: path to xp3-unpacker binary, input: archive path, output: extract dir */
+    external fun xp3Extract(tool: String, input: String, output: String): Boolean
+
+    /** tool: path to pfs_unpacker binary, input: archive path, output: extract dir */
+    external fun pfsExtract(tool: String, input: String, output: String): Boolean
+}

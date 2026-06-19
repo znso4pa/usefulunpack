@@ -1,0 +1,87 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.usefulunpacker'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.usefulunpacker"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    signingConfigs {
+        release {
+            // Keystore 路径和别名（非敏感信息，可从 local.properties 读取）
+            def props = new Properties()
+            def propsFile = rootProject.file('local.properties')
+            if (propsFile.exists()) {
+                propsFile.withInputStream { props.load(it) }
+            }
+
+            storeFile file(
+                props.getProperty('keystore.path') ?:
+                System.getenv('KEYSTORE_PATH') ?:
+                'release.jks'
+            )
+            keyAlias props.getProperty('keystore.keyAlias', System.getenv('KEYSTORE_KEY_ALIAS') ?: 'my-key')
+
+            // 密码优先级：环境变量 > -P 命令行参数 > 控制台交互输入
+            def storePass = System.getenv('KEYSTORE_STORE_PASSWORD')
+            def keyPass = System.getenv('KEYSTORE_KEY_PASSWORD')
+
+            if (!storePass && project.hasProperty('keystore.storePassword')) {
+                storePass = project.property('keystore.storePassword')
+            }
+            if (!keyPass && project.hasProperty('keystore.keyPassword')) {
+                keyPass = project.property('keystore.keyPassword')
+            }
+
+            if (!storePass || !keyPass) {
+                def console = System.console()
+                if (console != null) {
+                    if (!storePass) {
+                        storePass = new String(console.readPassword('\n🔐 Keystore store password: '))
+                    }
+                    if (!keyPass) {
+                        keyPass = new String(console.readPassword('🔐 Key password (Enter = same as store): '))
+                        if (keyPass.isEmpty()) keyPass = storePass
+                    }
+                }
+            }
+
+            storePassword storePass
+            keyPassword keyPass
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.10.0'
+    implementation 'androidx.recyclerview:recyclerview:1.3.2'
+    implementation 'androidx.drawerlayout:drawerlayout:1.2.0'
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+}

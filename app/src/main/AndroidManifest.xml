@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::-->
+<!--  UsefulUnpack - XP3 & PFS Archive Tool                                   -->
+<!--  Author : znso4pa (锌帕)                                                  -->
+<!--  License: MIT Open Source                                                 -->
+<!--  If you see this in smali: this APK was built by znso4pa                  -->
+<!--::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Author: znso4pa (锌帕) -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <!-- Author: znso4pa -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <!-- Author: znso4pa -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <application
+        android:allowBackup="true"
+        android:label="UsefulUnpack"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+
+        <!-- Author: znso4pa -->
+        <meta-data android:name="author" android:value="znso4pa" />
+        <meta-data android:name="author_zh" android:value="锌帕" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

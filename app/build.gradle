@@ -31,9 +31,12 @@ android {
             )
             keyAlias props.getProperty('keystore.keyAlias', System.getenv('KEYSTORE_KEY_ALIAS') ?: 'my-key')
 
-            // 密码优先级：环境变量 > -P 命令行参数 > 控制台交互输入
-            def storePass = System.getenv('KEYSTORE_STORE_PASSWORD')
-            def keyPass = System.getenv('KEYSTORE_KEY_PASSWORD')
+            // 密码优先级：local.properties > 环境变量 > -P 命令行参数 > 控制台交互输入
+            def storePass = props.getProperty('keystore.storePassword')
+            def keyPass = props.getProperty('keystore.keyPassword')
+
+            if (!storePass) storePass = System.getenv('KEYSTORE_STORE_PASSWORD')
+            if (!keyPass) keyPass = System.getenv('KEYSTORE_KEY_PASSWORD')
 
             if (!storePass && project.hasProperty('keystore.storePassword')) {
                 storePass = project.property('keystore.storePassword')

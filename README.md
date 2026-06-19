@@ -1,5 +1,7 @@
 # UsefulUnpack
 
+[**中文**](README-zh.md) | [**English**](README.md)
+
 A lightweight Android file manager and archive extraction tool for visual novel game files.
 
 Supports **XP3** (Kirikiri engine) and **PFS** (Artemis engine) archive formats with native Rust-powered extraction.

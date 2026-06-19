@@ -22,7 +22,14 @@ Supports **XP3** (Kirikiri engine) and **PFS** (Artemis engine) archive formats 
 
 ## Screenshots
 
-*(Coming soon)*
+<p align="middle">
+  <img src="screenshots/screenshot_01.jpg" width="45%" />
+  <img src="screenshots/screenshot_02.jpg" width="45%" />
+</p>
+<p align="middle">
+  <img src="screenshots/screenshot_03.jpg" width="45%" />
+  <img src="screenshots/screenshot_04.jpg" width="45%" />
+</p>
 
 ## Installation
 

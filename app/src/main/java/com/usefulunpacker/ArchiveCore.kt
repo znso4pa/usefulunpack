@@ -26,4 +26,8 @@ object ArchiveCore {
 
     /** NSA/SAR selected extraction */
     external fun nsaExtractSelected(tool: String, input: String, output: String, selected: String): Boolean
+
+    external fun isoExtract(tool: String, input: String, output: String): Boolean
+
+    external fun isoExtractSelected(tool: String, input: String, output: String, selected: String): Boolean
 }

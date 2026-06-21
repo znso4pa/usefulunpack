@@ -4,7 +4,7 @@
 
 A lightweight Android file manager and archive extraction tool for visual novel game files.
 
-Supports **XP3** (Kirikiri engine), **PFS** (Artemis engine), and **NSA/SAR** (NScripter engine) archive formats with native Rust-powered extraction.
+Supports **XP3** (Kirikiri engine), **PFS** (Artemis engine), **NSA/SAR** (NScripter engine), and **ISO 9660** disc images with native Rust-powered extraction.
 
 ---
 
@@ -15,6 +15,7 @@ Supports **XP3** (Kirikiri engine), **PFS** (Artemis engine), and **NSA/SAR** (N
 | 📁 **XP3 Extraction** | Unpack Kirikiri `.xp3` archives |
 | 📦 **PFS Extraction** | Unpack Artemis `.pfs` / `.pf6` / `.pf8` archives |
 | 📜 **NSA/SAR Extraction** | Unpack NScripter `.nsa` / `.sar` archives |
+| 💿 **ISO 9660 Extraction** | Browse and extract ISO disc images (CD/DVD/BD) |
 | 🔍 **Archive Preview** | Browse archive contents as a tree before extracting, with selective file/folder extraction |
 | 🖼️ **File Preview** | Preview images (JPG/PNG), audio (MP3/OGG), and video (MP4) directly from archive |
 | 🗂 **File Browser** | ZArchiver-style UI with path breadcrumb, fast scroll, folder ⭐ bookmarks |
@@ -82,7 +83,8 @@ User taps file → Kotlin UI calls ArchiveCore JNI
               libarchive_core.so (Rust)
                ├── xp3 crate  → XP3 extraction
                ├── pf8 crate  → PFS extraction
-               └── nsa parser → NSA/SAR extraction
+               ├── nsa parser → NSA/SAR extraction
+               └── isomage    → ISO 9660 extraction
                          ↓
               Files written to selected directory
 ```

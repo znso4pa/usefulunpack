@@ -256,6 +256,96 @@ pub extern "system" fn Java_com_usefulunpacker_ArchiveCore_nsaExtractSelected(
     }
 }
 
+// ─── ISO 9660 ────────────────────────────────
+
+fn iso_walk<'a>(node: &'a isomage::TreeNode, prefix: &str, out: &mut Vec<(String, &'a isomage::TreeNode)>) {
+    let path = if prefix.is_empty() { node.name.clone() } else { format!("{prefix}/{}", node.name) };
+    out.push((path.clone(), node));
+    for child in &node.children { iso_walk(child, &path, out); }
+}
+
+fn iso_map<'a>(root: &'a isomage::TreeNode) -> Vec<(String, &'a isomage::TreeNode)> {
+    let mut map = Vec::new();
+    for child in &root.children { iso_walk(child, "", &mut map); }
+    map
+}
+
+fn list_iso(input: &str) -> Result<String, String> {
+    let mut file = std::fs::File::open(input).map_err(|e| format!("{e}"))?;
+    let root = isomage::detect_and_parse_filesystem(&mut file, input).map_err(|e| format!("ISO: {e}"))?;
+    let mut map = iso_map(&root);
+    map.sort_by(|a, b| a.0.cmp(&b.0));
+    let items: Vec<String> = map.iter().map(|(p, n)| {
+        format!(r#"{{"n":"{}","s":{},"d":{},"e":false}}"#, json_escape(p), n.size, n.is_directory)
+    }).collect();
+    Ok(format!("[{}]", items.join(",")))
+}
+
+fn extract_iso_one(file: &mut std::fs::File, node: &isomage::TreeNode, output: &str, rel_path: &str) -> Result<(), String> {
+    if node.is_directory { return Ok(()); }
+    let mut dest = std::path::Path::new(output).to_path_buf();
+    for comp in rel_path.split('/') { if !comp.is_empty() { dest.push(comp); } }
+    if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
+    let mut data = Vec::new();
+    isomage::cat_node(file, node, &mut data).map_err(|e| format!("{e}"))?;
+    std::fs::write(&dest, &data).map_err(|e| format!("{e}"))?;
+    Ok(())
+}
+
+fn extract_iso_all(input: &str, output: &str) -> Result<u32, String> {
+    let mut file = std::fs::File::open(input).map_err(|e| format!("{e}"))?;
+    let root = isomage::detect_and_parse_filesystem(&mut file, input).map_err(|e| format!("ISO: {e}"))?;
+    isomage::extract_node(&mut file, &root, output).map_err(|e| format!("{e}"))?;
+    Ok(0)
+}
+
+fn extract_iso_selected(input: &str, output: &str, selected: &str) -> Result<u32, String> {
+    let sel_set: std::collections::HashSet<&str> = selected.lines().filter(|l| !l.is_empty()).collect();
+    if sel_set.is_empty() { return Ok(0); }
+    let mut file = std::fs::File::open(input).map_err(|e| format!("{e}"))?;
+    let root = isomage::detect_and_parse_filesystem(&mut file, input).map_err(|e| format!("ISO: {e}"))?;
+    let map = iso_map(&root);
+    let mut expanded = std::collections::HashSet::new();
+    for s in &sel_set {
+        let key = s.trim_start_matches('/');
+        expanded.insert(key.to_string());
+        let prefix = format!("{key}/");
+        for (p, _) in &map { if p.starts_with(&prefix) { expanded.insert(p.clone()); } }
+    }
+    let mut fail = 0u32;
+    for p in &expanded {
+        match map.iter().find(|(mp, _)| mp == p) {
+            Some((_, node)) => { if extract_iso_one(&mut file, node, output, p).is_err() { fail += 1; } }
+            None => fail += 1,
+        }
+    }
+    Ok(fail)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_ArchiveCore_isoExtract(
+    mut env: JNIEnv, _: JClass, _t: JString, input: JString, output: JString,
+) -> jboolean {
+    let inp = s(&mut env, &input); let out = s(&mut env, &output);
+    let _ = std::fs::create_dir_all(&out);
+    match extract_iso_all(&inp, &out) {
+        Ok(fail) if fail == 0 => JNI_TRUE,
+        Ok(fail) => { let _ = env.throw_new("java/io/IOException", format!("ISO: {fail} file(s) failed")); JNI_FALSE }
+        Err(e) => { let _ = env.throw_new("java/io/IOException", format!("ISO: {e}")); JNI_FALSE }
+    }
+}
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_ArchiveCore_isoExtractSelected(
+    mut env: JNIEnv, _: JClass, _t: JString, input: JString, output: JString, selected: JString,
+) -> jboolean {
+    let inp = s(&mut env, &input); let out = s(&mut env, &output); let sel = s(&mut env, &selected);
+    match extract_iso_selected(&inp, &out, &sel) {
+        Ok(fail) if fail == 0 => JNI_TRUE,
+        Ok(fail) => { let _ = env.throw_new("java/io/IOException", format!("ISO: {fail} file(s) failed")); JNI_FALSE }
+        Err(e) => { let _ = env.throw_new("java/io/IOException", format!("ISO: {e}")); JNI_FALSE }
+    }
+}
+
 // ─── Preview / Selective Extraction ───────────
 
 fn json_escape(s: &str) -> String {
@@ -297,6 +387,8 @@ pub extern "system" fn Java_com_usefulunpacker_ArchiveCore_listEntries(
         list_pfs(&inp)
     } else if inp.to_lowercase().ends_with(".nsa") || inp.to_lowercase().ends_with(".sar") {
         list_nsa(&inp)
+    } else if inp.to_lowercase().ends_with(".iso") {
+        list_iso(&inp)
     } else {
         let _ = env.throw_new("java/io/IOException", "Unsupported format");
         return std::ptr::null_mut();

@@ -4,7 +4,7 @@
 
 A lightweight Android file manager and archive extraction tool for visual novel game files.
 
-Supports **XP3** (Kirikiri engine) and **PFS** (Artemis engine) archive formats with native Rust-powered extraction.
+Supports **XP3** (Kirikiri engine), **PFS** (Artemis engine), and **NSA/SAR** (NScripter engine) archive formats with native Rust-powered extraction.
 
 ---
 
@@ -12,12 +12,17 @@ Supports **XP3** (Kirikiri engine) and **PFS** (Artemis engine) archive formats 
 
 | Feature | Description |
 |---------|-------------|
-| 📁 **XP3 Extraction** | Unpack Kirikiri `.xp3` archives (powered by `xp3` crate) |
-| 📦 **PFS Extraction** | Unpack Artemis `.pfs` / `.pf6` / `.pf8` archives (powered by `pf8` crate) |
-| 🗂 **File Browser** | ZArchiver-style dual-pane UI with fast scroll and path breadcrumb |
-| 📌 **Bookmarks** | Save quick-access paths to frequently used directories |
-| ⌨️ **Built-in CLI** | Command-line interface for advanced operations |
+| 📁 **XP3 Extraction** | Unpack Kirikiri `.xp3` archives |
+| 📦 **PFS Extraction** | Unpack Artemis `.pfs` / `.pf6` / `.pf8` archives |
+| 📜 **NSA/SAR Extraction** | Unpack NScripter `.nsa` / `.sar` archives |
+| 🔍 **Archive Preview** | Browse archive contents as a tree before extracting, with selective file/folder extraction |
+| 🖼️ **File Preview** | Preview images (JPG/PNG), audio (MP3/OGG), and video (MP4) directly from archive |
+| 🗂 **File Browser** | ZArchiver-style UI with path breadcrumb, fast scroll, folder ⭐ bookmarks |
+| 📌 **Bookmarks** | Quick-access paths via star button on folders or slide-out drawer |
+| 🏠 **Root Navigation** | One-tap home button to jump to `/storage/emulated/0` |
+| ⌨️ **Built-in CLI** | `ls`/`pwd`/`cd` with shell passthrough |
 | 🌙 **Dark Theme** | Eye-friendly dark theme matching ZArchiver's color scheme |
+| 🦀 **Rust Core** | JNI-powered native `.so` for high-performance extraction |
 | 🔒 **Minimal Permissions** | Only requests storage access |
 
 ## Screenshots
@@ -75,8 +80,9 @@ bash build.sh
 User taps file → Kotlin UI calls ArchiveCore JNI
                          ↓
               libarchive_core.so (Rust)
-               ├── xp3 crate → XP3 extraction
-               └── pf8 crate → PFS extraction
+               ├── xp3 crate  → XP3 extraction
+               ├── pf8 crate  → PFS extraction
+               └── nsa parser → NSA/SAR extraction
                          ↓
               Files written to selected directory
 ```

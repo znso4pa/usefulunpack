@@ -20,4 +20,10 @@ object ArchiveCore {
 
     /** Extract selected entries from PFS. selected: newline-separated paths (forward slashes) */
     external fun pfsExtractSelected(tool: String, input: String, output: String, selected: String): Boolean
+
+    /** NSA/SAR (NScripter) full extraction */
+    external fun nsaExtract(tool: String, input: String, output: String): Boolean
+
+    /** NSA/SAR selected extraction */
+    external fun nsaExtractSelected(tool: String, input: String, output: String, selected: String): Boolean
 }

@@ -4,7 +4,7 @@
 
 轻量级 Android 文件管理器 & **视觉小说游戏资源解包工具**
 
-支持 **XP3**（吉里吉里/Kirikiri 引擎）和 **PFS**（Artemis 引擎）封包格式，Rust 原生核心，性能强劲。
+支持 **XP3**（吉里吉里/Kirikiri 引擎）、**PFS**（Artemis 引擎）和 **NSA/SAR**（NScripter 引擎）封包格式，Rust 原生核心，性能强劲。
 
 ---
 
@@ -12,14 +12,18 @@
 
 | 功能 | 说明 |
 |------|------|
-| ✂️ **XP3 解包** | 解压吉里吉里 `.xp3` 封包（基于 `xp3` crate） |
-| 📦 **PFS 解包** | 解压 Artemis `.pfs` / `.pf6` / `.pf8` 封包（基于 `pf8` crate） |
-| 📂 **文件浏览器** | 类 ZArchiver 双栏界面，路径面包屑、快速滚动 |
-| 📌 **书签** | 收藏常用目录，快速跳转 |
-| 💻 **内置终端** | 支持 `ls`/`cd`/`pwd` 及 shell 命令透传 |
+| ✂️ **XP3 解包** | 解压吉里吉里 `.xp3` 封包 |
+| 📦 **PFS 解包** | 解压 Artemis `.pfs` / `.pf6` / `.pf8` 封包 |
+| 📜 **NSA/SAR 解包** | 解压 NScripter `.nsa` / `.sar` 封包 |
+| 🔍 **归档预览** | 预览归档内容树，可选择性解压文件/文件夹 |
+| 🖼️ **文件预览** | 直接从封包内预览图片（JPG/PNG）、音频（MP3/OGG）、视频（MP4） |
+| 🗂 **文件浏览器** | 类 ZArchiver 界面，路径面包屑、快速滚动、文件夹 ⭐ 星标收藏 |
+| 📌 **书签** | 文件夹星标 + 侧滑抽屉，快速跳转常用目录 |
+| 🏠 **根目录导航** | 一键回到 `/storage/emulated/0` 根目录 |
+| 💻 **内置终端** | 支持 `ls`/`pwd`/`cd` 及 shell 命令透传 |
 | 🌙 **深色主题** | 护眼暗色主题，配色参照 ZArchiver |
-| 🔒 **最小权限** | 仅请求文件存储权限 |
 | 🦀 **Rust 核心** | JNI 调用原生 `.so`，解压更快更稳 |
+| 🔒 **最小权限** | 仅请求文件存储权限 |
 
 ## 截图
 
@@ -76,8 +80,9 @@ bash build.sh
 用户操作 → Kotlin UI → JNI 桥
                   ↓
          libarchive_core.so (Rust)
-           ├── xp3 crate → XP3 解包
-           └── pf8 crate → PFS 解包
+           ├── xp3 crate  → XP3 解包
+           ├── pf8 crate  → PFS 解包
+           └── nsa parser → NSA/SAR 解包
                   ↓
           文件写入目标目录
 ```

@@ -81,6 +81,7 @@ class MainActivity : AppCompatActivity() {
         listBookmarks = findViewById(R.id.listBookmarks)
 
         findViewById<ImageButton>(R.id.btnDrawer).setOnClickListener { drawer.open() }
+        findViewById<ImageButton>(R.id.btnRoot).setOnClickListener { nav(Environment.getExternalStorageDirectory()) }
         findViewById<ImageButton>(R.id.btnUp).setOnClickListener { currentDir.parentFile?.let { nav(it) } }
         findViewById<TextView>(R.id.btnCLI).setOnClickListener { cli() }
         btnExtract.setOnClickListener { extract() }
@@ -160,13 +161,28 @@ class MainActivity : AppCompatActivity() {
         currentDir = dir
         tvPath.text = dir.absolutePath
 
-        val files = dir.listFiles()?.sortedWith(
-            compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }
-        ) ?: emptyList()
+        val raw = dir.listFiles()
+        val files: List<File> = when {
+            raw != null -> raw.sortedWith(
+                compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }
+            )
+            // listFiles() returned null — permission denied, e.g. /storage/emulated.
+            // Probe known hidden subdirectories so the user can still navigate.
+            else -> {
+                val probed = mutableListOf<File>()
+                for (name in arrayOf("0", "self", "primary")) {
+                    val child = File(dir, name)
+                    if (child.isDirectory) probed.add(child)
+                }
+                probed
+            }
+        }
 
         tvCount.text = "${files.size} 项"
-        if (files.isEmpty()) { tvEmpty.text = "空文件夹"; tvEmpty.visibility = View.VISIBLE }
-        else tvEmpty.visibility = View.GONE
+        if (files.isEmpty()) {
+            tvEmpty.text = if (raw == null) "无访问权限" else "空文件夹"
+            tvEmpty.visibility = View.VISIBLE
+        } else tvEmpty.visibility = View.GONE
 
         listFiles.adapter = FileAdapter(files)
     }
@@ -174,45 +190,85 @@ class MainActivity : AppCompatActivity() {
     private fun select(f: File) {
         selectedFile = f
         tvSelected.text = "${f.name}  |  ${fmt(fileSize(f))}"
-        bottomBar.visibility = View.VISIBLE
         fabExtract.visibility = View.VISIBLE
-        bottomBar.visibility = View.GONE  // 只用 FAB，隐藏底部栏
     }
+
+    private val ARCHIVE_EXTS = setOf("xp3", "pfs", "pf6", "pf8", "nsa", "sar")
 
     private fun extract() {
         val src = selectedFile ?: return
-        val n = src.name.lowercase()
+        val ext = src.name.lowercase().substringAfterLast('.')
+        // Block files that are clearly not archives (e.g. .jpg) to prevent JNI crash
+        if (ext !in ARCHIVE_EXTS && src.isDirectory.not()) {
+            AlertDialog.Builder(this)
+                .setTitle("无法解压")
+                .setMessage(".${ext} 不是压缩包格式\n请选择 .xp3 / .pfs / .nsa / .sar 文件")
+                .setPositiveButton("确定", null)
+                .show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("选择归档格式")
+            .setItems(arrayOf("📦 XP3", "📦 PFS", "📦 NSA/SAR")) { _, which ->
+                val format = arrayOf("xp3", "pfs", "nsa")[which]
+                showExtractOptions(src, format)
+            }.setNegativeButton("取消", null).show()
+    }
+
+    private fun showExtractOptions(src: File, format: String) {
         val parent = src.parentFile ?: return
         val outDir = File(parent, src.nameWithoutExtension)
 
         AlertDialog.Builder(this)
-            .setTitle("解压 ${src.name}")
+            .setTitle("解压 ${src.name} (${format.uppercase()})")
             .setItems(arrayOf("📁 新建文件夹: ${outDir.name}", "📂 直接解压到当前目录", "🔍 预览")) { _, w ->
                 when (w) {
-                    0 -> extractAll(outDir, src, n)
-                    1 -> extractAll(parent, src, n)
-                    2 -> previewArchive(src)
+                    0 -> extractAll(outDir, src, format)
+                    1 -> extractAll(parent, src, format)
+                    2 -> previewArchive(src, format)
                 }
             }.setNegativeButton("取消", null).show()
     }
 
-    private fun extractAll(out: File, src: File, ext: String) {
+    private fun extractAll(out: File, src: File, format: String) {
         val pd = ProgressDialog(this).apply {
             setTitle("解压中")
-            setMessage("${src.name}\n→ ${out.name}")
+            setMessage("${src.name} → ${out.name}")
             setProgressStyle(ProgressDialog.STYLE_SPINNER)
             setCancelable(false)
             show()
         }
         thread {
-            val ok = if (ext.endsWith(".xp3")) ArchiveCore.xp3Extract("", src.path, out.path)
-            else if (ext.endsWith(".pfs")) ArchiveCore.pfsExtract("", src.path, out.path)
-            else false
+            val ok = extractByFormat(format, src.path, out.path, "")
             runOnUiThread {
                 pd.dismiss()
-                if (ok) { toast("完成 → ${out.name}"); nav(currentDir) } else toast("失败")
+                if (ok) { toast("完成 → ${out.name}"); nav(currentDir) }
+                else toast(mismatchMsg(format, src))
             }
         }
+    }
+
+    private fun extractByFormat(format: String, src: String, out: String, selected: String): Boolean {
+        return when (format) {
+            "xp3" -> if (selected.isEmpty()) ArchiveCore.xp3Extract("", src, out)
+                     else ArchiveCore.xp3ExtractSelected("", src, out, selected)
+            "pfs" -> if (selected.isEmpty()) ArchiveCore.pfsExtract("", src, out)
+                     else ArchiveCore.pfsExtractSelected("", src, out, selected)
+            "nsa" -> if (selected.isEmpty()) ArchiveCore.nsaExtract("", src, out)
+                     else ArchiveCore.nsaExtractSelected("", src, out, selected)
+            else -> false
+        }
+    }
+
+    private fun mismatchMsg(format: String, file: File): String {
+        val ext = file.name.lowercase().substringAfterLast('.')
+        val exts = when (format) {
+            "pfs" -> setOf("pfs", "pf6", "pf8")
+            "nsa" -> setOf("nsa", "sar")
+            else -> setOf(format)
+        }
+        return if (ext !in exts) "后缀 .$ext 与格式 ${format.uppercase()} 不匹配"
+               else "解压失败"
     }
 
     private fun parseEntries(json: String): List<ArchiveEntry> {
@@ -231,7 +287,7 @@ class MainActivity : AppCompatActivity() {
         return result
     }
 
-    private fun previewArchive(src: File) {
+    private fun previewArchive(src: File, format: String) {
         val pd = ProgressDialog(this).apply {
             setTitle("读取中")
             setMessage("正在读取 ${src.name} 的内容...")
@@ -243,19 +299,19 @@ class MainActivity : AppCompatActivity() {
             val json = ArchiveCore.listEntries(src.absolutePath)
             runOnUiThread { pd.dismiss() }
             if (json == null || json == "[]") {
-                runOnUiThread { toast("无法读取归档内容") }
+                runOnUiThread { toast(mismatchMsg(format, src)) }
                 return@thread
             }
             val entries = parseEntries(json)
-            runOnUiThread { showPreviewDialog(src, entries) }
+            runOnUiThread { showPreviewDialog(src, entries, format) }
         }
     }
 
-    private fun showPreviewDialog(src: File, entries: List<ArchiveEntry>) {
+    private fun showPreviewDialog(src: File, entries: List<ArchiveEntry>, format: String) {
         val selectedPaths = mutableSetOf<String>()
         val expandedPaths = entries.filter { it.isDirectory }.map { it.path }.toMutableSet()
         val adapter = PreviewAdapter(entries, selectedPaths, expandedPaths) { entry ->
-            previewFileEntry(src, entry)
+            previewFileEntry(src, entry, format)
         }
 
         val listView = ListView(this).apply {
@@ -263,17 +319,6 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(0xFF303030.toInt())
             divider = ColorDrawable(0xFF1a1a1a.toInt())
             dividerHeight = 1
-            setOnItemClickListener { _, _, pos, _ ->
-                val entry = adapter.getItem(pos) ?: return@setOnItemClickListener
-                if (entry.isDirectory) {
-                    if (expandedPaths.contains(entry.path)) {
-                        expandedPaths.remove(entry.path)
-                    } else {
-                        expandedPaths.add(entry.path)
-                    }
-                    adapter.notifyDataSetChanged()
-                }
-            }
         }
 
         val dlg = AlertDialog.Builder(this)
@@ -289,7 +334,7 @@ class MainActivity : AppCompatActivity() {
                     toast("请至少选择一项")
                 } else {
                     dlg.dismiss()
-                    showOutputDirDialog(src, sel)
+                    showOutputDirDialog(src, sel, format)
                 }
             }
             dlg.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(0xFF35acc6.toInt())
@@ -298,7 +343,7 @@ class MainActivity : AppCompatActivity() {
         dlg.show()
     }
 
-    private fun showOutputDirDialog(src: File, selectedPaths: List<String>) {
+    private fun showOutputDirDialog(src: File, selectedPaths: List<String>, format: String) {
         val parent = src.parentFile ?: return
         val outDir = File(parent, src.nameWithoutExtension)
 
@@ -306,13 +351,12 @@ class MainActivity : AppCompatActivity() {
             .setTitle("解压到...")
             .setItems(arrayOf("📁 新建文件夹: ${outDir.name}", "📂 直接解压到当前目录")) { _, w ->
                 val out = if (w == 0) outDir else parent
-                extractSelected(src, out, selectedPaths)
+                extractSelected(src, out, selectedPaths, format)
             }.setNegativeButton("取消", null)
             .show()
     }
 
-    private fun extractSelected(src: File, out: File, paths: List<String>) {
-        val n = src.name.lowercase()
+    private fun extractSelected(src: File, out: File, paths: List<String>, format: String) {
         val selStr = paths.joinToString("\n")
         val pd = ProgressDialog(this).apply {
             setTitle("解压中")
@@ -322,19 +366,16 @@ class MainActivity : AppCompatActivity() {
             show()
         }
         thread {
-            val ok = if (n.endsWith(".xp3"))
-                ArchiveCore.xp3ExtractSelected("", src.path, out.path, selStr)
-            else if (n.endsWith(".pfs"))
-                ArchiveCore.pfsExtractSelected("", src.path, out.path, selStr)
-            else false
+            val ok = extractByFormat(format, src.path, out.path, selStr)
             runOnUiThread {
                 pd.dismiss()
-                if (ok) { toast("完成 → ${out.name}"); nav(currentDir) } else toast("解压失败")
+                if (ok) { toast("完成 → ${out.name}"); nav(currentDir) }
+                else toast(mismatchMsg(format, src))
             }
         }
     }
 
-    private fun previewFileEntry(archive: File, entry: ArchiveEntry) {
+    private fun previewFileEntry(archive: File, entry: ArchiveEntry, format: String) {
         val ext = entry.path.substringAfterLast('.').lowercase()
         if (ext !in setOf("jpg", "jpeg", "png", "mp3", "ogg", "mp4")) {
             toast("不支持预览 .$ext 文件")
@@ -343,13 +384,7 @@ class MainActivity : AppCompatActivity() {
 
         val cacheDir = File(cacheDir, "preview/${archive.nameWithoutExtension}")
         thread {
-            val n = archive.name.lowercase()
-            val ok = if (n.endsWith(".xp3"))
-                ArchiveCore.xp3ExtractSelected("", archive.path, cacheDir.path, entry.path)
-            else if (n.endsWith(".pfs"))
-                ArchiveCore.pfsExtractSelected("", archive.path, cacheDir.path, entry.path)
-            else false
-
+            val ok = extractByFormat(format, archive.path, cacheDir.path, entry.path)
             if (!ok) { runOnUiThread { toast("提取失败") }; return@thread }
 
             val extracted = File(cacheDir, entry.path)
@@ -655,29 +690,43 @@ private fun fmt(b: Long) = when {
             // CheckBox state
             checkbox.setOnCheckedChangeListener(null)
             if (entry.isDirectory) {
-                // Directories: checkbox non-clickable so row tap triggers expand/collapse
-                checkbox.isClickable = false
-                checkbox.isFocusable = false
-                checkbox.isChecked = selectedPaths.contains(entry.path)
-                checkbox.setOnCheckedChangeListener(null) // already null but be explicit
-            } else {
+                // Directory: checkbox selects/deselects all children
                 checkbox.isClickable = true
                 checkbox.isFocusable = true
                 checkbox.isChecked = selectedPaths.contains(entry.path)
                 checkbox.setOnCheckedChangeListener { _, checked ->
                     if (checked) selectedPaths.add(entry.path)
                     else selectedPaths.remove(entry.path)
+                    val prefix = "${entry.path}/"
+                    for (e in entries) {
+                        if (e.path.startsWith(prefix)) {
+                            if (checked) selectedPaths.add(e.path) else selectedPaths.remove(e.path)
+                        }
+                    }
+                    notifyDataSetChanged()
+                }
+            } else {
+                checkbox.isClickable = true
+                checkbox.isFocusable = true
+                checkbox.isChecked = selectedPaths.contains(entry.path)
+                checkbox.setOnCheckedChangeListener { _, checked ->
+                    if (checked) selectedPaths.add(entry.path) else selectedPaths.remove(entry.path)
                     notifyDataSetChanged()
                 }
             }
 
-            // Icon
+            // Icon + Label click targets
             if (entry.isDirectory) {
                 icon.setImageResource(android.R.drawable.ic_menu_compass)
                 icon.setColorFilter(0xFFffa726.toInt())
-                icon.setOnClickListener(null)
-                label.setOnClickListener(null)
-                // Show expand/collapse indicator in label
+                // Tapping icon or arrow toggles expand/collapse
+                val toggle = View.OnClickListener {
+                    if (expandedPaths.contains(entry.path)) expandedPaths.remove(entry.path)
+                    else expandedPaths.add(entry.path)
+                    notifyDataSetChanged()
+                }
+                icon.setOnClickListener(toggle)
+                label.setOnClickListener(toggle)
                 val arrow = if (expandedPaths.contains(entry.path)) "▼ " else "▶ "
                 label.text = "$arrow${entry.name}"
             } else {
@@ -721,10 +770,22 @@ private fun fmt(b: Long) = when {
             val size = view.findViewById<TextView>(R.id.info_size)
             val date = view.findViewById<TextView>(R.id.info_date)
 
+            val starBtn = view.findViewById<ImageView>(R.id.btnStar)
             if (f.isDirectory) {
+                // ⭐ Star button for quick bookmark
+                starBtn.visibility = View.VISIBLE
+                val bm = bookmarks.contains(f.absolutePath)
+                starBtn.setImageResource(if (bm) android.R.drawable.btn_star_big_on else android.R.drawable.btn_star_big_off)
+                starBtn.setColorFilter(if (bm) 0xFFffc107.toInt() else 0xFF666666.toInt())
+                starBtn.setOnClickListener {
+                    if (bookmarks.contains(f.absolutePath)) bookmarks.remove(f.absolutePath)
+                    else bookmarks.add(0, f.absolutePath)
+                    saveBookmarks(); notifyDataSetChanged()
+                }
                 icon.setImageResource(android.R.drawable.ic_menu_compass); icon.setColorFilter(0xFFffa726.toInt())
                 label.text = f.name; size.text = ""; date.text = ""
             } else {
+                starBtn.visibility = View.GONE
                 val n = f.name.lowercase()
                 val res = when { n.endsWith(".xp3")||n.endsWith(".pfs") -> android.R.drawable.ic_menu_compass; n.endsWith(".apk") -> android.R.drawable.ic_menu_manage; else -> android.R.drawable.ic_menu_gallery }
                 icon.setImageResource(res); icon.setColorFilter(0xFFe0f9ff.toInt())

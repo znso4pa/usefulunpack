@@ -11,4 +11,13 @@ object ArchiveCore {
 
     /** tool: path to pfs_unpacker binary, input: archive path, output: extract dir */
     external fun pfsExtract(tool: String, input: String, output: String): Boolean
+
+    /** List archive entries as JSON. Returns null on failure. */
+    external fun listEntries(input: String): String?
+
+    /** Extract selected entries from XP3. selected: newline-separated paths (forward slashes) */
+    external fun xp3ExtractSelected(tool: String, input: String, output: String, selected: String): Boolean
+
+    /** Extract selected entries from PFS. selected: newline-separated paths (forward slashes) */
+    external fun pfsExtractSelected(tool: String, input: String, output: String, selected: String): Boolean
 }

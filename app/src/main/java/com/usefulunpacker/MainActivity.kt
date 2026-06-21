@@ -193,7 +193,7 @@ class MainActivity : AppCompatActivity() {
         fabExtract.visibility = View.VISIBLE
     }
 
-    private val ARCHIVE_EXTS = setOf("xp3", "pfs", "pf6", "pf8", "nsa", "sar")
+    private val ARCHIVE_EXTS = setOf("xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso")
 
     private fun extract() {
         val src = selectedFile ?: return
@@ -209,8 +209,8 @@ class MainActivity : AppCompatActivity() {
         }
         AlertDialog.Builder(this)
             .setTitle("选择归档格式")
-            .setItems(arrayOf("📦 XP3", "📦 PFS", "📦 NSA/SAR")) { _, which ->
-                val format = arrayOf("xp3", "pfs", "nsa")[which]
+            .setItems(arrayOf("📦 XP3", "📦 PFS", "📦 NSA/SAR", "📀 ISO")) { _, which ->
+                val format = arrayOf("xp3", "pfs", "nsa", "iso")[which]
                 showExtractOptions(src, format)
             }.setNegativeButton("取消", null).show()
     }
@@ -220,13 +220,21 @@ class MainActivity : AppCompatActivity() {
         val outDir = File(parent, src.nameWithoutExtension)
 
         AlertDialog.Builder(this)
-            .setTitle("解压 ${src.name} (${format.uppercase()})")
-            .setItems(arrayOf("📁 新建文件夹: ${outDir.name}", "📂 直接解压到当前目录", "🔍 预览")) { _, w ->
+            .setTitle("${src.name} (${format.uppercase()})")
+            .setItems(arrayOf("🔍 先预览内容", "📦 直接解压")) { _, w ->
                 when (w) {
-                    0 -> extractAll(outDir, src, format)
-                    1 -> extractAll(parent, src, format)
-                    2 -> previewArchive(src, format)
+                    0 -> previewArchive(src, format)
+                    1 -> showDirectExtractDialog(src, format, parent, outDir)
                 }
+            }.setNegativeButton("取消", null).show()
+    }
+
+    private fun showDirectExtractDialog(src: File, format: String, parent: File, outDir: File) {
+        AlertDialog.Builder(this)
+            .setTitle("解压到...")
+            .setItems(arrayOf("📁 新建文件夹: ${outDir.name}", "📂 直接解压到当前目录")) { _, w ->
+                val out = if (w == 0) outDir else parent
+                extractAll(out, src, format)
             }.setNegativeButton("取消", null).show()
     }
 
@@ -254,6 +262,8 @@ class MainActivity : AppCompatActivity() {
                      else ArchiveCore.xp3ExtractSelected("", src, out, selected)
             "pfs" -> if (selected.isEmpty()) ArchiveCore.pfsExtract("", src, out)
                      else ArchiveCore.pfsExtractSelected("", src, out, selected)
+            "iso" -> if (selected.isEmpty()) ArchiveCore.isoExtract("", src, out)
+                     else ArchiveCore.isoExtractSelected("", src, out, selected)
             "nsa" -> if (selected.isEmpty()) ArchiveCore.nsaExtract("", src, out)
                      else ArchiveCore.nsaExtractSelected("", src, out, selected)
             else -> false
@@ -265,6 +275,7 @@ class MainActivity : AppCompatActivity() {
         val exts = when (format) {
             "pfs" -> setOf("pfs", "pf6", "pf8")
             "nsa" -> setOf("nsa", "sar")
+            "iso" -> setOf("iso")
             else -> setOf(format)
         }
         return if (ext !in exts) "后缀 .$ext 与格式 ${format.uppercase()} 不匹配"

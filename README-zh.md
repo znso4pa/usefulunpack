@@ -4,7 +4,7 @@
 
 轻量级 Android 文件管理器 & **视觉小说游戏资源解包工具**
 
-支持 **XP3**（吉里吉里/Kirikiri 引擎）、**PFS**（Artemis 引擎）和 **NSA/SAR**（NScripter 引擎）封包格式，Rust 原生核心，性能强劲。
+支持 **XP3**（吉里吉里/Kirikiri 引擎）、**PFS**（Artemis 引擎）、**NSA/SAR**（NScripter 引擎）和 **ISO 9660** 光盘镜像，Rust 原生核心，性能强劲。
 
 ---
 
@@ -15,6 +15,7 @@
 | ✂️ **XP3 解包** | 解压吉里吉里 `.xp3` 封包 |
 | 📦 **PFS 解包** | 解压 Artemis `.pfs` / `.pf6` / `.pf8` 封包 |
 | 📜 **NSA/SAR 解包** | 解压 NScripter `.nsa` / `.sar` 封包 |
+| 💿 **ISO 提取** | 浏览和提取 ISO 9660 光盘镜像 |
 | 🔍 **归档预览** | 预览归档内容树，可选择性解压文件/文件夹 |
 | 🖼️ **文件预览** | 直接从封包内预览图片（JPG/PNG）、音频（MP3/OGG）、视频（MP4） |
 | 🗂 **文件浏览器** | 类 ZArchiver 界面，路径面包屑、快速滚动、文件夹 ⭐ 星标收藏 |
@@ -82,7 +83,8 @@ bash build.sh
          libarchive_core.so (Rust)
            ├── xp3 crate  → XP3 解包
            ├── pf8 crate  → PFS 解包
-           └── nsa parser → NSA/SAR 解包
+           ├── nsa parser → NSA/SAR 解包
+           └── isomage    → ISO 9660 提取
                   ↓
           文件写入目标目录
 ```

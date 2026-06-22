@@ -178,11 +178,20 @@ fn extract_nsa_entry(entries: &[NsaEntry], file: &mut File, index: usize, output
     let mut dest = Path::new(output).to_path_buf();
     for comp in e.name.split('/') { if !comp.is_empty() { dest.push(comp); } }
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
-    if e.compressed { return Err("NSA compression not supported".to_string()); }
     file.seek(SeekFrom::Start(data_start + e.offset)).map_err(|e| format!("{e}"))?;
-    let mut data = vec![0u8; e.usize as usize];
-    file.read_exact(&mut data).map_err(|e| format!("{e}"))?;
-    fs::write(&dest, &data).map_err(|e| format!("{e}"))?;
+    if e.compressed {
+        let mut cdata = vec![0u8; e.csize as usize];
+        file.read_exact(&mut cdata).map_err(|e| format!("{e}"))?;
+        let mut raw = Vec::with_capacity(e.usize as usize);
+        use flate2::read::ZlibDecoder;
+        use std::io::Read as _;
+        ZlibDecoder::new(&cdata[..]).read_to_end(&mut raw).map_err(|e| format!("NSA zlib: {e}"))?;
+        fs::write(&dest, &raw).map_err(|e| format!("{e}"))?;
+    } else {
+        let mut data = vec![0u8; e.usize as usize];
+        file.read_exact(&mut data).map_err(|e| format!("{e}"))?;
+        fs::write(&dest, &data).map_err(|e| format!("{e}"))?;
+    }
     Ok(())
 }
 

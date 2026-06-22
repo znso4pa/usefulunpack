@@ -365,9 +365,24 @@ class MainActivity : AppCompatActivity() {
     private fun showPreviewDialog(src: File, entries: List<ArchiveEntry>, format: String) {
         val selectedPaths = mutableSetOf<String>()
         val expandedPaths = entries.filter { it.isDirectory }.map { it.path }.toMutableSet()
-        val adapter = PreviewAdapter(entries, selectedPaths, expandedPaths) { entry ->
-            previewFileEntry(src, entry, format)
+
+        val totalFiles = entries.count { !it.isDirectory }
+        val totalSize = entries.filter { !it.isDirectory }.sumOf { it.size }
+        val tvStats = TextView(this).apply {
+            text = "共 $totalFiles 文件，${fmt(totalSize)}  |  已选 0 项"
+            setTextColor(0xFFaaaaaa.toInt()); textSize = 12f
+            setPadding(12, 8, 12, 4)
+            setBackgroundColor(0xFF252525.toInt())
         }
+
+        val adapter = PreviewAdapter(entries, selectedPaths, expandedPaths, { entry ->
+            previewFileEntry(src, entry, format)
+        }, {
+            val sel = selectedPaths.filter { !it.endsWith("/") || selectedPaths.none { p -> p != it && p.startsWith(it) } }
+            val selFiles = sel.count { p -> entries.find { e -> e.path == p }?.isDirectory == false }
+            val selSize = sel.sumOf { p -> entries.find { e -> e.path == p }?.size ?: 0L }
+            tvStats.text = "共 $totalFiles 文件，${fmt(totalSize)}  |  已选 $selFiles 项，${fmt(selSize)}"
+        })
 
         val listView = ListView(this).apply {
             this.adapter = adapter
@@ -376,9 +391,15 @@ class MainActivity : AppCompatActivity() {
             dividerHeight = 1
         }
 
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(tvStats, LinearLayout.LayoutParams(MATCH, WRAP))
+            addView(listView, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        }
+
         val dlg = AlertDialog.Builder(this)
-            .setTitle("预览 ${src.name} (${entries.size} 项)")
-            .setView(listView)
+            .setTitle("预览 ${src.name}")
+            .setView(layout)
             .setPositiveButton("解压所选", null)
             .setNegativeButton("取消", null)
             .create()
@@ -723,7 +744,8 @@ private fun fmt(b: Long) = when {
         private val entries: List<ArchiveEntry>,
         private val selectedPaths: MutableSet<String>,
         private val expandedPaths: MutableSet<String>,
-        private val onFileClick: (ArchiveEntry) -> Unit = {}
+        private val onFileClick: (ArchiveEntry) -> Unit = {},
+        private val onSelectionChanged: () -> Unit = {}
     ) : BaseAdapter() {
 
         // Cache: visible entries (children of collapsed directories hidden)
@@ -783,7 +805,7 @@ private fun fmt(b: Long) = when {
                             if (checked) selectedPaths.add(e.path) else selectedPaths.remove(e.path)
                         }
                     }
-                    notifyDataSetChanged()
+                    onSelectionChanged(); notifyDataSetChanged()
                 }
             } else {
                 checkbox.isClickable = true
@@ -791,7 +813,7 @@ private fun fmt(b: Long) = when {
                 checkbox.isChecked = selectedPaths.contains(entry.path)
                 checkbox.setOnCheckedChangeListener { _, checked ->
                     if (checked) selectedPaths.add(entry.path) else selectedPaths.remove(entry.path)
-                    notifyDataSetChanged()
+                    onSelectionChanged(); notifyDataSetChanged()
                 }
             }
 

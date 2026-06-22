@@ -16,6 +16,7 @@ xp3 = "0.4"
 pf8 = "0.1"
 tokio = { version = "1", features = ["io-util"] }
 isomage = "0.1"
+flate2 = "1"
 
 [profile.release]
 opt-level = "s"

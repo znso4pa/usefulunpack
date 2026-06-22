@@ -49,6 +49,14 @@ class MainActivity : AppCompatActivity() {
     private val prefs: SharedPreferences by lazy { getSharedPreferences("bm", MODE_PRIVATE) }
     private val bookmarks = mutableListOf<String>()
     private val df = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+    private var lastTap = 0L
+
+    private fun tryTap(): Boolean {
+        val now = System.currentTimeMillis()
+        if (now - lastTap < 800) return false
+        lastTap = now
+        return true
+    }
 
     // Extraction powered by native .so (xp3 + pf8 crates)
 
@@ -94,7 +102,8 @@ class MainActivity : AppCompatActivity() {
         }
         listFiles.onItemClickListener = OnItemClickListener { _, _, pos, _ ->
             val f = listFiles.adapter.getItem(pos) as File
-            if (f.isDirectory) nav(f) else select(f)
+            if (f.isDirectory) { nav(f); return@OnItemClickListener }
+            if (tryTap()) select(f)
         }
         listFiles.onItemLongClickListener = AdapterView.OnItemLongClickListener { _, _, pos, _ ->
             val f = listFiles.adapter.getItem(pos) as File
@@ -187,10 +196,45 @@ class MainActivity : AppCompatActivity() {
         listFiles.adapter = FileAdapter(files)
     }
 
+    private val PREVIEW_EXTS = setOf("jpg", "jpeg", "png", "mp3", "ogg", "mp4",
+        "txt", "json", "ini", "ks", "lua", "py", "js", "html", "css", "xml", "cfg", "log")
+
     private fun select(f: File) {
-        selectedFile = f
-        tvSelected.text = "${f.name}  |  ${fmt(fileSize(f))}"
-        fabExtract.visibility = View.VISIBLE
+        val ext = f.name.lowercase().substringAfterLast('.')
+
+        // Archive files → show FAB for extraction
+        if (ext in ARCHIVE_EXTS) {
+            selectedFile = f
+            tvSelected.text = "${f.name}  |  ${fmt(fileSize(f))}"
+            fabExtract.visibility = View.VISIBLE
+            return
+        }
+
+        // Previewable non-archive files → show preview dialog
+        if (ext in PREVIEW_EXTS) {
+            AlertDialog.Builder(this)
+                .setTitle(f.name)
+                .setItems(arrayOf("🔍 预览", "ℹ️ 文件信息")) { _, w ->
+                    when (w) {
+                        0 -> previewLocalFile(f)
+                        1 -> toast("${f.name}\n${fmt(fileSize(f))}\n${df.format(Date(f.lastModified()))}")
+                    }
+                }.setNegativeButton("取消", null).show()
+            return
+        }
+
+        // Neither archive nor previewable — just show info
+        toast("${f.name}\n${fmt(fileSize(f))}\n${df.format(Date(f.lastModified()))}")
+    }
+
+    private fun previewLocalFile(f: File) {
+        val ext = f.name.lowercase().substringAfterLast('.')
+        when (ext) {
+            "jpg", "jpeg", "png" -> showImagePreview(f)
+            "mp3", "ogg" -> playAudio(f)
+            "mp4" -> playVideo(f)
+            else -> showTextPreview(f)
+        }
     }
 
     private val ARCHIVE_EXTS = setOf("xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso")
@@ -388,7 +432,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun previewFileEntry(archive: File, entry: ArchiveEntry, format: String) {
         val ext = entry.path.substringAfterLast('.').lowercase()
-        if (ext !in setOf("jpg", "jpeg", "png", "mp3", "ogg", "mp4")) {
+        val TEXT_EXTS = setOf("txt", "json", "ini", "ks", "lua", "py", "js", "html", "css", "xml", "cfg", "log")
+        if (ext !in setOf("jpg", "jpeg", "png", "mp3", "ogg", "mp4") && ext !in TEXT_EXTS) {
             toast("不支持预览 .$ext 文件")
             return
         }
@@ -404,6 +449,7 @@ class MainActivity : AppCompatActivity() {
                     "jpg", "jpeg", "png" -> showImagePreview(extracted)
                     "mp3", "ogg" -> playAudio(extracted)
                     "mp4" -> playVideo(extracted)
+                    else -> showTextPreview(extracted)
                 }
             }
         }
@@ -428,6 +474,29 @@ class MainActivity : AppCompatActivity() {
         }
 
         AlertDialog.Builder(this)
+            .setTitle(file.name)
+            .setView(scroll)
+            .setPositiveButton("关闭", null)
+            .show()
+    }
+
+    private fun showTextPreview(file: File) {
+        val text = runCatching { file.readText() }.getOrElse { "无法读取文件: ${it.message}" }
+        val tv = TextView(this@MainActivity).apply {
+            this.text = text.take(50000)
+            setTextColor(0xFFe0f9ff.toInt())
+            textSize = 12f
+            setBackgroundColor(0xFF1a1a1a.toInt())
+            setPadding(16, 16, 16, 16)
+            isVerticalScrollBarEnabled = true
+            movementMethod = android.text.method.ScrollingMovementMethod()
+            typeface = android.graphics.Typeface.MONOSPACE
+        }
+        val scroll = ScrollView(this@MainActivity).apply {
+            addView(tv)
+            setBackgroundColor(0xFF1a1a1a.toInt())
+        }
+        AlertDialog.Builder(this@MainActivity)
             .setTitle(file.name)
             .setView(scroll)
             .setPositiveButton("关闭", null)

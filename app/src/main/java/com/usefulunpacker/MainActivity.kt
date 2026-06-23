@@ -237,7 +237,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private val ARCHIVE_EXTS = setOf("xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso")
+    private val ARCHIVE_EXTS = setOf("xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso", "ypf")
 
     private fun extract() {
         val src = selectedFile ?: return
@@ -253,8 +253,8 @@ class MainActivity : AppCompatActivity() {
         }
         AlertDialog.Builder(this)
             .setTitle("选择归档格式")
-            .setItems(arrayOf("📦 XP3", "📦 PFS", "📦 NSA/SAR", "📀 ISO")) { _, which ->
-                val format = arrayOf("xp3", "pfs", "nsa", "iso")[which]
+            .setItems(arrayOf("📦 XP3", "📦 PFS", "📦 NSA/SAR", "📀 ISO", "📦 YPF")) { _, which ->
+                val format = arrayOf("xp3", "pfs", "nsa", "iso", "ypf")[which]
                 showExtractOptions(src, format)
             }.setNegativeButton("取消", null).show()
     }
@@ -308,6 +308,8 @@ class MainActivity : AppCompatActivity() {
                      else ArchiveCore.pfsExtractSelected("", src, out, selected)
             "iso" -> if (selected.isEmpty()) ArchiveCore.isoExtract("", src, out)
                      else ArchiveCore.isoExtractSelected("", src, out, selected)
+            "ypf" -> if (selected.isEmpty()) ArchiveCore.ypfExtract("", src, out)
+                     else ArchiveCore.ypfExtractSelected("", src, out, selected)
             "nsa" -> if (selected.isEmpty()) ArchiveCore.nsaExtract("", src, out)
                      else ArchiveCore.nsaExtractSelected("", src, out, selected)
             else -> false
@@ -320,6 +322,7 @@ class MainActivity : AppCompatActivity() {
             "pfs" -> setOf("pfs", "pf6", "pf8")
             "nsa" -> setOf("nsa", "sar")
             "iso" -> setOf("iso")
+            "ypf" -> setOf("ypf")
             else -> setOf(format)
         }
         return if (ext !in exts) "后缀 .$ext 与格式 ${format.uppercase()} 不匹配"

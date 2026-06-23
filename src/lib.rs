@@ -355,6 +355,116 @@ pub extern "system" fn Java_com_usefulunpacker_ArchiveCore_isoExtractSelected(
     }
 }
 
+// ─── YPF (YU-RIS Package) ───────────────────
+
+fn ypf_fname_len(m: u8) -> Option<usize> {
+    match m { 0xf4=>Some(9),0xfc=>Some(10),0xf6=>Some(11),0xef=>Some(12),0xec=>Some(13),0xf1=>Some(14),0xf0=>Some(15),0xf3=>Some(16),0xe7=>Some(17),0xed=>Some(18),0xf2=>Some(19),0xd1=>Some(20),0xe4=>Some(21),0xe9=>Some(22),0xe8=>Some(23),0xee=>Some(24),0xe6=>Some(25),0xe5=>Some(26),0xea=>Some(27),0xe1=>Some(28),0xe2=>Some(29),0xe3=>Some(30),0xe0=>Some(31),0xdc=>Some(32),0xde=>Some(33),0xdd=>Some(34),0xdf=>Some(35),0xdb=>Some(36),0xda=>Some(37),0xd6=>Some(38),0xd8=>Some(39),0xd7=>Some(40),0xd9=>Some(41),0xd5=>Some(42),0xd4=>Some(43),0xd0=>Some(44),0xd2=>Some(45),0xeb=>Some(46),0xd3=>Some(47),0xcf=>Some(48),0xce=>Some(49),0xcd=>Some(50),0xcc=>Some(51),0xcb=>Some(52),0xf9=>Some(53),0xc9=>Some(54),0xc8=>Some(55), _=>None }
+}
+
+struct YpfEntry {
+    name: String,
+    file_type: u8,
+    compressed: bool,
+    usize: u32,
+    asize: u32,
+    offset: u32,
+}
+
+fn open_ypf(input: &str) -> Result<(Vec<YpfEntry>, File), String> {
+    let mut f = File::open(input).map_err(|e| format!("{e}"))?;
+    let mut m = [0u8;4]; f.read_exact(&mut m).map_err(|e| format!("{e}"))?;
+    if &m != b"YPF\0" { return Err("Not a YPF file".to_string()); }
+    let mut b = [0u8;4];
+    f.read_exact(&mut b).map_err(|e| format!("{e}"))?; // version
+    f.read_exact(&mut b).map_err(|e| format!("{e}"))?; let count = u32::from_le_bytes(b) as usize;
+    f.read_exact(&mut b).map_err(|e| format!("{e}"))?; let hdr_len = u32::from_le_bytes(b);
+    if count==0||count>100000 { return Err(format!("YPF: bad count {count}")); }
+    if hdr_len<0x20 { return Err(format!("YPF: header too short")); }
+    if (hdr_len as usize-0x20)<count*36 || (hdr_len as usize-0x20)>count*69 {
+        return Err(format!("YPF: inconsistent header"));
+    }
+    // Read entire entry area
+    let ea = (hdr_len as usize - 0x20) as usize;
+    let mut er = vec![0u8; ea]; f.read_exact(&mut er).map_err(|e| format!("{e}"))?;
+    let mut pos = 0usize;
+    let mut ents = Vec::with_capacity(count);
+    for _ in 0..count {
+        pos += 4; // skip unknown0
+        let fl = ypf_fname_len(er[pos]).ok_or("YPF: bad marker")?; pos+=1;
+        let name = {
+            let mut d = er[pos..pos+fl].to_vec();
+            for b in &mut d { *b ^= 201; }
+            use encoding_rs::SHIFT_JIS;
+            SHIFT_JIS.decode(&d).0.into_owned().replace('\\', "/")
+        };
+        pos += fl;
+        let ft = er[pos]; pos+=1;
+        let comp = er[pos]!=0; pos+=1;
+        let ul = u32::from_le_bytes([er[pos],er[pos+1],er[pos+2],er[pos+3]]); pos+=4;
+        let al = u32::from_le_bytes([er[pos],er[pos+1],er[pos+2],er[pos+3]]); pos+=4;
+        let off = u32::from_le_bytes([er[pos],er[pos+1],er[pos+2],er[pos+3]]); pos+=4;
+        pos += 8; // end_of_record(4) + unknown5(4)
+        ents.push(YpfEntry{name,file_type:ft,compressed:comp,usize:ul,asize:al,offset:off});
+    }
+    Ok((ents, f))
+}
+
+fn extract_ypf_entry(ents: &[YpfEntry], f: &mut File, i: usize, out: &str) -> Result<(),String> {
+    let e = &ents[i];
+    let mut d = Path::new(out).to_path_buf();
+    for c in e.name.split('/') { if !c.is_empty() { d.push(c); } }
+    if let Some(p)=d.parent() { fs::create_dir_all(p).map_err(|x| format!("{x}"))?; }
+    f.seek(SeekFrom::Start(e.offset as u64)).map_err(|x| format!("{x}"))?;
+    let mut raw = vec![0u8; e.asize as usize];
+    f.read_exact(&mut raw).map_err(|x| format!("{x}"))?;
+    if e.compressed {
+        use flate2::read::ZlibDecoder;
+        let mut dec = Vec::with_capacity(e.usize as usize);
+        ZlibDecoder::new(&raw[..]).read_to_end(&mut dec).map_err(|x| format!("YPF zlib: {x}"))?;
+        fs::write(&d, &dec).map_err(|x| format!("{x}"))?;
+    } else { fs::write(&d, &raw).map_err(|x| format!("{x}"))?; }
+    Ok(())
+}
+
+fn list_ypf(input: &str) -> Result<String, String> {
+    let (ents, _) = open_ypf(input)?;
+    let names: Vec<&str> = ents.iter().map(|e| e.name.as_str()).collect();
+    let dirs = derive_dirs(&names);
+    let mut all: Vec<(String,u64,bool)> = Vec::new();
+    for d in &dirs { all.push((d.clone(),0,true)); }
+    for e in &ents { all.push((e.name.clone(),e.usize as u64,false)); }
+    all.sort_by(|a,b| a.0.cmp(&b.0));
+    let items: Vec<String> = all.iter().map(|(n,s,d)|{
+        format!(r#"{{"n":"{}","s":{},"d":{},"e":false}}"#,json_escape(n),if *d{0}else{*s},*d)
+    }).collect();
+    Ok(format!("[{}]",items.join(",")))
+}
+
+fn extract_ypf_all(i:&str,o:&str)->Result<u32,String>{
+    let (ents,mut f)=open_ypf(i)?; let mut fail=0u32;
+    for idx in 0..ents.len() { if extract_ypf_entry(&ents,&mut f,idx,o).is_err(){fail+=1;} }
+    Ok(fail)
+}
+fn extract_ypf_selected(i:&str,o:&str,s:&str)->Result<u32,String>{
+    let ss:HashSet<&str>=s.lines().filter(|l|!l.is_empty()).collect();
+    if ss.is_empty(){return Ok(0);}
+    let (ents,mut f)=open_ypf(i)?; let mut fail=0u32;
+    for (idx,e) in ents.iter().enumerate() {
+        if ss.contains(e.name.as_str())||ss.iter().any(|d|e.name.starts_with(&format!("{d}/"))){
+            if extract_ypf_entry(&ents,&mut f,idx,o).is_err(){fail+=1;}
+        }
+    }
+    Ok(fail)
+}
+#[no_mangle]pub extern "system" fn Java_com_usefulunpacker_ArchiveCore_ypfExtract(mut e:JNIEnv,_:JClass,_t:JString,i:JString,o:JString)->jboolean{
+    let inp=s(&mut e,&i);let out=s(&mut e,&o);let _=fs::create_dir_all(&out);
+    match extract_ypf_all(&inp,&out){Ok(f)if f==0=>JNI_TRUE,Ok(f)=>{let _=e.throw_new("java/io/IOException",format!("YPF: {f} failed"));JNI_FALSE},Err(er)=>{let _=e.throw_new("java/io/IOException",format!("YPF: {er}"));JNI_FALSE}}
+}
+#[no_mangle]pub extern "system" fn Java_com_usefulunpacker_ArchiveCore_ypfExtractSelected(mut e:JNIEnv,_:JClass,_t:JString,i:JString,o:JString,sel:JString)->jboolean{
+    let inp=s(&mut e,&i);let out=s(&mut e,&o);let ss=s(&mut e,&sel);
+    match extract_ypf_selected(&inp,&out,&ss){Ok(f)if f==0=>JNI_TRUE,Ok(f)=>{let _=e.throw_new("java/io/IOException",format!("YPF: {f} failed"));JNI_FALSE},Err(er)=>{let _=e.throw_new("java/io/IOException",format!("YPF: {er}"));JNI_FALSE}}
+}
+
 // ─── Preview / Selective Extraction ───────────
 
 fn json_escape(s: &str) -> String {
@@ -398,6 +508,8 @@ pub extern "system" fn Java_com_usefulunpacker_ArchiveCore_listEntries(
         list_nsa(&inp)
     } else if inp.to_lowercase().ends_with(".iso") {
         list_iso(&inp)
+    } else if inp.to_lowercase().ends_with(".ypf") {
+        list_ypf(&inp)
     } else {
         let _ = env.throw_new("java/io/IOException", "Unsupported format");
         return std::ptr::null_mut();

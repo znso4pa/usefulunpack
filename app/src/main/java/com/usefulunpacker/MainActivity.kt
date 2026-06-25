@@ -302,16 +302,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun extractByFormat(format: String, src: String, out: String, selected: String): Boolean {
         return when (format) {
-            "xp3" -> if (selected.isEmpty()) ArchiveCore.xp3Extract("", src, out)
-                     else ArchiveCore.xp3ExtractSelected("", src, out, selected)
-            "pfs" -> if (selected.isEmpty()) ArchiveCore.pfsExtract("", src, out)
-                     else ArchiveCore.pfsExtractSelected("", src, out, selected)
-            "iso" -> if (selected.isEmpty()) ArchiveCore.isoExtract("", src, out)
-                     else ArchiveCore.isoExtractSelected("", src, out, selected)
-            "ypf" -> if (selected.isEmpty()) ArchiveCore.ypfExtract("", src, out)
-                     else ArchiveCore.ypfExtractSelected("", src, out, selected)
-            "nsa" -> if (selected.isEmpty()) ArchiveCore.nsaExtract("", src, out)
-                     else ArchiveCore.nsaExtractSelected("", src, out, selected)
+            "xp3" -> if (selected.isEmpty()) Xp3Core.xp3Extract("", src, out)
+                     else Xp3Core.xp3ExtractSelected("", src, out, selected)
+            "pfs" -> if (selected.isEmpty()) PfsCore.pfsExtract("", src, out)
+                     else PfsCore.pfsExtractSelected("", src, out, selected)
+            "iso" -> if (selected.isEmpty()) IsoCore.isoExtract("", src, out)
+                     else IsoCore.isoExtractSelected("", src, out, selected)
+            "ypf" -> if (selected.isEmpty()) YpfCore.ypfExtract("", src, out)
+                     else YpfCore.ypfExtractSelected("", src, out, selected)
+            "nsa" -> if (selected.isEmpty()) NsaCore.nsaExtract("", src, out)
+                     else NsaCore.nsaExtractSelected("", src, out, selected)
             else -> false
         }
     }
@@ -354,10 +354,16 @@ class MainActivity : AppCompatActivity() {
             show()
         }
         thread {
-            val json = ArchiveCore.listEntries(src.absolutePath)
+            val json = try { when(format) { "xp3" -> Xp3Core.xp3ListEntries(src.absolutePath)
+                "pfs" -> PfsCore.pfsListEntries(src.absolutePath)
+                "nsa" -> NsaCore.nsaListEntries(src.absolutePath)
+                "iso" -> IsoCore.isoListEntries(src.absolutePath)
+                "ypf" -> YpfCore.ypfListEntries(src.absolutePath)
+                else -> null
+            } } catch (_: Exception) { null }
             runOnUiThread { pd.dismiss() }
             if (json == null || json == "[]") {
-                runOnUiThread { toast(mismatchMsg(format, src)) }
+                runOnUiThread { toast("无法读取归档内容") }
                 return@thread
             }
             val entries = parseEntries(json)

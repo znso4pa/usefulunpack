@@ -1,0 +1,13 @@
+[package]
+name = "archive_ypf-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+archive_common = { path = "../common" }
+jni = "0.21"
+flate2 = "1"
+encoding_rs = "0.8"

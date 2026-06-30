@@ -1,11 +1,10 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jstring, JNI_TRUE, JNI_FALSE};
-use archive_common::{s, json_escape, derive_dirs};
+use archive_common::{s, json_escape, derive_dirs, safe_join};
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::io::{Read, Seek, SeekFrom};
 use flate2::read::ZlibDecoder;
 
 // --- Marker → length lookup tables ---
@@ -38,7 +37,7 @@ fn fname_len(marker: u8) -> Option<usize> {
 
 // --- Entry struct ---
 
-struct YpfEntry { name: String, file_type: u8, compressed: bool, usize: u32, asize: u32, offset: u32 }
+struct YpfEntry { name: String, _file_type: u8, compressed: bool, usize: u32, asize: u32, offset: u32 }
 
 // --- Core: open + parse entries ---
 
@@ -121,7 +120,7 @@ fn open_ypf(input: &str) -> Result<(Vec<YpfEntry>, File, u64), String> {
               && !name.is_empty() && name.chars().any(|c| c.is_alphanumeric()||c=='/'||c=='.'||c=='_'||c=='-');
 
         if ok {
-            ents.push(YpfEntry { name, file_type: ft, compressed, usize: ulen, asize: alen, offset: off });
+            ents.push(YpfEntry { name, _file_type: ft, compressed, usize: ulen, asize: alen, offset: off });
         }
         file_off += (5 + fl + 22) as u64;
     }
@@ -135,8 +134,7 @@ fn open_ypf(input: &str) -> Result<(Vec<YpfEntry>, File, u64), String> {
 fn ypf_extract_one(f: &mut File, e: &YpfEntry, out: &str, fsize: u64) -> Result<(), String> {
     if e.asize == 0 { return Ok(()); }
     if e.offset as u64 + e.asize as u64 > fsize { return Err("offset OOB".into()); }
-    let mut d = Path::new(out).to_path_buf();
-    for c in e.name.split('/') { if !c.is_empty() { d.push(c); } }
+    let d = safe_join(out, &e.name)?;
     if let Some(p) = d.parent() { std::fs::create_dir_all(p).map_err(|x| format!("{x}"))?; }
     f.seek(SeekFrom::Start(e.offset as u64)).map_err(|x| format!("{x}"))?;
     let mut raw = vec![0u8; e.asize as usize];
@@ -191,14 +189,14 @@ fn extract_ypf_selected(i: &str, o: &str, s: &str) -> Result<u32, String> {
 
 // --- JNI ---
 
-#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ArchiveCore_ypfExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jboolean {
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jboolean {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
     match extract_ypf_all(&inp, &out) { Ok(0) => JNI_TRUE, Ok(f) => { let _ = e.throw_new("java/io/IOException", format!("YPF: {f} failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("YPF: {er}")); JNI_FALSE } }
 }
-#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ArchiveCore_ypfExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel_j: JString) -> jboolean {
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel_j: JString) -> jboolean {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel_j);
     match extract_ypf_selected(&inp, &out, &sel_str) { Ok(0) => JNI_TRUE, Ok(f) => { let _ = e.throw_new("java/io/IOException", format!("YPF: {f} failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("YPF: {er}")); JNI_FALSE } }
 }
-#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ArchiveCore_ypfListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
     match list_ypf(&s(&mut e, &i)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
 }

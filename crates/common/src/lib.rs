@@ -1,6 +1,7 @@
 use jni::JNIEnv;
 use jni::objects::JString;
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 pub fn s(env: &mut JNIEnv, s: &JString) -> String {
     env.get_string(s).map(|v| v.into()).unwrap_or_default()
@@ -68,4 +69,27 @@ pub fn derive_dirs(paths: &[&str]) -> BTreeSet<String> {
         for i in 1..parts.len() { dirs.insert(parts[..i].join("/")); }
     }
     dirs
+}
+
+pub fn safe_join(output: &str, archive_path: &str) -> Result<PathBuf, String> {
+    let mut dest = Path::new(output).to_path_buf();
+    let normalized = archive_path.replace('\\', "/");
+    let mut pushed = false;
+
+    for comp in normalized.split('/') {
+        if comp.is_empty() || comp == "." {
+            continue;
+        }
+        if comp == ".." || comp.contains('\0') || comp.contains(':') {
+            return Err(format!("unsafe archive path: {archive_path}"));
+        }
+        dest.push(comp);
+        pushed = true;
+    }
+
+    if !pushed {
+        return Err("empty archive path".to_string());
+    }
+
+    Ok(dest)
 }

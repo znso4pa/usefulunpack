@@ -1,7 +1,7 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jstring, JNI_TRUE, JNI_FALSE};
-use archive_common::{s, json_escape, derive_dirs};
+use archive_common::{s, json_escape, derive_dirs, safe_join};
 use pf8::Pf8Archive;
 use std::fs;
 use std::collections::HashSet;
@@ -17,10 +17,25 @@ pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsExtract(
     let inp = s(&mut env, &input);
     let out = s(&mut env, &output);
     let _ = fs::create_dir_all(&out);
-    match Pf8Archive::open(Path::new(&inp)) {
-        Ok(mut a) => { let _ = a.extract_all(&out); JNI_TRUE }
-        Err(e) => { let _ = env.throw_new("java/io/IOException", format!("PFS: {e}")); JNI_FALSE }
+    let mut archive = match Pf8Archive::open(Path::new(&inp)) {
+        Ok(a) => a,
+        Err(e) => { let _ = env.throw_new("java/io/IOException", format!("PFS: {e}")); return JNI_FALSE; }
+    };
+    let to_extract: Vec<std::path::PathBuf> = archive.entries().map(|e| e.path().to_path_buf()).collect();
+    let mut fail_count = 0u32;
+    for entry_path in &to_extract {
+        let entry_name = entry_path.to_string_lossy();
+        let dest = match safe_join(&out, &entry_name) {
+            Ok(d) => d,
+            Err(_) => { fail_count += 1; continue; }
+        };
+        if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
+        if archive.extract_file(entry_path, &dest).is_err() { fail_count += 1; }
     }
+    if fail_count > 0 {
+        let _ = env.throw_new("java/io/IOException", format!("PFS: {fail_count} file(s) failed"));
+        JNI_FALSE
+    } else { JNI_TRUE }
 }
 
 fn list_pfs(input: &str) -> Result<String, String> {
@@ -85,10 +100,11 @@ fn extract_pfs_selected(input: &str, output: &str, selected: &str, env: &mut JNI
         }).collect();
     let mut fail_count = 0u32;
     for entry_path in &to_extract {
-        let mut dest = Path::new(output).to_path_buf();
-        if let Ok(rel) = entry_path.strip_prefix("/") { dest.push(rel); }
-        else { for comp in entry_path.components().skip(1) { dest.push(comp); } }
-        if dest.to_string_lossy().is_empty() { continue; }
+        let entry_name = entry_path.to_string_lossy();
+        let dest = match safe_join(output, &entry_name) {
+            Ok(d) => d,
+            Err(_) => { fail_count += 1; continue; }
+        };
         if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
         if archive.extract_file(entry_path, &dest).is_err() { fail_count += 1; }
     }

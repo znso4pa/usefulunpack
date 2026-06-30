@@ -1,10 +1,9 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jstring, JNI_TRUE, JNI_FALSE};
-use archive_common::{s, json_escape};
+use archive_common::{s, json_escape, safe_join};
 use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
 
 // ─── ISO 9660 ────────────────────────────────
 
@@ -32,8 +31,7 @@ fn list_iso(input: &str) -> Result<String, String> {
 
 fn extract_iso_one(file: &mut std::fs::File, node: &isomage::TreeNode, output: &str, rel_path: &str) -> Result<(), String> {
     if node.is_directory { return Ok(()); }
-    let mut dest = Path::new(output).to_path_buf();
-    for comp in rel_path.split('/') { if !comp.is_empty() { dest.push(comp); } }
+    let dest = safe_join(output, rel_path)?;
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
     let mut data = Vec::new();
     isomage::cat_node(file, node, &mut data).map_err(|e| format!("{e}"))?;
@@ -44,8 +42,14 @@ fn extract_iso_one(file: &mut std::fs::File, node: &isomage::TreeNode, output: &
 fn extract_iso_all(input: &str, output: &str) -> Result<u32, String> {
     let mut file = std::fs::File::open(input).map_err(|e| format!("{e}"))?;
     let root = isomage::detect_and_parse_filesystem(&mut file, input).map_err(|e| format!("ISO: {e}"))?;
-    isomage::extract_node(&mut file, &root, output).map_err(|e| format!("{e}"))?;
-    Ok(0)
+    let map = iso_map(&root);
+    let mut fail = 0u32;
+    for (path, node) in &map {
+        if extract_iso_one(&mut file, node, output, path).is_err() {
+            fail += 1;
+        }
+    }
+    Ok(fail)
 }
 
 fn extract_iso_selected(input: &str, output: &str, selected: &str) -> Result<u32, String> {

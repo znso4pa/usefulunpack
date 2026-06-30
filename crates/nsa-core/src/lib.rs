@@ -1,11 +1,10 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jstring, JNI_TRUE, JNI_FALSE};
-use archive_common::{s, json_escape, derive_dirs};
-use std::collections::{BTreeSet, HashSet};
+use archive_common::{s, json_escape, derive_dirs, safe_join};
+use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::io::{Read, Seek, SeekFrom};
 use flate2::read::ZlibDecoder;
 
 // ─── NSA / SAR (NScripter) ──────────────────
@@ -36,8 +35,7 @@ fn open_nsa(input: &str) -> Result<(Vec<NsaEntry>, u64, File), String> {
 
 fn extract_nsa_entry(entries: &[NsaEntry], file: &mut File, index: usize, output: &str, data_start: u64) -> Result<(), String> {
     let e = &entries[index];
-    let mut dest = Path::new(output).to_path_buf();
-    for comp in e.name.split('/') { if !comp.is_empty() { dest.push(comp); } }
+    let dest = safe_join(output, &e.name)?;
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
     file.seek(SeekFrom::Start(data_start + e.offset)).map_err(|e| format!("{e}"))?;
     if e.compressed {

@@ -1,12 +1,11 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jstring, JNI_TRUE, JNI_FALSE};
-use archive_common::{s, SyncIo, oneshot_async, json_escape, derive_dirs};
+use archive_common::{s, SyncIo, oneshot_async, json_escape, derive_dirs, safe_join};
 use xp3::read::XP3Archive;
 use std::fs::{self, File};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::io::{BufReader, BufWriter};
-use std::path::Path;
 
 // ─── XP3 (Kirikiri) ────────────────────────
 
@@ -30,8 +29,10 @@ fn extract_xp3(input: &str, output: &str, env: &mut JNIEnv) -> jboolean {
     let mut fail_count = 0u32;
     for i in 0..archive.entries().len() {
         let name = &archive.entries()[i].name;
-        let mut dest = Path::new(output).to_path_buf();
-        for comp in name.split('\\') { if comp.is_empty() { continue; } dest.push(comp); }
+        let dest = match safe_join(output, name) {
+            Ok(d) => d,
+            Err(_) => { fail_count += 1; continue; }
+        };
         if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
         let out_file = match File::create(&dest) {
             Ok(f) => f, Err(_) => { fail_count += 1; continue; }
@@ -112,8 +113,10 @@ fn extract_xp3_selected(input: &str, output: &str, selected: &str, env: &mut JNI
         let should = sel_set.contains(norm_name.as_str()) ||
             sel_set.iter().any(|d| { let dd = if d.ends_with('/') { &d[..d.len()-1] } else { d }; norm_name.starts_with(&format!("{dd}/")) });
         if !should { continue; }
-        let mut dest = Path::new(output).to_path_buf();
-        for comp in raw_name.split('\\') { if comp.is_empty() { continue; } dest.push(comp); }
+        let dest = match safe_join(output, raw_name) {
+            Ok(d) => d,
+            Err(_) => { fail_count += 1; continue; }
+        };
         if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
         let out_file = match File::create(&dest) { Ok(f) => f, Err(_) => { fail_count += 1; continue; } };
         let mut out_stream = SyncIo(BufWriter::new(out_file));

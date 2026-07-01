@@ -4,7 +4,7 @@
 
 轻量级 Android 文件管理器 & **视觉小说游戏资源解包工具**
 
-支持 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）和 **ISO 9660** 光盘镜像，Rust 原生核心。
+支持 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）和 **ZIP**、**7z** 和 **ISO 9660** 光盘镜像，Rust 原生核心。
 
 ---
 
@@ -16,6 +16,8 @@
 | 📦 **PFS** | 解压 Artemis `.pfs` / `.pf6` / `.pf8` 封包 |
 | 📜 **NSA/SAR** | 解压 NScripter `.nsa` / `.sar` 封包（含 zlib 压缩） |
 | 📦 **YPF** | 解压 YU-RIS `.ypf` 封包，三层自适应边界检测 |
+| 🗜️ **ZIP** | 浏览和提取标准 ZIP 压缩包 |
+| 📦 **7z** | 浏览和提取 7-Zip 压缩包 |
 | 💿 **ISO 9660** | 浏览和提取 ISO 光盘镜像 |
 | 🔍 **归档预览** | 树形预览归档内容，可折叠/展开，复选框选择性解压 |
 | 📊 **预览统计** | 实时文件总数/总大小 + 已选统计 |
@@ -64,6 +66,8 @@ bash build.sh
          libarchive_nsa_core.so  → NSA/SAR
          libarchive_iso_core.so  → ISO 9660
          libarchive_ypf_core.so  → YPF (YU-RIS)
+         libarchive_zip_core.so  → ZIP
+         libarchive_sevenz_core.so → 7z
                   ↓
           文件写入目标目录
 ```
@@ -92,6 +96,8 @@ XOR 密钥（0xFF / 0xC9）按文件首条目自动判断。
 | … YPF SwapTable | [GARbro](https://github.com/morkt/GARbro) (ArcYPF.cs) | MIT |
 | … YPF 文件名 | XOR + Shift-JIS / [encoding_rs](https://crates.io/crates/encoding_rs) | 见 crates.io |
 | … YPF zlib | [flate2 crate](https://crates.io/crates/flate2) | MIT / Apache-2.0 |
+| **ZIP** | [zip crate](https://crates.io/crates/zip) | MIT |
+| **7z** | [sevenz-rust crate](https://crates.io/crates/sevenz-rust) | MIT / Apache-2.0 |
 | **ISO 9660** | [isomage crate](https://crates.io/crates/isomage) | MIT |
 
 ## 许可证

@@ -21,7 +21,7 @@ echo "[1/3] Building Rust native libraries..."
 cd "$PROJECT_DIR"
 
 # Build each format crate
-CRATES=("xp3-core" "pfs-core" "nsa-core" "iso-core" "ypf-core")
+CRATES=("xp3_core" "pfs_core" "nsa_core" "iso_core" "ypf_core" "zip_core" "sevenz_core")
 TARGETS=("aarch64-linux-android" "armv7-linux-androideabi" "x86_64-linux-android")
 
 for target in "${TARGETS[@]}"; do

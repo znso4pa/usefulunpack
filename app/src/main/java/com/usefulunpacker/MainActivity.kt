@@ -237,7 +237,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private val ARCHIVE_EXTS = setOf("xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso", "ypf")
+    private val ARCHIVE_EXTS = setOf("xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso", "ypf", "zip", "7z")
 
     private fun extract() {
         val src = selectedFile ?: return
@@ -253,8 +253,8 @@ class MainActivity : AppCompatActivity() {
         }
         AlertDialog.Builder(this)
             .setTitle("选择归档格式")
-            .setItems(arrayOf("📦 XP3", "📦 PFS", "📦 NSA/SAR", "📀 ISO", "📦 YPF")) { _, which ->
-                val format = arrayOf("xp3", "pfs", "nsa", "iso", "ypf")[which]
+            .setItems(arrayOf("📦 XP3", "📦 PFS", "📦 NSA/SAR", "📀 ISO", "📦 YPF", "🗜️ ZIP", "📦 7z")) { _, which ->
+                val format = arrayOf("xp3", "pfs", "nsa", "iso", "ypf", "zip", "7z")[which]
                 showExtractOptions(src, format)
             }.setNegativeButton("取消", null).show()
     }
@@ -310,6 +310,10 @@ class MainActivity : AppCompatActivity() {
                      else IsoCore.isoExtractSelected("", src, out, selected)
             "ypf" -> if (selected.isEmpty()) YpfCore.ypfExtract("", src, out)
                      else YpfCore.ypfExtractSelected("", src, out, selected)
+            "zip" -> if (selected.isEmpty()) ZipCore.zipExtract("", src, out)
+                     else ZipCore.zipExtractSelected("", src, out, selected)
+            "7z" -> if (selected.isEmpty()) SevenZCore.szExtract("", src, out)
+                     else SevenZCore.szExtractSelected("", src, out, selected)
             "nsa" -> if (selected.isEmpty()) NsaCore.nsaExtract("", src, out)
                      else NsaCore.nsaExtractSelected("", src, out, selected)
             else -> false
@@ -323,6 +327,8 @@ class MainActivity : AppCompatActivity() {
             "nsa" -> setOf("nsa", "sar")
             "iso" -> setOf("iso")
             "ypf" -> setOf("ypf")
+            "zip" -> setOf("zip")
+            "7z" -> setOf("7z")
             else -> setOf(format)
         }
         return if (ext !in exts) "后缀 .$ext 与格式 ${format.uppercase()} 不匹配"
@@ -359,6 +365,8 @@ class MainActivity : AppCompatActivity() {
                 "nsa" -> NsaCore.nsaListEntries(src.absolutePath)
                 "iso" -> IsoCore.isoListEntries(src.absolutePath)
                 "ypf" -> YpfCore.ypfListEntries(src.absolutePath)
+                "zip" -> ZipCore.zipListEntries(src.absolutePath)
+                "7z" -> SevenZCore.szListEntries(src.absolutePath)
                 else -> null
             } } catch (_: Exception) { null }
             runOnUiThread { pd.dismiss() }

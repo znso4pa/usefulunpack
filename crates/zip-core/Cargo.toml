@@ -1,0 +1,10 @@
+[package]
+name = "archive_zip_core"
+version.workspace = true
+edition.workspace = true
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+archive_common = { path = "../common" }
+jni = "0.21"
+zip = "3"

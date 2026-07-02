@@ -18,6 +18,7 @@ import android.os.Environment
 import android.view.*
 import android.widget.*
 import android.widget.AdapterView.OnItemClickListener
+import android.widget.PopupMenu
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.drawerlayout.widget.DrawerLayout
@@ -91,7 +92,23 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnDrawer).setOnClickListener { drawer.open() }
         findViewById<ImageButton>(R.id.btnRoot).setOnClickListener { nav(Environment.getExternalStorageDirectory()) }
         findViewById<ImageButton>(R.id.btnUp).setOnClickListener { currentDir.parentFile?.let { nav(it) } }
-        findViewById<TextView>(R.id.btnCLI).setOnClickListener { cli() }
+        findViewById<TextView>(R.id.btnCLI).setOnClickListener { view ->
+            val popup = PopupMenu(this, view)
+            popup.menu.add(0, 0, 0, ">_ CLI")
+            popup.menu.add(0, 1, 1, "🔍 全局搜索")
+            popup.menu.add(0, 2, 2, "📌 书签管理")
+            popup.menu.add(0, 3, 3, "⚙️ 设置")
+            popup.setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    0 -> cli()
+                    1 -> globalSearch()
+                    2 -> drawer.open()
+                    3 -> toast("设置 — 即将推出")
+                }
+                true
+            }
+            popup.show()
+        }
         btnExtract.setOnClickListener { extract() }
         fabExtract.setOnClickListener { extract() }
         findViewById<TextView>(R.id.btnAddBookmark).setOnClickListener {
@@ -238,6 +255,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val ARCHIVE_EXTS = setOf("xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso", "ypf", "zip", "7z")
+    private val TEXT_SEARCH_EXTS = setOf(
+        "txt", "json", "ini", "ks", "lua", "py", "js", "html", "css", "xml", "cfg", "log",
+        "rtf", "md", "yaml", "yml", "toml", "conf", "properties", "sh", "java", "kt", "rs",
+        "c", "cpp", "h", "hpp", "swift", "rb", "php", "pl", "sql", "tsv",
+        "srt", "ass", "lrc", "bat", "cmd", "ps1", "go", "dart", "r", "csv"
+    )
 
     private fun extract() {
         val src = selectedFile ?: return
@@ -415,8 +438,66 @@ class MainActivity : AppCompatActivity() {
             addView(listView, LinearLayout.LayoutParams(MATCH, 0, 1f))
         }
 
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("预览 ${src.name}")
+        // Custom title bar with search button at top-right
+        val titleBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(24, 14, 8, 14)
+            setBackgroundColor(0xFF303030.toInt())
+        }
+        titleBar.addView(TextView(this).apply {
+            text = "预览 ${src.name}"
+            setTextColor(0xFFe0f9ff.toInt()); textSize = 17f
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        })
+
+        // Must declare dlg before btnSearchTitle so its lambda can capture it
+        lateinit var dlg: AlertDialog
+        val btnSearchTitle = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_search)
+            setBackgroundColor(0xFF303030.toInt())
+            setPadding(8, 4, 8, 4)
+            scaleType = ImageView.ScaleType.FIT_XY
+            layoutParams = LinearLayout.LayoutParams(52, 40)
+            setOnClickListener {
+                val cacheDir = File(cacheDir, "archive_search/${src.nameWithoutExtension}")
+                cacheDir.deleteRecursively()
+                cacheDir.mkdirs()
+                val pd = ProgressDialog(this@MainActivity).apply {
+                    setTitle("准备搜索")
+                    setMessage("正在准备 ${src.name} 的文件索引...")
+                    setProgressStyle(ProgressDialog.STYLE_SPINNER)
+                    setCancelable(false); show()
+                }
+                thread {
+                    searchSourceArchive = src; searchSourceFormat = format
+                    searchSourceCacheBase = cacheDir
+                    // Phase 1: touch empty placeholder files for ALL entries (fast, for filename search)
+                    for (e in entries) {
+                        if (e.isDirectory) continue
+                        val f = File(cacheDir, e.path)
+                        f.parentFile?.mkdirs()
+                        f.createNewFile()
+                    }
+                    // Phase 2: extract only text files (overwrites placeholders, for content search)
+                    val textExts = TEXT_SEARCH_EXTS
+                    for (e in entries) {
+                        if (e.isDirectory) continue
+                        val ext = e.path.substringAfterLast('.').lowercase()
+                        if (ext !in textExts) continue
+                        extractByFormat(format, src.path, cacheDir.path, e.path)
+                    }
+                    runOnUiThread {
+                        pd.dismiss()
+                        dlg.dismiss()
+                        globalSearch(cacheDir, tempDir = cacheDir)
+                    }
+                }
+            }
+        }
+        titleBar.addView(btnSearchTitle)
+
+        dlg = AlertDialog.Builder(this)
+            .setCustomTitle(titleBar)
             .setView(layout)
             .setPositiveButton("解压所选", null)
             .setNegativeButton("取消", null)
@@ -520,10 +601,50 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun showTextPreview(file: File) {
-        val text = runCatching { file.readText() }.getOrElse { "无法读取文件: ${it.message}" }
+    private fun showTextPreview(file: File, highlightLine: Int = 0, highlightQuery: String = "") {
+        val raw = runCatching { file.readText() }.getOrElse { "无法读取文件: ${it.message}" }
+        val displayText = raw.take(50000)
+        val matchPos = mutableListOf<Int>() // character indices of each match
+
+        // Build spannable with all match positions tracked
+        var spannable: android.text.SpannableString? = null
+        if (highlightQuery.isNotEmpty()) {
+            spannable = android.text.SpannableString(displayText)
+            var idx = 0
+            val lowerText = displayText.lowercase()
+            val lowerQuery = highlightQuery.lowercase()
+            while (true) {
+                val pos = lowerText.indexOf(lowerQuery, idx)
+                if (pos < 0) break
+                matchPos.add(pos)
+                idx = pos + 1
+            }
+        }
+
+        fun applyHighlights(selectedIdx: Int) {
+            val s = spannable ?: return
+            val len = highlightQuery.length
+            // Remove all existing BackgroundColorSpans
+            for (span in s.getSpans(0, s.length, android.text.style.BackgroundColorSpan::class.java)) {
+                s.removeSpan(span)
+            }
+            // Re-apply: dim for non-selected, bright for selected
+            for (i in matchPos.indices) {
+                val color = if (i == selectedIdx) 0x88FFAA00.toInt() else 0x33FFAA00.toInt()
+                s.setSpan(
+                    android.text.style.BackgroundColorSpan(color),
+                    matchPos[i], matchPos[i] + len,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+        }
+
+        // Apply initial highlights (first match selected)
+        if (spannable != null && matchPos.isNotEmpty()) applyHighlights(0)
+        else spannable = null
+
         val tv = TextView(this@MainActivity).apply {
-            this.text = text.take(50000)
+            this.text = spannable ?: displayText
             setTextColor(0xFFe0f9ff.toInt())
             textSize = 12f
             setBackgroundColor(0xFF1a1a1a.toInt())
@@ -536,9 +657,80 @@ class MainActivity : AppCompatActivity() {
             addView(tv)
             setBackgroundColor(0xFF1a1a1a.toInt())
         }
+        // Scroll to highlightLine on first show
+        if (highlightLine > 0) {
+            tv.post {
+                val layout = tv.layout ?: return@post
+                val lineIdx = (highlightLine - 1).coerceIn(0, layout.lineCount - 1)
+                val y = layout.getLineTop(lineIdx) - (scroll.height / 3)
+                scroll.scrollTo(0, y.coerceAtLeast(0))
+            }
+        }
+
+        val root = LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(scroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        }
+
+        // Navigation bar for multiple matches
+        if (matchPos.size > 1) {
+            var curMatch = 0
+            if (highlightLine > 0) {
+                val layout = tv.layout
+                if (layout != null) {
+                    val targetLine = highlightLine - 1
+                    curMatch = matchPos.indices.minByOrNull {
+                        kotlin.math.abs(layout.getLineForOffset(matchPos[it]) - targetLine)
+                    } ?: 0
+                }
+            }
+            val navBar = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setBackgroundColor(0xFF222222.toInt())
+                setPadding(0, 6, 0, 6)
+            }
+            val btnPrev = Button(this@MainActivity).apply {
+                text = "◀ 上一个"; textSize = 12f; isAllCaps = false
+                setTextColor(0xFF35acc6.toInt()); background = null
+                setPadding(12, 4, 12, 4)
+            }
+            val tvCounter = TextView(this@MainActivity).apply {
+                gravity = Gravity.CENTER; textSize = 12f
+                setTextColor(0xFFaaaaaa.toInt())
+                setPadding(20, 4, 20, 4)
+            }
+            val btnNext = Button(this@MainActivity).apply {
+                text = "下一个 ▶"; textSize = 12f; isAllCaps = false
+                setTextColor(0xFF35acc6.toInt()); background = null
+                setPadding(12, 4, 12, 4)
+            }
+            fun scrollToMatch(idx: Int) {
+                curMatch = idx.coerceIn(0, matchPos.size - 1)
+                tvCounter.text = "${curMatch + 1} / ${matchPos.size}"
+                // Update highlights: selected brighter, others dimmer
+                applyHighlights(curMatch)
+                tv.text = spannable // force re-render with updated spans
+                tv.post {
+                    val layout = tv.layout ?: return@post
+                    val line = layout.getLineForOffset(matchPos[curMatch])
+                    val y = layout.getLineTop(line) - (scroll.height / 3)
+                    scroll.scrollTo(0, y.coerceAtLeast(0))
+                }
+            }
+            btnPrev.setOnClickListener { scrollToMatch(curMatch - 1) }
+            btnNext.setOnClickListener { scrollToMatch(curMatch + 1) }
+            navBar.addView(btnPrev)
+            navBar.addView(tvCounter, LinearLayout.LayoutParams(0, WRAP, 1f))
+            navBar.addView(btnNext)
+            root.addView(navBar, LinearLayout.LayoutParams(MATCH, WRAP))
+            scrollToMatch(curMatch)
+        }
+
+        val title = if (highlightLine > 0) "${file.name} (行 $highlightLine)" else file.name
         AlertDialog.Builder(this@MainActivity)
-            .setTitle(file.name)
-            .setView(scroll)
+            .setTitle(title)
+            .setView(root)
             .setPositiveButton("关闭", null)
             .show()
     }
@@ -683,6 +875,357 @@ class MainActivity : AppCompatActivity() {
         dlg.show()
     }
 
+    data class SearchResult(
+        val file: File,
+        val snippet: String = "",
+        val lineNumber: Int = 0,
+        val matchCount: Int = 0
+    )
+
+    private fun globalSearch(startDir: File? = null, tempDir: File? = null) {
+        var searchMode = 0 // 0=filename, 1=content
+        var searchDir = startDir ?: currentDir
+        val results = mutableListOf<SearchResult>()
+        var searchThread: Thread? = null
+        lateinit var searchDialog: AlertDialog
+        var currentLimit = 200
+        val seenFiles = mutableSetOf<String>()
+        var queryText = ""
+        var currentMaxFileSize = Long.MAX_VALUE
+
+        // Directory display + change button
+        val tvDir = TextView(this).apply {
+            text = "📁 搜索范围: ${searchDir.path}"
+            setTextColor(0xFFb0b0b0.toInt()); textSize = 11f; setPadding(16, 8, 16, 2)
+        }
+        val btnChangeDir = Button(this).apply {
+            text = "更改"; setTextColor(0xFF35acc6.toInt()); background = null; textSize = 11f
+            setPadding(0, 0, 16, 0)
+            setOnClickListener {
+                val dirInput = EditText(this@MainActivity).apply {
+                    setText(searchDir.path); setTextColor(0xFFe0f9ff.toInt())
+                    setHintTextColor(0xFF707070.toInt()); setBackgroundColor(0xFF303030.toInt())
+                    setPadding(12, 8, 12, 8)
+                }
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("输入搜索目录").setView(dirInput)
+                    .setPositiveButton("确定") { _, _ ->
+                        val d = File(dirInput.text.toString().trim())
+                        if (d.isDirectory) { searchDir = d; tvDir.text = "📁 搜索范围: ${d.path}" }
+                        else toast("目录不存在")
+                    }.setNegativeButton("取消", null).show()
+            }
+        }
+        val dirRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(tvDir, LinearLayout.LayoutParams(0, WRAP, 1f))
+            addView(btnChangeDir, LinearLayout.LayoutParams(WRAP, WRAP))
+        }
+
+        // Mode toggle
+        lateinit var btnFilename: Button
+        lateinit var btnContent: Button
+        fun selectMode(mode: Int) {
+            searchMode = mode
+            val onColor = 0xFF35acc6.toInt(); val offBg = 0xFF2a2a2a.toInt()
+            btnFilename.setBackgroundColor(if (mode == 0) onColor else offBg)
+            btnFilename.setTextColor(if (mode == 0) 0xFF000000.toInt() else 0xFF888888.toInt())
+            btnContent.setBackgroundColor(if (mode == 1) onColor else offBg)
+            btnContent.setTextColor(if (mode == 1) 0xFF000000.toInt() else 0xFF888888.toInt())
+        }
+        btnFilename = Button(this).apply {
+            text = "📄 文件名搜索"; textSize = 13f; isAllCaps = false
+            setPadding(24, 6, 24, 6); setOnClickListener { selectMode(0) }
+        }
+        btnContent = Button(this).apply {
+            text = "📝 内容搜索"; textSize = 13f; isAllCaps = false
+            setPadding(24, 6, 24, 6); setOnClickListener { selectMode(1) }
+        }
+        selectMode(0)
+        val modeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; setPadding(16, 4, 16, 4)
+            addView(btnFilename); addView(btnContent, LinearLayout.LayoutParams(WRAP, WRAP).apply { setMargins(8, 0, 0, 0) })
+        }
+
+        // Search input
+        val etQuery = EditText(this).apply {
+            hint = "输入关键词..."; setTextColor(0xFFe0f9ff.toInt()); setHintTextColor(0xFF707070.toInt())
+            setBackgroundColor(0xFF303030.toInt()); textSize = 14f; setPadding(12, 8, 12, 8); setSingleLine(true)
+        }
+
+        // Search button
+        val btnSearch = Button(this).apply {
+            text = "🔍 搜索"; setTextColor(0xFF35acc6.toInt()); textSize = 14f
+        }
+
+        // Progress bar (indeterminate while searching)
+        val searchProgress = ProgressBar(this).apply {
+            isIndeterminate = true; visibility = View.GONE
+            setPadding(16, 4, 16, 0)
+        }
+
+        // Stats + continue button
+        val tvStats = TextView(this).apply {
+            text = "输入关键词开始搜索"; setTextColor(0xFFaaaaaa.toInt()); textSize = 12f
+        }
+        val btnContinue = Button(this).apply {
+            text = "继续扫描"; setTextColor(0xFF35acc6.toInt()); textSize = 12f
+            background = null; visibility = View.GONE; setPadding(0, 0, 0, 0)
+        }
+        val statsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; setPadding(16, 2, 16, 4)
+            addView(tvStats, LinearLayout.LayoutParams(0, WRAP, 1f))
+            addView(btnContinue, LinearLayout.LayoutParams(WRAP, WRAP))
+        }
+
+        // Results adapter — uses snapshot to avoid threading crashes
+        val resultAdapter = object : BaseAdapter() {
+            @Volatile private var snapshot: List<SearchResult> = emptyList()
+            fun refresh() { snapshot = results.toList(); notifyDataSetChanged() }
+            override fun getCount() = snapshot.size
+            override fun getItem(pos: Int) = snapshot.getOrNull(pos) ?: SearchResult(File(""))
+            override fun getItemId(pos: Int) = pos.toLong()
+            override fun getView(pos: Int, v: View?, p: ViewGroup?): View {
+                val view = v ?: layoutInflater.inflate(android.R.layout.simple_list_item_2, p, false)
+                val r = snapshot.getOrNull(pos) ?: return view
+                view.findViewById<TextView>(android.R.id.text1).apply {
+                    val matchTag = if (r.matchCount > 1) "  (${r.matchCount} 处匹配)" else ""
+                    val lineTag = if (r.lineNumber > 0) "  [行 ${r.lineNumber}]" else ""
+                    text = "${r.file.name}$lineTag$matchTag"
+                    setTextColor(0xFFe0f9ff.toInt()); textSize = 14f; setSingleLine(true)
+                }
+                view.findViewById<TextView>(android.R.id.text2).apply {
+                    text = if (r.snippet.isNotEmpty()) "${r.file.parent}\n${r.snippet}"
+                           else "${r.file.parent}  •  ${fmt(r.file.length())}"
+                    setTextColor(0xFF888888.toInt()); textSize = 11f; maxLines = 3
+                }
+                view.setBackgroundColor(0xFF303030.toInt())
+                return view
+            }
+        }
+
+        val listResults = ListView(this).apply {
+            adapter = resultAdapter; setBackgroundColor(0xFF303030.toInt())
+            divider = ColorDrawable(0xFF1a1a1a.toInt()); dividerHeight = 1
+            onItemClickListener = OnItemClickListener { _, _, pos, _ ->
+                val r = resultAdapter.getItem(pos) as SearchResult
+                if (r.file.path.isEmpty()) return@OnItemClickListener
+                searchDialog.dismiss()
+                // If 0-byte placeholder from archive search, extract on demand
+                val archiveSrc = searchSourceArchive
+                val fmt = searchSourceFormat
+                val cacheBase = searchSourceCacheBase
+                if (r.file.length() == 0L && archiveSrc != null && fmt != null && cacheBase != null) {
+                    val pd = ProgressDialog(this@MainActivity).apply {
+                        setTitle("提取中"); setMessage(r.file.name)
+                        setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show()
+                    }
+                    val relPath = r.file.absolutePath.removePrefix(cacheBase.absolutePath + "/")
+                    thread {
+                        extractByFormat(fmt, archiveSrc.path, cacheBase.path, relPath)
+                        runOnUiThread { pd.dismiss(); previewClickedFile(r, queryText) }
+                    }
+                } else {
+                    previewClickedFile(r, queryText)
+                }
+            }
+        }
+
+        // Layout
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(dirRow, LinearLayout.LayoutParams(MATCH, WRAP))
+            addView(modeRow, LinearLayout.LayoutParams(MATCH, WRAP))
+            addView(etQuery, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(16, 4, 16, 4) })
+            addView(btnSearch, LinearLayout.LayoutParams(WRAP, WRAP).apply { gravity = Gravity.CENTER_HORIZONTAL })
+            addView(searchProgress, LinearLayout.LayoutParams(MATCH, WRAP))
+            addView(statsRow, LinearLayout.LayoutParams(MATCH, WRAP))
+            addView(listResults, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        }
+
+        searchDialog = AlertDialog.Builder(this)
+            .setTitle("🔍 全局搜索")
+            .setView(layout)
+            .setNegativeButton("关闭", null)
+            .create()
+        searchDialog.show()
+
+        // Launch search
+        fun doSearch(query: String, mode: Int, maxFileSize: Long, isContinue: Boolean = false) {
+            searchThread?.interrupt()
+            if (query.isEmpty()) { toast("请输入关键词"); return }
+            currentMaxFileSize = maxFileSize
+            if (!isContinue) { results.clear(); seenFiles.clear(); currentLimit = 200 }
+            else currentLimit += 200
+            resultAdapter.refresh()
+            searchProgress.visibility = View.VISIBLE
+            btnContinue.visibility = View.GONE
+            tvStats.text = if (isContinue) "继续扫描中..." else "搜索中..."
+            val scanned = intArrayOf(0)
+            searchThread = thread {
+                walkSearch(query.lowercase(), searchDir, mode, results, currentLimit, maxFileSize, scanned, seenFiles)
+                runOnUiThread {
+                    searchProgress.visibility = View.GONE
+                    val hasMore = results.size >= currentLimit && results.size < 10000
+                    btnContinue.visibility = if (hasMore) View.VISIBLE else View.GONE
+                    tvStats.text = "找到 ${results.size} 个结果（共扫描 ${scanned[0]} 个文件）"
+                    resultAdapter.refresh()
+                    if (results.isEmpty()) toast("未找到匹配结果")
+                }
+            }
+            // Periodically update stats while searching
+            thread {
+                var lastScanned = 0
+                while (searchThread?.isAlive == true) {
+                    Thread.sleep(200)
+                    val cur = scanned[0]
+                    if (cur != lastScanned) {
+                        lastScanned = cur
+                        runOnUiThread { tvStats.text = "搜索中... 已扫描 $cur 个文件，找到 ${results.size} 个结果" }
+                    }
+                }
+            }
+        }
+
+        btnSearch.setOnClickListener {
+            queryText = etQuery.text.toString().trim()
+            if (queryText.isEmpty()) { toast("请输入关键词"); return@setOnClickListener }
+            if (searchMode == 1) {
+                // Content search: ask for single-file size limit
+                val labels = arrayOf("100 KB", "500 KB", "1 MB", "5 MB", "10 MB", "不限制")
+                val limits = longArrayOf(100_000L, 500_000L, 1_000_000L, 5_000_000L, 10_000_000L, Long.MAX_VALUE)
+                val body = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setBackgroundColor(0xFF303030.toInt())
+                }
+                body.addView(TextView(this).apply {
+                    text = "超过上限的文件将被跳过，避免大文件拖慢搜索"
+                    setTextColor(0xFFb0b0b0.toInt()); textSize = 13f
+                    setPadding(24, 16, 24, 12)
+                })
+                val radioGroup = RadioGroup(this).apply { setPadding(24, 0, 24, 0) }
+                labels.forEachIndexed { i, label ->
+                    val rb = RadioButton(this).apply {
+                        text = label; id = i
+                        setTextColor(0xFFe0f9ff.toInt()); textSize = 15f
+                        setPadding(16, 10, 16, 10)
+                        if (i == 2) isChecked = true
+                    }
+                    radioGroup.addView(rb, LinearLayout.LayoutParams(MATCH, WRAP))
+                }
+                body.addView(radioGroup)
+                body.addView(View(this).apply {
+                    setBackgroundColor(0xFF555555.toInt())
+                    layoutParams = LinearLayout.LayoutParams(MATCH, 1).apply { setMargins(24, 8, 24, 8) }
+                })
+                val customRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(40, 8, 24, 16)
+                }
+                customRow.addView(TextView(this).apply {
+                    text = "自定义 (MB):"; setTextColor(0xFFb0b0b0.toInt()); textSize = 13f
+                    gravity = Gravity.CENTER_VERTICAL
+                })
+                val customInput = EditText(this).apply {
+                    hint = "如 2"; setTextColor(0xFFe0f9ff.toInt()); setHintTextColor(0xFF707070.toInt())
+                    setBackgroundColor(0xFF1a1a1a.toInt()); setPadding(8, 4, 8, 4); textSize = 14f; gravity = Gravity.CENTER
+                    inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                    layoutParams = LinearLayout.LayoutParams(120, WRAP).apply { setMargins(12, 0, 0, 0) }
+                }
+                customRow.addView(customInput)
+                body.addView(customRow)
+                AlertDialog.Builder(this)
+                    .setTitle("是否跳过超过 XX 的文件？")
+                    .setView(body)
+                    .setPositiveButton("开始搜索") { _, _ ->
+                        val custom = customInput.text.toString().toDoubleOrNull()
+                        val bytes = if (custom != null && custom > 0) (custom * 1_000_000).toLong()
+                                   else limits[radioGroup.checkedRadioButtonId.coerceIn(0, limits.size - 1)]
+                        doSearch(queryText, 1, bytes)
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            } else {
+                doSearch(queryText, 0, Long.MAX_VALUE)
+            }
+        }
+
+        btnContinue.setOnClickListener {
+            if (queryText.isEmpty()) return@setOnClickListener
+            doSearch(queryText, searchMode, currentMaxFileSize, true)
+        }
+    }
+
+    private fun previewClickedFile(r: SearchResult, highlightQuery: String = "") {
+        if (r.snippet.isNotEmpty()) {
+            showTextPreview(r.file, r.lineNumber, highlightQuery)
+        } else {
+            val ext = r.file.name.lowercase().substringAfterLast('.')
+            if (ext in PREVIEW_EXTS || ext in TEXT_SEARCH_EXTS) {
+                previewLocalFile(r.file)
+            } else {
+                val parent = r.file.parentFile
+                if (parent != null) { nav(parent); toast(r.file.name) }
+                else toast(r.file.path)
+            }
+        }
+    }
+
+    private fun walkSearch(
+        query: String, dir: File, mode: Int, results: MutableList<SearchResult>, limit: Int,
+        maxFileSize: Long, scanned: IntArray, seenFiles: MutableSet<String>
+    ) {
+        if (results.size >= limit || Thread.interrupted()) return
+        val children = dir.listFiles() ?: return
+        for (child in children) {
+            if (results.size >= limit || Thread.interrupted()) return
+            try {
+                if (child.isFile) {
+                    scanned[0]++
+                    val absPath = child.absolutePath
+                    if (seenFiles.contains(absPath)) continue
+                    if (mode == 0) {
+                        // Filename search
+                        if (child.name.lowercase().contains(query)) {
+                            seenFiles.add(absPath)
+                            results.add(SearchResult(child))
+                        }
+                    } else {
+                        // Content search: scan whole file, count matches, group per file
+                        val ext = child.extension.lowercase()
+                        if (ext in TEXT_SEARCH_EXTS && child.length() < maxFileSize) {
+                            var matchCount = 0
+                            var firstSnippet = ""
+                            var firstLine = 0
+                            var lineNum = 0
+                            try {
+                                child.bufferedReader(charset = Charsets.UTF_8).use { reader ->
+                                    reader.forEachLine { line ->
+                                        if (Thread.interrupted()) return@forEachLine
+                                        lineNum++
+                                        if (line.lowercase().contains(query)) {
+                                            matchCount++
+                                            if (firstLine == 0) {
+                                                firstLine = lineNum
+                                                firstSnippet = line.trim().take(120)
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (_: Exception) { }
+                            if (matchCount > 0) {
+                                seenFiles.add(absPath)
+                                results.add(SearchResult(child, firstSnippet, firstLine, matchCount))
+                            }
+                        }
+                    }
+                } else if (child.isDirectory) {
+                    walkSearch(query, child, mode, results, limit, maxFileSize, scanned, seenFiles)
+                }
+            } catch (_: Exception) { }
+        }
+    }
+
     data class ArchiveEntry(
         val path: String,
         val name: String,
@@ -695,6 +1238,9 @@ class MainActivity : AppCompatActivity() {
     companion object {
         val MATCH = LinearLayout.LayoutParams.MATCH_PARENT
         val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
+        var searchSourceArchive: File? = null
+        var searchSourceFormat: String? = null
+        var searchSourceCacheBase: File? = null
     }
 
     private fun loadBookmarks() {
@@ -767,12 +1313,21 @@ private fun fmt(b: Long) = when {
         private val onSelectionChanged: () -> Unit = {}
     ) : BaseAdapter() {
 
-        // Cache: visible entries (children of collapsed directories hidden)
+        var searchQuery: String = ""
+            set(value) {
+                field = value; rebuildVisible(); notifyDataSetChanged()
+            }
+        // Cache: visible entries
         private var visible: List<ArchiveEntry> = entries
             .filter { e -> isVisible(e) }
 
         private fun isVisible(e: ArchiveEntry): Boolean {
-            // An entry is visible if all its ancestor directories are expanded
+            // If searching by filename, show all entries matching query
+            if (searchQuery.isNotEmpty()) {
+                return e.path.lowercase().contains(searchQuery.lowercase()) ||
+                       e.name.lowercase().contains(searchQuery.lowercase())
+            }
+            // Normal: entry is visible if all its ancestor directories are expanded
             val parts = e.path.split('/')
             for (i in 1 until parts.size) {
                 val dirPath = parts.take(i).joinToString("/")

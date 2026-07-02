@@ -4,7 +4,7 @@
 
 A lightweight Android file manager and archive extraction tool for visual novel game files.
 
-Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF** (YU-RIS), and **ISO 9660** disc images — with native Rust-powered extraction.
+Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF** (YU-RIS), **ZIP**, **7z**, and **ISO 9660** disc images — with native Rust-powered extraction.
 
 ---
 
@@ -19,7 +19,9 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 💿 **ISO 9660** | Browse and extract ISO disc images (CD/DVD/BD) via isomage |
 | 🔍 **Archive Preview** | Browse archive contents as a collapsible tree with checkboxes for selective extraction |
 | 📊 **Preview Statistics** | Real-time count/size of total and selected files |
-| 🖼️ **File Preview** | Image (JPG/PNG), audio (MP3/OGG), video (MP4), text/code (TXT/JSON/INI/KS/LUA/PY/JS/HTML/CSS/XML) |
+| 🔎 **Global Search** | Filename search + content search (30+ text formats), match highlighting with prev/next navigation, progressive scanning |
+| 📦 **In-Archive Search** | One-click unpack text files from preview and open the full global search interface on extracted content |
+| 🖼️ **File Preview** | Image (JPG/PNG), audio (MP3/OGG), video (MP4), text/code — jump to matching line on search results |
 | 📂 **Local File Preview** | Tap any previewable file in the browser to view directly |
 | 🗂 **File Browser** | ZArchiver-style UI with path breadcrumb, fast scroll, folder ⭐ bookmarks |
 | 📌 **Bookmarks** | Quick-access paths via star button on folders or slide-out drawer |
@@ -75,7 +77,9 @@ User taps file → Kotlin UI calls format-specific JNI
           libarchive_pfs_core.so  → PFS
           libarchive_nsa_core.so  → NSA/SAR
           libarchive_iso_core.so  → ISO 9660
-          libarchive_ypf_core.so  → YPF (YU-RIS)
+          libarchive_ypf_core.so
+	          libarchive_zip_core.so  → **ZIP**
+	          libarchive_sevenz_core.so → **7z**  → YPF (YU-RIS)
                          ↓
               Files written to selected directory
 ```

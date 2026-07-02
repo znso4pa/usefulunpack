@@ -1,13 +1,13 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "==========================================="
 echo " UsefulUnpack Builder v4.0"
 echo "==========================================="
 
-if [ -z "$ANDROID_NDK_HOME" ]; then
-    if [ -d "$ANDROID_HOME/ndk" ]; then
+if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+    if [ -n "${ANDROID_HOME:-}" ] && [ -d "$ANDROID_HOME/ndk" ]; then
         export ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME/ndk/"*/ | sort -r | head -1)
         echo "[0/3] NDK: $ANDROID_NDK_HOME"
     else
@@ -20,17 +20,26 @@ echo ""
 echo "[1/3] Building Rust native libraries..."
 cd "$PROJECT_DIR"
 
-# Build each format crate
-CRATES=("xp3_core" "pfs_core" "nsa_core" "iso_core" "ypf_core" "zip_core" "sevenz_core")
+# package name:library artifact suffix
+CRATES=(
+    "archive_xp3-core:xp3_core"
+    "archive_pfs-core:pfs_core"
+    "archive_nsa-core:nsa_core"
+    "archive_iso-core:iso_core"
+    "archive_ypf-core:ypf_core"
+    "archive_zip_core:zip_core"
+    "archive_sevenz_core:sevenz_core"
+)
 TARGETS=("aarch64-linux-android" "armv7-linux-androideabi" "x86_64-linux-android")
 
 for target in "${TARGETS[@]}"; do
     echo "  → $target"
-    args=""
+    args=()
     for crate in "${CRATES[@]}"; do
-        args="$args -p archive_$crate"
+        package="${crate%%:*}"
+        args+=("-p" "$package")
     done
-    cargo ndk --target "$target" --platform 26 build --release $args 2>&1 | tail -1
+    cargo ndk --target "$target" --platform 26 build --release "${args[@]}"
 done
 
 # Copy .so files
@@ -44,9 +53,10 @@ for pair in "${ARCH_MAP[@]}"; do
     target="${pair%%:*}"
     jni_dir="${pair##*:}"
     for crate in "${CRATES[@]}"; do
-        src="$PROJECT_DIR/target/$target/release/libarchive_${crate}.so"
+        lib_suffix="${crate##*:}"
+        src="$PROJECT_DIR/target/$target/release/libarchive_${lib_suffix}.so"
         dst="$LIBDIR/$jni_dir/"
-        cp -f "$src" "$dst" 2>/dev/null || echo "  [warn] missing: $src"
+        cp -f "$src" "$dst"
     done
 done
 

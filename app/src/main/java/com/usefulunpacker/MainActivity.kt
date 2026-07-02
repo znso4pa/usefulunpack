@@ -291,11 +291,12 @@ class MainActivity : AppCompatActivity() {
             show()
         }
         thread {
-            val ok = extractByFormat(format, src.path, out.path, "")
+            val result = runCatching { extractByFormat(format, src.path, out.path, "") }
             runOnUiThread {
                 pd.dismiss()
+                val ok = result.getOrDefault(false)
                 if (ok) { toast("完成 → ${out.name}"); nav(currentDir) }
-                else toast(mismatchMsg(format, src))
+                else toast(result.exceptionOrNull()?.message ?: mismatchMsg(format, src))
             }
         }
     }
@@ -459,11 +460,12 @@ class MainActivity : AppCompatActivity() {
             show()
         }
         thread {
-            val ok = extractByFormat(format, src.path, out.path, selStr)
+            val result = runCatching { extractByFormat(format, src.path, out.path, selStr) }
             runOnUiThread {
                 pd.dismiss()
+                val ok = result.getOrDefault(false)
                 if (ok) { toast("完成 → ${out.name}"); nav(currentDir) }
-                else toast(mismatchMsg(format, src))
+                else toast(result.exceptionOrNull()?.message ?: mismatchMsg(format, src))
             }
         }
     }

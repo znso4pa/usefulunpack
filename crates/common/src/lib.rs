@@ -74,13 +74,16 @@ pub fn derive_dirs(paths: &[&str]) -> BTreeSet<String> {
 pub fn safe_join(output: &str, archive_path: &str) -> Result<PathBuf, String> {
     let mut dest = Path::new(output).to_path_buf();
     let normalized = archive_path.replace('\\', "/");
+    if normalized.starts_with('/') || normalized.contains('\0') {
+        return Err(format!("unsafe archive path: {archive_path}"));
+    }
     let mut pushed = false;
 
     for comp in normalized.split('/') {
         if comp.is_empty() || comp == "." {
             continue;
         }
-        if comp == ".." || comp.contains('\0') || comp.contains(':') {
+        if comp == ".." || comp.contains(':') {
             return Err(format!("unsafe archive path: {archive_path}"));
         }
         dest.push(comp);

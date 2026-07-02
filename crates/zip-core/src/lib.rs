@@ -1,9 +1,8 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jstring, JNI_TRUE, JNI_FALSE};
-use archive_common::{s, json_escape, derive_dirs};
+use archive_common::{s, json_escape, safe_join};
 use std::collections::HashSet;
-use std::io::Read;
 
 fn list_zip_inner(input: &str) -> Result<String, String> {
     let file = std::fs::File::open(input).map_err(|e| format!("{e}"))?;
@@ -38,8 +37,7 @@ fn extract_zip_all_inner(input: &str, output: &str) -> Result<u32, String> {
         let mut entry = archive.by_index(i).map_err(|e| format!("{e}"))?;
         let name = entry.name().replace('\\', "/").trim_matches('/').to_string();
         if name.is_empty() || entry.is_dir() { continue; }
-        let mut dest = std::path::Path::new(output).to_path_buf();
-        for comp in name.split('/') { if !comp.is_empty() { dest.push(comp); } }
+        let dest = safe_join(output, entry.name()).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
         let mut out = std::fs::File::create(&dest).map_err(|e| format!("{e}"))?;
         if std::io::copy(&mut entry, &mut out).is_err() { fail += 1; }
@@ -58,8 +56,7 @@ fn extract_zip_selected_inner(input: &str, output: &str, selected: &str) -> Resu
         let name = entry.name().replace('\\', "/").trim_matches('/').to_string();
         if name.is_empty() || entry.is_dir() { continue; }
         if !ss.contains(name.as_str()) && !ss.iter().any(|s| name.starts_with(&format!("{s}/"))) { continue; }
-        let mut dest = std::path::Path::new(output).to_path_buf();
-        for comp in name.split('/') { if !comp.is_empty() { dest.push(comp); } }
+        let dest = safe_join(output, entry.name()).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
         let mut out = std::fs::File::create(&dest).map_err(|e| format!("{e}"))?;
         if std::io::copy(&mut entry, &mut out).is_err() { fail += 1; }
@@ -68,7 +65,7 @@ fn extract_zip_selected_inner(input: &str, output: &str, selected: &str) -> Resu
 }
 
 fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|e| Err(format!("panic")) )
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err(format!("panic")) )
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jboolean {

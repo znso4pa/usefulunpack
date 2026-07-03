@@ -31,6 +31,26 @@ import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.concurrent.thread
 
+private val C = mapOf(
+    "accent" to 0xFF35acc6.toInt(),
+    "primary" to 0xFFe0f9ff.toInt(),
+    "secondary" to 0xFFb0b0b0.toInt(),
+    "tertiary" to 0xFF888888.toInt(),
+    "tertiary_light" to 0xFFaaaaaa.toInt(),
+    "hint" to 0xFF8f8f8f.toInt(),
+    "surface" to 0xFF303030.toInt(),
+    "surface_dim" to 0xFF252525.toInt(),
+    "surface_dark" to 0xFF1a1a1a.toInt(),
+    "nav_bg" to 0xFF222222.toInt(),
+    "divider_subtle" to 0xFF555555.toInt(),
+    "toggle_on" to 0xFF3a3a3a.toInt(),
+    "warning" to 0xFFffa726.toInt(),
+    "error" to 0xFFff5252.toInt(),
+    "success" to 0xFF69f0ae.toInt(),
+    "search_hilite_sel" to 0x88FFAA00.toInt(),
+    "search_hilite_oth" to 0x33FFAA00.toInt(),
+)
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var drawer: DrawerLayout
@@ -77,7 +97,27 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Force dark theme permanently
+        androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
+            androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_YES
+        )
+
         drawer = findViewById(R.id.drawer)
+
+        // Init background image picker
+        bgImageLauncher = registerForActivityResult(
+            androidx.activity.result.contract.ActivityResultContracts.GetContent()
+        ) { uri ->
+            if (uri != null) {
+                try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
+                prefs.edit().putString("bg_image_uri", uri.toString()).apply()
+                applyBackgroundImage(uri)
+            }
+        }
+        // Restore saved background
+        prefs.getString("bg_image_uri", null)?.let { uriStr ->
+            try { applyBackgroundImage(Uri.parse(uriStr)) } catch (_: Exception) {}
+        }
         tvPath = findViewById(R.id.tvPath)
         tvCount = findViewById(R.id.tvCount)
         tvSelected = findViewById(R.id.tvSelected)
@@ -103,7 +143,7 @@ class MainActivity : AppCompatActivity() {
                     0 -> cli()
                     1 -> globalSearch()
                     2 -> drawer.open()
-                    3 -> toast("设置 — 即将推出")
+                    3 -> settings()
                 }
                 true
             }
@@ -411,9 +451,9 @@ class MainActivity : AppCompatActivity() {
         val totalSize = entries.filter { !it.isDirectory }.sumOf { it.size }
         val tvStats = TextView(this).apply {
             text = "共 $totalFiles 文件，${fmt(totalSize)}  |  已选 0 项"
-            setTextColor(0xFFaaaaaa.toInt()); textSize = 12f
+            setTextColor(C["tertiary_light"]!!); textSize = 12f
             setPadding(12, 8, 12, 4)
-            setBackgroundColor(0xFF252525.toInt())
+            setBackgroundColor(C["surface_dim"]!!)
         }
 
         val adapter = PreviewAdapter(entries, selectedPaths, expandedPaths, { entry ->
@@ -427,8 +467,8 @@ class MainActivity : AppCompatActivity() {
 
         val listView = ListView(this).apply {
             this.adapter = adapter
-            setBackgroundColor(0xFF303030.toInt())
-            divider = ColorDrawable(0xFF1a1a1a.toInt())
+            setBackgroundColor(C["surface"]!!)
+            divider = ColorDrawable(C["surface_dark"]!!)
             dividerHeight = 1
         }
 
@@ -442,11 +482,11 @@ class MainActivity : AppCompatActivity() {
         val titleBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(24, 14, 8, 14)
-            setBackgroundColor(0xFF303030.toInt())
+            setBackgroundColor(C["surface"]!!)
         }
         titleBar.addView(TextView(this).apply {
             text = "预览 ${src.name}"
-            setTextColor(0xFFe0f9ff.toInt()); textSize = 17f
+            setTextColor(C["primary"]!!); textSize = 17f
             layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
         })
 
@@ -454,7 +494,7 @@ class MainActivity : AppCompatActivity() {
         lateinit var dlg: AlertDialog
         val btnSearchTitle = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_search)
-            setBackgroundColor(0xFF303030.toInt())
+            setBackgroundColor(C["surface"]!!)
             setPadding(8, 4, 8, 4)
             scaleType = ImageView.ScaleType.FIT_XY
             layoutParams = LinearLayout.LayoutParams(52, 40)
@@ -512,8 +552,8 @@ class MainActivity : AppCompatActivity() {
                     showOutputDirDialog(src, sel, format)
                 }
             }
-            dlg.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(0xFF35acc6.toInt())
-            dlg.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(0xFF888888.toInt())
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(C["accent"]!!)
+            dlg.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(C["tertiary"]!!)
         }
         dlg.show()
     }
@@ -630,7 +670,7 @@ class MainActivity : AppCompatActivity() {
             }
             // Re-apply: dim for non-selected, bright for selected
             for (i in matchPos.indices) {
-                val color = if (i == selectedIdx) 0x88FFAA00.toInt() else 0x33FFAA00.toInt()
+                val color = if (i == selectedIdx) C["search_hilite_sel"]!! else C["search_hilite_oth"]!!
                 s.setSpan(
                     android.text.style.BackgroundColorSpan(color),
                     matchPos[i], matchPos[i] + len,
@@ -645,9 +685,9 @@ class MainActivity : AppCompatActivity() {
 
         val tv = TextView(this@MainActivity).apply {
             this.text = spannable ?: displayText
-            setTextColor(0xFFe0f9ff.toInt())
+            setTextColor(C["primary"]!!)
             textSize = 12f
-            setBackgroundColor(0xFF1a1a1a.toInt())
+            setBackgroundColor(C["surface_dark"]!!)
             setPadding(16, 16, 16, 16)
             isVerticalScrollBarEnabled = true
             movementMethod = android.text.method.ScrollingMovementMethod()
@@ -655,7 +695,7 @@ class MainActivity : AppCompatActivity() {
         }
         val scroll = ScrollView(this@MainActivity).apply {
             addView(tv)
-            setBackgroundColor(0xFF1a1a1a.toInt())
+            setBackgroundColor(C["surface_dark"]!!)
         }
         // Scroll to highlightLine on first show
         if (highlightLine > 0) {
@@ -687,22 +727,22 @@ class MainActivity : AppCompatActivity() {
             val navBar = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
-                setBackgroundColor(0xFF222222.toInt())
+                setBackgroundColor(C["nav_bg"]!!)
                 setPadding(0, 6, 0, 6)
             }
             val btnPrev = Button(this@MainActivity).apply {
                 text = "◀ 上一个"; textSize = 12f; isAllCaps = false
-                setTextColor(0xFF35acc6.toInt()); background = null
+                setTextColor(C["accent"]!!); background = null
                 setPadding(12, 4, 12, 4)
             }
             val tvCounter = TextView(this@MainActivity).apply {
                 gravity = Gravity.CENTER; textSize = 12f
-                setTextColor(0xFFaaaaaa.toInt())
+                setTextColor(C["tertiary_light"]!!)
                 setPadding(20, 4, 20, 4)
             }
             val btnNext = Button(this@MainActivity).apply {
                 text = "下一个 ▶"; textSize = 12f; isAllCaps = false
-                setTextColor(0xFF35acc6.toInt()); background = null
+                setTextColor(C["accent"]!!); background = null
                 setPadding(12, 4, 12, 4)
             }
             fun scrollToMatch(idx: Int) {
@@ -765,17 +805,133 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun settings() {
+        AlertDialog.Builder(this)
+            .setTitle("⚙️ 设置")
+            .setItems(arrayOf("🎨 界面设置", "📂 一般管理", "🗜️ 压缩设置")) { _, which ->
+                when (which) {
+                    0 -> showUISettings()
+                    1 -> toast("一般管理 — 即将推出")
+                    2 -> toast("压缩设置 — 即将推出")
+                }
+            }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    private var bgImageLauncher: androidx.activity.result.ActivityResultLauncher<String>? = null
+
+    private fun showUISettings() {
+        // Background image toggle row
+        val hasBg = prefs.getString("bg_image_uri", null) != null
+        val tvBgInfo = TextView(this).apply {
+            text = if (hasBg) "✅ 已设置自定义背景" else "未设置"
+            setTextColor(C["tertiary_light"]!!); textSize = 13f
+        }
+        val btnPickBg = Button(this).apply {
+            text = if (hasBg) "更换" else "选择图片"
+            setTextColor(C["accent"]!!); background = null; textSize = 13f
+        }
+        val btnClearBg = Button(this).apply {
+            text = "清除"
+            setTextColor(C["error"]!!); background = null; textSize = 13f
+            visibility = if (hasBg) View.VISIBLE else View.GONE
+        }
+        val bgRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(32, 0, 32, 8)
+            addView(tvBgInfo, LinearLayout.LayoutParams(0, WRAP, 1f))
+            addView(btnClearBg)
+            addView(btnPickBg, LinearLayout.LayoutParams(WRAP, WRAP).apply { setMargins(8, 0, 0, 0) })
+        }
+
+        val curAlpha = prefs.getInt("bg_image_alpha", 20)
+        val tvAlpha = TextView(this@MainActivity).apply {
+            text = "透明度: ${curAlpha}%"; setTextColor(C["tertiary"]!!); textSize = 12f
+            setPadding(40, 4, 32, 0)
+        }
+        val seekAlpha = SeekBar(this@MainActivity).apply {
+            max = 100; progress = curAlpha
+            setPadding(40, 0, 40, 8)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) { tvAlpha.text = "透明度: $p%" }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        val body = LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = "自定义背景图"; setTextColor(C["tertiary_light"]!!); textSize = 12f
+                setPadding(32, 12, 32, 0)
+            })
+            addView(bgRow)
+            addView(tvAlpha)
+            addView(seekAlpha)
+        }
+
+        btnPickBg.setOnClickListener { bgImageLauncher?.launch("image/*") }
+        btnClearBg.setOnClickListener {
+            prefs.edit().remove("bg_image_uri").apply()
+            findViewById<View>(R.id.root)?.setBackgroundResource(R.color.bg_surface)
+            findViewById<View>(R.id.toolbar)?.setBackgroundResource(R.color.bg_toolbar)
+            findViewById<View>(R.id.pathBar)?.setBackgroundResource(R.color.bg_pathbar)
+            findViewById<View>(R.id.panel)?.setBackgroundResource(R.color.bg_file_list)
+            window?.statusBarColor = 0xBB000000.toInt()
+            tvBgInfo.text = "未设置"
+            btnClearBg.visibility = View.GONE
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("🎨 界面设置")
+            .setView(body)
+            .setPositiveButton("确定") { _, _ ->
+                prefs.edit().putInt("bg_image_alpha", seekAlpha.progress).apply()
+                prefs.getString("bg_image_uri", null)?.let { applyBackgroundImage(Uri.parse(it)) }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun applyBackgroundImage(uri: Uri) {
+        try {
+            val bmp = BitmapFactory.decodeStream(contentResolver.openInputStream(uri)) ?: return
+            val root = findViewById<View>(R.id.root) ?: return
+            val alpha = prefs.getInt("bg_image_alpha", 20).coerceIn(1, 100)
+            root.post {
+                val rw = root.width; val rh = root.height
+                if (rw <= 0 || rh <= 0) return@post
+                val bmpW = bmp.width; val bmpH = bmp.height
+                val scale = maxOf(rw.toFloat() / bmpW, rh.toFloat() / bmpH)
+                val sw = (bmpW * scale).toInt(); val sh = (bmpH * scale).toInt()
+                val scaled = android.graphics.Bitmap.createScaledBitmap(bmp, sw, sh, true)
+                val x = maxOf((sw - rw) / 2, 0); val y = maxOf((sh - rh) / 2, 0)
+                val cw = minOf(rw, sw); val ch = minOf(rh, sh)
+                val cropped = android.graphics.Bitmap.createBitmap(scaled, x, y, cw, ch)
+                val dr = android.graphics.drawable.BitmapDrawable(resources, cropped)
+                dr.alpha = (alpha * 255 / 100).coerceIn(1, 255)
+                root.background = dr
+            }
+            // Make surfaces transparent so the bg shows through everywhere
+            findViewById<View>(R.id.toolbar)?.setBackgroundColor(0xBB000000.toInt())
+            findViewById<View>(R.id.pathBar)?.setBackgroundColor(0xBB000000.toInt())
+            findViewById<View>(R.id.panel)?.background = null
+            // Match status bar to toolbar
+            window?.statusBarColor = 0xBB000000.toInt()
+        } catch (_: Exception) {}
+    }
+
     private fun cli() {
         val inp = EditText(this).apply {
             hint = "cd: $currentDir"
-            setTextColor(0xFFe0f9ff.toInt()); setHintTextColor(0xFF707070.toInt())
-            setBackgroundColor(0xFF303030.toInt()); textSize = 12f; minLines = 1; maxLines = 1
+            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+            setBackgroundColor(C["surface"]!!); textSize = 12f; minLines = 1; maxLines = 1
             setSingleLine(true)
         }
         val out = TextView(this).apply {
             text = "cd: $currentDir"
-            setTextColor(0xFFb0b0b0.toInt()); textSize = 11f
-            setBackgroundColor(0xFF222222.toInt()); setPadding(12,12,12,12)
+            setTextColor(C["secondary"]!!); textSize = 11f
+            setBackgroundColor(C["nav_bg"]!!); setPadding(12,12,12,12)
             minLines = 6; gravity = android.view.Gravity.TOP or android.view.Gravity.START
             setHorizontallyScrolling(true)
         }
@@ -827,9 +983,9 @@ class MainActivity : AppCompatActivity() {
             val runBtn = dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
             val closeBtn = dlg.getButton(android.app.AlertDialog.BUTTON_NEGATIVE)
             val helpBtn = dlg.getButton(android.app.AlertDialog.BUTTON_NEUTRAL)
-            runBtn?.setTextColor(0xFF35acc6.toInt())
-            closeBtn?.setTextColor(0xFF888888.toInt())
-            helpBtn?.setTextColor(0xFF35acc6.toInt())
+            runBtn?.setTextColor(C["accent"]!!)
+            closeBtn?.setTextColor(C["tertiary"]!!)
+            helpBtn?.setTextColor(C["accent"]!!)
             runBtn?.setOnClickListener { val c = inp.text.toString().trim(); if (c.isNotEmpty()) exec(c) }
             closeBtn?.setOnClickListener { dlg.dismiss() }
             helpBtn?.setOnClickListener { showHelp(inp) { cmd -> inp.setText(cmd); exec(cmd) } }
@@ -852,9 +1008,9 @@ class MainActivity : AppCompatActivity() {
             override fun getView(pos: Int, v: View?, p: ViewGroup): View {
                 val view = super.getView(pos, v, p)
                 (view.findViewById<TextView>(android.R.id.text1)).apply {
-                    setTextColor(0xFFb0b0b0.toInt()); textSize = 12f
+                    setTextColor(C["secondary"]!!); textSize = 12f
                 }
-                view.setBackgroundColor(if (pos == lastSelected) 0xFF35acc6.toInt() and 0x30ffffff else 0x00000000)
+                view.setBackgroundColor(if (pos == lastSelected) C["accent"]!! and 0x30ffffff else 0x00000000)
                 return view
             }
         }
@@ -896,15 +1052,15 @@ class MainActivity : AppCompatActivity() {
         // Directory display + change button
         val tvDir = TextView(this).apply {
             text = "📁 搜索范围: ${searchDir.path}"
-            setTextColor(0xFFb0b0b0.toInt()); textSize = 11f; setPadding(16, 8, 16, 2)
+            setTextColor(C["secondary"]!!); textSize = 11f; setPadding(16, 8, 16, 2)
         }
         val btnChangeDir = Button(this).apply {
-            text = "更改"; setTextColor(0xFF35acc6.toInt()); background = null; textSize = 11f
+            text = "更改"; setTextColor(C["accent"]!!); background = null; textSize = 11f
             setPadding(0, 0, 16, 0)
             setOnClickListener {
                 val dirInput = EditText(this@MainActivity).apply {
-                    setText(searchDir.path); setTextColor(0xFFe0f9ff.toInt())
-                    setHintTextColor(0xFF707070.toInt()); setBackgroundColor(0xFF303030.toInt())
+                    setText(searchDir.path); setTextColor(C["primary"]!!)
+                    setHintTextColor(C["hint"]!!); setBackgroundColor(C["surface"]!!)
                     setPadding(12, 8, 12, 8)
                 }
                 AlertDialog.Builder(this@MainActivity)
@@ -927,11 +1083,11 @@ class MainActivity : AppCompatActivity() {
         lateinit var btnContent: Button
         fun selectMode(mode: Int) {
             searchMode = mode
-            val onColor = 0xFF35acc6.toInt(); val offBg = 0xFF2a2a2a.toInt()
+            val onColor = C["accent"]!!; val offBg = 0xFF2a2a2a.toInt()
             btnFilename.setBackgroundColor(if (mode == 0) onColor else offBg)
-            btnFilename.setTextColor(if (mode == 0) 0xFF000000.toInt() else 0xFF888888.toInt())
+            btnFilename.setTextColor(if (mode == 0) 0xFF000000.toInt() else C["tertiary"]!!)
             btnContent.setBackgroundColor(if (mode == 1) onColor else offBg)
-            btnContent.setTextColor(if (mode == 1) 0xFF000000.toInt() else 0xFF888888.toInt())
+            btnContent.setTextColor(if (mode == 1) 0xFF000000.toInt() else C["tertiary"]!!)
         }
         btnFilename = Button(this).apply {
             text = "📄 文件名搜索"; textSize = 13f; isAllCaps = false
@@ -949,13 +1105,13 @@ class MainActivity : AppCompatActivity() {
 
         // Search input
         val etQuery = EditText(this).apply {
-            hint = "输入关键词..."; setTextColor(0xFFe0f9ff.toInt()); setHintTextColor(0xFF707070.toInt())
-            setBackgroundColor(0xFF303030.toInt()); textSize = 14f; setPadding(12, 8, 12, 8); setSingleLine(true)
+            hint = "输入关键词..."; setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+            setBackgroundColor(C["surface"]!!); textSize = 14f; setPadding(12, 8, 12, 8); setSingleLine(true)
         }
 
         // Search button
         val btnSearch = Button(this).apply {
-            text = "🔍 搜索"; setTextColor(0xFF35acc6.toInt()); textSize = 14f
+            text = "🔍 搜索"; setTextColor(C["accent"]!!); textSize = 14f
         }
 
         // Progress bar (indeterminate while searching)
@@ -966,10 +1122,10 @@ class MainActivity : AppCompatActivity() {
 
         // Stats + continue button
         val tvStats = TextView(this).apply {
-            text = "输入关键词开始搜索"; setTextColor(0xFFaaaaaa.toInt()); textSize = 12f
+            text = "输入关键词开始搜索"; setTextColor(C["tertiary_light"]!!); textSize = 12f
         }
         val btnContinue = Button(this).apply {
-            text = "继续扫描"; setTextColor(0xFF35acc6.toInt()); textSize = 12f
+            text = "继续扫描"; setTextColor(C["accent"]!!); textSize = 12f
             background = null; visibility = View.GONE; setPadding(0, 0, 0, 0)
         }
         val statsRow = LinearLayout(this).apply {
@@ -992,21 +1148,21 @@ class MainActivity : AppCompatActivity() {
                     val matchTag = if (r.matchCount > 1) "  (${r.matchCount} 处匹配)" else ""
                     val lineTag = if (r.lineNumber > 0) "  [行 ${r.lineNumber}]" else ""
                     text = "${r.file.name}$lineTag$matchTag"
-                    setTextColor(0xFFe0f9ff.toInt()); textSize = 14f; setSingleLine(true)
+                    setTextColor(C["primary"]!!); textSize = 14f; setSingleLine(true)
                 }
                 view.findViewById<TextView>(android.R.id.text2).apply {
                     text = if (r.snippet.isNotEmpty()) "${r.file.parent}\n${r.snippet}"
                            else "${r.file.parent}  •  ${fmt(r.file.length())}"
-                    setTextColor(0xFF888888.toInt()); textSize = 11f; maxLines = 3
+                    setTextColor(C["tertiary"]!!); textSize = 11f; maxLines = 3
                 }
-                view.setBackgroundColor(0xFF303030.toInt())
+                view.setBackgroundColor(C["surface"]!!)
                 return view
             }
         }
 
         val listResults = ListView(this).apply {
-            adapter = resultAdapter; setBackgroundColor(0xFF303030.toInt())
-            divider = ColorDrawable(0xFF1a1a1a.toInt()); dividerHeight = 1
+            adapter = resultAdapter; setBackgroundColor(C["surface"]!!)
+            divider = ColorDrawable(C["surface_dark"]!!); dividerHeight = 1
             onItemClickListener = OnItemClickListener { _, _, pos, _ ->
                 val r = resultAdapter.getItem(pos) as SearchResult
                 if (r.file.path.isEmpty()) return@OnItemClickListener
@@ -1096,18 +1252,18 @@ class MainActivity : AppCompatActivity() {
                 val limits = longArrayOf(100_000L, 500_000L, 1_000_000L, 5_000_000L, 10_000_000L, Long.MAX_VALUE)
                 val body = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    setBackgroundColor(0xFF303030.toInt())
+                    setBackgroundColor(C["surface"]!!)
                 }
                 body.addView(TextView(this).apply {
                     text = "超过上限的文件将被跳过，避免大文件拖慢搜索"
-                    setTextColor(0xFFb0b0b0.toInt()); textSize = 13f
+                    setTextColor(C["secondary"]!!); textSize = 13f
                     setPadding(24, 16, 24, 12)
                 })
                 val radioGroup = RadioGroup(this).apply { setPadding(24, 0, 24, 0) }
                 labels.forEachIndexed { i, label ->
                     val rb = RadioButton(this).apply {
                         text = label; id = i
-                        setTextColor(0xFFe0f9ff.toInt()); textSize = 15f
+                        setTextColor(C["primary"]!!); textSize = 15f
                         setPadding(16, 10, 16, 10)
                         if (i == 2) isChecked = true
                     }
@@ -1115,7 +1271,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 body.addView(radioGroup)
                 body.addView(View(this).apply {
-                    setBackgroundColor(0xFF555555.toInt())
+                    setBackgroundColor(C["divider_subtle"]!!)
                     layoutParams = LinearLayout.LayoutParams(MATCH, 1).apply { setMargins(24, 8, 24, 8) }
                 })
                 val customRow = LinearLayout(this).apply {
@@ -1123,12 +1279,12 @@ class MainActivity : AppCompatActivity() {
                     setPadding(40, 8, 24, 16)
                 }
                 customRow.addView(TextView(this).apply {
-                    text = "自定义 (MB):"; setTextColor(0xFFb0b0b0.toInt()); textSize = 13f
+                    text = "自定义 (MB):"; setTextColor(C["secondary"]!!); textSize = 13f
                     gravity = Gravity.CENTER_VERTICAL
                 })
                 val customInput = EditText(this).apply {
-                    hint = "如 2"; setTextColor(0xFFe0f9ff.toInt()); setHintTextColor(0xFF707070.toInt())
-                    setBackgroundColor(0xFF1a1a1a.toInt()); setPadding(8, 4, 8, 4); textSize = 14f; gravity = Gravity.CENTER
+                    hint = "如 2"; setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+                    setBackgroundColor(C["surface_dark"]!!); setPadding(8, 4, 8, 4); textSize = 14f; gravity = Gravity.CENTER
                     inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
                     layoutParams = LinearLayout.LayoutParams(120, WRAP).apply { setMargins(12, 0, 0, 0) }
                 }
@@ -1250,7 +1406,7 @@ class MainActivity : AppCompatActivity() {
         listBookmarks.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, items) {
             override fun getView(pos: Int, v: View?, p: ViewGroup): View {
                 val view = super.getView(pos, v, p)
-                (view.findViewById<TextView>(android.R.id.text1)).apply { setTextColor(0xFFb0b0b0.toInt()); textSize = 13f }
+                (view.findViewById<TextView>(android.R.id.text1)).apply { setTextColor(C["secondary"]!!); textSize = 13f }
                 return view
             }
         }
@@ -1394,7 +1550,7 @@ private fun fmt(b: Long) = when {
             // Icon + Label click targets
             if (entry.isDirectory) {
                 icon.setImageResource(android.R.drawable.ic_menu_compass)
-                icon.setColorFilter(0xFFffa726.toInt())
+                icon.setColorFilter(C["warning"]!!)
                 // Tapping icon or arrow toggles expand/collapse
                 val toggle = View.OnClickListener {
                     if (expandedPaths.contains(entry.path)) expandedPaths.remove(entry.path)
@@ -1412,7 +1568,7 @@ private fun fmt(b: Long) = when {
                     else -> android.R.drawable.ic_menu_gallery
                 }
                 icon.setImageResource(res)
-                icon.setColorFilter(0xFFe0f9ff.toInt())
+                icon.setColorFilter(C["primary"]!!)
                 label.text = entry.name
                 // Tap file icon or label to preview
                 val click = View.OnClickListener { onFileClick(entry) }
@@ -1458,13 +1614,13 @@ private fun fmt(b: Long) = when {
                     else bookmarks.add(0, f.absolutePath)
                     saveBookmarks(); notifyDataSetChanged()
                 }
-                icon.setImageResource(android.R.drawable.ic_menu_compass); icon.setColorFilter(0xFFffa726.toInt())
+                icon.setImageResource(android.R.drawable.ic_menu_compass); icon.setColorFilter(C["warning"]!!)
                 label.text = f.name; size.text = ""; date.text = ""
             } else {
                 starBtn.visibility = View.GONE
                 val n = f.name.lowercase()
                 val res = when { n.endsWith(".xp3")||n.endsWith(".pfs") -> android.R.drawable.ic_menu_compass; n.endsWith(".apk") -> android.R.drawable.ic_menu_manage; else -> android.R.drawable.ic_menu_gallery }
-                icon.setImageResource(res); icon.setColorFilter(0xFFe0f9ff.toInt())
+                icon.setImageResource(res); icon.setColorFilter(C["primary"]!!)
                 label.text = f.name; size.text = fmt(fileSize(f)); date.text = df.format(Date(f.lastModified()))
             }
             return view

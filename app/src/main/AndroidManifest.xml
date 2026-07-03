@@ -19,7 +19,7 @@
         android:label="UsefulUnpack"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
-        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+        android:theme="@style/Theme.UsefulUnpack">
 
         <!-- Author: znso4pa -->
         <meta-data android:name="author" android:value="znso4pa" />

@@ -1,14 +1,47 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ui_base">#35acc6</color>
-    <color name="ui_base_dark">#00728b</color>
-    <color name="ui_icon_tint">#e0f9ff</color>
+    <!-- ═══ Accent / Brand ═══ -->
+    <color name="accent">#35acc6</color>
+    <color name="accent_dark">#00728b</color>
+
+    <!-- ═══ Backgrounds — dark ═══ -->
+    <color name="bg_surface">#303030</color>
+    <color name="bg_surface_dim">#252525</color>
+    <color name="bg_surface_dark">#1a1a1a</color>
+    <color name="bg_toolbar">#303030</color>
+    <color name="bg_pathbar">#383838</color>
+    <color name="bg_drawer">#252525</color>
+    <color name="bg_drawer_header">#222222</color>
+
+    <!-- ═══ Text — light on dark ═══ -->
+    <color name="text_primary">#e0f9ff</color>
+    <color name="text_secondary">#b0b0b0</color>
+    <color name="text_tertiary">#9a9a9a</color>
+    <color name="text_hint">#8f8f8f</color>
+    <color name="text_disabled">#666666</color>
+
+    <!-- Legacy aliases -->
+    <color name="ui_base">@color/accent</color>
+    <color name="ui_base_dark">@color/accent_dark</color>
+    <color name="ui_icon_tint">@color/text_primary</color>
     <color name="ui_icon_folder">#ffa726</color>
-    <color name="bg_file_list">#ff303030</color>
+    <color name="bg_file_list">@color/bg_surface</color>
     <color name="bg_file_item">#20000000</color>
     <color name="text_file_list">#ffffff</color>
-    <color name="text_file_sub">#bbbbbb</color>
-    <color name="text_file_msg">#7a7a7a</color>
-    <color name="bg_toolbar">#ff303030</color>
-    <color name="bg_pathbar">#ff383838</color>
+    <color name="text_file_sub">@color/text_secondary</color>
+    <color name="text_file_msg">#8a8a8a</color>
+
+    <!-- ═══ Dividers ═══ -->
+    <color name="divider">#1a1a1a</color>
+    <color name="divider_subtle">#555555</color>
+
+    <!-- ═══ State colors ═══ -->
+    <color name="state_selected">@color/accent</color>
+    <color name="state_warning">#ffa726</color>
+    <color name="state_error">#ff5252</color>
+    <color name="state_success">#69f0ae</color>
+
+    <!-- ═══ Search highlights ═══ -->
+    <color name="search_highlight_selected">#88FFAA00</color>
+    <color name="search_highlight_other">#33FFAA00</color>
 </resources>

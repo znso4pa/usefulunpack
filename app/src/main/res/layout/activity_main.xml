@@ -95,7 +95,7 @@
                 android:layout_weight="1"
                 android:text="/"
                 android:textSize="11sp"
-                android:textColor="#b0b0b0"
+                android:textColor="@color/text_secondary"
                 android:singleLine="true"
                 android:ellipsize="start" />
 
@@ -124,7 +124,7 @@
                 android:id="@+id/listFiles"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
-                android:divider="#1a1a1a"
+                android:divider="@color/divider"
                 android:dividerHeight="1dp"
                 android:listSelector="#40ffffff"
                 android:cacheColorHint="@color/bg_file_list"
@@ -203,7 +203,7 @@
         android:layout_height="match_parent"
         android:layout_gravity="start"
         android:orientation="vertical"
-        android:background="#ff252525">
+        android:background="@color/bg_drawer">
 
         <TextView
             android:layout_width="match_parent"
@@ -212,16 +212,16 @@
             android:paddingStart="16dp"
             android:text="快捷路径"
             android:textSize="14sp"
-            android:textColor="@color/ui_base"
+            android:textColor="@color/accent"
             android:textStyle="bold"
-            android:background="#ff222222" />
+            android:background="@color/bg_drawer_header" />
 
         <ListView
             android:id="@+id/listBookmarks"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
-            android:divider="#ff222222"
+            android:divider="@color/bg_drawer_header"
             android:dividerHeight="1dp" />
 
         <TextView

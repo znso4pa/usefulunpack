@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base app theme — inherits DayNight so system dark mode works -->
+    <style name="Theme.UsefulUnpack" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="alertDialogTheme">@style/Theme.UsefulUnpack.Dialog</item>
+        <item name="colorAccent">@color/accent</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:windowBackground">@color/bg_surface</item>
+    </style>
+
+    <!-- Dialog theme — dark consistent surface -->
+    <style name="Theme.UsefulUnpack.Dialog" parent="Theme.AppCompat.DayNight.Dialog.Alert">
+        <item name="android:background">@color/bg_surface_dim</item>
+        <item name="android:windowBackground">@color/bg_surface_dim</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.6</item>
+        <item name="colorAccent">@color/accent</item>
+        <item name="android:colorAccent">@color/accent</item>
+
+        <!-- Title -->
+        <item name="android:titleTextColor">@color/text_primary</item>
+
+        <!-- List items inside AlertDialog (for setItems / setSingleChoiceItems) -->
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+        <item name="android:textColorAlertDialogListItem">@color/text_primary</item>
+
+        <!-- Button colors -->
+        <item name="buttonBarPositiveButtonStyle">@style/Widget.UsefulUnpack.Button.Positive</item>
+        <item name="buttonBarNegativeButtonStyle">@style/Widget.UsefulUnpack.Button.Negative</item>
+        <item name="buttonBarNeutralButtonStyle">@style/Widget.UsefulUnpack.Button.Neutral</item>
+    </style>
+
+    <!-- Dialog buttons -->
+    <style name="Widget.UsefulUnpack.Button.Positive" parent="Widget.AppCompat.Button.ButtonBar.AlertDialog">
+        <item name="android:textColor">@color/accent</item>
+    </style>
+    <style name="Widget.UsefulUnpack.Button.Negative" parent="Widget.AppCompat.Button.ButtonBar.AlertDialog">
+        <item name="android:textColor">@color/text_secondary</item>
+    </style>
+    <style name="Widget.UsefulUnpack.Button.Neutral" parent="Widget.AppCompat.Button.ButtonBar.AlertDialog">
+        <item name="android:textColor">@color/accent</item>
+    </style>
+</resources>

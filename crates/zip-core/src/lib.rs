@@ -1,15 +1,22 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jstring, JNI_TRUE, JNI_FALSE};
+use jni::sys::{jboolean, jstring, jint, JNI_TRUE, JNI_FALSE};
 use archive_common::{s, json_escape, safe_join};
 use std::collections::HashSet;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
+
+static COMPRESS_COUNT: AtomicUsize = AtomicUsize::new(0);
+static COMPRESS_TOTAL: AtomicUsize = AtomicUsize::new(0);
+static COMPRESS_FNAME: Mutex<String> = Mutex::new(String::new());
+static COMPRESS_CANCEL: AtomicBool = AtomicBool::new(false);
 
 fn list_zip_inner(input: &str) -> Result<String, String> {
     let file = std::fs::File::open(input).map_err(|e| format!("{e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("{e}"))?;
     let mut all: Vec<(String, u64, bool)> = Vec::with_capacity(archive.len());
     for i in 0..archive.len() {
-        let entry = archive.by_index(i).map_err(|e| format!("{e}"))?;
+        let entry = match archive.by_index(i) { Ok(e) => e, Err(_) => continue };
         let name = entry.name().replace('\\', "/").trim_matches('/').to_string();
         if name.is_empty() { continue; }
         let is_dir = entry.is_dir();
@@ -56,7 +63,7 @@ fn extract_zip_selected_inner(input: &str, output: &str, selected: &str) -> Resu
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("{e}"))?;
     let mut fail = 0u32;
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| format!("{e}"))?;
+        let mut entry = match archive.by_index(i) { Ok(e) => e, Err(_) => continue };
         let name = entry.name().replace('\\', "/").trim_matches('/').to_string();
         if name.is_empty() || entry.is_dir() { continue; }
         if !ss.contains(name.as_str()) && !ss.iter().any(|s| name.starts_with(&format!("{s}/"))) { continue; }
@@ -68,18 +75,36 @@ fn extract_zip_selected_inner(input: &str, output: &str, selected: &str) -> Resu
     Ok(fail)
 }
 
+fn count_files(base: &str, rel: &str) -> usize {
+    let dir_path = if rel.is_empty() { base.to_string() } else { format!("{base}/{rel}") };
+    let mut total = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&dir_path) {
+        for entry in entries.flatten() {
+            let ft = entry.file_type().unwrap();
+            if ft.is_dir() { total += count_files(base, &format!("{}/{}", rel, entry.file_name().to_string_lossy())); }
+            else if ft.is_file() { total += 1; }
+        }
+    }
+    total
+}
+
 fn compress_zip_inner(input: &str, output: &str, level: i32, password: &str) -> Result<u32, String> {
     let file = std::fs::File::create(output).map_err(|e| format!("{e}"))?;
     let mut zip = zip::write::ZipWriter::new(file);
     let mut fail = 0u32;
     let method = if level <= 0 { zip::CompressionMethod::Stored } else { zip::CompressionMethod::Deflated };
     let pw = if password.is_empty() { None } else { Some(password) };
+    COMPRESS_CANCEL.store(false, Ordering::SeqCst);
+    COMPRESS_TOTAL.store(count_files(input, ""), Ordering::SeqCst);
+    COMPRESS_COUNT.store(0, Ordering::SeqCst);
+    *COMPRESS_FNAME.lock().unwrap() = String::new();
 
     fn add_dir(zip: &mut zip::write::ZipWriter<std::fs::File>, base: &str, rel: &str, method: zip::CompressionMethod, level: i32, pw: Option<&str>) -> Result<u32, String> where zip::write::ZipWriter<std::fs::File>: std::io::Write {
         let dir_path = if rel.is_empty() { base.to_string() } else { format!("{base}/{rel}") };
         let mut fail = 0u32;
         let entries = std::fs::read_dir(&dir_path).map_err(|e| format!("{e}"))?;
         for entry in entries {
+            if COMPRESS_CANCEL.load(Ordering::SeqCst) { return Err("cancelled".to_string()); }
             let entry = entry.map_err(|e| format!("{e}"))?;
             let name = entry.file_name().to_string_lossy().to_string();
             let file_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
@@ -96,6 +121,8 @@ fn compress_zip_inner(input: &str, output: &str, level: i32, password: &str) -> 
                 } else {
                     zip.start_file(&file_rel, base).map_err(|e| format!("{e}"))?;
                 }
+                *COMPRESS_FNAME.lock().unwrap() = file_rel.clone();
+                COMPRESS_COUNT.fetch_add(1, Ordering::SeqCst);
                 let mut f = std::fs::File::open(&entry.path()).map_err(|e| format!("{e}"))?;
                 if std::io::copy(&mut f, zip).is_err() { fail += 1; }
             }
@@ -111,6 +138,21 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err(format!("panic")) )
 }
 
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipNeedsPassword(mut e: JNIEnv, _: JClass, i: JString) -> jboolean {
+    let inp = s(&mut e, &i);
+    match std::fs::File::open(&inp) {
+        Ok(file) => match zip::ZipArchive::new(file) {
+            Ok(mut arc) => {
+                for idx in 0..arc.len() {
+                    if let Ok(entry) = arc.by_index(idx) { if entry.encrypted() { return JNI_TRUE; } }
+                }
+                JNI_FALSE
+            }
+            Err(_) => JNI_FALSE
+        },
+        Err(_) => JNI_FALSE
+    }
+}
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractWithPassword(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, pw: JString) -> jboolean {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let pwd = s(&mut e, &pw);
     match guarded(move || extract_zip_with_password(&inp, &out, &pwd)) { Ok(0) => JNI_TRUE, Ok(f) => { let _ = e.throw_new("java/io/IOException", format!("ZIP: {f} failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("ZIP: {er}")); JNI_FALSE } }
@@ -122,6 +164,13 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel: JString) -> jboolean {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel);
     match guarded(move || extract_zip_selected_inner(&inp, &out, &sel_str)) { Ok(0) => JNI_TRUE, Ok(f) => { let _ = e.throw_new("java/io/IOException", format!("ZIP: {f} failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("ZIP: {er}")); JNI_FALSE } }
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipCompressCancel(_: JNIEnv, _: JClass) { COMPRESS_CANCEL.store(true, Ordering::SeqCst); }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipCompressProgressCount(_: JNIEnv, _: JClass) -> jint { COMPRESS_COUNT.load(Ordering::SeqCst) as jint }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipCompressProgressTotal(_: JNIEnv, _: JClass) -> jint { COMPRESS_TOTAL.load(Ordering::SeqCst) as jint }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipCompressProgressName(mut e: JNIEnv, _: JClass) -> jstring {
+    let name = COMPRESS_FNAME.lock().unwrap().clone();
+    e.new_string(&name).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipCompress(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, lv: JString, pw: JString) -> jboolean {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let lvl = s(&mut e, &lv); let pwd = s(&mut e, &pw);

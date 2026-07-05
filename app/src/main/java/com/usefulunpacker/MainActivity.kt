@@ -42,6 +42,7 @@ private val C = mapOf(
     "surface_dim" to 0xFF252525.toInt(),
     "surface_dark" to 0xFF1a1a1a.toInt(),
     "nav_bg" to 0xFF222222.toInt(),
+    "divider" to 0xFF1a1a1a.toInt(),
     "divider_subtle" to 0xFF555555.toInt(),
     "toggle_on" to 0xFF3a3a3a.toInt(),
     "warning" to 0xFFffa726.toInt(),
@@ -69,6 +70,9 @@ class MainActivity : AppCompatActivity() {
     private var currentDir = Environment.getExternalStorageDirectory()
     private var selectedFile: File? = null
     private var fileToMove: File? = null
+    private var MultiFiles = listOf<File>()
+    private var multiSelectMode = false
+    private val multiSelected = mutableSetOf<File>()
     private val prefs: SharedPreferences by lazy { getSharedPreferences("bm", MODE_PRIVATE) }
     private val bookmarks = mutableListOf<String>()
     private val df = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
@@ -102,6 +106,12 @@ class MainActivity : AppCompatActivity() {
         // Force dark theme permanently
         androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
             androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_YES
+        )
+        // Apply saved language
+        androidx.appcompat.app.AppCompatDelegate.setApplicationLocales(
+            androidx.core.os.LocaleListCompat.forLanguageTags(
+                prefs.getString("app_lang", "zh-CN") ?: "zh-CN"
+            )
         )
 
         drawer = findViewById(R.id.drawer)
@@ -159,17 +169,17 @@ class MainActivity : AppCompatActivity() {
                     setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
                 }
                 AlertDialog.Builder(this@MainActivity)
-                    .setTitle("新建文件夹")
+                    .setTitle(getString(R.string.title_new_folder))
                     .setView(inp)
-                    .setPositiveButton("创建") { _, _ ->
+                    .setPositiveButton(getString(R.string.action_new_folder)) { _, _ ->
                         val name = inp.text.toString().trim()
-                        if (name.isEmpty()) { toast("请输入文件夹名称"); return@setPositiveButton }
+                        if (name.isEmpty()) { toast(getString(R.string.prompt_new_folder_name)); return@setPositiveButton }
                         val dir = File(currentDir, name)
-                        if (dir.exists()) { toast("文件夹已存在"); return@setPositiveButton }
-                        if (dir.mkdir()) { toast("已创建"); nav(currentDir) }
-                        else toast("创建失败")
+                        if (dir.exists()) { toast(getString(R.string.msg_file_exists)); return@setPositiveButton }
+                        if (dir.mkdir()) { toast(getString(R.string.msg_created)); nav(currentDir) }
+                        else toast(getString(R.string.title_compress_failed))
                     }
-                    .setNegativeButton("取消", null)
+                    .setNegativeButton(getString(R.string.action_cancel), null)
                     .show()
             }
         }
@@ -194,6 +204,7 @@ class MainActivity : AppCompatActivity() {
 
         listFiles.onItemClickListener = OnItemClickListener { _, _, pos, _ ->
             val f = listFiles.adapter.getItem(pos) as File
+            if (multiSelectMode) { toggleMultiSelect(f); return@OnItemClickListener }
             if (f.isDirectory) {
                 val isCompressMode = prefs.getInt("work_mode", 0) == 1
                 if (isCompressMode) {
@@ -201,7 +212,7 @@ class MainActivity : AppCompatActivity() {
                     tvSelected.text = "📁 ${f.name}"
                     bottomBar.visibility = View.VISIBLE
                     fabExtract.visibility = View.GONE
-                    btnExtract.text = "📦 压缩"
+                    btnExtract.text = getString(R.string.msg_compress_title)
                     btnExtract.setOnClickListener { showCompressFormatPicker(f) }
                     btnFolderNext.visibility = View.VISIBLE
                     progress.visibility = View.GONE
@@ -216,33 +227,33 @@ class MainActivity : AppCompatActivity() {
             val f = listFiles.adapter.getItem(pos) as File
             AlertDialog.Builder(this)
                 .setTitle(f.name)
-                .setItems(arrayOf("📋 复制路径", "✂️ 移动", "🗑️ 删除", "ℹ️ 文件信息")) { _, w ->
+                .setItems(arrayOf(getString(R.string.action_copy_path), getString(R.string.action_move), getString(R.string.action_rename), getString(R.string.action_delete), getString(R.string.action_select), getString(R.string.action_file_info))) { _, w ->
                     when (w) {
                         0 -> { (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
-                            .setPrimaryClip(android.content.ClipData.newPlainText("p", f.path)); toast("已复制") }
+                            .setPrimaryClip(android.content.ClipData.newPlainText("p", f.path)); toast(getString(R.string.msg_copied)) }
                         1 -> { fileToMove = f; updatePasteButton(); toast("已选择: ${f.name}，请导航到目标目录") }
-                        2 -> {
-                            val type = if (f.isDirectory) "文件夹" else "文件"
-                            AlertDialog.Builder(this@MainActivity)
-                                .setTitle("删除${type}")
-                                .setMessage("确定删除 ${f.name}？\n此操作不可恢复！")
-                                .setPositiveButton("删除") { _, _ ->
-                                    if (f.isDirectory) f.deleteRecursively() else f.delete()
-                                    toast("已删除"); nav(currentDir)
-                                }
-                                .setNegativeButton("取消", null)
-                                .show()
-                        }
+                        2 -> { showRenameDialog(f) }
                         3 -> {
+                            val type = if (f.isDirectory) getString(R.string.folder) else getString(R.string.files)
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle(getString(R.string.title_delete))
+                                .setMessage("确定删除 ${f.name}？\n此操作不可恢复！")
+                                .setPositiveButton(getString(R.string.action_delete)) { _, _ ->
+                                    if (f.isDirectory) f.deleteRecursively() else f.delete()
+                                    toast(getString(R.string.msg_deleted)); nav(currentDir)
+                                }
+                                .setNegativeButton(getString(R.string.action_cancel), null).show()
+                        }
+                        4 -> { enterMultiSelect(f) }
+                        5 -> {
                             if (f.isDirectory) {
                                 val fileCount = f.listFiles()?.size ?: 0
                                 val eta = fileCount / 200
                                 AlertDialog.Builder(this)
-                                    .setTitle("文件夹大小")
+                                    .setTitle(getString(R.string.action_file_info))
                                     .setMessage("${f.name}\n包含 $fileCount 个项目\n\n递归计算文件夹大小需要逐文件统计，较大文件夹可能耗时 ${eta}~${eta+3} 秒。是否继续？")
                                     .setPositiveButton("计算") { _, _ -> calcDirSize(f) }
-                                    .setNegativeButton("取消", null)
-                                    .show()
+                                    .setNegativeButton(getString(R.string.action_cancel), null).show()
                             } else {
                                 toast("${f.name}\n${fmt(fileSize(f))}\n${df.format(Date(f.lastModified()))}")
                             }
@@ -258,6 +269,32 @@ class MainActivity : AppCompatActivity() {
             bookmarks.removeAt(pos); saveBookmarks(); true
         }
 
+        // Batch action bar for multi-select
+        val batchBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(C["surface_dim"]!!); visibility = View.GONE
+            setPadding(12, 6, 12, 6)
+            layoutParams = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams(MATCH, WRAP).apply {
+                bottomToBottom = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+                startToStart = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+                endToEnd = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+            }
+        }
+        val tvBatchCount = TextView(this).apply { setTextColor(C["primary"]!!); textSize = 12f }
+        fun b(text: String, color: Int) = Button(this).apply { this.text = text; setTextColor(color); background = null; textSize = 12f; isAllCaps = false; setPadding(4, 0, 4, 0) }
+        val btnBatchExtract = b(getString(R.string.batch_extract), C["accent"]!!).apply { setOnClickListener { startBatchExtract() } }
+        val btnBatchCompress = b(getString(R.string.batch_compress), C["accent"]!!).apply { setOnClickListener { startBatchCompress() } }
+        val btnBatchMove = b(getString(R.string.action_move), C["accent"]!!).apply { setOnClickListener { startBatchMove() } }
+        val btnBatchDelete = b(getString(R.string.action_delete), C["error"]!!).apply { setOnClickListener { confirmBatchDelete() } }
+        val btnBatchCancel = b("✕ " + getString(R.string.action_cancel), C["tertiary"]!!).apply { setOnClickListener { exitMultiSelect() } }
+        batchBar.addView(tvBatchCount, LinearLayout.LayoutParams(0, WRAP, 1f))
+        batchBar.addView(btnBatchExtract)
+        batchBar.addView(btnBatchCompress)
+        batchBar.addView(btnBatchMove)
+        batchBar.addView(btnBatchDelete)
+        batchBar.addView(btnBatchCancel)
+        findViewById<androidx.constraintlayout.widget.ConstraintLayout>(R.id.root)?.addView(batchBar)
+
         loadBookmarks(); nav(currentDir)
         showDisclaimer()
     }
@@ -269,17 +306,27 @@ class MainActivity : AppCompatActivity() {
             cli.textSize = if (hasFile) 16f else 22f
             cli.setOnClickListener { v ->
                 if (hasFile) {
-                    val src = fileToMove ?: return@setOnClickListener
-                    val dst = File(currentDir, src.name)
-                    if (dst.exists()) { toast("目标已存在"); return@setOnClickListener }
-                    if (src.renameTo(dst)) { toast("已移动到: ${dst.path}"); fileToMove = null; updatePasteButton(); nav(currentDir) }
-                    else toast("移动失败")
+                    if (MultiFiles.size > 1) {
+                        var ok = 0; var fail = 0
+                        for (src in MultiFiles) {
+                            val dst = File(currentDir, src.name)
+                            if (dst.exists()) { fail++; continue }
+                            if (src.renameTo(dst)) ok++ else fail++
+                        }
+                        toast("移动完成: $ok 成功, $fail 失败"); fileToMove = null; MultiFiles = listOf(); updatePasteButton(); nav(currentDir)
+                    } else {
+                        val src = fileToMove ?: return@setOnClickListener
+                        val dst = File(currentDir, src.name)
+                        if (dst.exists()) { toast(getString(R.string.msg_target_exists)); return@setOnClickListener }
+                        if (src.renameTo(dst)) { toast("已移动到: ${dst.path}"); fileToMove = null; MultiFiles = listOf(); updatePasteButton(); nav(currentDir) }
+                        else toast("移动失败")
+                    }
                 } else {
                     val popup = PopupMenu(this@MainActivity, v)
-                    popup.menu.add(0, 0, 0, ">_ CLI")
-                    popup.menu.add(0, 1, 1, "🔍 全局搜索")
-                    popup.menu.add(0, 2, 2, "📌 书签管理")
-                    popup.menu.add(0, 3, 3, "⚙️ 设置")
+                    popup.menu.add(0, 0, 0, getString(R.string.action_terminal))
+                    popup.menu.add(0, 1, 1, getString(R.string.msg_search_global))
+                    popup.menu.add(0, 2, 2, getString(R.string.nav_bookmarks))
+                    popup.menu.add(0, 3, 3, getString(R.string.settings))
                     popup.setOnMenuItemClickListener { item ->
                         when (item.itemId) { 0 -> cli(); 1 -> globalSearch(); 2 -> drawer.open(); 3 -> settings() }
                         true
@@ -298,7 +345,7 @@ class MainActivity : AppCompatActivity() {
                     textSize = 16f; setTextColor(C["error"]!!)
                     gravity = Gravity.CENTER; setPadding(4, 0, 8, 0)
                     tag = "cancel_move"
-                    setOnClickListener { fileToMove = null; updatePasteButton(); toast("已取消") }
+                    setOnClickListener { fileToMove = null; MultiFiles = listOf(); updatePasteButton(); toast(getString(R.string.msg_cancelled)) }
                 }
                 toolbar?.addView(btnCancel)
             }
@@ -307,10 +354,230 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun enterMultiSelect(f: File) {
+        multiSelectMode = true; multiSelected.add(f); refreshMultiSelectUI()
+        val compressMode = prefs.getInt("work_mode", 0) == 1
+        syncMultiBar()
+    }
+    private fun toggleMultiSelect(f: File) { if (multiSelected.contains(f)) multiSelected.remove(f) else multiSelected.add(f); refreshMultiSelectUI() }
+    private fun exitMultiSelect() { multiSelectMode = false; multiSelected.clear(); syncMultiBar() }
+    private fun syncMultiBar() {
+        val bar = (findViewById<androidx.constraintlayout.widget.ConstraintLayout>(R.id.root)).let { r ->
+            for (i in 0 until r.childCount) { val c = r.getChildAt(i); if (c is LinearLayout && c.childCount >= 6) return@let c as LinearLayout }
+            return
+        }
+        val tv = bar.getChildAt(0) as? TextView ?: return
+        val isCompress = prefs.getInt("work_mode", 0) == 1
+        tv.text = "已选 ${multiSelected.size} 项"
+        bar.visibility = if (multiSelectMode) View.VISIBLE else View.GONE
+        if (bottomBar != null) bottomBar.visibility = if (multiSelectMode) View.GONE else bottomBar.visibility
+        // Sync adapter selection state and force full redraw
+        (listFiles.adapter as? FileAdapter)?.multiSelected_ = if (multiSelectMode) multiSelected else emptySet()
+        listFiles.invalidateViews()
+        // Show/hide extract/compress based on mode (use startsWith for emoji safety)
+        for (i in 0 until bar.childCount) {
+            val btn = bar.getChildAt(i) as? Button ?: continue
+            val t = btn.text.toString()
+            if (t.startsWith("📂")) btn.visibility = if (isCompress) View.GONE else View.VISIBLE
+            if (t.startsWith("📦")) btn.visibility = if (isCompress) View.VISIBLE else View.GONE
+        }
+    }
+    private fun refreshMultiSelectUI() { syncMultiBar() }
+    private fun confirmBatchDelete() {
+        val sel = multiSelected.toList(); if (sel.isEmpty()) return
+        AlertDialog.Builder(this).setTitle(getString(R.string.title_batch_delete)).setMessage("确定删除 ${sel.size} 项？不可恢复！")
+            .setPositiveButton(getString(R.string.action_delete)) { _, _ -> for (f in sel) { if (f.isDirectory) f.deleteRecursively() else f.delete() }; toast(getString(R.string.msg_deleted)); exitMultiSelect(); nav(currentDir) }
+            .setNegativeButton(getString(R.string.action_cancel), null).show()
+    }
+    private fun startBatchMove() {
+        val sel = multiSelected.toList(); if (sel.isEmpty()) return
+        // Copy all selected files to a temp list for multi-move; use first file as UI indicator
+        MultiFiles = sel
+        fileToMove = sel[0]; multiSelected.clear()
+        updatePasteButton(); exitMultiSelect()
+        toast("已选择 ${sel.size} 项，请导航到目标目录")
+    }
+    private fun startBatchCompress() {
+        val sel = multiSelected.toList(); if (sel.isEmpty()) return
+        val items = sel.filter { it.isDirectory || (it.isFile && it.extension.lowercase() !in ARCHIVE_EXTS) }
+        if (items.isEmpty()) { toast(getString(R.string.no_compressible)); return }
+        val ext = "zip"; val level = prefs.getInt("zip_level", 5)
+        val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
+        val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
+        val pd = ProgressDialog(this).apply { setTitle("批量压缩 — $ext"); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
+        thread {
+            var ok = true
+            for (f in items) {
+                val outF = uniqueFile(f.parentFile ?: currentDir, "${f.name}.$ext")
+                ok = ZipCore.zipCompress("", f.path, outF.path, level.toString(), password)
+                if (!ok) break
+            }
+            runOnUiThread { pd.dismiss(); if (ok) toast(getString(R.string.msg_batch_compress_done)) else toast(getString(R.string.title_compress_failed)); exitMultiSelect(); nav(currentDir) }
+        }
+    }
+    private fun batchArchives(): List<File> = multiSelected.filter { it.isFile && it.extension.lowercase() in ARCHIVE_EXTS }
+    private fun resolveBatchPath(mergedPath: String): Pair<File, String>? {
+        // mergedPath is like "📦 data.xp3/scenario/main.ks". Extract the archive name and original path.
+        for ((src, _) in showBatchPreview_all ?: emptyList()) {
+            val prefix = "📦 ${src.name}/"
+            if (mergedPath.startsWith(prefix)) return src to mergedPath.removePrefix(prefix)
+        }
+        return null
+    }
+    private var showBatchPreview_all: List<Pair<File, List<ArchiveEntry>>>? = null
+
+    private fun startBatchExtract() {
+        val archives = batchArchives(); if (archives.isEmpty()) { toast(getString(R.string.no_archives)); return }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.title_select_format))
+            .setItems(arrayOf(getString(R.string.format_xp3), getString(R.string.format_pfs), getString(R.string.format_nsa), getString(R.string.format_iso), getString(R.string.format_ypf), getString(R.string.format_zip), getString(R.string.format_7z))) { _, which ->
+                val fmt = arrayOf("xp3", "pfs", "nsa", "iso", "ypf", "zip", "7z")[which]
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("${archives.size} 个归档 — ${fmt.uppercase()}")
+                    .setItems(arrayOf(getString(R.string.action_preview), getString(R.string.action_extract))) { _, w ->
+                        when (w) {
+                            0 -> batchPreview(archives, fmt)
+                            1 -> batchDirectExtract(archives, fmt)
+                        }
+                    }.setNegativeButton(getString(R.string.action_cancel), null).show()
+            }.setNegativeButton(getString(R.string.action_cancel), null).show()
+    }
+    private fun batchDirectExtract(archives: List<File>, fmt: String) {
+        val parent = archives[0].parentFile ?: currentDir
+        // Pre-compute unique output dirs
+        val outDirs = archives.map { src -> uniqueFile(parent, src.nameWithoutExtension) }
+        val labels = arrayOf("📁 各单独文件夹（${outDirs.map { it.name }.joinToString(", ")}）", getString(R.string.action_extract))
+        AlertDialog.Builder(this).setTitle(getString(R.string.title_extract_to))
+            .setItems(labels) { _, w ->
+                val pd = ProgressDialog(this).apply { setTitle("批量解压 — $fmt"); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
+                thread {
+                    var ok = true
+                    for (i in archives.indices) {
+                        val out = if (w == 0) outDirs[i] else parent
+                        ok = extractByFormat(fmt, archives[i].path, out.path, "")
+                        if (!ok) break
+                    }
+                    runOnUiThread { pd.dismiss(); if (ok) toast("批量解压完成") else toast(getString(R.string.title_extract_failed)); exitMultiSelect(); nav(currentDir) }
+                }
+            }.setNegativeButton(getString(R.string.action_cancel), null).show()
+    }
+    private fun batchPreview(archives: List<File>, fmt: String) {
+        val pd = ProgressDialog(this).apply { setTitle(getString(R.string.reading)); setMessage("正在读取 ${archives.size} 个归档..."); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
+        thread {
+            val all: MutableList<Pair<File, List<ArchiveEntry>>> = mutableListOf()
+            for (src in archives) {
+                val json = try { when(fmt) { "xp3"->Xp3Core.xp3ListEntries(src.path); "pfs"->PfsCore.pfsListEntries(src.path); "nsa"->NsaCore.nsaListEntries(src.path); "iso"->IsoCore.isoListEntries(src.path); "ypf"->YpfCore.ypfListEntries(src.path); "zip"->ZipCore.zipListEntries(src.path); "7z"->SevenZCore.szListEntries(src.path); else->null } } catch(_:Exception){null}
+                if (json != null) all.add(src to parseEntries(json))
+            }
+            runOnUiThread { pd.dismiss(); if (all.isEmpty()) toast(getString(R.string.msg_cannot_read)); else showBatchPreviewDialog(all, fmt) }
+        }
+    }
+    private fun showBatchPreviewDialog(all: List<Pair<File, List<ArchiveEntry>>>, fmt: String) {
+        showBatchPreview_all = all
+        val selectedPaths = mutableSetOf<String>()
+        // Merge entries: each archive becomes a root-level pseudodir, entries get archive prefix
+        val merged = mutableListOf<ArchiveEntry>()
+        val arcDirs = mutableSetOf<String>()
+        for ((src, entries) in all) {
+            val dirPath = "📦 ${src.name}"
+            arcDirs.add(dirPath)
+            merged.add(ArchiveEntry(dirPath, src.name, 0, true, false, 0))
+            for (e in entries) {
+                merged.add(ArchiveEntry("$dirPath/${e.path}", e.name, e.size, e.isDirectory, e.isEncrypted, e.depth + 1))
+            }
+        }
+        val expandedPaths = arcDirs.toMutableSet()
+        val totalFiles = merged.count { !it.isDirectory }
+        val totalSize = merged.filter { !it.isDirectory }.sumOf { it.size }
+
+        // Stats bar
+        val tvStats = TextView(this).apply {
+            text = "${all.size} 归档 / $totalFiles 文件 / ${fmt(totalSize)}  |  已选 0 项"
+            setTextColor(C["tertiary_light"]!!); textSize = 12f
+            setPadding(12, 8, 12, 4); setBackgroundColor(C["surface_dim"]!!)
+        }
+        fun updateStats() {
+            val selFiles = selectedPaths.filter { p -> merged.find { e -> e.path == p && !e.isDirectory } != null }
+            val selSize = selectedPaths.sumOf { p -> merged.find { e -> e.path == p }?.size ?: 0L }
+            tvStats.text = "${all.size} 归档 / $totalFiles 文件 / ${fmt(totalSize)}  |  已选 ${selFiles.size} 项, ${fmt(selSize)}"
+        }
+
+        // Preview file click: extract from correct archive then show
+        fun batchPreviewClick(entry: ArchiveEntry) {
+            if (entry.isDirectory) return
+            val (arc, origPath) = resolveBatchPath(entry.path) ?: return
+            val cacheDir = File(cacheDir, "batch_preview/${arc.nameWithoutExtension}")
+            val pd3 = ProgressDialog(this).apply { setTitle(getString(R.string.msg_extracting)); setMessage(entry.name); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
+            thread {
+                val ok = extractByFormat(fmt, arc.path, cacheDir.path, origPath)
+                runOnUiThread { pd3.dismiss(); if (ok) previewLocalFile(File(cacheDir, origPath)) else toast(getString(R.string.title_extract_failed)) }
+            }
+        }
+        val adapter = PreviewAdapter(merged, selectedPaths, expandedPaths, { e -> batchPreviewClick(e) }, { updateStats() })
+
+        val listView = ListView(this).apply {
+            this.adapter = adapter; setBackgroundColor(C["surface"]!!)
+            divider = ColorDrawable(C["surface_dark"]!!); dividerHeight = 1
+        }
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; addView(tvStats); addView(listView, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        }
+
+        lateinit var dlg: AlertDialog
+        // Title bar with search button
+        val titleBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(24, 14, 8, 14); setBackgroundColor(C["surface"]!!) }
+        titleBar.addView(TextView(this).apply {
+            text = "批量预览 ${all.map{it.first.name}.joinToString(", ").take(40)}"; setTextColor(C["primary"]!!); textSize = 17f
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        })
+        val btnSearchTitle = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_search); setBackgroundColor(C["surface"]!!); setPadding(8, 4, 8, 4)
+            scaleType = ImageView.ScaleType.FIT_XY; layoutParams = LinearLayout.LayoutParams(52, 40)
+            setOnClickListener {
+                val cacheDir = File(cacheDir, "archive_search/batch_${all.map{it.first.nameWithoutExtension}.joinToString("_").take(50)}")
+                cacheDir.deleteRecursively(); cacheDir.mkdirs()
+                val pd2 = ProgressDialog(this@MainActivity).apply { setTitle(getString(R.string.preparing_search)); setMessage(getString(R.string.extracting_texts)); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
+                thread {
+                    searchSourceArchive = all[0].first; searchSourceFormat = fmt; searchSourceCacheBase = cacheDir
+                    val textExts = TEXT_SEARCH_EXTS
+                    for ((src, _) in all) {
+                        for (e in merged.filter{!it.isDirectory&&it.path.startsWith("📦 ${src.name}/")}) {
+                            if (e.name.substringAfterLast('.').lowercase() !in textExts) continue
+                            val rp = resolveBatchPath(e.path)?.second ?: continue
+                            extractByFormat(fmt, src.path, cacheDir.path, rp)
+                        }
+                    }
+                    runOnUiThread { pd2.dismiss(); dlg.dismiss(); globalSearch(cacheDir, tempDir = cacheDir) }
+                }
+            }
+        }
+        titleBar.addView(btnSearchTitle)
+
+        dlg = AlertDialog.Builder(this).setCustomTitle(titleBar).setView(layout)
+            .setPositiveButton(getString(R.string.extract_selected)) { _, _ ->
+                val sel = selectedPaths.filter { p -> !p.endsWith("/") || selectedPaths.none { it.startsWith(p) && it != p } }
+                if (sel.isEmpty()) { toast(getString(R.string.msg_select_one)); return@setPositiveButton }
+                val byArchive = mutableMapOf<File, MutableList<String>>()
+                for (p in sel) {
+                    val r = resolveBatchPath(p) ?: continue
+                    byArchive.getOrPut(r.first) { mutableListOf() }.add(r.second)
+                }
+                val pd2 = ProgressDialog(this).apply { setTitle(getString(R.string.title_batch_extract)); setMessage("${sel.size} 项"); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
+                thread {
+                    var ok2 = true
+                    for ((src, paths) in byArchive) {
+                        if (!extractByFormat(fmt, src.path, uniqueFile(src.parentFile!!, src.nameWithoutExtension).path, paths.joinToString("\n"))) { ok2 = false; break }
+                    }
+                    runOnUiThread { pd2.dismiss(); if (ok2) toast("批量解压完成") else toast(getString(R.string.title_extract_failed)); exitMultiSelect(); nav(currentDir) }
+                }
+            }
+            .setNegativeButton(getString(R.string.action_cancel), null).create()
+        dlg.show()
+    }
     private fun showDisclaimer() {
         if (prefs.getBoolean("disclaimer_accepted", false)) return
         AlertDialog.Builder(this)
-            .setTitle("免责声明")
+            .setTitle(getString(R.string.title_disclaimer))
             .setMessage("""
                 UsefulUnpack 是文件解压工具，支持 XP3 / PFS 格式。
 
@@ -323,7 +590,7 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("同意并继续") { _, _ ->
                 prefs.edit().putBoolean("disclaimer_accepted", true).apply()
             }
-            .setNegativeButton("退出") { _, _ -> finish() }
+            .setNegativeButton(getString(R.string.action_close)) { _, _ -> finish() }
             .setCancelable(false)
             .show()
     }
@@ -332,7 +599,7 @@ class MainActivity : AppCompatActivity() {
         selectedFile = null
         bottomBar.visibility = View.GONE
         fabExtract.visibility = View.GONE
-        btnExtract.text = "解压"
+        btnExtract.text = getString(R.string.msg_extract_title)
         btnExtract.setOnClickListener { extract() }
         btnFolderNext.visibility = View.GONE
         currentDir = dir
@@ -360,7 +627,7 @@ class MainActivity : AppCompatActivity() {
 
         tvCount.text = "${files.size} 项"
         if (files.isEmpty()) {
-            tvEmpty.text = if (raw == null) "无访问权限" else "空文件夹"
+            tvEmpty.text = if (raw == null) getString(R.string.no_permission) else getString(R.string.empty_folder)
             tvEmpty.visibility = View.VISIBLE
         } else tvEmpty.visibility = View.GONE
 
@@ -376,7 +643,7 @@ class MainActivity : AppCompatActivity() {
         // Archive files → show FAB for extraction (but not in compression mode)
         if (ext in ARCHIVE_EXTS) {
             if (prefs.getInt("work_mode", 0) == 1) {
-                toast("压缩模式下不处理归档文件")
+                toast(getString(R.string.msg_compress_mode_block))
                 return
             }
             selectedFile = f
@@ -389,12 +656,12 @@ class MainActivity : AppCompatActivity() {
         if (ext in PREVIEW_EXTS) {
             AlertDialog.Builder(this)
                 .setTitle(f.name)
-                .setItems(arrayOf("🔍 预览", "ℹ️ 文件信息")) { _, w ->
+                .setItems(arrayOf(getString(R.string.preview), getString(R.string.action_file_info))) { _, w ->
                     when (w) {
                         0 -> previewLocalFile(f)
                         1 -> toast("${f.name}\n${fmt(fileSize(f))}\n${df.format(Date(f.lastModified()))}")
                     }
-                }.setNegativeButton("取消", null).show()
+                }.setNegativeButton(getString(R.string.action_cancel), null).show()
             return
         }
 
@@ -426,26 +693,29 @@ class MainActivity : AppCompatActivity() {
         // Block files that are clearly not archives (e.g. .jpg) to prevent JNI crash
         if (ext !in ARCHIVE_EXTS && src.isDirectory.not()) {
             AlertDialog.Builder(this)
-                .setTitle("无法解压")
+                .setTitle(getString(R.string.title_extract_failed))
                 .setMessage(".${ext} 不是压缩包格式\n请选择 .xp3 / .pfs / .nsa / .sar 文件")
-                .setPositiveButton("确定", null)
+                .setPositiveButton(getString(R.string.action_confirm), null)
                 .show()
             return
         }
         AlertDialog.Builder(this)
-            .setTitle("选择归档格式")
-            .setItems(arrayOf("📦 XP3", "📦 PFS", "📦 NSA/SAR", "📀 ISO", "📦 YPF", "🗜️ ZIP", "📦 7z")) { _, which ->
+            .setTitle(getString(R.string.title_select_format))
+            .setItems(arrayOf(getString(R.string.format_xp3), getString(R.string.format_pfs), getString(R.string.format_nsa), getString(R.string.format_iso), getString(R.string.format_ypf), getString(R.string.format_zip), getString(R.string.format_7z))) { _, which ->
                 val format = arrayOf("xp3", "pfs", "nsa", "iso", "ypf", "zip", "7z")[which]
                 showExtractOptions(src, format)
-            }.setNegativeButton("取消", null).show()
+            }.setNegativeButton(getString(R.string.action_cancel), null).show()
     }
 
     private fun uniqueFile(parent: File, name: String): File {
         var f = File(parent, name)
         if (!f.exists()) return f
+        val dot = name.lastIndexOf('.')
+        val base = if (dot >= 0) name.substring(0, dot) else name
+        val ext = if (dot >= 0) name.substring(dot) else ""
         var n = 1
         while (true) {
-            f = File(parent, "$name ($n)")
+            f = File(parent, "$base ($n)$ext")
             if (!f.exists()) return f
             n++
         }
@@ -457,74 +727,76 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("${src.name} (${format.uppercase()})")
-            .setItems(arrayOf("🔍 先预览内容", "📦 直接解压")) { _, w ->
+            .setItems(arrayOf(getString(R.string.action_preview), getString(R.string.action_extract))) { _, w ->
                 when (w) {
                     0 -> previewArchive(src, format)
                     1 -> showDirectExtractDialog(src, format, parent, outDir)
                 }
-            }.setNegativeButton("取消", null).show()
+            }.setNegativeButton(getString(R.string.action_cancel), null).show()
     }
 
     private fun showDirectExtractDialog(src: File, format: String, parent: File, outDir: File) {
         AlertDialog.Builder(this)
-            .setTitle("解压到...")
-            .setItems(arrayOf("📁 新建文件夹: ${outDir.name}", "📂 直接解压到当前目录")) { _, w ->
+            .setTitle(getString(R.string.title_extract_to))
+            .setItems(arrayOf("📁 ${getString(R.string.title_new_folder)}: ${outDir.name}", getString(R.string.action_extract))) { _, w ->
                 val out = if (w == 0) outDir else parent
                 extractAll(out, src, format)
-            }.setNegativeButton("取消", null).show()
+            }.setNegativeButton(getString(R.string.action_cancel), null).show()
     }
 
-    private fun extractAll(out: File, src: File, format: String) {
+    private fun extractAll(destFile: File, src: File, format: String) {
         val pd = ProgressDialog(this).apply {
-            setTitle("解压中")
-            setMessage("${src.name} → ${out.name}")
+            setTitle(getString(R.string.extracting_please))
+            setMessage("${src.name} → ${destFile.name}")
             setProgressStyle(ProgressDialog.STYLE_SPINNER)
             setCancelable(false)
             show()
         }
         fun doExtract(pwd: String = "") = runCatching {
             when (format) {
-                "zip" -> if (pwd.isEmpty()) ZipCore.zipExtract("", src.path, out.path) else ZipCore.zipExtractWithPassword("", src.path, out.path, pwd)
-                "7z" -> if (pwd.isEmpty()) SevenZCore.szExtract("", src.path, out.path) else SevenZCore.szExtractWithPassword("", src.path, out.path, pwd)
-                else -> extractByFormat(format, src.path, out.path, "")
+                "zip" -> if (pwd.isEmpty()) ZipCore.zipExtract("", src.path, destFile.path) else ZipCore.zipExtractWithPassword("", src.path, destFile.path, pwd)
+                "7z" -> if (pwd.isEmpty()) SevenZCore.szExtract("", src.path, destFile.path) else SevenZCore.szExtractWithPassword("", src.path, destFile.path, pwd)
+                else -> extractByFormat(format, src.path, destFile.path, "")
             }
         }.getOrDefault(false)
         thread {
             val ok = doExtract()
             runOnUiThread {
                 pd.dismiss()
-                if (ok) { toast("完成 → ${out.name}"); nav(currentDir) }
+                if (ok) { toast(getString(R.string.msg_extract_complete) + " ${destFile.name}"); nav(currentDir) }
                 else if (format in setOf("zip", "7z")) {
                     // Show password dialog
                     val inp = EditText(this@MainActivity).apply {
-                        hint = "输入解压密码"
+                        hint = getString(R.string.prompt_password)
                         setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
                         setBackgroundColor(C["surface"]!!)
                         setPadding(12, 8, 12, 8)
                         inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
                     }
+                    // Cleanup empty output dir so uniqueFile naming doesn't stack
+                    if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete()
                     AlertDialog.Builder(this@MainActivity)
-                        .setTitle("文件可能已加密")
-                        .setMessage("输入密码后重试")
+                        .setTitle(getString(R.string.title_password))
+                        .setMessage(getString(R.string.retry))
                         .setView(inp)
-                        .setPositiveButton("重试") { _, _ ->
+                        .setPositiveButton(getString(R.string.retry)) { _, _ ->
                             val pwd = inp.text.toString()
                             val pd2 = ProgressDialog(this@MainActivity).apply {
-                                setTitle("解压中"); setMessage("${src.name} → ${out.name}")
+                                setTitle(getString(R.string.extracting_please)); setMessage("${src.name} → ${destFile.name}")
                                 setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show()
                             }
                             thread {
                                 val ok2 = doExtract(pwd)
                                 runOnUiThread {
                                     pd2.dismiss()
-                                    if (ok2) { toast("完成 → ${out.name}"); nav(currentDir) }
+                                    if (ok2) { toast(getString(R.string.msg_extract_complete) + " ${destFile.name}"); nav(currentDir) }
                                     else toast("解压失败，密码可能错误")
                                 }
                             }
                         }
-                        .setNegativeButton("取消", null)
+                        .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete() }
                         .show()
-                } else toast("解压失败")
+                } else toast(getString(R.string.title_extract_failed))
             }
         }
     }
@@ -561,7 +833,7 @@ class MainActivity : AppCompatActivity() {
             else -> setOf(format)
         }
         return if (ext !in exts) "后缀 .$ext 与格式 ${format.uppercase()} 不匹配"
-               else "解压失败"
+               else getString(R.string.title_extract_failed)
     }
 
     private fun parseEntries(json: String): List<ArchiveEntry> {
@@ -582,7 +854,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun previewArchive(src: File, format: String) {
         val pd = ProgressDialog(this).apply {
-            setTitle("读取中")
+            setTitle(getString(R.string.reading))
             setMessage("正在读取 ${src.name} 的内容...")
             setProgressStyle(ProgressDialog.STYLE_SPINNER)
             setCancelable(false)
@@ -600,7 +872,8 @@ class MainActivity : AppCompatActivity() {
             } } catch (_: Exception) { null }
             runOnUiThread { pd.dismiss() }
             if (json == null || json == "[]") {
-                runOnUiThread { toast("无法读取归档内容") }
+                val msg = if (format in setOf("zip", "7z")) "无法读取归档内容，如果包含密码请直接解压" else getString(R.string.msg_cannot_read)
+                runOnUiThread { toast(msg) }
                 return@thread
             }
             val entries = parseEntries(json)
@@ -668,7 +941,7 @@ class MainActivity : AppCompatActivity() {
                 cacheDir.deleteRecursively()
                 cacheDir.mkdirs()
                 val pd = ProgressDialog(this@MainActivity).apply {
-                    setTitle("准备搜索")
+                    setTitle(getString(R.string.preparing_search))
                     setMessage("正在准备 ${src.name} 的文件索引...")
                     setProgressStyle(ProgressDialog.STYLE_SPINNER)
                     setCancelable(false); show()
@@ -704,14 +977,14 @@ class MainActivity : AppCompatActivity() {
         dlg = AlertDialog.Builder(this)
             .setCustomTitle(titleBar)
             .setView(layout)
-            .setPositiveButton("解压所选", null)
-            .setNegativeButton("取消", null)
+            .setPositiveButton(getString(R.string.extract_selected), null)
+            .setNegativeButton(getString(R.string.action_cancel), null)
             .create()
         dlg.setOnShowListener {
             dlg.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
                 val sel = selectedPaths.filter { it.endsWith("/").not() || selectedPaths.none { p -> p != it && p.startsWith(it) } }
                 if (sel.isEmpty()) {
-                    toast("请至少选择一项")
+                    toast(getString(R.string.msg_select_one))
                 } else {
                     dlg.dismiss()
                     showOutputDirDialog(src, sel, format)
@@ -728,30 +1001,102 @@ class MainActivity : AppCompatActivity() {
         val outDir = uniqueFile(parent, src.nameWithoutExtension)
 
         AlertDialog.Builder(this)
-            .setTitle("解压到...")
-            .setItems(arrayOf("📁 新建文件夹: ${outDir.name}", "📂 直接解压到当前目录")) { _, w ->
+            .setTitle(getString(R.string.title_extract_to))
+            .setItems(arrayOf("📁 ${getString(R.string.title_new_folder)}: ${outDir.name}", getString(R.string.action_extract))) { _, w ->
                 val out = if (w == 0) outDir else parent
                 extractSelected(src, out, selectedPaths, format)
-            }.setNegativeButton("取消", null)
+            }.setNegativeButton(getString(R.string.action_cancel), null)
             .show()
     }
 
     private fun extractSelected(src: File, out: File, paths: List<String>, format: String) {
         val selStr = paths.joinToString("\n")
         val pd = ProgressDialog(this).apply {
-            setTitle("解压中")
+            setTitle(getString(R.string.extracting_please))
             setMessage("${src.name}\n→ ${out.name}\n已选 ${paths.size} 项")
             setProgressStyle(ProgressDialog.STYLE_SPINNER)
             setCancelable(false)
             show()
         }
-        thread {
-            val result = runCatching { extractByFormat(format, src.path, out.path, selStr) }
-            runOnUiThread {
+        if (format in setOf("zip", "7z") && selStr.isNotEmpty()) {
+            // For selective extraction of zip/7z, use JNI selected extraction directly
+            thread {
+                val ok = when (format) {
+                    "zip" -> ZipCore.zipExtractSelected("", src.path, out.path, selStr)
+                    else -> SevenZCore.szExtractSelected("", src.path, out.path, selStr)
+                }
+                runOnUiThread {
+                    pd.dismiss()
+                    if (ok) { toast(getString(R.string.msg_extract_complete) + " ${out.name}"); nav(currentDir) }
+                    else toast(getString(R.string.title_extract_failed))
+                }
+            }
+        } else {
+            tryExtractWithPassword(format, src.path, out.path, selStr) { ok ->
                 pd.dismiss()
-                val ok = result.getOrDefault(false)
-                if (ok) { toast("完成 → ${out.name}"); nav(currentDir) }
-                else toast(result.exceptionOrNull()?.message ?: mismatchMsg(format, src))
+                if (ok) { toast(getString(R.string.msg_extract_complete) + " ${out.name}"); nav(currentDir) }
+                else toast(getString(R.string.title_extract_failed))
+            }
+        }
+    }
+
+    private fun showPasswordDialog(fmt: String, src: String, out: String, onResult: (Boolean) -> Unit) {
+        val inp = EditText(this@MainActivity).apply {
+            hint = getString(R.string.prompt_password)
+            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+            setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        AlertDialog.Builder(this@MainActivity)
+            .setTitle(getString(R.string.title_password))
+            .setView(inp)
+            .setPositiveButton(getString(R.string.retry)) { _, _ ->
+                val pwd = inp.text.toString()
+                thread {
+                    val ok = if (fmt == "zip") ZipCore.zipExtractWithPassword("", src, out, pwd)
+                              else SevenZCore.szExtractWithPassword("", src, out, pwd)
+                    runOnUiThread { onResult(ok) }
+                }
+            }
+            .setNegativeButton(getString(R.string.action_cancel), null)
+            .show()
+    }
+
+    private fun tryExtractWithPassword(fmt: String, src: String, out: String, sel: String, onResult: (Boolean) -> Unit) {
+        fun doExtract(pwd: String = "") = when (fmt) {
+            "zip" -> if (pwd.isEmpty()) ZipCore.zipExtract("", src, out) else ZipCore.zipExtractWithPassword("", src, out, pwd)
+            "7z" -> if (pwd.isEmpty()) SevenZCore.szExtract("", src, out) else SevenZCore.szExtractWithPassword("", src, out, pwd)
+            else -> extractByFormat(fmt, src, out, sel)
+        }
+        thread {
+            val ok = if (fmt in setOf("zip", "7z") && sel.isNotEmpty()) {
+                // For selected extraction, pass sel as selected parameter
+                if (fmt == "zip") ZipCore.zipExtractSelected("", src, out, sel)
+                else SevenZCore.szExtractSelected("", src, out, sel)
+            } else doExtract()
+            runOnUiThread {
+                if (ok) { onResult(true) }
+                else if (fmt in setOf("zip", "7z")) {
+                    val inp = EditText(this@MainActivity).apply {
+                        hint = getString(R.string.prompt_password)
+                        setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+                        setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
+                        inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                    }
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle(getString(R.string.title_password))
+                        .setView(inp)
+                        .setPositiveButton(getString(R.string.retry)) { _, _ ->
+                            val pwd = inp.text.toString()
+                            thread {
+                                val ok2 = if (fmt == "zip") ZipCore.zipExtractWithPassword("", src, out, pwd)
+                                          else SevenZCore.szExtractWithPassword("", src, out, pwd)
+                                runOnUiThread { onResult(ok2) }
+                            }
+                        }
+                        .setNegativeButton(getString(R.string.action_cancel), null)
+                        .show()
+                } else { onResult(false) }
             }
         }
     }
@@ -765,10 +1110,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val cacheDir = File(cacheDir, "preview/${archive.nameWithoutExtension}")
-        thread {
-            val ok = extractByFormat(format, archive.path, cacheDir.path, entry.path)
-            if (!ok) { runOnUiThread { toast("提取失败") }; return@thread }
-
+        fun openPreview() {
             val extracted = File(cacheDir, entry.path)
             runOnUiThread {
                 when (ext) {
@@ -779,11 +1121,28 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        if (format in setOf("zip", "7z")) {
+            // Detect if archive needs password first
+            val needsPw = if (format == "zip") ZipCore.zipNeedsPassword(archive.path) else SevenZCore.szNeedsPassword(archive.path)
+            if (needsPw) {
+                showPasswordDialog(format, archive.path, cacheDir.path) { ok2 ->
+                    if (ok2) openPreview() else toast(getString(R.string.title_extract_failed))
+                }
+            } else {
+                tryExtractWithPassword(format, archive.path, cacheDir.path, entry.path) { ok ->
+                    if (ok) openPreview() else toast(getString(R.string.title_extract_failed))
+                }
+            }
+        } else {
+            tryExtractWithPassword(format, archive.path, cacheDir.path, entry.path) { ok ->
+                if (ok) openPreview() else toast(getString(R.string.title_extract_failed))
+            }
+        }
     }
 
     private fun showImagePreview(file: File) {
         val bmp = BitmapFactory.decodeFile(file.path)
-        if (bmp == null) { toast("无法解码图片"); return }
+        if (bmp == null) { toast(getString(R.string.msg_cannot_decode)); return }
 
         val iv = ImageView(this).apply {
             setImageBitmap(bmp)
@@ -802,7 +1161,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle(file.name)
             .setView(scroll)
-            .setPositiveButton("关闭", null)
+            .setPositiveButton(getString(R.string.action_close), null)
             .show()
     }
 
@@ -896,7 +1255,7 @@ class MainActivity : AppCompatActivity() {
                 setPadding(0, 6, 0, 6)
             }
             val btnPrev = Button(this@MainActivity).apply {
-                text = "◀ 上一个"; textSize = 12f; isAllCaps = false
+                text = getString(R.string.search_prev); textSize = 12f; isAllCaps = false
                 setTextColor(C["accent"]!!); background = null
                 setPadding(12, 4, 12, 4)
             }
@@ -906,7 +1265,7 @@ class MainActivity : AppCompatActivity() {
                 setPadding(20, 4, 20, 4)
             }
             val btnNext = Button(this@MainActivity).apply {
-                text = "下一个 ▶"; textSize = 12f; isAllCaps = false
+                text = getString(R.string.search_next); textSize = 12f; isAllCaps = false
                 setTextColor(C["accent"]!!); background = null
                 setPadding(12, 4, 12, 4)
             }
@@ -936,7 +1295,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this@MainActivity)
             .setTitle(title)
             .setView(root)
-            .setPositiveButton("关闭", null)
+            .setPositiveButton(getString(R.string.action_close), null)
             .show()
     }
 
@@ -950,7 +1309,7 @@ class MainActivity : AppCompatActivity() {
             AlertDialog.Builder(this)
                 .setTitle("🎵 ${file.name}")
                 .setMessage("正在播放…")
-                .setPositiveButton("停止") { _, _ -> mp.release() }
+                .setPositiveButton(getString(R.string.action_stop)) { _, _ -> mp.release() }
                 .setOnDismissListener { mp.release() }
                 .show()
         } catch (e: Exception) {
@@ -972,34 +1331,64 @@ class MainActivity : AppCompatActivity() {
 
     private fun showCompressFormatPicker(dir: File) {
         AlertDialog.Builder(this)
-            .setTitle("📦 压缩 ${dir.name}")
-            .setItems(arrayOf("🗜️ ZIP", "📦 7z", "📁 XP3", "📁 PFS")) { _, which ->
+            .setTitle("${getString(R.string.msg_compress_title)} ${dir.name}")
+            .setItems(arrayOf(getString(R.string.format_zip), getString(R.string.format_7z), "📁 XP3", "📁 PFS")) { _, which ->
                 val fmt = arrayOf("zip", "7z", "xp3", "pfs")[which]
                 val ext = if (fmt == "7z") "7z" else fmt
                 val outFile = uniqueFile(dir.parentFile ?: currentDir, "${dir.name}.$ext")
                 val level = if (fmt == "zip") prefs.getInt("zip_level", 5) else prefs.getInt("sz_level", 6)
                 val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                 val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
+                var cancelled = false
                 val pd = ProgressDialog(this).apply {
-                    setTitle("压缩中 — $ext")
-                    setMessage("正在压缩——【${dir.name}】")
+                    setTitle("${getString(R.string.msg_compress_progress)} — $ext")
+                    setMessage(getString(R.string.msg_compress_progress))
                     setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
-                    max = 100; setCancelable(false); show()
+                    max = 100
+                    setCancelable(true)
+                    setButton(ProgressDialog.BUTTON_NEGATIVE, getString(R.string.action_cancel), android.content.DialogInterface.OnClickListener { _, _ -> cancelled = true; if (fmt == "zip") ZipCore.zipCompressCancel() else SevenZCore.szCompressCancel() })
+                    show()
                 }
                 thread {
-                    val ok = when (fmt) {
-                        "zip" -> ZipCore.zipCompress("", dir.path, outFile.path, level.toString(), password)
-                        "7z" -> SevenZCore.szCompress("", dir.path, outFile.path, level.toString(), password)
-                        else -> false
+                    var ok = false
+                    try {
+                        ok = when (fmt) {
+                            "zip" -> ZipCore.zipCompress("", dir.path, outFile.path, level.toString(), password)
+                            "7z" -> SevenZCore.szCompress("", dir.path, outFile.path, level.toString(), password)
+                            else -> false
+                        }
+                    } catch (_: Exception) { /* cancelled */ }
+                    if (cancelled) {
+                        var deleted = false; for (i in 0..10) { deleted = outFile.delete(); if (deleted) break else Thread.sleep(200) }
                     }
                     runOnUiThread {
                         pd.dismiss()
-                        if (ok) { toast("压缩完成 → ${outFile.name}"); nav(currentDir) }
-                        else toast("压缩失败")
+                        if (cancelled) { toast(getString(R.string.msg_cancelled)) }
+                        else if (ok) { toast("${getString(R.string.msg_extract_complete)} ${outFile.name}"); nav(currentDir) }
+                        else toast(getString(R.string.title_compress_failed))
+                    }
+                }
+                // Poll progress from Rust globals
+                thread {
+                    var last = 0
+                    while (!cancelled) {
+                        Thread.sleep(200)
+                        val cur = if (fmt == "zip") ZipCore.zipCompressProgressCount() else SevenZCore.szCompressProgressCount()
+                        val tot = if (fmt == "zip") ZipCore.zipCompressProgressTotal() else SevenZCore.szCompressProgressTotal()
+                        val fname = (if (fmt == "zip") ZipCore.zipCompressProgressName() else SevenZCore.szCompressProgressName()) ?: ""
+                        if (cur != last) {
+                            last = cur
+                            val pct = if (tot > 0) (cur * 100 / tot).coerceAtMost(100) else 0
+                            runOnUiThread {
+                                pd.progress = pct
+                                pd.setMessage("正在压缩——${fname.takeLast(40)}")
+                            }
+                        }
+                        if (cancelled || (cur > 0 && tot > 0 && cur >= tot)) break
                     }
                 }
             }
-            .setNegativeButton("取消", null)
+            .setNegativeButton(getString(R.string.action_cancel), null)
             .show()
     }
 
@@ -1009,16 +1398,16 @@ class MainActivity : AppCompatActivity() {
         var szLevel = prefs.getInt("sz_level", 6).let { if (it !in intArrayOf(0,3,6,9,12)) 6 else it }
         var passwordEnabled = prefs.getBoolean("compress_password_enabled", false)
         var password = prefs.getString("compress_password", "") ?: ""
-        val ZIP_LEVELS = arrayOf("仅打包", "低", "中等 (默认)", "高", "极限")
+        val ZIP_LEVELS = arrayOf(getString(R.string.level_store), getString(R.string.level_low), getString(R.string.level_medium), getString(R.string.level_high), getString(R.string.level_extreme))
         val ZIP_VALS = intArrayOf(0, 3, 5, 7, 9)
-        val SZ_LEVELS = arrayOf("仅打包", "低", "中等 (默认)", "高", "极限")
+        val SZ_LEVELS = arrayOf(getString(R.string.level_store), getString(R.string.level_low), getString(R.string.level_medium), getString(R.string.level_high), getString(R.string.level_extreme))
         val SZ_VALS = intArrayOf(0, 3, 6, 9, 12)
 
         fun setMode(m: Int) {
             mode = m
             prefs.edit().putInt("work_mode", m).apply()
             findViewById<TextView>(R.id.tvTitle)?.text = "UsefulUnpack" + if (m == 1) "  [🗜️压缩]" else "  [📦归档]"
-            if (m == 0) { bottomBar.visibility = View.GONE; btnExtract.text = "解压"; btnExtract.setOnClickListener { extract() }; btnFolderNext.visibility = View.GONE; selectedFile = null }
+            if (m == 0) { bottomBar.visibility = View.GONE; btnExtract.text = getString(R.string.msg_extract_title); btnExtract.setOnClickListener { extract() }; btnFolderNext.visibility = View.GONE; selectedFile = null }
         }
         fun styleBtn(btn: Button, active: Boolean) {
             btn.setBackgroundColor(if (active) C["accent"]!! else C["toggle_on"]!!)
@@ -1029,12 +1418,12 @@ class MainActivity : AppCompatActivity() {
         lateinit var btnArchive: Button
         lateinit var btnCompress: Button
         btnArchive = Button(this).apply {
-            text = "📦 归档"; textSize = 13f; isAllCaps = false
+            text = getString(R.string.settings_mode_archive); textSize = 13f; isAllCaps = false
             setPadding(20, 6, 20, 6)
             setOnClickListener { setMode(0); styleBtn(this, true); styleBtn(btnCompress, false) }
         }
         btnCompress = Button(this).apply {
-            text = "🗜️ 压缩"; textSize = 13f; isAllCaps = false
+            text = getString(R.string.settings_mode_compress); textSize = 13f; isAllCaps = false
             setPadding(20, 6, 20, 6)
             setOnClickListener { setMode(1); styleBtn(this, true); styleBtn(btnArchive, false) }
         }
@@ -1043,7 +1432,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(20, 12, 20, 8)
             addView(TextView(this@MainActivity).apply {
-                text = "工作模式："; setTextColor(C["tertiary_light"]!!); textSize = 13f
+                text = getString(R.string.action_work_mode); setTextColor(C["tertiary_light"]!!); textSize = 13f
                 gravity = Gravity.CENTER_VERTICAL
             })
             addView(btnArchive, LinearLayout.LayoutParams(WRAP, WRAP).apply { setMargins(8, 0, 0, 0) })
@@ -1095,12 +1484,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val zipSection = buildFormatSection("ZIP 压缩设置", ZIP_LEVELS, ZIP_VALS, zipLevel) { v -> zipLevel = v }
-        val szSection = buildFormatSection("7z 压缩设置", SZ_LEVELS, SZ_VALS, szLevel) { v -> szLevel = v }
+        val zipSection = buildFormatSection("ZIP " + getString(R.string.settings_compress), ZIP_LEVELS, ZIP_VALS, zipLevel) { v -> zipLevel = v }
+        val szSection = buildFormatSection("7z " + getString(R.string.settings_compress), SZ_LEVELS, SZ_VALS, szLevel) { v -> szLevel = v }
 
         // ═══ Password section ═══
         val etPassword = EditText(this@MainActivity).apply {
-            hint = "压缩密码：将自动用于后续每一次压缩"
+            hint = getString(R.string.password_hint_long)
             setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
             setBackgroundColor(C["surface_dark"]!!)
             setPadding(12, 8, 12, 8); textSize = 13f
@@ -1111,6 +1500,7 @@ class MainActivity : AppCompatActivity() {
         val btnEye = TextView(this@MainActivity).apply {
             text = "👁"
             textSize = 16f
+            visibility = if (passwordEnabled) View.VISIBLE else View.GONE
             setTextColor(C["accent"]!!)
             gravity = Gravity.CENTER
             setPadding(8, 0, 0, 0)
@@ -1124,21 +1514,22 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val btnPwdToggle = Button(this@MainActivity).apply {
-            text = if (passwordEnabled) "关闭" else "开启"
+            text = if (passwordEnabled) getString(R.string.action_close) else getString(R.string.action_confirm)
             setTextColor(if (passwordEnabled) C["error"]!! else C["accent"]!!)
             background = null; textSize = 13f
             setOnClickListener {
                 passwordEnabled = !passwordEnabled
-                text = if (passwordEnabled) "关闭" else "开启"
+                text = if (passwordEnabled) getString(R.string.action_close) else getString(R.string.action_confirm)
                 setTextColor(if (passwordEnabled) C["error"]!! else C["accent"]!!)
                 etPassword.visibility = if (passwordEnabled) View.VISIBLE else View.GONE
+                btnEye.visibility = if (passwordEnabled) View.VISIBLE else View.GONE
             }
         }
         val pwdRow = LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(24, 12, 24, 4)
             addView(TextView(this@MainActivity).apply {
-                text = "压缩密码："
+                text = getString(R.string.password_colon)
                 setTextColor(C["tertiary_light"]!!); textSize = 13f
                 gravity = Gravity.CENTER_VERTICAL
                 layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
@@ -1172,30 +1563,90 @@ class MainActivity : AppCompatActivity() {
         }
 
         AlertDialog.Builder(this)
-            .setTitle("🗜️ 压缩设置")
+            .setTitle(getString(R.string.settings_compress))
             .setView(body)
-            .setPositiveButton("确定") { _, _ ->
+            .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                 prefs.edit().putInt("zip_level", zipLevel).apply()
                 prefs.edit().putInt("sz_level", szLevel).apply()
                 prefs.edit().putBoolean("compress_password_enabled", passwordEnabled).apply()
                 if (passwordEnabled) prefs.edit().putString("compress_password", etPassword.text.toString()).apply()
                 else prefs.edit().remove("compress_password").apply()
             }
-            .setNegativeButton("取消", null)
+            .setNegativeButton(getString(R.string.action_cancel), null)
             .show()
+    }
+
+    private fun showGeneralSettings() {
+        val langTags = arrayOf("zh-CN", "zh-TW", "ja", "en")
+        val labels = arrayOf(getString(R.string.language_zhcn), getString(R.string.language_zhtw), getString(R.string.language_ja), getString(R.string.language_en))
+        val current = prefs.getString("app_lang", "zh-CN") ?: "zh-CN"
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.settings_general))
+            .setSingleChoiceItems(labels, langTags.indexOf(current).coerceAtLeast(0)) { _, which ->
+                val tag = langTags[which]
+                prefs.edit().putString("app_lang", tag).apply()
+                androidx.appcompat.app.AppCompatDelegate.setApplicationLocales(
+                    androidx.core.os.LocaleListCompat.forLanguageTags(tag)
+                )
+                recreate()
+            }
+            .setPositiveButton(getString(R.string.action_confirm), null)
+            .show()
+    }
+
+    private fun showRenameDialog(f: File) {
+        val inp = EditText(this@MainActivity).apply {
+            setText(f.name); selectAll()
+            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+            setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
+        }
+        AlertDialog.Builder(this@MainActivity)
+            .setTitle(getString(R.string.action_rename))
+            .setView(inp)
+            .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
+                val newName = inp.text.toString().trim()
+                if (newName.isEmpty() || newName == f.name) return@setPositiveButton
+                val dst = File(f.parentFile ?: return@setPositiveButton, newName)
+                if (!dst.exists()) { f.renameTo(dst); toast(getString(R.string.action_rename)); nav(currentDir); return@setPositiveButton }
+                // Conflict dialog
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle(getString(R.string.msg_target_exists))
+                    .setItems(arrayOf(getString(R.string.action_replace), getString(R.string.action_keep_both), getString(R.string.action_compare))) { _, which ->
+                        when (which) {
+                            0 -> { dst.delete(); f.renameTo(dst); toast(getString(R.string.action_replace)); nav(currentDir) }
+                            1 -> { val u = uniqueFile(f.parentFile!!, newName); f.renameTo(u); toast("已重命名为 ${u.name}"); nav(currentDir) }
+                            2 -> { compareFiles(f, dst) }
+                        }
+                    }.setNegativeButton(getString(R.string.action_cancel), null).show()
+            }
+            .setNegativeButton(getString(R.string.action_cancel), null).show()
+    }
+    private fun compareFiles(a: File, b: File) {
+        val info = "${a.name}\n大小: ${fmt(fileSize(a))}\n时间: ${df.format(Date(a.lastModified()))}\n\n${b.name}\n大小: ${fmt(fileSize(b))}\n时间: ${df.format(Date(b.lastModified()))}\n\n"
+        val extA = a.name.lowercase().substringAfterLast('.')
+        val extB = b.name.lowercase().substringAfterLast('.')
+        val previewable = setOf("jpg","jpeg","png","txt","json","ini","ks","lua","py","js","html","css","xml","cfg","log","md")
+        val canPreview = extA in previewable && extB in previewable
+        AlertDialog.Builder(this@MainActivity)
+            .setTitle(getString(R.string.title_compare))
+            .setMessage(info + if (canPreview) "两个文件均可预览" else "大小相同: ${fileSize(a) == fileSize(b)}")
+            .setPositiveButton(if (canPreview) getString(R.string.preview_both) else "确定") { _, _ ->
+                if (canPreview) { previewLocalFile(a); previewLocalFile(b) }
+            }
+            .setNegativeButton(getString(R.string.action_cancel), null).show()
     }
 
     private fun settings() {
         AlertDialog.Builder(this)
-            .setTitle("⚙️ 设置")
-            .setItems(arrayOf("🎨 界面设置", "📂 一般管理", "🗜️ 压缩设置")) { _, which ->
+            .setTitle(getString(R.string.settings))
+            .setItems(arrayOf(getString(R.string.settings_ui), getString(R.string.settings_general), getString(R.string.settings_compress))) { _, which ->
                 when (which) {
                     0 -> showUISettings()
-                    1 -> toast("一般管理 — 即将推出")
+                    1 -> showGeneralSettings()
                     2 -> showCompressionSettings()
                 }
             }
-            .setNegativeButton("关闭", null)
+            .setNegativeButton(getString(R.string.action_close), null)
             .show()
     }
 
@@ -1205,7 +1656,7 @@ class MainActivity : AppCompatActivity() {
         // Background image toggle row
         val hasBg = prefs.getString("bg_image_uri", null) != null
         val tvBgInfo = TextView(this).apply {
-            text = if (hasBg) "✅ 已设置自定义背景" else "未设置"
+            text = if (hasBg) "✅ 已设置自定义背景" else getString(R.string.level_store)
             setTextColor(C["tertiary_light"]!!); textSize = 13f
         }
         val btnPickBg = Button(this).apply {
@@ -1242,7 +1693,7 @@ class MainActivity : AppCompatActivity() {
         val body = LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.VERTICAL
             addView(TextView(this@MainActivity).apply {
-                text = "自定义背景图"; setTextColor(C["tertiary_light"]!!); textSize = 12f
+                text = getString(R.string.settings_bg_image); setTextColor(C["tertiary_light"]!!); textSize = 12f
                 setPadding(32, 12, 32, 0)
             })
             addView(bgRow)
@@ -1258,18 +1709,18 @@ class MainActivity : AppCompatActivity() {
             findViewById<View>(R.id.pathBar)?.setBackgroundResource(R.color.bg_pathbar)
             findViewById<View>(R.id.panel)?.setBackgroundResource(R.color.bg_file_list)
             window?.statusBarColor = 0xBB000000.toInt()
-            tvBgInfo.text = "未设置"
+            tvBgInfo.text = getString(R.string.level_store)
             btnClearBg.visibility = View.GONE
         }
 
         AlertDialog.Builder(this)
-            .setTitle("🎨 界面设置")
+            .setTitle(getString(R.string.settings_ui))
             .setView(body)
-            .setPositiveButton("确定") { _, _ ->
+            .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                 prefs.edit().putInt("bg_image_alpha", seekAlpha.progress).apply()
                 prefs.getString("bg_image_uri", null)?.let { applyBackgroundImage(Uri.parse(it)) }
             }
-            .setNegativeButton("取消", null)
+            .setNegativeButton(getString(R.string.action_cancel), null)
             .show()
     }
 
@@ -1401,12 +1852,12 @@ class MainActivity : AppCompatActivity() {
             adapter.notifyDataSetChanged()
         }
         val dlg = AlertDialog.Builder(this)
-            .setTitle("命令速查")
+            .setTitle(getString(R.string.title_help))
             .setView(listView)
-            .setPositiveButton("应用此命令") { _, _ ->
+            .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                 if (selectedCmd.isNotEmpty()) { inp.setText(selectedCmd); onApply(selectedCmd) }
             }
-            .setNegativeButton("关闭", null)
+            .setNegativeButton(getString(R.string.action_close), null)
             .create()
         dlg.show()
     }
@@ -1435,7 +1886,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(C["secondary"]!!); textSize = 11f; setPadding(16, 8, 16, 2)
         }
         val btnChangeDir = Button(this).apply {
-            text = "更改"; setTextColor(C["accent"]!!); background = null; textSize = 11f
+            text = getString(R.string.action_move); setTextColor(C["accent"]!!); background = null; textSize = 11f
             setPadding(0, 0, 16, 0)
             setOnClickListener {
                 val dirInput = EditText(this@MainActivity).apply {
@@ -1445,11 +1896,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 AlertDialog.Builder(this@MainActivity)
                     .setTitle("输入搜索目录").setView(dirInput)
-                    .setPositiveButton("确定") { _, _ ->
+                    .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                         val d = File(dirInput.text.toString().trim())
                         if (d.isDirectory) { searchDir = d; tvDir.text = "📁 搜索范围: ${d.path}" }
-                        else toast("目录不存在")
-                    }.setNegativeButton("取消", null).show()
+                        else toast(getString(R.string.msg_dir_not_found))
+                    }.setNegativeButton(getString(R.string.action_cancel), null).show()
             }
         }
         val dirRow = LinearLayout(this).apply {
@@ -1470,11 +1921,11 @@ class MainActivity : AppCompatActivity() {
             btnContent.setTextColor(if (mode == 1) 0xFF000000.toInt() else C["tertiary"]!!)
         }
         btnFilename = Button(this).apply {
-            text = "📄 文件名搜索"; textSize = 13f; isAllCaps = false
+            text = getString(R.string.filename_search); textSize = 13f; isAllCaps = false
             setPadding(24, 6, 24, 6); setOnClickListener { selectMode(0) }
         }
         btnContent = Button(this).apply {
-            text = "📝 内容搜索"; textSize = 13f; isAllCaps = false
+            text = getString(R.string.content_search); textSize = 13f; isAllCaps = false
             setPadding(24, 6, 24, 6); setOnClickListener { selectMode(1) }
         }
         selectMode(0)
@@ -1485,13 +1936,13 @@ class MainActivity : AppCompatActivity() {
 
         // Search input
         val etQuery = EditText(this).apply {
-            hint = "输入关键词..."; setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+            hint = getString(R.string.input_search); setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
             setBackgroundColor(C["surface"]!!); textSize = 14f; setPadding(12, 8, 12, 8); setSingleLine(true)
         }
 
         // Search button
         val btnSearch = Button(this).apply {
-            text = "🔍 搜索"; setTextColor(C["accent"]!!); textSize = 14f
+            text = getString(R.string.search_button); setTextColor(C["accent"]!!); textSize = 14f
         }
 
         // Progress bar (indeterminate while searching)
@@ -1502,10 +1953,10 @@ class MainActivity : AppCompatActivity() {
 
         // Stats + continue button
         val tvStats = TextView(this).apply {
-            text = "输入关键词开始搜索"; setTextColor(C["tertiary_light"]!!); textSize = 12f
+            text = getString(R.string.search_empty); setTextColor(C["tertiary_light"]!!); textSize = 12f
         }
         val btnContinue = Button(this).apply {
-            text = "继续扫描"; setTextColor(C["accent"]!!); textSize = 12f
+            text = getString(R.string.continue_scan); setTextColor(C["accent"]!!); textSize = 12f
             background = null; visibility = View.GONE; setPadding(0, 0, 0, 0)
         }
         val statsRow = LinearLayout(this).apply {
@@ -1553,7 +2004,7 @@ class MainActivity : AppCompatActivity() {
                 val cacheBase = searchSourceCacheBase
                 if (r.file.length() == 0L && archiveSrc != null && fmt != null && cacheBase != null) {
                     val pd = ProgressDialog(this@MainActivity).apply {
-                        setTitle("提取中"); setMessage(r.file.name)
+                        setTitle(getString(R.string.msg_extracting)); setMessage(r.file.name)
                         setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show()
                     }
                     val relPath = r.file.absolutePath.removePrefix(cacheBase.absolutePath + "/")
@@ -1580,23 +2031,23 @@ class MainActivity : AppCompatActivity() {
         }
 
         searchDialog = AlertDialog.Builder(this)
-            .setTitle("🔍 全局搜索")
+            .setTitle(getString(R.string.msg_search_global))
             .setView(layout)
-            .setNegativeButton("关闭", null)
+            .setNegativeButton(getString(R.string.action_close), null)
             .create()
         searchDialog.show()
 
         // Launch search
         fun doSearch(query: String, mode: Int, maxFileSize: Long, isContinue: Boolean = false) {
             searchThread?.interrupt()
-            if (query.isEmpty()) { toast("请输入关键词"); return }
+            if (query.isEmpty()) { toast(getString(R.string.msg_enter_keyword)); return }
             currentMaxFileSize = maxFileSize
             if (!isContinue) { results.clear(); seenFiles.clear(); currentLimit = 200 }
             else currentLimit += 200
             resultAdapter.refresh()
             searchProgress.visibility = View.VISIBLE
             btnContinue.visibility = View.GONE
-            tvStats.text = if (isContinue) "继续扫描中..." else "搜索中..."
+            tvStats.text = if (isContinue) getString(R.string.continue_scan) else getString(R.string.search_scanning)
             val scanned = intArrayOf(0)
             searchThread = thread {
                 walkSearch(query.lowercase(), searchDir, mode, results, currentLimit, maxFileSize, scanned, seenFiles)
@@ -1606,7 +2057,7 @@ class MainActivity : AppCompatActivity() {
                     btnContinue.visibility = if (hasMore) View.VISIBLE else View.GONE
                     tvStats.text = "找到 ${results.size} 个结果（共扫描 ${scanned[0]} 个文件）"
                     resultAdapter.refresh()
-                    if (results.isEmpty()) toast("未找到匹配结果")
+                    if (results.isEmpty()) toast(getString(R.string.msg_no_results))
                 }
             }
             // Periodically update stats while searching
@@ -1625,17 +2076,17 @@ class MainActivity : AppCompatActivity() {
 
         btnSearch.setOnClickListener {
             queryText = etQuery.text.toString().trim()
-            if (queryText.isEmpty()) { toast("请输入关键词"); return@setOnClickListener }
+            if (queryText.isEmpty()) { toast(getString(R.string.msg_enter_keyword)); return@setOnClickListener }
             if (searchMode == 1) {
                 // Content search: ask for single-file size limit
-                val labels = arrayOf("100 KB", "500 KB", "1 MB", "5 MB", "10 MB", "不限制")
+                val labels = arrayOf("100 KB", "500 KB", "1 MB", "5 MB", "10 MB", getString(R.string.level_extreme))
                 val limits = longArrayOf(100_000L, 500_000L, 1_000_000L, 5_000_000L, 10_000_000L, Long.MAX_VALUE)
                 val body = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     setBackgroundColor(C["surface"]!!)
                 }
                 body.addView(TextView(this).apply {
-                    text = "超过上限的文件将被跳过，避免大文件拖慢搜索"
+                    text = getString(R.string.size_limit_warn)
                     setTextColor(C["secondary"]!!); textSize = 13f
                     setPadding(24, 16, 24, 12)
                 })
@@ -1659,11 +2110,11 @@ class MainActivity : AppCompatActivity() {
                     setPadding(40, 8, 24, 16)
                 }
                 customRow.addView(TextView(this).apply {
-                    text = "自定义 (MB):"; setTextColor(C["secondary"]!!); textSize = 13f
+                    text = getString(R.string.custom_mb); setTextColor(C["secondary"]!!); textSize = 13f
                     gravity = Gravity.CENTER_VERTICAL
                 })
                 val customInput = EditText(this).apply {
-                    hint = "如 2"; setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+                    hint = getString(R.string.custom_mb); setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
                     setBackgroundColor(C["surface_dark"]!!); setPadding(8, 4, 8, 4); textSize = 14f; gravity = Gravity.CENTER
                     inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
                     layoutParams = LinearLayout.LayoutParams(120, WRAP).apply { setMargins(12, 0, 0, 0) }
@@ -1671,15 +2122,15 @@ class MainActivity : AppCompatActivity() {
                 customRow.addView(customInput)
                 body.addView(customRow)
                 AlertDialog.Builder(this)
-                    .setTitle("是否跳过超过 XX 的文件？")
+                    .setTitle(getString(R.string.size_limit_warn))
                     .setView(body)
-                    .setPositiveButton("开始搜索") { _, _ ->
+                    .setPositiveButton(getString(R.string.search_button)) { _, _ ->
                         val custom = customInput.text.toString().toDoubleOrNull()
                         val bytes = if (custom != null && custom > 0) (custom * 1_000_000).toLong()
                                    else limits[radioGroup.checkedRadioButtonId.coerceIn(0, limits.size - 1)]
                         doSearch(queryText, 1, bytes)
                     }
-                    .setNegativeButton("取消", null)
+                    .setNegativeButton(getString(R.string.action_cancel), null)
                     .show()
             } else {
                 doSearch(queryText, 0, Long.MAX_VALUE)
@@ -1815,7 +2266,7 @@ class MainActivity : AppCompatActivity() {
                 AlertDialog.Builder(this)
                     .setTitle(dir.name)
                     .setMessage("总大小: ${fmt(total)}\n文件数: ${processed}")
-                    .setPositiveButton("确定", null)
+                    .setPositiveButton(getString(R.string.action_confirm), null)
                     .show()
             }
         }
@@ -1967,6 +2418,7 @@ private fun fmt(b: Long) = when {
     }
 
     inner class FileAdapter(private val files: List<File>) : BaseAdapter() {
+        var multiSelected_: Set<File> = emptySet()
         private val iconFolder = GradientDrawable().apply {
             shape = GradientDrawable.OVAL; setSize(72, 72)
             setColor(ContextCompat.getColor(this@MainActivity, R.color.ui_icon_folder) and 0x40ffffff.toInt())
@@ -1977,6 +2429,17 @@ private fun fmt(b: Long) = when {
         override fun getView(pos: Int, v: View?, p: ViewGroup?): View {
             val view = v ?: layoutInflater.inflate(R.layout.item_file, p, false)
             val f = files[pos]
+            // Multi-select: checkbox + highlight, click handled by listView's onItemClickListener
+            val cb = view.findViewById<CheckBox>(R.id.checkbox)
+            if (multiSelected_.isNotEmpty()) {
+                cb.visibility = View.VISIBLE; cb.isChecked = f in multiSelected_
+                cb.isClickable = false; cb.isFocusable = false
+                if (f in multiSelected_) view.setBackgroundColor(0x4035acc6.toInt())
+                else view.setBackgroundColor(0x00000000.toInt())
+            } else {
+                cb.visibility = View.GONE
+                view.setBackgroundColor(0x00000000.toInt())
+            }
             val icon = view.findViewById<ImageView>(R.id.icon)
             val label = view.findViewById<TextView>(R.id.label)
             val size = view.findViewById<TextView>(R.id.info_size)

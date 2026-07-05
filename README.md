@@ -1,6 +1,6 @@
 # UsefulUnpack
 
-[**中文**](README-zh.md) | [**English**](README.md)
+[**中文**](README-zh.md) | [**English**](README.md) | [**繁體中文**](README-zh-TW.md) | [**日本語**](README-ja.md)
 
 A lightweight Android file manager and archive extraction tool for visual novel game files.
 
@@ -22,6 +22,11 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 🔎 **Global Search** | Filename search + content search (30+ text formats), match highlighting with prev/next navigation, progressive scanning |
 | 📦 **In-Archive Search** | One-click unpack text files from preview and open the full global search interface on extracted content |
 | 🖼️ **File Preview** | Image (JPG/PNG), audio (MP3/OGG), video (MP4), text/code — jump to matching line on search results |
+| 🗜️ **ZIP/7z Compression** | Create ZIP/7z archives, 5 compression levels, AES-256 encryption |
+| 🔐 **Extract with Password** | Enter password for encrypted ZIP/7z archives |
+| ✂️ **File Operations** | Long-press to rename, move, delete (irreversible), create folder |
+| ☑️ **Batch Multi-Select** | Multi-select mode for batch extract/compress/delete/move |
+| 📂 **Batch Preview** | Preview multiple archives at once, select files across all of them |
 | 📂 **Local File Preview** | Tap any previewable file in the browser to view directly |
 | 🗂 **File Browser** | ZArchiver-style UI with path breadcrumb, fast scroll, folder ⭐ bookmarks |
 | 📌 **Bookmarks** | Quick-access paths via star button on folders or slide-out drawer |
@@ -65,11 +70,6 @@ Minimum Android 8.0 (API 26). Requires "All files access" permission on Android 
 ```bash
 bash build.sh
 ```
-
-This builds each format as a separate `.so` via the Cargo workspace, then assembles the APK via Gradle.
-
-## Architecture (v4.0+)
-
 ```
 User taps file → Kotlin UI calls format-specific JNI
                          ↓
@@ -77,12 +77,11 @@ User taps file → Kotlin UI calls format-specific JNI
           libarchive_pfs_core.so  → PFS
           libarchive_nsa_core.so  → NSA/SAR
           libarchive_iso_core.so  → ISO 9660
-          libarchive_ypf_core.so
-	          libarchive_zip_core.so  → **ZIP**
-	          libarchive_sevenz_core.so → **7z**  → YPF (YU-RIS)
+          libarchive_ypf_core.so  → YPF (YU-RIS)
+          libarchive_zip_core.so  → ZIP
+          libarchive_sevenz_core.so → 7z
                          ↓
               Files written to selected directory
-```
 
 Each format lives in `crates/<format>-core/` as an independent `cdylib`. Shared utilities (SyncIo, oneshot_async, JSON escaping) live in `crates/common/`.
 

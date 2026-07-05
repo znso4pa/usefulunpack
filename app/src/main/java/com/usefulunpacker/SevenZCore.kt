@@ -4,6 +4,11 @@ object SevenZCore {
     external fun szExtract(tool: String, input: String, output: String): Boolean
     external fun szExtractSelected(tool: String, input: String, output: String, selected: String): Boolean
     external fun szListEntries(input: String): String?
+    external fun szNeedsPassword(input: String): Boolean
     external fun szExtractWithPassword(tool: String, input: String, output: String, password: String): Boolean
     external fun szCompress(tool: String, input: String, output: String, level: String, password: String): Boolean
+    external fun szCompressCancel()
+    external fun szCompressProgressCount(): Int
+    external fun szCompressProgressTotal(): Int
+    external fun szCompressProgressName(): String?
 }

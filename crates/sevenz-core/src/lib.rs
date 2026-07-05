@@ -1,10 +1,17 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jstring, JNI_TRUE, JNI_FALSE};
+use jni::sys::{jboolean, jstring, jint, JNI_TRUE, JNI_FALSE};
 use archive_common::{s, json_escape, safe_join};
 use sevenz_rust::*;
 use std::collections::HashSet;
 use std::io::Write;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
+
+static SZ_COUNT: AtomicUsize = AtomicUsize::new(0);
+static SZ_TOTAL: AtomicUsize = AtomicUsize::new(0);
+static SZ_FNAME: Mutex<String> = Mutex::new(String::new());
+static SZ_CANCEL: AtomicBool = AtomicBool::new(false);
 
 fn list_7z(input: &str) -> Result<String, String> {
     let archive = Archive::open(input).map_err(|e| format!("7z: {e}"))?;
@@ -95,20 +102,47 @@ fn extract_7z_selected(input: &str, output: &str, selected: &str) -> Result<u32,
     extract_7z(input, output, Some(&paths))
 }
 
-fn compress_7z_inner(input: &str, output: &str, level: i32, _password: &str) -> Result<u32, String> {
+fn count_files_7z(base: &str, rel: &str) -> usize {
+    let dir_path = if rel.is_empty() { base.to_string() } else { format!("{base}/{rel}") };
+    let mut total = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&dir_path) {
+        for entry in entries.flatten() {
+            let ft = entry.file_type().unwrap();
+            if ft.is_dir() { total += count_files_7z(base, &format!("{}/{}", rel, entry.file_name().to_string_lossy())); }
+            else if ft.is_file() { total += 1; }
+        }
+    }
+    total
+}
+
+fn compress_7z_inner(input: &str, output: &str, level: i32, password: &str) -> Result<u32, String> {
+    SZ_CANCEL.store(false, Ordering::SeqCst);
+    SZ_TOTAL.store(count_files_7z(input, ""), Ordering::SeqCst);
+    SZ_COUNT.store(0, Ordering::SeqCst);
+    *SZ_FNAME.lock().unwrap() = String::new();
     let lzma_preset = match level { 0 => 0, 1..=3 => 3, 4..=6 => 5, 7..=9 => 9, _ => 9 };
+    let has_pw = !password.is_empty();
     let mut sz = sevenz_rust::SevenZWriter::create(output).map_err(|e| format!("7z: {e}"))?;
+    if has_pw { sz.set_encrypt_header(true); }
+    let mut methods: Vec<sevenz_rust::SevenZMethodConfiguration> = Vec::new();
+    if has_pw {
+        let aes_opts = sevenz_rust::AesEncoderOptions::new(password.into());
+        methods.push(aes_opts.into());
+    }
     if level == 0 {
-        sz.set_content_methods(vec![
-            sevenz_rust::SevenZMethodConfiguration::new(sevenz_rust::SevenZMethod::COPY)
-        ]);
-    } else {
-        let opts = sevenz_rust::lzma::LZMA2Options::with_preset(lzma_preset);
-        sz.set_content_methods(vec![
+        let opts = sevenz_rust::lzma::LZMA2Options::with_preset(0);
+        methods.push(
             sevenz_rust::SevenZMethodConfiguration::new(sevenz_rust::SevenZMethod::LZMA2)
                 .with_options(sevenz_rust::MethodOptions::LZMA2(opts))
-        ]);
+        );
+    } else {
+        let opts = sevenz_rust::lzma::LZMA2Options::with_preset(lzma_preset);
+        methods.push(
+            sevenz_rust::SevenZMethodConfiguration::new(sevenz_rust::SevenZMethod::LZMA2)
+                .with_options(sevenz_rust::MethodOptions::LZMA2(opts))
+        );
     }
+    sz.set_content_methods(methods);
     let mut fail = 0u32;
     fn add_dir(sz: &mut sevenz_rust::SevenZWriter<std::fs::File>, base: &str, rel: &str) -> Result<u32, String> {
         let dir_path = if rel.is_empty() { base.to_string() } else { format!("{base}/{rel}") };
@@ -124,6 +158,9 @@ fn compress_7z_inner(input: &str, output: &str, level: i32, _password: &str) -> 
                 let _ = sz.push_archive_entry(e, None::<std::fs::File>);
                 fail += add_dir(sz, base, &file_rel)?;
             } else if file_type.is_file() {
+                if SZ_CANCEL.load(Ordering::SeqCst) { return Err("cancelled".to_string()); }
+                *SZ_FNAME.lock().unwrap() = file_rel.clone();
+                SZ_COUNT.fetch_add(1, Ordering::SeqCst);
                 let e = sevenz_rust::SevenZArchiveEntry::from_path(&entry.path(), file_rel.clone());
                 match std::fs::File::open(&entry.path()) {
                     Ok(f) => { let _ = sz.push_archive_entry(e, Some(f)); }
@@ -153,6 +190,28 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel: JString) -> jboolean {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel);
     match guarded(|| extract_7z_selected(&inp, &out, &sel_str)) { Ok(0) => JNI_TRUE, Ok(f) => { let _ = e.throw_new("java/io/IOException", format!("7z: {f} failed")); JNI_FALSE } Err(er) => { let _ = e.throw_new("java/io/IOException", format!("7z: {er}")); JNI_FALSE } }
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompressCancel(_: JNIEnv, _: JClass) { SZ_CANCEL.store(true, Ordering::SeqCst); }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompressProgressCount(_: JNIEnv, _: JClass) -> jint { SZ_COUNT.load(Ordering::SeqCst) as jint }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompressProgressTotal(_: JNIEnv, _: JClass) -> jint { SZ_TOTAL.load(Ordering::SeqCst) as jint }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompressProgressName(mut e: JNIEnv, _: JClass) -> jstring {
+    let name = SZ_FNAME.lock().unwrap().clone();
+    e.new_string(&name).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szNeedsPassword(mut e: JNIEnv, _: JClass, i: JString) -> jboolean {
+    let inp = s(&mut e, &i);
+    // Try to open the archive; if it succeeds, check if any folder uses AES256SHA256
+    match sevenz_rust::Archive::open(&inp) {
+        Ok(arc) => {
+            for f in &arc.folders {
+                for c in &f.coders {
+                    if c.decompression_method_id() == sevenz_rust::SevenZMethod::AES256SHA256.id() { return JNI_TRUE; }
+                }
+            }
+            JNI_FALSE
+        }
+        Err(_) => JNI_FALSE
+    }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompress(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, lv: JString, pw: JString) -> jboolean {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let lvl = s(&mut e, &lv); let pwd = s(&mut e, &pw);

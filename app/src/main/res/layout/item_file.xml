@@ -9,6 +9,13 @@
     android:paddingEnd="12dp"
     android:background="?attr/selectableItemBackground">
 
+    <CheckBox
+        android:id="@+id/checkbox"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:buttonTint="@color/accent"
+        android:visibility="gone" />
+
     <ImageView
         android:id="@+id/btnStar"
         android:layout_width="32dp"

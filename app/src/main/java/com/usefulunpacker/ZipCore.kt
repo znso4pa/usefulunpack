@@ -7,6 +7,7 @@ object ZipCore {
     external fun zipNeedsPassword(input: String): Boolean
     external fun zipExtractWithPassword(tool: String, input: String, output: String, password: String): Boolean
     external fun zipCompress(tool: String, input: String, output: String, level: String, password: String): Boolean
+    external fun zipSetEncoding(enc: String)
     external fun zipCompressCancel()
     external fun zipCompressProgressCount(): Int
     external fun zipCompressProgressTotal(): Int

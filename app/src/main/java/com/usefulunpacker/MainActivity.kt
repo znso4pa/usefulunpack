@@ -409,8 +409,8 @@ class MainActivity : AppCompatActivity() {
             var ok = true
             for (f in items) {
                 val outF = uniqueFile(f.parentFile ?: currentDir, "${f.name}.$ext")
-                ok = ZipCore.zipCompress("", f.path, outF.path, level.toString(), password)
-                if (!ok) break
+                ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); val ok2 = ZipCore.zipCompress("", f.path, outF.path, level.toString(), password)
+                if (!ok2) { ok = false; break }
             }
             runOnUiThread { pd.dismiss(); if (ok) toast(getString(R.string.msg_batch_compress_done)) else toast(getString(R.string.title_compress_failed)); exitMultiSelect(); nav(currentDir) }
         }
@@ -575,20 +575,24 @@ class MainActivity : AppCompatActivity() {
         dlg.show()
     }
     private fun showDisclaimer() {
-        if (prefs.getBoolean("disclaimer_accepted", false)) return
+        if (prefs.getBoolean("disclaimer_accepted_v2", false)) return
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.title_disclaimer))
             .setMessage("""
-                UsefulUnpack 是文件解压工具，支持 XP3 / PFS 格式。
+                UsefulUnpack 是通用的文件归档管理工具。
 
-                本软件仅提供文件提取功能，不包含任何游戏内容、版权素材或破解密钥。
+                本软件：
+                · 不包含、不提供、不绕过任何 DRM 或复制保护
+                · 所有格式解析基于公开规范或开源实现
+                · 不托管任何版权内容或素材
 
-                用户应遵守当地法律法规，仅对您拥有合法权利的文件使用本工具。开发者（znso4pa）不对用户的任何不当使用承担责任。
+                用户应遵守当地法律法规，仅对您合法拥有的文件使用本工具。
+                开发者不对任何非法或不当使用承担责任。
 
                 继续使用即表示您同意以上条款。
             """.trimIndent())
             .setPositiveButton("同意并继续") { _, _ ->
-                prefs.edit().putBoolean("disclaimer_accepted", true).apply()
+                prefs.edit().putBoolean("disclaimer_accepted_v2", true).apply()
             }
             .setNegativeButton(getString(R.string.action_close)) { _, _ -> finish() }
             .setCancelable(false)
@@ -754,7 +758,7 @@ class MainActivity : AppCompatActivity() {
         }
         fun doExtract(pwd: String = "") = runCatching {
             when (format) {
-                "zip" -> if (pwd.isEmpty()) ZipCore.zipExtract("", src.path, destFile.path) else ZipCore.zipExtractWithPassword("", src.path, destFile.path, pwd)
+                "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); if (pwd.isEmpty()) ZipCore.zipExtract("", src.path, destFile.path) else ZipCore.zipExtractWithPassword("", src.path, destFile.path, pwd) }
                 "7z" -> if (pwd.isEmpty()) SevenZCore.szExtract("", src.path, destFile.path) else SevenZCore.szExtractWithPassword("", src.path, destFile.path, pwd)
                 else -> extractByFormat(format, src.path, destFile.path, "")
             }
@@ -811,8 +815,7 @@ class MainActivity : AppCompatActivity() {
                      else IsoCore.isoExtractSelected("", src, out, selected)
             "ypf" -> if (selected.isEmpty()) YpfCore.ypfExtract("", src, out)
                      else YpfCore.ypfExtractSelected("", src, out, selected)
-            "zip" -> if (selected.isEmpty()) ZipCore.zipExtract("", src, out)
-                     else ZipCore.zipExtractSelected("", src, out, selected)
+            "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); if (selected.isEmpty()) ZipCore.zipExtract("", src, out) else ZipCore.zipExtractSelected("", src, out, selected) }
             "7z" -> if (selected.isEmpty()) SevenZCore.szExtract("", src, out)
                      else SevenZCore.szExtractSelected("", src, out, selected)
             "nsa" -> if (selected.isEmpty()) NsaCore.nsaExtract("", src, out)
@@ -866,7 +869,7 @@ class MainActivity : AppCompatActivity() {
                 "nsa" -> NsaCore.nsaListEntries(src.absolutePath)
                 "iso" -> IsoCore.isoListEntries(src.absolutePath)
                 "ypf" -> YpfCore.ypfListEntries(src.absolutePath)
-                "zip" -> ZipCore.zipListEntries(src.absolutePath)
+                "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); ZipCore.zipListEntries(src.absolutePath) }
                 "7z" -> SevenZCore.szListEntries(src.absolutePath)
                 else -> null
             } } catch (_: Exception) { null }
@@ -1353,7 +1356,7 @@ class MainActivity : AppCompatActivity() {
                     var ok = false
                     try {
                         ok = when (fmt) {
-                            "zip" -> ZipCore.zipCompress("", dir.path, outFile.path, level.toString(), password)
+                            "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); ZipCore.zipCompress("", dir.path, outFile.path, level.toString(), password) }
                             "7z" -> SevenZCore.szCompress("", dir.path, outFile.path, level.toString(), password)
                             else -> false
                         }
@@ -1484,8 +1487,27 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val zipSection = buildFormatSection("ZIP " + getString(R.string.settings_compress), ZIP_LEVELS, ZIP_VALS, zipLevel) { v -> zipLevel = v }
+        val zipLevelSection = buildFormatSection("ZIP " + getString(R.string.settings_compress), ZIP_LEVELS, ZIP_VALS, zipLevel) { v -> zipLevel = v }
         val szSection = buildFormatSection("7z " + getString(R.string.settings_compress), SZ_LEVELS, SZ_VALS, szLevel) { v -> szLevel = v }
+
+        // ═══ Compact encoding row (like password toggle) ═══
+        val zipEncVals = arrayOf("UTF-8", "SHIFT-JIS", "GBK")
+        val encLabels = arrayOf(getString(R.string.encoding_utf8), getString(R.string.encoding_sjis), getString(R.string.encoding_gbk))
+        var encIdx = zipEncVals.indexOf(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8").coerceAtLeast(0)
+        val tvEncVal = TextView(this@MainActivity).apply {
+            text = encLabels[encIdx]; setTextColor(C["accent"]!!); textSize = 13f
+        }
+        val encRow = LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.HORIZONTAL; setPadding(24, 10, 24, 10)
+            setOnClickListener {
+                val cur = zipEncVals.indexOf(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8").coerceAtLeast(0)
+                val next = (cur + 1) % zipEncVals.size
+                prefs.edit().putString("zip_encoding", zipEncVals[next]).apply()
+                tvEncVal.text = encLabels[next]; toast("编码: ${zipEncVals[next]}")
+            }
+            addView(TextView(this@MainActivity).apply { text = "编码"; setTextColor(C["tertiary_light"]!!); textSize = 13f; layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f) })
+            addView(tvEncVal, LinearLayout.LayoutParams(WRAP, WRAP))
+        }
 
         // ═══ Password section ═══
         val etPassword = EditText(this@MainActivity).apply {
@@ -1556,8 +1578,11 @@ class MainActivity : AppCompatActivity() {
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(row1)
-                addView(zipSection)
+                addView(zipLevelSection)
                 addView(szSection)
+                // Compact encoding toggle row
+                addView(View(this@MainActivity).apply { setBackgroundColor(C["divider_subtle"]!!); layoutParams = LinearLayout.LayoutParams(MATCH, 1).apply { setMargins(24, 0, 24, 0) } })
+                addView(encRow)
                 addView(pwdSection)
             })
         }
@@ -1568,6 +1593,7 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                 prefs.edit().putInt("zip_level", zipLevel).apply()
                 prefs.edit().putInt("sz_level", szLevel).apply()
+                // zip_encoding already saved on toggle
                 prefs.edit().putBoolean("compress_password_enabled", passwordEnabled).apply()
                 if (passwordEnabled) prefs.edit().putString("compress_password", etPassword.text.toString()).apply()
                 else prefs.edit().remove("compress_password").apply()

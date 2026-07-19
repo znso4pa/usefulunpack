@@ -130,4 +130,10 @@
     <string name="extracting_texts">正在提取文本文件…</string>
     <string name="no_permission">无访问权限</string>
     <string name="empty_folder">空文件夹</string>
+    <string name="encoding_title">编码</string>
+    <string name="encoding_hint">如遇到编码报错请更换尝试 if encoding errors occur</string>
+    <string name="encoding_utf8">UTF-8 (默认)</string>
+    <string name="encoding_sjis">SHIFT-JIS (日本語)</string>
+    <string name="encoding_gbk">GBK (中文)</string>
+    <string name="msg_encoding_error">编码报错，请在设置中更换编码格式, try a different encoding in settings</string>
 </resources>

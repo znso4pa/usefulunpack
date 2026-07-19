@@ -118,4 +118,10 @@
     <string name="extracting_texts">正在提取文本檔案…</string>
     <string name="no_permission">無存取權限</string>
     <string name="empty_folder">空資料夾</string>
+    <string name="encoding_title">編碼</string>
+    <string name="encoding_hint">如遇到編碼報錯請更換嘗試 if encoding errors occur</string>
+    <string name="encoding_utf8">UTF-8 (預設)</string>
+    <string name="encoding_sjis">SHIFT-JIS (日本語)</string>
+    <string name="encoding_gbk">GBK (中文)</string>
+    <string name="msg_encoding_error">編碼錯誤，請在設定中更換編碼格式, try a different encoding in settings</string>
 </resources>

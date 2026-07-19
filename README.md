@@ -139,5 +139,9 @@ GitHub: [github.com/znso4pa/usefulunpack](https://github.com/znso4pa/usefulunpac
 
 ## Disclaimer
 
-This tool is provided for personal use with legally owned files.
-The author assumes no responsibility for any misuse.
+This tool is intended **solely for managing and accessing files you legally own**.
+- It does not contain, provide, or bypass any digital rights management (DRM) or copy protection mechanisms
+- All format parsers are based on publicly available format specifications or open-source reference implementations
+- The XOR values used in the YPF format parser are part of the public YU-RIS engine format specification, not reverse-engineered secrets
+- Do not use this tool for unauthorized extraction or distribution of copyrighted content
+- The author assumes no responsibility for any illegal or improper use

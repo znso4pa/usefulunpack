@@ -118,4 +118,10 @@
     <string name="extracting_texts">正在抽出文本ファイル…</string>
     <string name="no_permission">権限がありません</string>
     <string name="empty_folder">空のフォルダ</string>
+    <string name="encoding_title">エンコーディング</string>
+    <string name="encoding_hint">エンコードエラー時は変更 if encoding errors occur</string>
+    <string name="encoding_utf8">UTF-8 (デフォルト)</string>
+    <string name="encoding_sjis">SHIFT-JIS (日本語)</string>
+    <string name="encoding_gbk">GBK (中文)</string>
+    <string name="msg_encoding_error">エンコードエラー、設定で変更してください, try a different encoding in settings</string>
 </resources>

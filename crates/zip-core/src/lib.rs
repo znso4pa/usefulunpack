@@ -10,14 +10,35 @@ static COMPRESS_COUNT: AtomicUsize = AtomicUsize::new(0);
 static COMPRESS_TOTAL: AtomicUsize = AtomicUsize::new(0);
 static COMPRESS_FNAME: Mutex<String> = Mutex::new(String::new());
 static COMPRESS_CANCEL: AtomicBool = AtomicBool::new(false);
+static ZIP_ENCODING: Mutex<String> = Mutex::new(String::new());
+
+fn get_enc() -> String { let g = ZIP_ENCODING.lock().unwrap(); if g.is_empty() { "UTF-8".to_string() } else { g.clone() } }
+fn decode_entry_name(entry: &zip::read::ZipFile<'_, std::fs::File>, encoding: &str) -> String {
+    let raw = entry.name_raw();
+    match encoding {
+        "SHIFT-JIS" | "CP932" => {
+            let (dec, _, _) = encoding_rs::SHIFT_JIS.decode(raw);
+            dec.into_owned()
+        }
+        "GBK" | "GB2312" => {
+            let (dec, _, _) = encoding_rs::GBK.decode(raw);
+            dec.into_owned()
+        }
+        _ => {
+            // Try UTF-8 first, fall back to raw lossy
+            entry.name().to_string()
+        }
+    }
+}
 
 fn list_zip_inner(input: &str) -> Result<String, String> {
+    let enc = get_enc();
     let file = std::fs::File::open(input).map_err(|e| format!("{e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("{e}"))?;
     let mut all: Vec<(String, u64, bool)> = Vec::with_capacity(archive.len());
     for i in 0..archive.len() {
         let entry = match archive.by_index(i) { Ok(e) => e, Err(_) => continue };
-        let name = entry.name().replace('\\', "/").trim_matches('/').to_string();
+        let name = decode_entry_name(&entry, &enc).replace('\\', "/").trim_matches('/').to_string();
         if name.is_empty() { continue; }
         let is_dir = entry.is_dir();
         all.push((name.clone(), entry.size(), is_dir));
@@ -40,15 +61,16 @@ fn extract_zip_all_inner(input: &str, output: &str) -> Result<u32, String> {
     extract_zip_with_password(input, output, "")
 }
 fn extract_zip_with_password(input: &str, output: &str, password: &str) -> Result<u32, String> {
+    let enc = get_enc();
     let file = std::fs::File::open(input).map_err(|e| format!("{e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("{e}"))?;
     let mut fail = 0u32;
     let pw = if password.is_empty() { None } else { Some(password.as_bytes()) };
     for i in 0..archive.len() {
         let mut entry = if let Some(p) = pw { archive.by_index_decrypt(i, p).map_err(|e| format!("{e}"))? } else { archive.by_index(i).map_err(|e| format!("{e}"))? };
-        let name = entry.name().replace('\\', "/").trim_matches('/').to_string();
+        let name = decode_entry_name(&entry, &enc).replace('\\', "/").trim_matches('/').to_string();
         if name.is_empty() || entry.is_dir() { continue; }
-        let dest = safe_join(output, entry.name()).map_err(|e| format!("{e}"))?;
+        let dest = safe_join(output, &name).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
         let mut out = std::fs::File::create(&dest).map_err(|e| format!("{e}"))?;
         if std::io::copy(&mut entry, &mut out).is_err() { fail += 1; }
@@ -57,17 +79,18 @@ fn extract_zip_with_password(input: &str, output: &str, password: &str) -> Resul
 }
 
 fn extract_zip_selected_inner(input: &str, output: &str, selected: &str) -> Result<u32, String> {
-    let ss: HashSet<&str> = selected.lines().filter(|l| !l.is_empty()).collect();
+    let enc = get_enc();
+    let ss: HashSet<String> = selected.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect();
     if ss.is_empty() { return Ok(0); }
     let file = std::fs::File::open(input).map_err(|e| format!("{e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("{e}"))?;
     let mut fail = 0u32;
     for i in 0..archive.len() {
         let mut entry = match archive.by_index(i) { Ok(e) => e, Err(_) => continue };
-        let name = entry.name().replace('\\', "/").trim_matches('/').to_string();
+        let name = decode_entry_name(&entry, &enc).replace('\\', "/").trim_matches('/').to_string();
         if name.is_empty() || entry.is_dir() { continue; }
-        if !ss.contains(name.as_str()) && !ss.iter().any(|s| name.starts_with(&format!("{s}/"))) { continue; }
-        let dest = safe_join(output, entry.name()).map_err(|e| format!("{e}"))?;
+        if !ss.contains(&name) && !ss.iter().any(|s| name.starts_with(&format!("{s}/"))) { continue; }
+        let dest = safe_join(output, &name).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
         let mut out = std::fs::File::create(&dest).map_err(|e| format!("{e}"))?;
         if std::io::copy(&mut entry, &mut out).is_err() { fail += 1; }
@@ -134,6 +157,9 @@ fn compress_zip_inner(input: &str, output: &str, level: i32, password: &str) -> 
     Ok(fail)
 }
 
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipSetEncoding(mut e: JNIEnv, _: JClass, enc: JString) {
+    *ZIP_ENCODING.lock().unwrap() = s(&mut e, &enc);
+}
 fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err(format!("panic")) )
 }

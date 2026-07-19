@@ -130,4 +130,10 @@
     <string name="extracting_texts">Extracting text files…</string>
     <string name="no_permission">No permission</string>
     <string name="empty_folder">Empty folder</string>
+    <string name="encoding_title">Encoding</string>
+    <string name="encoding_hint">Try changing if encoding errors occur</string>
+    <string name="encoding_utf8">UTF-8 (default)</string>
+    <string name="encoding_sjis">SHIFT-JIS (日本語)</string>
+    <string name="encoding_gbk">GBK (中文)</string>
+    <string name="msg_encoding_error">Encoding error, try a different encoding in settings</string>
 </resources>

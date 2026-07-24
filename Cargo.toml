@@ -8,6 +8,8 @@ members = [
     "crates/ypf-core",
     "crates/zip-core",
     "crates/sevenz-core",
+    "crates/rar-core",
+    "crates/lz4-core",
 ]
 resolver = "2"
 

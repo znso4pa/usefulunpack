@@ -90,6 +90,8 @@
     <string name="format_iso">💿 ISO</string>
     <string name="format_ypf">📦 YPF</string>
     <string name="format_zip">🗜️ ZIP</string>
+    <string name="format_rar">📦 RAR</string>
+    <string name="format_lz4">🗜️ LZ4</string>
     <string name="format_7z">📦 7z</string>
     <string name="msg_compress_title">📦 压缩</string>
     <string name="msg_compress_progress">压缩中</string>
@@ -136,4 +138,22 @@
     <string name="encoding_sjis">SHIFT-JIS (日本語)</string>
     <string name="encoding_gbk">GBK (中文)</string>
     <string name="msg_encoding_error">编码报错，请在设置中更换编码格式, try a different encoding in settings</string>
+    <string name="err_not_archive">不是支持的压缩包格式</string>
+    <string name="err_ext_mismatch">后缀 .%1$s 与格式 %2$s 不匹配</string>
+    <string name="err_pwd_wrong">密码错误，解压失败</string>
+    <string name="err_cannot_read_maybe_pwd">无法读取归档内容，如果包含密码请直接解压</string>
+    <string name="err_preview_unsupported">不支持预览 .%1$s 文件</string>
+    <string name="err_file_open_failed">无法打开文件：%1$s</string>
+    <string name="err_extract_io">解压失败：%1$s</string>
+    <string name="msg_batch_done">批量解压完成</string>
+    <string name="msg_selected_nav">已选择：%1$s，请导航到目标目录</string>
+    <string name="msg_selected_nav_multi">已选择 %1$d 项，请导航到目标目录</string>
+    <string name="msg_move_failed">移动失败</string>
+    <string name="msg_moved_to">已移动到：%1$s</string>
+    <string name="msg_move_result">移动完成：%1$d 成功，%2$d 失败</string>
+    <string name="confirm_delete_file_msg">确定删除 %1$s？\n此操作不可恢复！</string>
+    <string name="confirm_delete_batch_msg">确定删除 %1$d 项？不可恢复！</string>
+    <string name="msg_calc_dir_size_prompt">%1$s\n包含 %2$d 个项目\n\n递归计算文件夹大小需要逐文件统计，较大文件夹可能耗时 %3$d~%4$d 秒。是否继续？</string>
+    <string name="msg_read_all_fail">无法读取归档内容，可能已加密</string>
+    <string name="err_file_error">文件操作失败</string>
 </resources>

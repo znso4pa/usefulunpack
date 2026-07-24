@@ -85,6 +85,8 @@
     <string name="format_iso">ISO</string>
     <string name="format_ypf">YPF</string>
     <string name="format_zip">ZIP</string>
+    <string name="format_rar">📦 RAR</string>
+    <string name="format_lz4">🗜️ LZ4</string>
     <string name="format_7z">7z</string>
     <string name="msg_compress_title">📦 Compress</string>
     <string name="msg_compress_progress">Compressing</string>
@@ -136,4 +138,22 @@
     <string name="encoding_sjis">SHIFT-JIS (日本語)</string>
     <string name="encoding_gbk">GBK (中文)</string>
     <string name="msg_encoding_error">Encoding error, try a different encoding in settings</string>
+    <string name="err_not_archive">Not a supported archive format</string>
+    <string name="err_ext_mismatch">Extension .%1$s does not match format %2$s</string>
+    <string name="err_pwd_wrong">Wrong password, extraction failed</string>
+    <string name="err_cannot_read_maybe_pwd">Cannot read archive, try extracting with password</string>
+    <string name="err_preview_unsupported">Cannot preview .%1$s files</string>
+    <string name="err_file_open_failed">Cannot open file: %1$s</string>
+    <string name="err_extract_io">Extraction failed: %1$s</string>
+    <string name="msg_batch_done">Batch extraction complete</string>
+    <string name="msg_selected_nav">Selected: %1$s, navigate to target directory</string>
+    <string name="msg_selected_nav_multi">Selected %1$d items, navigate to target directory</string>
+    <string name="msg_move_failed">Move failed</string>
+    <string name="msg_moved_to">Moved to: %1$s</string>
+    <string name="msg_move_result">Move complete: %1$d success, %2$d failed</string>
+    <string name="confirm_delete_file_msg">Delete %1$s?\nThis cannot be undone!</string>
+    <string name="confirm_delete_batch_msg">Delete %1$d items? This cannot be undone!</string>
+    <string name="msg_calc_dir_size_prompt">%1$s\nContains %2$d items\n\nRecursively calculating folder size requires scanning each file. Large folders may take %3$d~%4$d seconds. Continue?</string>
+    <string name="msg_read_all_fail">Cannot read archive, it may be encrypted</string>
+    <string name="err_file_error">File operation failed</string>
 </resources>

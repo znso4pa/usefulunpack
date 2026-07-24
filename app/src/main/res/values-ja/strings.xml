@@ -78,6 +78,8 @@
     <string name="format_iso">💿 ISO</string>
     <string name="format_ypf">📦 YPF</string>
     <string name="format_zip">🗜️ ZIP</string>
+    <string name="format_rar">📦 RAR</string>
+    <string name="format_lz4">🗜️ LZ4</string>
     <string name="format_7z">📦 7z</string>
     <string name="msg_compress_title">📦 圧縮</string>
     <string name="msg_compress_progress">圧縮中</string>
@@ -124,4 +126,22 @@
     <string name="encoding_sjis">SHIFT-JIS (日本語)</string>
     <string name="encoding_gbk">GBK (中文)</string>
     <string name="msg_encoding_error">エンコードエラー、設定で変更してください, try a different encoding in settings</string>
+    <string name="err_not_archive">対応していないアーカイブ形式です</string>
+    <string name="err_ext_mismatch">拡張子 .%1$s が形式 %2$s と一致しません</string>
+    <string name="err_pwd_wrong">パスワードが間違っています、解凍失敗</string>
+    <string name="err_cannot_read_maybe_pwd">アーカイブを読み取れません、パスワードがあるかもしれません</string>
+    <string name="err_preview_unsupported">.％1$s ファイルのプレビューは非対応です</string>
+    <string name="err_file_open_failed">ファイルを開けません：%1$s</string>
+    <string name="err_extract_io">解凍失敗：%1$s</string>
+    <string name="msg_batch_done">一括解凍完了</string>
+    <string name="msg_selected_nav">選択済み：%1$s、移動先へナビゲートしてください</string>
+    <string name="msg_selected_nav_multi">%1$d 件選択済み、移動先へナビゲートしてください</string>
+    <string name="msg_move_failed">移動失敗</string>
+    <string name="msg_moved_to">移動先：%1$s</string>
+    <string name="msg_move_result">移動完了：%1$d 成功、%2$d 失敗</string>
+    <string name="confirm_delete_file_msg">%1$s を削除しますか？\nこの操作は元に戻せません！</string>
+    <string name="confirm_delete_batch_msg">%1$d 件を削除しますか？元に戻せません！</string>
+    <string name="msg_calc_dir_size_prompt">%1$s\n%2$d 個のアイテムを含む\n\nフォルダサイズの計算にはファイルごとの統計が必要です。大きなフォルダでは %3$d~%4$d 秒かかる場合があります。続行しますか？</string>
+    <string name="msg_read_all_fail">アーカイブを読み取れません、暗号化されている可能性があります</string>
+    <string name="err_file_error">ファイル操作に失敗しました</string>
 </resources>

@@ -147,7 +147,14 @@ fn ypf_extract_one(f: &mut File, e: &YpfEntry, out: &str, fsize: u64) -> Result<
     Ok(())
 }
 
-// --- API functions ---
+fn guard_panic<T, F: FnOnce() -> Result<T, String>>(f: F) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let msg = panic.downcast_ref::<&str>().copied()
+            .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+            .unwrap_or("unknown panic");
+        Err(format!("panic: {msg}"))
+    })
+}
 
 fn list_ypf(input: &str) -> Result<String, String> {
     let (ents, _, _) = open_ypf(input)?;
@@ -167,8 +174,7 @@ fn extract_ypf_all(i: &str, o: &str) -> Result<u32, String> {
     let (ents, mut f, fsize) = open_ypf(i)?;
     let mut fail = 0u32;
     for e in &ents {
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ypf_extract_one(&mut f, e, o, fsize)));
-        match r { Ok(Err(_)) | Err(_) => { fail += 1; } _ => {} }
+        if guard_panic(|| ypf_extract_one(&mut f, e, o, fsize)).is_err() { fail += 1; }
     }
     Ok(fail)
 }

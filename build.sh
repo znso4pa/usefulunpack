@@ -29,6 +29,8 @@ CRATES=(
     "archive_ypf-core:ypf_core"
     "archive_zip_core:zip_core"
     "archive_sevenz_core:sevenz_core"
+    "archive_rar_core:rar_core"
+    "archive_lz4_core:lz4_core"
 )
 TARGETS=("aarch64-linux-android" "armv7-linux-androideabi" "x86_64-linux-android")
 

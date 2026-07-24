@@ -161,7 +161,12 @@ fn compress_zip_inner(input: &str, output: &str, level: i32, password: &str) -> 
     *ZIP_ENCODING.lock().unwrap() = s(&mut e, &enc);
 }
 fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err(format!("panic")) )
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let msg = panic.downcast_ref::<&str>().copied()
+            .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+            .unwrap_or("unknown panic");
+        Err(format!("panic: {msg}"))
+    })
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipNeedsPassword(mut e: JNIEnv, _: JClass, i: JString) -> jboolean {
@@ -174,9 +179,9 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
                 }
                 JNI_FALSE
             }
-            Err(_) => JNI_FALSE
+            Err(er) => { let _ = e.throw_new("java/io/IOException", format!("ZIP: {er}")); JNI_FALSE }
         },
-        Err(_) => JNI_FALSE
+        Err(er) => { let _ = e.throw_new("java/io/IOException", format!("ZIP: {er}")); JNI_FALSE }
     }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractWithPassword(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, pw: JString) -> jboolean {

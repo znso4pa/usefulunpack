@@ -97,7 +97,7 @@ class MainActivity : AppCompatActivity() {
                 val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
                 intent.data = android.net.Uri.parse("package:$packageName")
                 startActivity(intent)
-                toast("请授予「所有文件访问」权限后重新打开")
+                                toast("请授予「所有文件访问」权限后重新打开")
                 finish()
                 return
             }
@@ -231,13 +231,13 @@ class MainActivity : AppCompatActivity() {
                     when (w) {
                         0 -> { (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
                             .setPrimaryClip(android.content.ClipData.newPlainText("p", f.path)); toast(getString(R.string.msg_copied)) }
-                        1 -> { fileToMove = f; updatePasteButton(); toast("已选择: ${f.name}，请导航到目标目录") }
+                        1 -> { fileToMove = f; updatePasteButton(); toast(getString(R.string.msg_selected_nav, f.name)) }
                         2 -> { showRenameDialog(f) }
                         3 -> {
                             val type = if (f.isDirectory) getString(R.string.folder) else getString(R.string.files)
                             AlertDialog.Builder(this@MainActivity)
                                 .setTitle(getString(R.string.title_delete))
-                                .setMessage("确定删除 ${f.name}？\n此操作不可恢复！")
+                                                                .setMessage(getString(R.string.confirm_delete_file_msg, f.name))
                                 .setPositiveButton(getString(R.string.action_delete)) { _, _ ->
                                     if (f.isDirectory) f.deleteRecursively() else f.delete()
                                     toast(getString(R.string.msg_deleted)); nav(currentDir)
@@ -251,11 +251,14 @@ class MainActivity : AppCompatActivity() {
                                 val eta = fileCount / 200
                                 AlertDialog.Builder(this)
                                     .setTitle(getString(R.string.action_file_info))
-                                    .setMessage("${f.name}\n包含 $fileCount 个项目\n\n递归计算文件夹大小需要逐文件统计，较大文件夹可能耗时 ${eta}~${eta+3} 秒。是否继续？")
+                                                                        .setMessage(getString(R.string.msg_calc_dir_size_prompt, f.name, fileCount.toString(), eta.toString(), (eta + 3).toString()))
                                     .setPositiveButton("计算") { _, _ -> calcDirSize(f) }
                                     .setNegativeButton(getString(R.string.action_cancel), null).show()
                             } else {
-                                toast("${f.name}\n${fmt(fileSize(f))}\n${df.format(Date(f.lastModified()))}")
+                                AlertDialog.Builder(this@MainActivity)
+                                    .setTitle(getString(R.string.action_file_info))
+                                    .setMessage("${f.name}\n${fmt(fileSize(f))}\n${df.format(Date(f.lastModified()))}")
+                                    .setPositiveButton(getString(R.string.action_confirm), null).show()
                             }
                         }
                     }
@@ -313,13 +316,13 @@ class MainActivity : AppCompatActivity() {
                             if (dst.exists()) { fail++; continue }
                             if (src.renameTo(dst)) ok++ else fail++
                         }
-                        toast("移动完成: $ok 成功, $fail 失败"); fileToMove = null; MultiFiles = listOf(); updatePasteButton(); nav(currentDir)
+                                                toast(getString(R.string.msg_move_result, ok.toString(), fail.toString())); fileToMove = null; MultiFiles = listOf(); updatePasteButton(); nav(currentDir)
                     } else {
                         val src = fileToMove ?: return@setOnClickListener
                         val dst = File(currentDir, src.name)
                         if (dst.exists()) { toast(getString(R.string.msg_target_exists)); return@setOnClickListener }
-                        if (src.renameTo(dst)) { toast("已移动到: ${dst.path}"); fileToMove = null; MultiFiles = listOf(); updatePasteButton(); nav(currentDir) }
-                        else toast("移动失败")
+                        if (src.renameTo(dst)) { toast(getString(R.string.msg_moved_to, dst.path)); fileToMove = null; MultiFiles = listOf(); updatePasteButton(); nav(currentDir) }
+                        else toast(getString(R.string.msg_move_failed))
                     }
                 } else {
                     val popup = PopupMenu(this@MainActivity, v)
@@ -370,6 +373,11 @@ class MainActivity : AppCompatActivity() {
         val isCompress = prefs.getInt("work_mode", 0) == 1
         tv.text = "已选 ${multiSelected.size} 项"
         bar.visibility = if (multiSelectMode) View.VISIBLE else View.GONE
+        if (multiSelectMode) {
+            bar.post { listFiles.setPadding(listFiles.paddingLeft, listFiles.paddingTop, listFiles.paddingRight, bar.height) }
+        } else {
+            listFiles.setPadding(listFiles.paddingLeft, listFiles.paddingTop, listFiles.paddingRight, 0)
+        }
         if (bottomBar != null) bottomBar.visibility = if (multiSelectMode) View.GONE else bottomBar.visibility
         // Sync adapter selection state and force full redraw
         (listFiles.adapter as? FileAdapter)?.multiSelected_ = if (multiSelectMode) multiSelected else emptySet()
@@ -385,7 +393,7 @@ class MainActivity : AppCompatActivity() {
     private fun refreshMultiSelectUI() { syncMultiBar() }
     private fun confirmBatchDelete() {
         val sel = multiSelected.toList(); if (sel.isEmpty()) return
-        AlertDialog.Builder(this).setTitle(getString(R.string.title_batch_delete)).setMessage("确定删除 ${sel.size} 项？不可恢复！")
+                AlertDialog.Builder(this).setTitle(getString(R.string.title_batch_delete)).setMessage(getString(R.string.confirm_delete_batch_msg, sel.size.toString()))
             .setPositiveButton(getString(R.string.action_delete)) { _, _ -> for (f in sel) { if (f.isDirectory) f.deleteRecursively() else f.delete() }; toast(getString(R.string.msg_deleted)); exitMultiSelect(); nav(currentDir) }
             .setNegativeButton(getString(R.string.action_cancel), null).show()
     }
@@ -395,7 +403,7 @@ class MainActivity : AppCompatActivity() {
         MultiFiles = sel
         fileToMove = sel[0]; multiSelected.clear()
         updatePasteButton(); exitMultiSelect()
-        toast("已选择 ${sel.size} 项，请导航到目标目录")
+                toast(getString(R.string.msg_selected_nav_multi, sel.size))
     }
     private fun startBatchCompress() {
         val sel = multiSelected.toList(); if (sel.isEmpty()) return
@@ -430,8 +438,8 @@ class MainActivity : AppCompatActivity() {
         val archives = batchArchives(); if (archives.isEmpty()) { toast(getString(R.string.no_archives)); return }
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.title_select_format))
-            .setItems(arrayOf(getString(R.string.format_xp3), getString(R.string.format_pfs), getString(R.string.format_nsa), getString(R.string.format_iso), getString(R.string.format_ypf), getString(R.string.format_zip), getString(R.string.format_7z))) { _, which ->
-                val fmt = arrayOf("xp3", "pfs", "nsa", "iso", "ypf", "zip", "7z")[which]
+            .setItems(arrayOf(getString(R.string.format_xp3), getString(R.string.format_pfs), getString(R.string.format_nsa), getString(R.string.format_iso), getString(R.string.format_ypf), getString(R.string.format_zip), getString(R.string.format_7z), getString(R.string.format_rar), getString(R.string.format_lz4))) { _, which ->
+                val fmt = arrayOf("xp3", "pfs", "nsa", "iso", "ypf", "zip", "7z", "rar", "lz4")[which]
                 AlertDialog.Builder(this@MainActivity)
                     .setTitle("${archives.size} 个归档 — ${fmt.uppercase()}")
                     .setItems(arrayOf(getString(R.string.action_preview), getString(R.string.action_extract))) { _, w ->
@@ -457,7 +465,7 @@ class MainActivity : AppCompatActivity() {
                         ok = extractByFormat(fmt, archives[i].path, out.path, "")
                         if (!ok) break
                     }
-                    runOnUiThread { pd.dismiss(); if (ok) toast("批量解压完成") else toast(getString(R.string.title_extract_failed)); exitMultiSelect(); nav(currentDir) }
+                                        runOnUiThread { pd.dismiss(); if (ok) toast(getString(R.string.msg_batch_done)) else toast(getString(R.string.title_extract_failed)); exitMultiSelect(); nav(currentDir) }
                 }
             }.setNegativeButton(getString(R.string.action_cancel), null).show()
     }
@@ -466,7 +474,7 @@ class MainActivity : AppCompatActivity() {
         thread {
             val all: MutableList<Pair<File, List<ArchiveEntry>>> = mutableListOf()
             for (src in archives) {
-                val json = try { when(fmt) { "xp3"->Xp3Core.xp3ListEntries(src.path); "pfs"->PfsCore.pfsListEntries(src.path); "nsa"->NsaCore.nsaListEntries(src.path); "iso"->IsoCore.isoListEntries(src.path); "ypf"->YpfCore.ypfListEntries(src.path); "zip"->ZipCore.zipListEntries(src.path); "7z"->SevenZCore.szListEntries(src.path); else->null } } catch(_:Exception){null}
+                val json = try { when(fmt) { "xp3"->Xp3Core.xp3ListEntries(src.path); "pfs"->PfsCore.pfsListEntries(src.path); "nsa"->NsaCore.nsaListEntries(src.path); "iso"->IsoCore.isoListEntries(src.path); "ypf"->YpfCore.ypfListEntries(src.path); "zip"->ZipCore.zipListEntries(src.path); "7z"->SevenZCore.szListEntries(src.path); "rar"->RarCore.rarListEntries(src.path); "lz4"->Lz4Core.lz4ListEntries(src.path); else->null } } catch(_:Exception){null}
                 if (json != null) all.add(src to parseEntries(json))
             }
             runOnUiThread { pd.dismiss(); if (all.isEmpty()) toast(getString(R.string.msg_cannot_read)); else showBatchPreviewDialog(all, fmt) }
@@ -568,7 +576,7 @@ class MainActivity : AppCompatActivity() {
                     for ((src, paths) in byArchive) {
                         if (!extractByFormat(fmt, src.path, uniqueFile(src.parentFile!!, src.nameWithoutExtension).path, paths.joinToString("\n"))) { ok2 = false; break }
                     }
-                    runOnUiThread { pd2.dismiss(); if (ok2) toast("批量解压完成") else toast(getString(R.string.title_extract_failed)); exitMultiSelect(); nav(currentDir) }
+                                        runOnUiThread { pd2.dismiss(); if (ok2) toast(getString(R.string.msg_batch_done)) else toast(getString(R.string.title_extract_failed)); exitMultiSelect(); nav(currentDir) }
                 }
             }
             .setNegativeButton(getString(R.string.action_cancel), null).create()
@@ -683,7 +691,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private val ARCHIVE_EXTS = setOf("xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso", "ypf", "zip", "7z")
+    private val ARCHIVE_EXTS = setOf("xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso", "ypf", "zip", "7z", "rar", "lz4")
     private val TEXT_SEARCH_EXTS = setOf(
         "txt", "json", "ini", "ks", "lua", "py", "js", "html", "css", "xml", "cfg", "log",
         "rtf", "md", "yaml", "yml", "toml", "conf", "properties", "sh", "java", "kt", "rs",
@@ -694,19 +702,18 @@ class MainActivity : AppCompatActivity() {
     private fun extract() {
         val src = selectedFile ?: return
         val ext = src.name.lowercase().substringAfterLast('.')
-        // Block files that are clearly not archives (e.g. .jpg) to prevent JNI crash
         if (ext !in ARCHIVE_EXTS && src.isDirectory.not()) {
             AlertDialog.Builder(this)
                 .setTitle(getString(R.string.title_extract_failed))
-                .setMessage(".${ext} 不是压缩包格式\n请选择 .xp3 / .pfs / .nsa / .sar 文件")
+                                .setMessage(getString(R.string.err_not_archive))
                 .setPositiveButton(getString(R.string.action_confirm), null)
                 .show()
             return
         }
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.title_select_format))
-            .setItems(arrayOf(getString(R.string.format_xp3), getString(R.string.format_pfs), getString(R.string.format_nsa), getString(R.string.format_iso), getString(R.string.format_ypf), getString(R.string.format_zip), getString(R.string.format_7z))) { _, which ->
-                val format = arrayOf("xp3", "pfs", "nsa", "iso", "ypf", "zip", "7z")[which]
+            .setItems(arrayOf(getString(R.string.format_xp3), getString(R.string.format_pfs), getString(R.string.format_nsa), getString(R.string.format_iso), getString(R.string.format_ypf), getString(R.string.format_zip), getString(R.string.format_7z), getString(R.string.format_rar), getString(R.string.format_lz4))) { _, which ->
+                val format = arrayOf("xp3", "pfs", "nsa", "iso", "ypf", "zip", "7z", "rar", "lz4")[which]
                 showExtractOptions(src, format)
             }.setNegativeButton(getString(R.string.action_cancel), null).show()
     }
@@ -760,6 +767,7 @@ class MainActivity : AppCompatActivity() {
             when (format) {
                 "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); if (pwd.isEmpty()) ZipCore.zipExtract("", src.path, destFile.path) else ZipCore.zipExtractWithPassword("", src.path, destFile.path, pwd) }
                 "7z" -> if (pwd.isEmpty()) SevenZCore.szExtract("", src.path, destFile.path) else SevenZCore.szExtractWithPassword("", src.path, destFile.path, pwd)
+                "rar" -> if (pwd.isEmpty()) RarCore.rarExtract("", src.path, destFile.path) else RarCore.rarExtractWithPassword("", src.path, destFile.path, pwd)
                 else -> extractByFormat(format, src.path, destFile.path, "")
             }
         }.getOrDefault(false)
@@ -768,7 +776,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 pd.dismiss()
                 if (ok) { toast(getString(R.string.msg_extract_complete) + " ${destFile.name}"); nav(currentDir) }
-                else if (format in setOf("zip", "7z")) {
+                else if (format in setOf("zip", "7z", "rar")) {
                     // Show password dialog
                     val inp = EditText(this@MainActivity).apply {
                         hint = getString(R.string.prompt_password)
@@ -794,7 +802,7 @@ class MainActivity : AppCompatActivity() {
                                 runOnUiThread {
                                     pd2.dismiss()
                                     if (ok2) { toast(getString(R.string.msg_extract_complete) + " ${destFile.name}"); nav(currentDir) }
-                                    else toast("解压失败，密码可能错误")
+                                                                        else toast(getString(R.string.err_pwd_wrong))
                                 }
                             }
                         }
@@ -820,6 +828,9 @@ class MainActivity : AppCompatActivity() {
                      else SevenZCore.szExtractSelected("", src, out, selected)
             "nsa" -> if (selected.isEmpty()) NsaCore.nsaExtract("", src, out)
                      else NsaCore.nsaExtractSelected("", src, out, selected)
+            "rar" -> if (selected.isEmpty()) RarCore.rarExtract("", src, out)
+                     else RarCore.rarExtractSelected("", src, out, selected)
+            "lz4" -> Lz4Core.lz4Extract("", src, out)
             else -> false
         }
     }
@@ -835,7 +846,7 @@ class MainActivity : AppCompatActivity() {
             "7z" -> setOf("7z")
             else -> setOf(format)
         }
-        return if (ext !in exts) "后缀 .$ext 与格式 ${format.uppercase()} 不匹配"
+                return if (ext !in exts) getString(R.string.err_ext_mismatch, ".$ext", format.uppercase())
                else getString(R.string.title_extract_failed)
     }
 
@@ -871,11 +882,13 @@ class MainActivity : AppCompatActivity() {
                 "ypf" -> YpfCore.ypfListEntries(src.absolutePath)
                 "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); ZipCore.zipListEntries(src.absolutePath) }
                 "7z" -> SevenZCore.szListEntries(src.absolutePath)
+                "rar" -> RarCore.rarListEntries(src.absolutePath)
+                "lz4" -> Lz4Core.lz4ListEntries(src.absolutePath)
                 else -> null
             } } catch (_: Exception) { null }
             runOnUiThread { pd.dismiss() }
             if (json == null || json == "[]") {
-                val msg = if (format in setOf("zip", "7z")) "无法读取归档内容，如果包含密码请直接解压" else getString(R.string.msg_cannot_read)
+                                val msg = if (format in setOf("zip", "7z", "rar")) getString(R.string.err_cannot_read_maybe_pwd) else getString(R.string.msg_cannot_read)
                 runOnUiThread { toast(msg) }
                 return@thread
             }
@@ -1022,11 +1035,11 @@ class MainActivity : AppCompatActivity() {
             show()
         }
         if (format in setOf("zip", "7z") && selStr.isNotEmpty()) {
-            // For selective extraction of zip/7z, use JNI selected extraction directly
             thread {
                 val ok = when (format) {
                     "zip" -> ZipCore.zipExtractSelected("", src.path, out.path, selStr)
-                    else -> SevenZCore.szExtractSelected("", src.path, out.path, selStr)
+                    "7z" -> SevenZCore.szExtractSelected("", src.path, out.path, selStr)
+                    else -> false
                 }
                 runOnUiThread {
                     pd.dismiss()
@@ -1056,8 +1069,12 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton(getString(R.string.retry)) { _, _ ->
                 val pwd = inp.text.toString()
                 thread {
-                    val ok = if (fmt == "zip") ZipCore.zipExtractWithPassword("", src, out, pwd)
-                              else SevenZCore.szExtractWithPassword("", src, out, pwd)
+                    val ok = when (fmt) {
+                        "zip" -> ZipCore.zipExtractWithPassword("", src, out, pwd)
+                        "7z" -> SevenZCore.szExtractWithPassword("", src, out, pwd)
+                        "rar" -> RarCore.rarExtractWithPassword("", src, out, pwd)
+                        else -> false
+                    }
                     runOnUiThread { onResult(ok) }
                 }
             }
@@ -1069,17 +1086,18 @@ class MainActivity : AppCompatActivity() {
         fun doExtract(pwd: String = "") = when (fmt) {
             "zip" -> if (pwd.isEmpty()) ZipCore.zipExtract("", src, out) else ZipCore.zipExtractWithPassword("", src, out, pwd)
             "7z" -> if (pwd.isEmpty()) SevenZCore.szExtract("", src, out) else SevenZCore.szExtractWithPassword("", src, out, pwd)
+            "rar" -> if (pwd.isEmpty()) RarCore.rarExtract("", src, out) else RarCore.rarExtractWithPassword("", src, out, pwd)
             else -> extractByFormat(fmt, src, out, sel)
         }
         thread {
-            val ok = if (fmt in setOf("zip", "7z") && sel.isNotEmpty()) {
-                // For selected extraction, pass sel as selected parameter
+            val ok = if (fmt in setOf("zip", "7z", "rar") && sel.isNotEmpty()) {
                 if (fmt == "zip") ZipCore.zipExtractSelected("", src, out, sel)
-                else SevenZCore.szExtractSelected("", src, out, sel)
+                else if (fmt == "7z") SevenZCore.szExtractSelected("", src, out, sel)
+                else RarCore.rarExtractSelected("", src, out, sel)
             } else doExtract()
             runOnUiThread {
                 if (ok) { onResult(true) }
-                else if (fmt in setOf("zip", "7z")) {
+                else if (fmt in setOf("zip", "7z", "rar")) {
                     val inp = EditText(this@MainActivity).apply {
                         hint = getString(R.string.prompt_password)
                         setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
@@ -1092,8 +1110,13 @@ class MainActivity : AppCompatActivity() {
                         .setPositiveButton(getString(R.string.retry)) { _, _ ->
                             val pwd = inp.text.toString()
                             thread {
-                                val ok2 = if (fmt == "zip") ZipCore.zipExtractWithPassword("", src, out, pwd)
-                                          else SevenZCore.szExtractWithPassword("", src, out, pwd)
+                                val ok2 = when (fmt) {
+                                    "zip" -> ZipCore.zipExtractWithPassword("", src, out, pwd)
+                                    "7z" -> SevenZCore.szExtractWithPassword("", src, out, pwd)
+                                    "rar" -> if (sel.isNotEmpty()) RarCore.rarExtractSelectedWithPassword("", src, out, sel, pwd)
+                                             else RarCore.rarExtractWithPassword("", src, out, pwd)
+                                    else -> false
+                                }
                                 runOnUiThread { onResult(ok2) }
                             }
                         }
@@ -1108,7 +1131,7 @@ class MainActivity : AppCompatActivity() {
         val ext = entry.path.substringAfterLast('.').lowercase()
         val TEXT_EXTS = setOf("txt", "json", "ini", "ks", "lua", "py", "js", "html", "css", "xml", "cfg", "log")
         if (ext !in setOf("jpg", "jpeg", "png", "mp3", "ogg", "mp4") && ext !in TEXT_EXTS) {
-            toast("不支持预览 .$ext 文件")
+                        toast(getString(R.string.err_preview_unsupported, ".$ext"))
             return
         }
 
@@ -1124,9 +1147,14 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        if (format in setOf("zip", "7z")) {
+        if (format in setOf("zip", "7z", "rar")) {
             // Detect if archive needs password first
-            val needsPw = if (format == "zip") ZipCore.zipNeedsPassword(archive.path) else SevenZCore.szNeedsPassword(archive.path)
+            val needsPw = when (format) {
+                "zip" -> ZipCore.zipNeedsPassword(archive.path)
+                "7z" -> SevenZCore.szNeedsPassword(archive.path)
+                "rar" -> RarCore.rarNeedsPassword(archive.path)
+                else -> false
+            }
             if (needsPw) {
                 showPasswordDialog(format, archive.path, cacheDir.path) { ok2 ->
                     if (ok2) openPreview() else toast(getString(R.string.title_extract_failed))

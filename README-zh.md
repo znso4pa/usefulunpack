@@ -4,7 +4,7 @@
 
 轻量级 Android 文件管理器 & **视觉小说游戏资源解包工具**
 
-支持 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）和 **ZIP**、**7z** 和 **ISO 9660** 光盘镜像，Rust 原生核心。
+支持 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）和 **ZIP**、**7z**、**RAR**、**LZ4** 和 **ISO 9660** 光盘镜像，Rust 原生核心。
 
 ---
 
@@ -14,10 +14,12 @@
 |------|------|
 | ✂️ **XP3** | 解压吉里吉里 `.xp3` 封包 |
 | 📦 **PFS** | 解压 Artemis `.pfs` / `.pf6` / `.pf8` 封包 |
-| 📜 **NSA/SAR** | 解压 NScripter `.nsa` / `.sar` 封包（含 zlib 压缩） |
+| 📜 **NSA/SAR** | 解压 NScripter `.nsa` / `.sar` 封包（LZSS + SPB） |
 | 📦 **YPF** | 解压 YU-RIS `.ypf` 封包，三层自适应边界检测 |
 | 🗜️ **ZIP** | 浏览和提取标准 ZIP 压缩包，支持压缩、加密 |
 | 📦 **7z** | 浏览和提取 7-Zip 压缩包，支持压缩、加密 |
+| 🗜️ **RAR** | 解压 RAR 封包（RAR4/5），支持密码 |
+| ⚡ **LZ4** | 解压 LZ4 帧压缩文件 |
 | 💿 **ISO 9660** | 浏览和提取 ISO 光盘镜像 |
 | 🔍 **归档预览** | 树形预览归档内容，可折叠/展开，复选框选择性解压 |
 | 📊 **预览统计** | 实时文件总数/总大小 + 已选统计 |
@@ -96,16 +98,14 @@ XOR 密钥（0xFF / 0xC9）按文件首条目自动判断。
 | 格式 | 来源 / 参考 | 协议 |
 |------|-----------|------|
 | **XP3** | [xp3 crate](https://crates.io/crates/xp3) | MIT / Apache-2.0 |
-| **PFS / PF8** | [pf8 crate](https://crates.io/crates/pf8) | 见 crates.io |
-| **NSA / SAR** | [NSA 格式规范](https://orin.page/w/index.php?title=NSA) | 公开规范 |
-| … NSA zlib | [flate2 crate](https://crates.io/crates/flate2) | MIT / Apache-2.0 |
-| **YPF** | [python-YU-RIS-unpacker](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker) (Kaitai) | 公开规范 |
-| … YPF SwapTable | [GARbro](https://github.com/morkt/GARbro) (ArcYPF.cs) | MIT |
-| … YPF 文件名 | XOR + Shift-JIS / [encoding_rs](https://crates.io/crates/encoding_rs) | 见 crates.io |
-| … YPF zlib | [flate2 crate](https://crates.io/crates/flate2) | MIT / Apache-2.0 |
+| **PFS / PF6 / PF8** | [pf8 crate](https://crates.io/crates/pf8) | 见 crates.io |
+| **NSA / SAR** | [NSA 格式规范](https://orin.page/w/index.php?title=NSA), LZSS/SPB via [GARbro](https://github.com/morkt/GARbro) / [ONScripter](https://github.com/nscripter/nscripter) | 公开规范 / MIT / GPL |
+| **YPF** | [YU-RIS 解包工具](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker) (Kaitai), [GARbro](https://github.com/morkt/GARbro) SwapTable, XOR + Shift-JIS, zlib | 公开规范 / MIT |
+| **ISO 9660** | [isomage crate](https://crates.io/crates/isomage) | MIT |
 | **ZIP** | [zip crate](https://crates.io/crates/zip) | MIT |
 | **7z** | [sevenz-rust crate](https://crates.io/crates/sevenz-rust) | MIT / Apache-2.0 |
-| **ISO 9660** | [isomage crate](https://crates.io/crates/isomage) | MIT |
+| **RAR** | [rars crate](https://crates.io/crates/rars) | MIT / Apache-2.0 |
+| **LZ4** | [lz4_flex crate](https://crates.io/crates/lz4_flex) | MIT |
 
 ## 许可证
 

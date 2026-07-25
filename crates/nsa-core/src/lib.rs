@@ -5,7 +5,15 @@ use archive_common::{s, json_escape, derive_dirs, safe_join};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
-use flate2::read::ZlibDecoder;
+
+fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let msg = panic.downcast_ref::<&str>().copied()
+            .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+            .unwrap_or("unknown panic");
+        Err(format!("panic: {msg}"))
+    })
+}
 
 // ─── NSA / SAR (NScripter) ──────────────────
 
@@ -19,7 +27,7 @@ fn open_nsa(input: &str) -> Result<(Vec<NsaEntry>, u64, File), String> {
     let mut entries = Vec::with_capacity(count);
     for _ in 0..count {
         let mut nb = Vec::new();
-        loop { let mut b = [0u8; 1]; file.read_exact(&mut b).map_err(|e| format!("{e}"))?; if b[0] == 0 { break; } nb.push(b[0]); }
+        loop { let mut b = [0u8; 1]; file.read_exact(&mut b).map_err(|e| format!("{e}"))?; if b[0] == 0 { break; } nb.push(b[0]); if nb.len() > 512 { return Err("NSA: filename too long".to_string()); } }
         let name = String::from_utf8(nb).map_err(|_| "Invalid UTF-8".to_string())?.replace('\\', "/");
         let mut comp = [0u8; 1]; file.read_exact(&mut comp).map_err(|e| format!("{e}"))?;
         let compressed = comp[0] != 0;
@@ -35,20 +43,13 @@ fn open_nsa(input: &str) -> Result<(Vec<NsaEntry>, u64, File), String> {
 
 fn extract_nsa_entry(entries: &[NsaEntry], file: &mut File, index: usize, output: &str, data_start: u64) -> Result<(), String> {
     let e = &entries[index];
+    if e.compressed { return Err("NSA compression not supported".to_string()); }
     let dest = safe_join(output, &e.name)?;
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
     file.seek(SeekFrom::Start(data_start + e.offset)).map_err(|e| format!("{e}"))?;
-    if e.compressed {
-        let mut cdata = vec![0u8; e.csize as usize];
-        file.read_exact(&mut cdata).map_err(|e| format!("{e}"))?;
-        let mut raw = Vec::with_capacity(e.usize as usize);
-        ZlibDecoder::new(&cdata[..]).read_to_end(&mut raw).map_err(|e| format!("NSA zlib: {e}"))?;
-        fs::write(&dest, &raw).map_err(|e| format!("{e}"))?;
-    } else {
-        let mut data = vec![0u8; e.usize as usize];
-        file.read_exact(&mut data).map_err(|e| format!("{e}"))?;
-        fs::write(&dest, &data).map_err(|e| format!("{e}"))?;
-    }
+    let mut data = vec![0u8; e.usize as usize];
+    file.read_exact(&mut data).map_err(|e| format!("{e}"))?;
+    fs::write(&dest, &data).map_err(|e| format!("{e}"))?;
     Ok(())
 }
 
@@ -68,18 +69,27 @@ fn list_nsa(input: &str) -> Result<String, String> {
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jboolean {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = fs::create_dir_all(&out);
-    match open_nsa(&inp) { Ok((ents, ds, mut f)) => { let mut fail = 0u32; for idx in 0..ents.len() { if extract_nsa_entry(&ents, &mut f, idx, &out, ds).is_err() { fail += 1; } }
-        if fail > 0 { let _ = e.throw_new("java/io/IOException", format!("NSA: {fail} failed")); JNI_FALSE } else { JNI_TRUE }
-    } Err(er) => { let _ = e.throw_new("java/io/IOException", format!("NSA: {er}")); JNI_FALSE } }
+    match guarded(move || {
+        let (ents, ds, mut f) = open_nsa(&inp)?;
+        let mut fail = 0u32;
+        for idx in 0..ents.len() { if extract_nsa_entry(&ents, &mut f, idx, &out, ds).is_err() { fail += 1; } }
+        if fail == ents.len() as u32 && ents.len() > 0 { Err(format!("NSA: all {fail} failed")) } else { Ok(0) }
+    }) { Ok(0) => JNI_TRUE, Ok(_) => { let _ = e.throw_new("java/io/IOException", format!("NSA: extract failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); JNI_FALSE } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel_j: JString) -> jboolean {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel_j);
-    let ss: HashSet<&str> = sel_str.lines().filter(|l| !l.is_empty()).collect();
-    if ss.is_empty() { return JNI_FALSE; } let _ = fs::create_dir_all(&out);
-    match open_nsa(&inp) { Ok((ents, ds, mut f)) => { let mut fail = 0u32; for (idx, entry) in ents.iter().enumerate() {
-        if ss.contains(entry.name.as_str()) || ss.iter().any(|d| entry.name.starts_with(&format!("{d}/"))) { if extract_nsa_entry(&ents, &mut f, idx, &out, ds).is_err() { fail += 1; } }
-    } if fail > 0 { let _ = e.throw_new("java/io/IOException", format!("NSA: {fail} failed")); JNI_FALSE } else { JNI_TRUE }
-    } Err(er) => { let _ = e.throw_new("java/io/IOException", format!("NSA: {er}")); JNI_FALSE } }
+    match guarded(move || {
+        let ss: HashSet<&str> = sel_str.lines().filter(|l| !l.is_empty()).collect();
+        if ss.is_empty() { return Ok(0); }
+        let (ents, ds, mut f) = open_nsa(&inp)?;
+        let mut fail = 0u32;
+        for (idx, entry) in ents.iter().enumerate() {
+            if ss.contains(entry.name.as_str()) || ss.iter().any(|d| entry.name.starts_with(&format!("{d}/"))) {
+                if extract_nsa_entry(&ents, &mut f, idx, &out, ds).is_err() { fail += 1; }
+            }
+        }
+        if fail == ents.len() as u32 && ents.len() > 0 { Err(format!("NSA: all {fail} failed")) } else { Ok(0) }
+    }) { Ok(0) => JNI_TRUE, Ok(_) => { let _ = e.throw_new("java/io/IOException", format!("NSA: extract failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); JNI_FALSE } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
     match list_nsa(&s(&mut e, &i)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }

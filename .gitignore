@@ -28,3 +28,6 @@ Thumbs.db
 *.tmp
 
 logcat.txt
+releases/
+issuesfile/
+java_pid77671.hprof

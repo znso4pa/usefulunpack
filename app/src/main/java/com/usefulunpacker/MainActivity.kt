@@ -234,13 +234,14 @@ class MainActivity : AppCompatActivity() {
                         1 -> { fileToMove = f; updatePasteButton(); toast(getString(R.string.msg_selected_nav, f.name)) }
                         2 -> { showRenameDialog(f) }
                         3 -> {
-                            val type = if (f.isDirectory) getString(R.string.folder) else getString(R.string.files)
                             AlertDialog.Builder(this@MainActivity)
                                 .setTitle(getString(R.string.title_delete))
                                                                 .setMessage(getString(R.string.confirm_delete_file_msg, f.name))
                                 .setPositiveButton(getString(R.string.action_delete)) { _, _ ->
-                                    if (f.isDirectory) f.deleteRecursively() else f.delete()
-                                    toast(getString(R.string.msg_deleted)); nav(currentDir)
+                                    thread {
+                                        if (f.isDirectory) f.deleteRecursively() else f.delete()
+                                        runOnUiThread { toast(getString(R.string.msg_deleted)); nav(currentDir) }
+                                    }
                                 }
                                 .setNegativeButton(getString(R.string.action_cancel), null).show()
                         }
@@ -251,7 +252,7 @@ class MainActivity : AppCompatActivity() {
                                 val eta = fileCount / 200
                                 AlertDialog.Builder(this)
                                     .setTitle(getString(R.string.action_file_info))
-                                                                        .setMessage(getString(R.string.msg_calc_dir_size_prompt, f.name, fileCount.toString(), eta.toString(), (eta + 3).toString()))
+                                                                        .setMessage(getString(R.string.msg_calc_dir_size_prompt, f.name, fileCount, eta, eta + 3))
                                     .setPositiveButton("计算") { _, _ -> calcDirSize(f) }
                                     .setNegativeButton(getString(R.string.action_cancel), null).show()
                             } else {
@@ -316,7 +317,7 @@ class MainActivity : AppCompatActivity() {
                             if (dst.exists()) { fail++; continue }
                             if (src.renameTo(dst)) ok++ else fail++
                         }
-                                                toast(getString(R.string.msg_move_result, ok.toString(), fail.toString())); fileToMove = null; MultiFiles = listOf(); updatePasteButton(); nav(currentDir)
+                                                toast(getString(R.string.msg_move_result, ok, fail)); fileToMove = null; MultiFiles = listOf(); updatePasteButton(); nav(currentDir)
                     } else {
                         val src = fileToMove ?: return@setOnClickListener
                         val dst = File(currentDir, src.name)
@@ -393,8 +394,13 @@ class MainActivity : AppCompatActivity() {
     private fun refreshMultiSelectUI() { syncMultiBar() }
     private fun confirmBatchDelete() {
         val sel = multiSelected.toList(); if (sel.isEmpty()) return
-                AlertDialog.Builder(this).setTitle(getString(R.string.title_batch_delete)).setMessage(getString(R.string.confirm_delete_batch_msg, sel.size.toString()))
-            .setPositiveButton(getString(R.string.action_delete)) { _, _ -> for (f in sel) { if (f.isDirectory) f.deleteRecursively() else f.delete() }; toast(getString(R.string.msg_deleted)); exitMultiSelect(); nav(currentDir) }
+                AlertDialog.Builder(this).setTitle(getString(R.string.title_batch_delete)).setMessage(getString(R.string.confirm_delete_batch_msg, sel.size))
+            .setPositiveButton(getString(R.string.action_delete)) { _, _ ->
+                thread {
+                    for (f in sel) { if (f.isDirectory) f.deleteRecursively() else f.delete() }
+                    runOnUiThread { toast(getString(R.string.msg_deleted)); exitMultiSelect(); nav(currentDir) }
+                }
+            }
             .setNegativeButton(getString(R.string.action_cancel), null).show()
     }
     private fun startBatchMove() {
@@ -616,34 +622,36 @@ class MainActivity : AppCompatActivity() {
         btnFolderNext.visibility = View.GONE
         currentDir = dir
         tvPath.text = dir.absolutePath
-        // Update mode indicator in title
         val isCompress = prefs.getInt("work_mode", 0) == 1
         findViewById<TextView>(R.id.tvTitle)?.text = "UsefulUnpack" + if (isCompress) "  [🗜️压缩]" else "  [📦归档]"
+        tvCount.text = "…"
+        tvEmpty.visibility = View.GONE
+        listFiles.adapter = FileAdapter(emptyList())
 
-        val raw = dir.listFiles()
-        val files: List<File> = when {
-            raw != null -> raw.sortedWith(
-                compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }
-            )
-            // listFiles() returned null — permission denied, e.g. /storage/emulated.
-            // Probe known hidden subdirectories so the user can still navigate.
-            else -> {
-                val probed = mutableListOf<File>()
-                for (name in arrayOf("0", "self", "primary")) {
-                    val child = File(dir, name)
-                    if (child.isDirectory) probed.add(child)
+        thread {
+            val raw = dir.listFiles()
+            val files: List<File> = when {
+                raw != null -> raw.sortedWith(
+                    compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }
+                )
+                else -> {
+                    val probed = mutableListOf<File>()
+                    for (name in arrayOf("0", "self", "primary")) {
+                        val child = File(dir, name)
+                        if (child.isDirectory) probed.add(child)
+                    }
+                    probed
                 }
-                probed
+            }
+            runOnUiThread {
+                tvCount.text = "${files.size} 项"
+                if (files.isEmpty()) {
+                    tvEmpty.text = if (raw == null) getString(R.string.no_permission) else getString(R.string.empty_folder)
+                    tvEmpty.visibility = View.VISIBLE
+                } else tvEmpty.visibility = View.GONE
+                listFiles.adapter = FileAdapter(files)
             }
         }
-
-        tvCount.text = "${files.size} 项"
-        if (files.isEmpty()) {
-            tvEmpty.text = if (raw == null) getString(R.string.no_permission) else getString(R.string.empty_folder)
-            tvEmpty.visibility = View.VISIBLE
-        } else tvEmpty.visibility = View.GONE
-
-        listFiles.adapter = FileAdapter(files)
     }
 
     private val PREVIEW_EXTS = setOf("jpg", "jpeg", "png", "mp3", "ogg", "mp4",

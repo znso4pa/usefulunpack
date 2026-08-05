@@ -2,6 +2,82 @@ use jni::JNIEnv;
 use jni::objects::JString;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
+
+/// Byte-based progress stores. Each cdylib statically links this crate, so the
+/// statics below are independent per format library.
+macro_rules! progress_store {
+    ($name:ident) => {
+        pub mod $name {
+            use super::*;
+
+            static BYTES: AtomicU64 = AtomicU64::new(0);
+            static TOTAL: AtomicU64 = AtomicU64::new(0);
+            static FNAME: Mutex<String> = Mutex::new(String::new());
+            static CANCEL: AtomicBool = AtomicBool::new(false);
+
+            pub fn reset(total_bytes: u64) {
+                BYTES.store(0, Ordering::SeqCst);
+                TOTAL.store(total_bytes, Ordering::SeqCst);
+                CANCEL.store(false, Ordering::SeqCst);
+                *FNAME.lock().unwrap() = String::new();
+            }
+
+            pub fn add_bytes(n: u64) { BYTES.fetch_add(n, Ordering::SeqCst); }
+
+            pub fn set_name(name: &str) { *FNAME.lock().unwrap() = name.to_string(); }
+
+            pub fn cancel() { CANCEL.store(true, Ordering::SeqCst); }
+            pub fn cancelled() -> bool { CANCEL.load(Ordering::SeqCst) }
+            pub fn bytes() -> u64 { BYTES.load(Ordering::SeqCst) }
+            pub fn total_bytes() -> u64 { TOTAL.load(Ordering::SeqCst) }
+            pub fn name() -> String { FNAME.lock().unwrap().clone() }
+        }
+    }
+}
+
+progress_store!(extract_progress);
+progress_store!(compress_progress);
+
+/// Wraps a `Write` and accumulates written bytes into a progress store.
+pub struct ProgressWriter<W> {
+    inner: W,
+    sink: fn(u64),
+}
+
+impl<W> ProgressWriter<W> {
+    pub fn extract(inner: W) -> Self { Self { inner, sink: extract_progress::add_bytes } }
+    pub fn compress(inner: W) -> Self { Self { inner, sink: compress_progress::add_bytes } }
+}
+
+impl<W: std::io::Write> std::io::Write for ProgressWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        (self.sink)(n as u64);
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> { self.inner.flush() }
+}
+
+/// Wraps a `Read` and accumulates read bytes into a progress store.
+pub struct ProgressReader<R> {
+    inner: R,
+    sink: fn(u64),
+}
+
+impl<R> ProgressReader<R> {
+    pub fn extract(inner: R) -> Self { Self { inner, sink: extract_progress::add_bytes } }
+    pub fn compress(inner: R) -> Self { Self { inner, sink: compress_progress::add_bytes } }
+}
+
+impl<R: std::io::Read> std::io::Read for ProgressReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        (self.sink)(n as u64);
+        Ok(n)
+    }
+}
 
 pub fn s(env: &mut JNIEnv, s: &JString) -> String {
     env.get_string(s).map(|v| v.into()).unwrap_or_default()
@@ -95,4 +171,8 @@ pub fn safe_join(output: &str, archive_path: &str) -> Result<PathBuf, String> {
     }
 
     Ok(dest)
+}
+
+pub fn extract_result_json(total: u32, success: u32, error: u32) -> String {
+    format!(r#"{{"total":{},"success":{},"error":{}}}"#, total, success, error)
 }

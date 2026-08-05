@@ -1,7 +1,8 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jstring, JNI_TRUE, JNI_FALSE};
-use archive_common::{s, json_escape, derive_dirs, safe_join};
+use jni::sys::{jstring, jlong};
+use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json};
+use archive_common::extract_progress;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -170,38 +171,55 @@ fn list_ypf(input: &str) -> Result<String, String> {
     Ok(format!("[{}]", items.join(",")))
 }
 
-fn extract_ypf_all(i: &str, o: &str) -> Result<u32, String> {
+fn extract_ypf_all(i: &str, o: &str) -> Result<(u32, u32), String> {
     let (ents, mut f, fsize) = open_ypf(i)?;
+    let total = ents.len() as u32;
+    extract_progress::reset(ents.iter().map(|e| e.usize as u64).sum());
     let mut fail = 0u32;
     for e in &ents {
+        if extract_progress::cancelled() { return Err("cancelled".to_string()); }
+        extract_progress::set_name(&e.name);
         if guard_panic(|| ypf_extract_one(&mut f, e, o, fsize)).is_err() { fail += 1; }
+        extract_progress::add_bytes(e.usize as u64);
     }
-    Ok(fail)
+    Ok((total, fail))
 }
 
-fn extract_ypf_selected(i: &str, o: &str, s: &str) -> Result<u32, String> {
+fn extract_ypf_selected(i: &str, o: &str, s: &str) -> Result<(u32, u32), String> {
     let ss: HashSet<&str> = s.lines().filter(|l| !l.is_empty()).collect();
-    if ss.is_empty() { return Ok(0); }
+    if ss.is_empty() { return Ok((0, 0)); }
     let (ents, mut f, fsize) = open_ypf(i)?;
-    let mut fail = 0u32;
+    extract_progress::reset(ents.iter().filter(|e| ss.contains(e.name.as_str()) || ss.iter().any(|d| e.name.starts_with(&format!("{d}/")))).map(|e| e.usize as u64).sum());
+    let mut fail = 0u32; let mut selected = 0u32;
     for e in &ents {
+        if extract_progress::cancelled() { return Err("cancelled".to_string()); }
         if ss.contains(e.name.as_str()) || ss.iter().any(|d| e.name.starts_with(&format!("{d}/"))) {
+            selected += 1;
+            extract_progress::set_name(&e.name);
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ypf_extract_one(&mut f, e, o, fsize)));
             match r { Ok(Err(_)) | Err(_) => { fail += 1; } _ => {} }
+            extract_progress::add_bytes(e.usize as u64);
         }
     }
-    Ok(fail)
+    Ok((selected, fail))
 }
+
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractProgressCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractProgressTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::total_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractProgressName(e: JNIEnv, _: JClass) -> jstring {
+    e.new_string(&extract_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractCancel(_: JNIEnv, _: JClass) { extract_progress::cancel(); }
 
 // --- JNI ---
 
-#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jboolean {
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
-    match extract_ypf_all(&inp, &out) { Ok(0) => JNI_TRUE, Ok(f) => { let _ = e.throw_new("java/io/IOException", format!("YPF: {f} failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("YPF: {er}")); JNI_FALSE } }
+    match extract_ypf_all(&inp, &out) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
-#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel_j: JString) -> jboolean {
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel_j: JString) -> jstring {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel_j);
-    match extract_ypf_selected(&inp, &out, &sel_str) { Ok(0) => JNI_TRUE, Ok(f) => { let _ = e.throw_new("java/io/IOException", format!("YPF: {f} failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("YPF: {er}")); JNI_FALSE } }
+    match extract_ypf_selected(&inp, &out, &sel_str) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
     match list_ypf(&s(&mut e, &i)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }

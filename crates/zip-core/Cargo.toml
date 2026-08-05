@@ -8,4 +8,4 @@ crate-type = ["cdylib"]
 archive_common = { path = "../common" }
 jni = "0.21"
 zip = "3"
-encoding_rs = { version = "0.8", default-features = false, features = [] }
+encoding_rs = { version = "0.8", default-features = false, features = ["alloc"] }

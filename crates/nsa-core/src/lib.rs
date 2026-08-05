@@ -1,7 +1,8 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jstring, JNI_TRUE, JNI_FALSE};
-use archive_common::{s, json_escape, derive_dirs, safe_join};
+use jni::sys::{jstring, jlong};
+use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json};
+use archive_common::extract_progress;
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -49,6 +50,7 @@ impl<'a> BitReader<'a> {
 }
 
 fn nsa_lzss_decompress(data: &[u8], usize: u32) -> Result<Vec<u8>, String> {
+    if usize > 2 * 1024 * 1024 * 1024 { return Err("lzss: declared size too large".into()); }
     let mut out = Vec::with_capacity(usize.min(512 * 1024 * 1024) as usize);
     let mut ring = vec![0u8; LZSS_N * 2];
     let mut r = LZSS_N - LZSS_F;
@@ -78,6 +80,11 @@ fn nsa_spb_decompress(data: &[u8], usize: u32) -> Result<Vec<u8>, String> {
     let width_pad = (4u32.wrapping_sub(width * 3) & 3) as usize;
     let stride = (width as usize) * 3 + width_pad;
     let total_size = stride * height as usize + 54;
+    // Guard against corrupt width/height blowing up the allocation (u16 pair can
+    // declare ~12.8GB); cap at 2GB to fail cleanly instead of aborting on OOM.
+    if total_size > 2 * 1024 * 1024 * 1024 || usize as u64 > 2 * 1024 * 1024 * 1024 {
+        return Err("spb: image too large".into());
+    }
     let data = &data[4..];
 
     let mut out = vec![0u8; total_size.max(usize as usize)];
@@ -199,30 +206,53 @@ fn list_nsa(input: &str) -> Result<String, String> {
     Ok(format!("[{}]", items.join(",")))
 }
 
-#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jboolean {
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = fs::create_dir_all(&out);
     match guarded(move || {
         let (ents, ds, mut f) = open_nsa(&inp)?;
-        let mut fail = 0u32;
-        for idx in 0..ents.len() { if extract_nsa_entry(&ents, &mut f, idx, &out, ds).is_err() { fail += 1; } }
-        if fail == ents.len() as u32 && ents.len() > 0 { Err(format!("NSA: all {fail} failed")) } else { Ok(0) }
-    }) { Ok(0) => JNI_TRUE, Ok(_) => { let _ = e.throw_new("java/io/IOException", format!("NSA: extract failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); JNI_FALSE } }
+        let total = ents.len() as u32; let mut fail = 0u32;
+        extract_progress::reset(ents.iter().map(|e| e.usize).sum());
+        for idx in 0..ents.len() {
+            if extract_progress::cancelled() { return Err("cancelled".to_string()); }
+            extract_progress::set_name(&ents[idx].name);
+            if extract_nsa_entry(&ents, &mut f, idx, &out, ds).is_err() { fail += 1; }
+            extract_progress::add_bytes(ents[idx].usize);
+        }
+        Ok((total, fail))
+    }) {
+        Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
+        Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() }
+    }
 }
-#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel_j: JString) -> jboolean {
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel_j: JString) -> jstring {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel_j);
     match guarded(move || {
         let ss: HashSet<&str> = sel_str.lines().filter(|l| !l.is_empty()).collect();
-        if ss.is_empty() { return Ok(0); }
+        if ss.is_empty() { return Ok((0, 0)); }
         let (ents, ds, mut f) = open_nsa(&inp)?;
-        let mut fail = 0u32;
+        extract_progress::reset(ents.iter().filter(|e| ss.contains(e.name.as_str()) || ss.iter().any(|d| e.name.starts_with(&format!("{d}/")))).map(|e| e.usize).sum());
+        let mut fail = 0u32; let mut selected = 0u32;
         for (idx, entry) in ents.iter().enumerate() {
+            if extract_progress::cancelled() { return Err("cancelled".to_string()); }
             if ss.contains(entry.name.as_str()) || ss.iter().any(|d| entry.name.starts_with(&format!("{d}/"))) {
+                selected += 1;
+                extract_progress::set_name(&entry.name);
                 if extract_nsa_entry(&ents, &mut f, idx, &out, ds).is_err() { fail += 1; }
+                extract_progress::add_bytes(entry.usize);
             }
         }
-        if fail == ents.len() as u32 && ents.len() > 0 { Err(format!("NSA: all {fail} failed")) } else { Ok(0) }
-    }) { Ok(0) => JNI_TRUE, Ok(_) => { let _ = e.throw_new("java/io/IOException", format!("NSA: extract failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); JNI_FALSE } }
+        Ok((selected, fail))
+    }) {
+        Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
+        Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() }
+    }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
     match list_nsa(&s(&mut e, &i)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
 }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtractProgressCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtractProgressTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::total_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtractProgressName(e: JNIEnv, _: JClass) -> jstring {
+    e.new_string(&extract_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtractCancel(_: JNIEnv, _: JClass) { extract_progress::cancel(); }

@@ -2,11 +2,110 @@
 
 ## 下版本计划
 
-- [ ] **分卷支持** — RAR/ZIP/7z 多分卷归档的识别与解压
+- [x] **解压进度** — 每个 format 加进度条（JNI 返回值已是 JSON，轮询机制复用压缩的 static atomic 模式，后改为**字节百分比**，见 v5.5.0）
+  - Rust: `archive_common::extract_progress` 静态量共享于 9 个 crate,每 crate 4 个 JNI getter (`*ExtractProgressCount/Total/Name/Cancel`)
+  - Kotlin: `PollingProgressDialog` 共享 helper(压缩/解压复用),接入 extractAll / extractSelected / batchDirectExtract / tryExtractWithPassword / showPasswordDialog
+  - 支持取消(9 格式),取消后清理空输出目录
+- [x] **分卷支持** — RAR 原生多分卷 + 7z `.7z.001/.002` 字节分卷
+  - Rust: `rar-core` 用 `extract_volumes_to` 原生解压多卷;`sevenz-core` 新增 `ConcatReader`(零拷贝 Read+Seek 拼接)+ 7z 魔数校验
+  - Kotlin: `resolveRarVolumes`(partN + rNN 命名)/ `resolveSevenZVolumes`(按基名分组,修同目录混放多组时拼错卷),`isVolumeFile` 识别,选中显示"共 N 卷"
+  - 完整对齐: 全量/预览/选择性/密码/进度/取消;ZIP 分卷因库不支持排除
 - [ ] **XP3 封包** — XP3 格式的打包/压缩功能
 - [ ] **PFS 封包** — PFS/PF6/PF8 格式的打包/压缩功能
 - [ ] **UI 重构** — 优化交互流程
 - [ ] 完善单元测试与 CI/CD
+
+---
+
+## 已知问题 / 待决策: RAR5 filtered 大成员
+
+**问题**: `rars` 对 RAR5 **filtered** 成员(如 `[YZ006]炎孕6.rar` 里的 `data.xp3`,实测 **786MB**)必须**整块缓冲**解码,超过库默认 **512MB** 上限即拒绝。
+- 官方 unrar / 7z 实测 `data.xp3 = 786,317,647 字节`(用户说的"6个多G"是整包解压总量 6.8GB)
+- 真机上表现为"解压到一半突然密码错误"——旧版 app 把密码重试后的**任何失败**都标成 `err_pwd_wrong`(误导,**已修**: `lastExtractError` + `friendlyExtractError()` 透传真实错误,含 `err_large_member` 提示)
+
+**待决策(三项选一)**:
+- [ ] **方案 B: 上限设 1GB** — `rar_opts()` 加 `with_rar50_buffered_decode_limit(1GB)`,让 786MB 能解。代价: 占 786MB 内存 + 解码极慢(主机 100% CPU 5 分钟+),手机有 OOM/被杀风险。最小改动(一行)
+- [ ] **方案 C: 保持 512MB 干净拒绝** — 大 filtered 成员报"归档包含超大文件,需整块缓冲解压,设备内存可能不足",不 OOM 不残留(当前状态)
+- [ ] **方案 A(根治): 换官方 unrar** — 用 `unrar` crate(静态链 RARLAB unrar C++)流式处理过滤器,对齐 ZArchiver。代价:
+  - RARLAB unrar 有**独立许可证**(免费但非 OSI 开源,商用需向 RARLAB 授权;用前核实 `unrar_sys/vendor/unrar/license.txt`)
+  - Android 3 个 ABI 需**编译 unrar C++**(构建变慢)
+  - **失去 RAR 平滑字节进度**(退化为逐文件跳变)与 **mid-file 取消**(只能逐文件取消)
+  - `rar-core` 整体重写(list/extract/selected/password/multivolume 全部基于 unrar crate),JNI 面不变
+
+**关联根治**: NSA/YPF/ISO/LZ4 大文件 OOM —— 改为流式(ISO 用 `cat_node` 直写文件、LZ4 用 `copy(FrameDecoder)`、YPF 用 `Take+ZlibDecoder`、NSA LZSS/SPB 流式改造)
+
+---
+
+## Debug 审计(全 crate 扫查)
+
+### 已修(本轮)
+
+- [x] **sevenz 分卷空卷列表 `paths[0]` panic** — `list_7z_volumes`/`extract_7z_volumes`/`sz_volumes_needs_password` 直接下标 `paths[0]` 未查空;且 list/needs_password 的 JNI 入口**未包 `guarded`**,panic 会跨 JNI 边界崩进程 → 已加 `if paths.is_empty() { return Err("empty volume list") }`
+- [x] **NSA SPB/LZSS 巨大分配 OOM** — SPB 用 width/height(u16)算 `total_size`,损坏条目可声明 **~12.8GB** 直接 `vec!` → abort;LZSS 可长到 4GB → 已加 **2GB 上限**,超限报错而非崩溃
+- [x] **zip/7z 压缩统计 `file_type().unwrap()`** — 坏符号链接会 panic → 已改 `if let Ok(t) = ... else continue`
+
+### 待处理(按优先级)
+
+- [ ] **NSA/YPF/ISO/LZ4 整文件进内存**(OOM 主因) — nsa 解出 `raw`(可到 4GB)、ypf 读 `asize` 整段+zlib 整段、iso `cat_node` 整文件、lz4 压缩+解压双份 → 大文件必 OOM → 见上方"关联根治"流式方案
+- [ ] **common `FNAME.lock().unwrap()` mutex 中毒** — 任一持锁线程 panic 会毒化后续所有 `extract_progress`/`compress_progress` 调用;低概率,可改 `lock().unwrap_or_else(|e| e.into_inner())`
+- [ ] **进度静态量跨线程竞争** — `extract_progress`/`compress_progress` + `CANCEL` 全局,若两个解压/压缩并发会互相覆盖;app 当前单操作模型(低风险),可考虑每操作局部上下文
+- [ ] **`lastExtractResult`/`lastExtractError` 全局跨线程** — 同上,worker 线程写、UI 线程读;单操作串行下安全,多操作并发有竞态
+- [ ] **RAR 加密大量小文件慢** — rars 每文件 PBKDF2(~2s/个),几百个小文件加密归档要解很久;非 bug,性能特性(换官方 unrar 可显著改善)
+- [ ] **`oneshot_async` 忙等** — `spin_loop()` 轮询 Pending;若 future 永不完成会死循环卡死。当前 xp3 用的同步 reader 总返回 Ready/Err,低概率
+- [ ] **深递归** — `iso_walk`/压缩 `add_dir`/`deleteWithProgress` 对极深目录可能栈溢出;galgame 目录深度有限,低风险
+
+---
+
+## v5.5.0
+
+### 功能更新
+
+- **解压/压缩进度改为字节百分比** — 所有 9 个解压格式 + ZIP/7z 压缩统一按字节算百分比
+  - Rust: `extract_progress`/`compress_progress` 静态量改 `AtomicU64`,新增 `ProgressWriter`/`ProgressReader` 包装 IO 逐块累计字节
+  - 平滑流式: zip/7z/rar/xp3(包 ProgressWriter)+ pfs(原生 `extract_file_with_progress` handler)+ 压缩(ProgressReader 包源文件);逐文件跳变: nsa/iso/ypf/lz4(整文件进内存)
+  - 进度 JNI getter `jint → jlong`(支持 >2GB 归档),Kotlin 对应 `Int → Long`,进度框消息显示 `文件名 — 已解压/总字节`
+- **JNI 返回值统一为 JSON** — 所有 extract 方法从 `Boolean` 改为返回 `String?` (JSON `{"total","success","error"}`)
+  - Rust 端: 9 个 crate 的 extract JNI 函数改为 `-> jstring`，返回 JSON 字符串
+  - Kotlin 端: 10 个 `Core.kt` 的 `external fun` 签名同步更新，新增 `ExtractCounts` / `fromJson()` 解析层
+  - 新增 `archive_common::extract_result_json()` 序列化函数
+
+- **解压报告准确文件数** — xp3/pfs/nsa/iso/ypf/zip/7z 报告的 `total` 从硬编码 `1` 改为归档内的实际文件数（选中解压时报告选中数）
+  - 解压成功弹窗改为显示 "总条目 / 成功 / 错误 / 其他" 四行统计
+
+- **7z 解压 error 追踪** — `sevenz-core` 回调改用 `AtomicU32` 逐文件追踪失败数，不再固定返回 error=0
+
+- **删除进度条** — `deleteWithProgress()` 先 `walkBottomUp().count()` 统计总数,再自底向上逐文件删除,横向进度 + 当前文件名,失败单独计数;单文件用 spinner;接入单删(目录)/批量删,成功弹 `msg_deleted`、有失败弹 `msg_delete_result`
+
+### 功能迭代
+
+- **MainActivity 拆分** — 2732 行 → 1880 行，拆出 13 个独立文件
+  - `model/` — ExtractCounts.kt, ArchiveEntry.kt, SearchResult.kt (数据类)
+  - `util/` — Constants.kt (色表 + 扩展名集合), FileUtils.kt (工具函数)
+  - `adapter/` — PreviewAdapter.kt, FileAdapter.kt
+  - `archive/` — ArchiveExtractor.kt (解压调度 + 密码处理), ArchivePreview.kt
+  - `ui/` — PreviewDialogs.kt (图片/文本/音频/视频预览)
+  - `terminal/` — TerminalDialog.kt
+  - `fileops/` — FileOperations.kt (重命名/比较/计算大小)
+  - `compression/` — CompressionDialogs.kt
+
+- **xp3-core 改用 fail-counting 模式** — extract_xp3 / extract_xp3_selected 从 `?` 中断改为 skip+count，单个文件失败不影响后续
+
+- **压缩完成自动刷新目录** — `showCompressFormatPicker` 增加 `onComplete` 回调，压缩后自动 `nav(currentDir)`
+
+- 移除 4 个 crate (nsa/iso/lz4/ypf) 的 unused import (`jboolean`/`JNI_TRUE`/`JNI_FALSE`)
+- 移除 `nsa-core` 中 `if fail==total` 冗余错误检查
+- 移除 `zip-core` `extract_zip_selected_inner` 中死代码 `let total`
+- 删除死代码 `ArchiveCore.kt`（旧 JNI 桥，无人引用）、`doExtractBool`（未使用的 lambda）
+
+### Bug 修复
+
+- **`getString` 格式符 `%d` 配 `toString()` 闪退** — 3 处 (`extractSelected`, `startBatchCompress`, `startBatchExtract`) 的 `paths.size.toString()` / `items.size.toString()` / `archives.size.toString()` 改为 `*.size`
+- **`lastExtractResult` 影子变量导致解压永远报告失败** — MainActivity 残留 private var 与 ArchiveExtractor 全局 var 同名，`doExtract` 读写 private 变量永远 (0,0,0)
+- **`tryExtractWithPassword` 异常时残留旧 `_lastExtractResult`** — 加 `ExtractCounts(0, 0, 0)` 初始重置
+- **书签星标失效** — `FileAdapter` 调 `onBookmarkToggled(path)`,但 `MainActivity` 传 `{ saveBookmarks() }` 只保存不增删 → 改为真实增删 + 保存
+- **RAR 计数恒为 1** — 8 个 JNI 硬编码 `extract_result_json(1, ...)`,`extract_rar_inner` 恒返回 fail=0 且文件创建失败 `?` 中断整批 → 改为 `AtomicU32` 逐文件失败计数 + 返回真实 `(total, fail)`(匹配非目录成员数),失败文件返回 sink 继续解压
+- **7z 分卷检测混入他卷** — `resolveSevenZVolumes` 只按数字后缀收集、不按基名分组,同目录混放多组 7z 分卷时会把别的归档拼进卷列表 → 按正则 group1(公共前缀)过滤同基名分卷
+- **死代码清理** — 删 `mismatchMsg`(无调用方)、`msg_disclaimer_ok` / `err_ext_mismatch` 未用资源(4 语言)
 
 ---
 

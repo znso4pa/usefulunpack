@@ -77,6 +77,7 @@ fn extract_zip_with_password(input: &str, output: &str, password: &str) -> Resul
         let name = decode_entry_name(&entry, &enc).replace('\\', "/").trim_matches('/').to_string();
         if name.is_empty() || entry.is_dir() { continue; }
         extract_progress::set_name(&name);
+        extract_progress::set_file(entry.size());
         let dest = safe_join(output, &name).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
         let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
@@ -109,6 +110,7 @@ fn extract_zip_selected_inner(input: &str, output: &str, selected: &str) -> Resu
         if !ss.contains(&name) && !ss.iter().any(|s| name.starts_with(&format!("{s}/"))) { continue; }
         selected += 1;
         extract_progress::set_name(&name);
+        extract_progress::set_file(entry.size());
         let dest = safe_join(output, &name).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
         let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
@@ -162,7 +164,11 @@ fn compress_zip_inner(input: &str, output: &str, level: i32, password: &str) -> 
                 }
                 compress_progress::set_name(&file_rel);
                 let mut f = std::fs::File::open(&entry.path()).map_err(|e| format!("{e}"))?;
-                if std::io::copy(&mut ProgressReader::compress(&mut f), zip).is_err() { fail += 1; }
+                compress_progress::set_file(f.metadata().map(|m| m.len()).unwrap_or(0));
+                if std::io::copy(&mut ProgressReader::compress(&mut f), zip).is_err() {
+                    if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+                    fail += 1;
+                }
             }
         }
         Ok(fail)
@@ -186,17 +192,14 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipNeedsPassword(mut e: JNIEnv, _: JClass, i: JString) -> jboolean {
     let inp = s(&mut e, &i);
-    match std::fs::File::open(&inp) {
-        Ok(file) => match zip::ZipArchive::new(file) {
-            Ok(mut arc) => {
-                for idx in 0..arc.len() {
-                    if let Ok(entry) = arc.by_index(idx) { if entry.encrypted() { return JNI_TRUE; } }
-                }
-                JNI_FALSE
-            }
-            Err(er) => { let _ = e.throw_new("java/io/IOException", format!("ZIP: {er}")); JNI_FALSE }
-        },
-        Err(er) => { let _ = e.throw_new("java/io/IOException", format!("ZIP: {er}")); JNI_FALSE }
+    match guarded(move || {
+        let file = std::fs::File::open(&inp).map_err(|e| format!("ZIP: {e}"))?;
+        let mut arc = zip::ZipArchive::new(file).map_err(|e| format!("ZIP: {e}"))?;
+        for idx in 0..arc.len() {
+            if let Ok(entry) = arc.by_index(idx) { if entry.encrypted() { return Ok(true); } }
+        }
+        Ok(false)
+    }) { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(er) => { let _ = e.throw_new("java/io/IOException", er); JNI_FALSE }
     }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractWithPassword(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, pw: JString) -> jstring {
@@ -214,6 +217,8 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipCompressCancel(_: JNIEnv, _: JClass) { compress_progress::cancel(); }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipCompressProgressCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::bytes() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipCompressProgressTotal(_: JNIEnv, _: JClass) -> jlong { compress_progress::total_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipCompressProgressFileCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::file_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipCompressProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { compress_progress::file_total() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipCompressProgressName(e: JNIEnv, _: JClass) -> jstring {
     e.new_string(&compress_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
@@ -228,6 +233,8 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractProgressCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::bytes() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractProgressTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::total_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractProgressFileCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_total() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractProgressName(e: JNIEnv, _: JClass) -> jstring {
     e.new_string(&extract_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }

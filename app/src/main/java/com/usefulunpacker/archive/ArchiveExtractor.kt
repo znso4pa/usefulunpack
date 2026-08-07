@@ -96,6 +96,13 @@ fun extractByFormat(
                      else NsaCore.nsaExtractSelected("", src, out, selected)
             "rar" -> rarExtractDispatch(src, out, selected, "")
             "lz4" -> Lz4Core.lz4Extract("", src, out)
+            "gz" -> GzipCore.gzExtract("", src, out)
+            "bz2" -> Bzip2Core.bz2Extract("", src, out)
+            "xz" -> XzCore.xzExtract("", src, out)
+            "zst" -> ZstdCore.zstExtract("", src, out)
+            "lzma" -> LzmaCore.lzmaExtract("", src, out)
+            "tar" -> if (selected.isEmpty()) TarCore.tarExtract("", src, out)
+                     else TarCore.tarExtractSelected("", src, out, selected)
             else -> null
         }
         val r = ExtractCounts.fromJson(json)

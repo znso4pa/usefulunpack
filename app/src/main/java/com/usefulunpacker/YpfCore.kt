@@ -6,6 +6,8 @@ object YpfCore {
     external fun ypfListEntries(input: String): String?
     external fun ypfExtractProgressCount(): Long
     external fun ypfExtractProgressTotal(): Long
+    external fun ypfExtractProgressFileCount(): Long
+    external fun ypfExtractProgressFileTotal(): Long
     external fun ypfExtractProgressName(): String?
     external fun ypfExtractCancel()
 }

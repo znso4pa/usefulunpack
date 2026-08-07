@@ -11,9 +11,13 @@ object ZipCore {
     external fun zipCompressCancel()
     external fun zipCompressProgressCount(): Long
     external fun zipCompressProgressTotal(): Long
+    external fun zipCompressProgressFileCount(): Long
+    external fun zipCompressProgressFileTotal(): Long
     external fun zipCompressProgressName(): String?
     external fun zipExtractProgressCount(): Long
     external fun zipExtractProgressTotal(): Long
+    external fun zipExtractProgressFileCount(): Long
+    external fun zipExtractProgressFileTotal(): Long
     external fun zipExtractProgressName(): String?
     external fun zipExtractCancel()
 }

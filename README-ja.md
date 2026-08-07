@@ -4,7 +4,7 @@
 
 軽量 Android ファイルマネージャー & **ビジュアルノベルゲームリソース抽出ツール**
 
-**XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**ZIP**、**7z**、**RAR**、**LZ4**、**ISO 9660** をサポート。Rust ネイティブコア。
+**XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**ISO 9660**、および **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** などの汎用形式（圧縮/解凍対応）。Rust ネイティブコア。
 
 ---
 
@@ -19,15 +19,24 @@
 | 🗜️ **ZIP/7z 圧縮** | ZIP/7z 圧縮、5段階レベル、AES-256暗号化 |
 | 🔐 **解凍パスワード** | 暗号化ZIP/7z/RARのパスワード入力対応 |
 | 🗜️ **RAR** | RAR を解凍（RAR4/5）、パスワード対応 |
-| ⚡ **LZ4** | LZ4 フレーム圧縮ファイルを解凍 |
+| ⚡ **LZ4** | LZ4 フレーム圧縮ファイルを圧縮/解凍 |
+| 🗜️ **TAR** | `.tar`・`.tar.gz`・`.tgz`・`.tar.bz2`・`.tbz2`・`.tar.xz`・`.txz`・`.tar.zst` を圧縮/解凍 |
+| 🗜️ **GZIP** | `.gz` を圧縮/解凍 |
+| 🗜️ **BZIP2** | `.bz2` を圧縮/解凍 |
+| 🗜️ **XZ** | `.xz` を圧縮/解凍 |
+| 🗜️ **ZSTD** | `.zst` を圧縮/解凍 |
+| 🗜️ **LZMA** | `.lzma` を圧縮/解凍 |
 | 💿 **ISO 9660** | ISOディスクイメージの参照・抽出 |
 | 🔍 **アーカイブプレビュー** | ツリー表示、展開/折りたたみ、チェックボックス選択抽出 |
 | 📊 **プレビュー統計** | リアルタイムファイル数/サイズ + 選択統計 |
 | 🔎 **全体検索** | ファイル名検索 + 内容検索（30+形式）、ハイライト、継続スキャン |
 | 🖼️ **ファイルプレビュー** | 画像・音声・動画・テキストを直接プレビュー |
+| 🗜️ **汎用圧縮** | ZIP/7z + gzip/bzip2/xz/zstd/lzma/lz4（単一ファイル）+ tar（フォルダ5種），5段階レベル，AES-256（ZIP） |
+| 📊 **二重プログレスバー** | 上=全体進捗，下=現在ファイル進捗（解凍+圧縮） |
+| 📋 **グループ形式選択** | スクロール可能なグループ形式選択（Galgame / 汎用圧縮） |
 | ✂️ **ファイル操作** | 長押しでリネーム・移動・削除（復元不可）・新規フォルダ |
 | ☑️ **複数選択** | バッチ解凍/圧縮/削除/移動 |
-| 🦀 **Rust コア** | 各形式が独立した `.so` |
+| 🦀 **Rust コア** | 各形式が独立した `.so`（15形式） |
 | 🔒 **最小権限** | ストレージアクセスのみ |
 
 ## インストール
@@ -56,8 +65,16 @@ bash build.sh
          libarchive_ypf_core.so  → YPF (YU-RIS)
          libarchive_zip_core.so  → ZIP
          libarchive_sevenz_core.so → 7z
-                  ↓
-          ファイル書き出し
+         libarchive_rar_core.so  → RAR
+         libarchive_lz4_core.so  → LZ4
+         libarchive_gzip_core.so → GZIP
+         libarchive_bzip2_core.so → BZIP2
+         libarchive_xz_core.so   → XZ
+         libarchive_zstd_core.so → ZSTD
+         libarchive_lzma_core.so → LZMA
+         libarchive_tar_core.so  → TAR (+ tgz/tbz2/txz/tzst)
+                   ↓
+           ファイル書き出し
 ```
 
 ## ライセンス

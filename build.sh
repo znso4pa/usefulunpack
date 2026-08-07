@@ -31,6 +31,12 @@ CRATES=(
     "archive_sevenz_core:sevenz_core"
     "archive_rar_core:rar_core"
     "archive_lz4_core:lz4_core"
+    "archive_gzip-core:gzip_core"
+    "archive_bzip2-core:bzip2_core"
+    "archive_xz-core:xz_core"
+    "archive_zstd-core:zstd_core"
+    "archive_lzma-core:lzma_core"
+    "archive_tar-core:tar_core"
 )
 TARGETS=("aarch64-linux-android" "armv7-linux-androideabi" "x86_64-linux-android")
 

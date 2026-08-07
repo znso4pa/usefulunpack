@@ -15,6 +15,8 @@ object RarCore {
     external fun rarVolumesNeedsPassword(volumes: String): Boolean
     external fun rarExtractProgressCount(): Long
     external fun rarExtractProgressTotal(): Long
+    external fun rarExtractProgressFileCount(): Long
+    external fun rarExtractProgressFileTotal(): Long
     external fun rarExtractProgressName(): String?
     external fun rarExtractCancel()
 }

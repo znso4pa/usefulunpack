@@ -59,6 +59,7 @@ pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsExtract(
         for (entry_path, _entry_size) in &to_extract {
             if extract_progress::cancelled() { return Err("cancelled".to_string()); }
             let entry_name = entry_path.to_string_lossy();
+            extract_progress::set_file(*_entry_size);
             match safe_join(&out, &entry_name) {
                 Ok(dest) => {
                     if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
@@ -101,7 +102,7 @@ pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsListEntries(
     mut env: JNIEnv, _: JClass, input: JString,
 ) -> jstring {
     let inp = s(&mut env, &input);
-    match list_pfs(&inp) {
+    match guarded(move || list_pfs(&inp)) {
         Ok(j) => match env.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() },
         Err(e) => { let _ = env.throw_new("java/io/IOException", format!("listEntries: {e}")); std::ptr::null_mut() }
     }
@@ -143,6 +144,7 @@ fn extract_pfs_selected(input: &str, output: &str, selected: &str) -> Result<(u3
     for (entry_path, _entry_size) in &to_extract {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
         let entry_name = entry_path.to_string_lossy();
+        extract_progress::set_file(*_entry_size);
         let dest = safe_join(output, &entry_name).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
         let mut handler = PfsProgress { base, last: base };
@@ -157,6 +159,10 @@ fn extract_pfs_selected(input: &str, output: &str, selected: &str) -> Result<(u3
 pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsExtractProgressCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::bytes() as jlong }
 #[no_mangle]
 pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsExtractProgressTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::total_bytes() as jlong }
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsExtractProgressFileCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_bytes() as jlong }
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsExtractProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_total() as jlong }
 #[no_mangle]
 pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsExtractProgressName(env: JNIEnv, _: JClass) -> jstring {
     env.new_string(&extract_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())

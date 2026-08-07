@@ -1,7 +1,7 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jstring, jlong};
-use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json};
+use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json, ProgressWriter};
 use archive_common::extract_progress;
 use std::collections::HashSet;
 use std::fs::File;
@@ -138,13 +138,15 @@ fn ypf_extract_one(f: &mut File, e: &YpfEntry, out: &str, fsize: u64) -> Result<
     let d = safe_join(out, &e.name)?;
     if let Some(p) = d.parent() { std::fs::create_dir_all(p).map_err(|x| format!("{x}"))?; }
     f.seek(SeekFrom::Start(e.offset as u64)).map_err(|x| format!("{x}"))?;
-    let mut raw = vec![0u8; e.asize as usize];
-    f.read_exact(&mut raw).map_err(|x| format!("{x}"))?;
+    let mut out_file = ProgressWriter::extract(std::fs::File::create(&d).map_err(|x| format!("{x}"))?);
+    let limited = (&mut *f).take(e.asize as u64);
     if e.compressed {
-        let mut dec = Vec::with_capacity(e.usize.min(100_000_000) as usize);
-        ZlibDecoder::new(&raw[..]).read_to_end(&mut dec).map_err(|x| format!("YPF zlib: {x}"))?;
-        std::fs::write(&d, &dec).map_err(|x| format!("{x}"))?;
-    } else { std::fs::write(&d, &raw).map_err(|x| format!("{x}"))?; }
+        let mut dec = ZlibDecoder::new(limited);
+        std::io::copy(&mut dec, &mut out_file).map_err(|x| format!("YPF zlib: {x}"))?;
+    } else {
+        let mut raw = limited;
+        std::io::copy(&mut raw, &mut out_file).map_err(|x| format!("{x}"))?;
+    }
     Ok(())
 }
 
@@ -179,8 +181,8 @@ fn extract_ypf_all(i: &str, o: &str) -> Result<(u32, u32), String> {
     for e in &ents {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
         extract_progress::set_name(&e.name);
+        extract_progress::set_file(e.usize as u64);
         if guard_panic(|| ypf_extract_one(&mut f, e, o, fsize)).is_err() { fail += 1; }
-        extract_progress::add_bytes(e.usize as u64);
     }
     Ok((total, fail))
 }
@@ -196,9 +198,9 @@ fn extract_ypf_selected(i: &str, o: &str, s: &str) -> Result<(u32, u32), String>
         if ss.contains(e.name.as_str()) || ss.iter().any(|d| e.name.starts_with(&format!("{d}/"))) {
             selected += 1;
             extract_progress::set_name(&e.name);
+            extract_progress::set_file(e.usize as u64);
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ypf_extract_one(&mut f, e, o, fsize)));
             match r { Ok(Err(_)) | Err(_) => { fail += 1; } _ => {} }
-            extract_progress::add_bytes(e.usize as u64);
         }
     }
     Ok((selected, fail))
@@ -206,21 +208,84 @@ fn extract_ypf_selected(i: &str, o: &str, s: &str) -> Result<(u32, u32), String>
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractProgressCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::bytes() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractProgressTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::total_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractProgressFileCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_total() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractProgressName(e: JNIEnv, _: JClass) -> jstring {
     e.new_string(&extract_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractCancel(_: JNIEnv, _: JClass) { extract_progress::cancel(); }
 
 // --- JNI ---
+// All archive-parsing entry points are wrapped in guard_panic so a panic on
+// malicious input cannot cross the JNI boundary and kill the process.
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
-    match extract_ypf_all(&inp, &out) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
+    match guard_panic(move || extract_ypf_all(&inp, &out)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel_j: JString) -> jstring {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel_j);
-    match extract_ypf_selected(&inp, &out, &sel_str) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
+    match guard_panic(move || extract_ypf_selected(&inp, &out, &sel_str)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
-    match list_ypf(&s(&mut e, &i)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
+    let inp = s(&mut e, &i);
+    match guard_panic(move || list_ypf(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    use std::io::Write as _;
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn extract_streams_zlib_and_raw_entries() {
+        let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        let compressed = zlib(&data);
+        let dir = std::env::temp_dir().join(format!("uu_ypf_x_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // File layout: [zlib payload][raw payload]
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&compressed);
+        payload.extend_from_slice(&data);
+        let fpath = dir.join("payload.bin");
+        std::fs::write(&fpath, &payload).unwrap();
+
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+
+        let mut f = File::open(&fpath).unwrap();
+        let fsize = payload.len() as u64;
+        let zlib_entry = YpfEntry {
+            name: "a/z.bin".into(),
+            _file_type: 0,
+            compressed: true,
+            usize: data.len() as u32,
+            asize: compressed.len() as u32,
+            offset: 0,
+        };
+        let raw_entry = YpfEntry {
+            name: "b/raw.bin".into(),
+            _file_type: 0,
+            compressed: false,
+            usize: data.len() as u32,
+            asize: data.len() as u32,
+            offset: compressed.len() as u32,
+        };
+
+        ypf_extract_one(&mut f, &zlib_entry, out.to_str().unwrap(), fsize).unwrap();
+        ypf_extract_one(&mut f, &raw_entry, out.to_str().unwrap(), fsize).unwrap();
+
+        assert_eq!(std::fs::read(out.join("a/z.bin")).unwrap(), data);
+        assert_eq!(std::fs::read(out.join("b/raw.bin")).unwrap(), data);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

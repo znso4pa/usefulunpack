@@ -6,6 +6,8 @@ object IsoCore {
     external fun isoListEntries(input: String): String?
     external fun isoExtractProgressCount(): Long
     external fun isoExtractProgressTotal(): Long
+    external fun isoExtractProgressFileCount(): Long
+    external fun isoExtractProgressFileTotal(): Long
     external fun isoExtractProgressName(): String?
     external fun isoExtractCancel()
 }

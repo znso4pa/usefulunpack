@@ -10,6 +10,12 @@ members = [
     "crates/sevenz-core",
     "crates/rar-core",
     "crates/lz4-core",
+    "crates/gzip-core",
+    "crates/bzip2-core",
+    "crates/xz-core",
+    "crates/zstd-core",
+    "crates/lzma-core",
+    "crates/tar-core",
 ]
 resolver = "2"
 
@@ -21,3 +27,8 @@ edition = "2021"
 opt-level = "s"
 strip = true
 lto = true
+
+# Local fork of rars with streaming RAR5 filter support
+# (upstream refuses to stream filtered members over the buffered-decode limit)
+[patch.crates-io]
+rars = { path = "crates/vendor/rars" }

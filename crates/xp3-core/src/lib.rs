@@ -42,6 +42,7 @@ fn extract_xp3(input: &str, output: &str) -> Result<(u32, u32), String> {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
         let name = &archive.entries()[i].name;
         extract_progress::set_name(name);
+        extract_progress::set_file(archive.entries()[i].size);
         let dest = match safe_join(output, name) {
             Ok(d) => d,
             Err(_) => { fail += 1; continue; }
@@ -89,7 +90,7 @@ pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3ListEntries(
     mut env: JNIEnv, _: JClass, input: JString,
 ) -> jstring {
     let inp = s(&mut env, &input);
-    match list_xp3(&inp) {
+    match guarded(move || list_xp3(&inp)) {
         Ok(j) => match env.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() },
         Err(e) => { let _ = env.throw_new("java/io/IOException", format!("listEntries: {e}")); std::ptr::null_mut() }
     }
@@ -128,6 +129,7 @@ fn extract_xp3_selected(input: &str, output: &str, selected: &str) -> Result<(u3
         if !matches(raw_name) { continue; }
         sel += 1;
         extract_progress::set_name(raw_name);
+        extract_progress::set_file(archive.entries()[i].size);
         let dest = match safe_join(output, raw_name) {
             Ok(d) => d,
             Err(_) => { fail += 1; continue; }
@@ -153,6 +155,10 @@ fn extract_xp3_selected(input: &str, output: &str, selected: &str) -> Result<(u3
 pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3ExtractProgressCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::bytes() as jlong }
 #[no_mangle]
 pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3ExtractProgressTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::total_bytes() as jlong }
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3ExtractProgressFileCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_bytes() as jlong }
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3ExtractProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_total() as jlong }
 #[no_mangle]
 pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3ExtractProgressName(env: JNIEnv, _: JClass) -> jstring {
     env.new_string(&extract_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())

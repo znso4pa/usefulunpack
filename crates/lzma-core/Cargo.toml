@@ -1,0 +1,12 @@
+[package]
+name = "archive_lzma-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+archive_common = { path = "../common" }
+jni = "0.21"
+lzma-rs = "0.3"

@@ -1,7 +1,7 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jstring, jlong};
-use archive_common::{s, json_escape, safe_join, extract_result_json};
+use archive_common::{s, json_escape, safe_join, extract_result_json, ProgressWriter};
 use archive_common::extract_progress;
 use std::collections::HashSet;
 use std::fs;
@@ -43,9 +43,8 @@ fn extract_iso_one(file: &mut std::fs::File, node: &isomage::TreeNode, output: &
     if node.is_directory { return Ok(()); }
     let dest = safe_join(output, rel_path)?;
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
-    let mut data = Vec::new();
-    isomage::cat_node(file, node, &mut data).map_err(|e| format!("{e}"))?;
-    fs::write(&dest, &data).map_err(|e| format!("{e}"))?;
+    let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
+    isomage::cat_node(file, node, &mut out).map_err(|e| format!("{e}"))?;
     Ok(())
 }
 
@@ -59,10 +58,10 @@ fn extract_iso_all(input: &str, output: &str) -> Result<(u32, u32), String> {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
         if node.is_directory { continue; }
         extract_progress::set_name(path);
+        extract_progress::set_file(node.size);
         if extract_iso_one(&mut file, node, output, path).is_err() {
             fail += 1;
         }
-        extract_progress::add_bytes(node.size);
     }
     let total = map.len() as u32;
     Ok((total, fail))
@@ -89,8 +88,8 @@ fn extract_iso_selected(input: &str, output: &str, selected: &str) -> Result<(u3
             Some((_, node)) => {
                 if node.is_directory { continue; }
                 extract_progress::set_name(p);
+                extract_progress::set_file(node.size);
                 if extract_iso_one(&mut file, node, output, p).is_err() { fail += 1; }
-                extract_progress::add_bytes(node.size);
             }
             None => fail += 1,
         }
@@ -101,6 +100,8 @@ fn extract_iso_selected(input: &str, output: &str, selected: &str) -> Result<(u3
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoExtractProgressCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::bytes() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoExtractProgressTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::total_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoExtractProgressFileCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoExtractProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_total() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoExtractProgressName(e: JNIEnv, _: JClass) -> jstring {
     e.new_string(&extract_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
@@ -121,5 +122,80 @@ fn extract_iso_selected(input: &str, output: &str, selected: &str) -> Result<(u3
     }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
-    match list_iso(&s(&mut e, &i)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
+    let inp = s(&mut e, &i);
+    match guarded(move || list_iso(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECTOR: usize = 2048;
+
+    fn dir_record(name: &[u8], extent: u32, length: u32, flags: u8) -> Vec<u8> {
+        let pad = if name.len() % 2 == 0 { 0 } else { 1 };
+        let mut rec = vec![0u8; 33 + name.len() + pad];
+        rec[0] = rec.len() as u8;
+        rec[2..6].copy_from_slice(&extent.to_le_bytes());
+        rec[6..10].copy_from_slice(&extent.to_be_bytes());
+        rec[10..14].copy_from_slice(&length.to_le_bytes());
+        rec[14..18].copy_from_slice(&length.to_be_bytes());
+        rec[25] = flags;
+        rec[32] = name.len() as u8;
+        rec[33..33 + name.len()].copy_from_slice(name);
+        rec
+    }
+
+    /// Builds a minimal ISO9660 image:
+    ///   sector 16  PVD (root record at offset 156)
+    ///   sector 17  volume descriptor set terminator
+    ///   sector 20  root directory data
+    ///   sector 21  file "HELLO.TXT"
+    fn make_iso(file_content: &[u8]) -> Vec<u8> {
+        let root_sector = 20u32;
+        let file_sector = 21u32;
+        let root_len = 2048u32;
+        let mut root_dir = Vec::new();
+        root_dir.extend(dir_record(&[0u8], root_sector, root_len, 0x02));   // "."
+        root_dir.extend(dir_record(&[1u8], root_sector, root_len, 0x02));   // ".."
+        root_dir.extend(dir_record(b"HELLO.TXT", file_sector, file_content.len() as u32, 0x00));
+        root_dir.resize(SECTOR, 0);
+
+        let mut iso = vec![0u8; 22 * SECTOR];
+        // PVD
+        let pvd = &mut iso[16 * SECTOR..17 * SECTOR];
+        pvd[0] = 1;
+        pvd[1..6].copy_from_slice(b"CD001");
+        pvd[6] = 1;
+        let root_rec = dir_record(&[0u8], root_sector, root_len, 0x02);
+        pvd[156..156 + root_rec.len()].copy_from_slice(&root_rec);
+        // Terminator
+        let term = &mut iso[17 * SECTOR..18 * SECTOR];
+        term[0] = 255;
+        term[1..6].copy_from_slice(b"CD001");
+        term[6] = 1;
+        // Root directory data
+        iso[20 * SECTOR..21 * SECTOR].copy_from_slice(&root_dir);
+        // File data
+        iso[21 * SECTOR..21 * SECTOR + file_content.len()].copy_from_slice(file_content);
+        iso
+    }
+
+    #[test]
+    fn streams_iso_file_extraction() {
+        let content = b"HELLO ISO!";
+        let dir = std::env::temp_dir().join(format!("uu_iso_x_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let iso_path = dir.join("test.iso");
+        std::fs::write(&iso_path, make_iso(content)).unwrap();
+
+        let list = list_iso(iso_path.to_str().unwrap()).unwrap();
+        assert!(list.contains("HELLO.TXT"), "list: {list}");
+
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        extract_iso_all(iso_path.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+        assert_eq!(std::fs::read(out.join("HELLO.TXT")).unwrap(), content);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

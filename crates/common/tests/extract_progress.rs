@@ -42,3 +42,32 @@ fn cancel_flag_is_set_and_cleared_by_reset() {
     extract_progress::reset(1);
     assert!(!extract_progress::cancelled());
 }
+
+#[test]
+fn set_file_resets_per_file_counter_and_tracks_bytes() {
+    let _g = LOCK.lock().unwrap();
+    extract_progress::reset(1000);
+    extract_progress::set_file(500);
+    assert_eq!(extract_progress::file_total(), 500);
+    assert_eq!(extract_progress::file_bytes(), 0);
+
+    // add_bytes feeds both the overall and the per-file counter
+    extract_progress::add_bytes(200);
+    assert_eq!(extract_progress::file_bytes(), 200);
+    extract_progress::add_bytes(300);
+    assert_eq!(extract_progress::file_bytes(), 500);
+    assert_eq!(extract_progress::bytes(), 500);
+
+    // next member resets the per-file counter but keeps overall bytes
+    extract_progress::set_file(400);
+    assert_eq!(extract_progress::file_total(), 400);
+    assert_eq!(extract_progress::file_bytes(), 0);
+    extract_progress::add_bytes(400);
+    assert_eq!(extract_progress::file_bytes(), 400);
+    assert_eq!(extract_progress::bytes(), 900);
+
+    // reset clears per-file state too
+    extract_progress::reset(1000);
+    assert_eq!(extract_progress::file_bytes(), 0);
+    assert_eq!(extract_progress::file_total(), 0);
+}

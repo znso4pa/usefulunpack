@@ -3,7 +3,7 @@ use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jstring, jlong, JNI_TRUE, JNI_FALSE};
 use archive_common::{s, json_escape, safe_join, extract_result_json, ProgressWriter};
 use archive_common::extract_progress;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -39,6 +39,7 @@ fn list_rar_inner(input: &str) -> Result<String, String> {
 
 fn rar_writer<'a>(
     sel_set: &'a Option<HashSet<String>>,
+    sizes: &'a HashMap<String, u64>,
     out_base: &'a str,
     fail: &'a AtomicU32,
 ) -> impl FnMut(&rars::ExtractedEntryMeta) -> Result<Box<dyn Write>, rars::Error> + 'a {
@@ -56,6 +57,7 @@ fn rar_writer<'a>(
             }
         }
         extract_progress::set_name(&name);
+        extract_progress::set_file(sizes.get(&name).copied().unwrap_or(0));
         let dest = safe_join(out_base, &name).unwrap_or_else(|_| Path::new(out_base).join(&name));
         if let Some(p) = Path::new(&dest).parent() { std::fs::create_dir_all(p).ok(); }
         let out_file = match std::fs::File::create(&dest) {
@@ -67,10 +69,13 @@ fn rar_writer<'a>(
 }
 
 fn rar_opts(pw: Option<&[u8]>) -> rars::ArchiveReadOptions<'_> {
-    // Keep the library's default buffered-decode limit (512MB): RAR5 filtered
-    // members above it are rejected cleanly rather than buffering huge amounts
-    // of RAM on-device (which would risk OOM / partial output).
-    rars::ArchiveReadOptions::with_optional_password(pw)
+    // Members larger than 64MB are stream-decoded. The vendored rars fork
+    // streams RAR5 filtered members too (filters are applied per filter block,
+    // which is typically tens of KB), so large members never buffer fully into
+    // RAM and cannot OOM the device. Only small members use the buffered path.
+    let mut options = rars::ArchiveReadOptions::with_optional_password(pw);
+    options.rar50_buffered_decode_limit = Some(64 * 1024 * 1024);
+    options
 }
 
 fn read_volumes(paths: &[&str], pw: Option<&[u8]>) -> Result<Vec<rars::Archive>, String> {
@@ -89,6 +94,7 @@ fn extract_rar_inner(input: &str, output: &str, selected: Option<&HashSet<String
 
     let mut total = 0u32;
     let mut prog_total = 0u64;
+    let mut sizes: HashMap<String, u64> = HashMap::new();
     for member in archive.members() {
         let name = member.meta.name_lossy().replace('\\', "/").trim_matches('/').to_string();
         if member.meta.is_directory || name.is_empty() || name.ends_with('/') { continue; }
@@ -96,11 +102,15 @@ fn extract_rar_inner(input: &str, output: &str, selected: Option<&HashSet<String
             None => true,
             Some(sel) => sel.contains(&name) || sel.iter().any(|s| name.starts_with(&format!("{s}/"))),
         };
-        if matches { total += 1; prog_total += member.meta.unpacked_size; }
+        if matches {
+            total += 1;
+            prog_total += member.meta.unpacked_size;
+            sizes.insert(name, member.meta.unpacked_size);
+        }
     }
     extract_progress::reset(prog_total);
     let fail = AtomicU32::new(0);
-    archive.extract_to(pw, rar_writer(&sel_set, &out_base, &fail)).map_err(|e| format!("rar: {e}"))?;
+    archive.extract_to(pw, rar_writer(&sel_set, &sizes, &out_base, &fail)).map_err(|e| format!("rar: {e}"))?;
     Ok((total, fail.load(Ordering::SeqCst)))
 }
 
@@ -113,6 +123,7 @@ fn extract_rar_volumes_inner(paths: &[&str], output: &str, selected: Option<&Has
     let mut total = 0u32;
     let mut prog_total = 0u64;
     let mut seen: HashSet<String> = HashSet::new();
+    let mut sizes: HashMap<String, u64> = HashMap::new();
     for archive in &archives {
         for member in archive.members() {
             let name = member.meta.name_lossy().replace('\\', "/").trim_matches('/').to_string();
@@ -122,12 +133,16 @@ fn extract_rar_volumes_inner(paths: &[&str], output: &str, selected: Option<&Has
                 None => true,
                 Some(sel) => sel.contains(&name) || sel.iter().any(|s| name.starts_with(&format!("{s}/"))),
             };
-            if matches { total += 1; prog_total += member.meta.unpacked_size; }
+            if matches {
+                total += 1;
+                prog_total += member.meta.unpacked_size;
+                sizes.insert(name, member.meta.unpacked_size);
+            }
         }
     }
     extract_progress::reset(prog_total);
     let fail = AtomicU32::new(0);
-    rars::extract_volumes_to_with_options(&archives, rar_opts(pw), rar_writer(&sel_set, &out_base, &fail)).map_err(|e| format!("rar: {e}"))?;
+    rars::extract_volumes_to_with_options(&archives, rar_opts(pw), rar_writer(&sel_set, &sizes, &out_base, &fail)).map_err(|e| format!("rar: {e}"))?;
     Ok((total, fail.load(Ordering::SeqCst)))
 }
 
@@ -187,7 +202,7 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
-    let inp = s(&mut e, &i); match list_rar_inner(&inp) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
+    let inp = s(&mut e, &i); match guarded(move || list_rar_inner(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
@@ -204,7 +219,7 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarNeedsPassword(mut e: JNIEnv, _: JClass, i: JString) -> jboolean {
     let inp = s(&mut e, &i);
-    match rar_needs_password_inner(&inp) { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("rar: {er}")); JNI_FALSE } }
+    match guarded(move || rar_needs_password_inner(&inp)) { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("rar: {er}")); JNI_FALSE } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractSelectedWithPassword(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel: JString, pw: JString) -> jstring {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel); let pwd = s(&mut e, &pw); let _ = std::fs::create_dir_all(&out);
@@ -213,6 +228,8 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractProgressCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::bytes() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractProgressTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::total_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractProgressFileCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_total() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractProgressName(e: JNIEnv, _: JClass) -> jstring {
     e.new_string(&extract_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
@@ -222,7 +239,7 @@ fn volume_refs(vols: &[String]) -> Vec<&str> { vols.iter().map(|s| s.as_str()).c
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarListEntriesVolumes(mut e: JNIEnv, _: JClass, v: JString) -> jstring {
     let vs = s(&mut e, &v); let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
-    match list_rar_volumes_inner(&volume_refs(&vols)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
+    match guarded(move || list_rar_volumes_inner(&volume_refs(&vols))) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractVolumes(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString) -> jstring {
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
@@ -248,7 +265,7 @@ fn volume_refs(vols: &[String]) -> Vec<&str> { vols.iter().map(|s| s.as_str()).c
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarVolumesNeedsPassword(mut e: JNIEnv, _: JClass, v: JString) -> jboolean {
     let vs = s(&mut e, &v); let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
-    match rar_volumes_needs_password_inner(&volume_refs(&vols)) { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("rar: {er}")); JNI_FALSE } }
+    match guarded(move || rar_volumes_needs_password_inner(&volume_refs(&vols))) { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("rar: {er}")); JNI_FALSE } }
 }
 
 #[cfg(test)]

@@ -18,14 +18,22 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 📦 **YPF** | Unpack YU-RIS `.ypf` archives with adaptive boundary detection |
 | 💿 **ISO 9660** | Browse and extract ISO disc images (CD/DVD/BD) via isomage |
 | 🗜️ **RAR** | Unpack RAR archives (RAR4/5) with password support |
-| ⚡ **LZ4** | Decompress LZ4 frame-compressed files |
+| 🗜️ **TAR** | Pack/unpack `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.zst` |
+| 🗜️ **GZIP** | Pack/unpack `.gz` |
+| 🗜️ **BZIP2** | Pack/unpack `.bz2` |
+| 🗜️ **XZ** | Pack/unpack `.xz` |
+| 🗜️ **ZSTD** | Pack/unpack `.zst` |
+| 🗜️ **LZMA** | Pack/unpack `.lzma` |
+| ⚡ **LZ4** | Pack/unpack LZ4 frame-compressed files |
 | 🔍 **Archive Preview** | Browse archive contents as a collapsible tree with checkboxes for selective extraction |
 | 📊 **Preview Statistics** | Real-time count/size of total and selected files |
 | 🔎 **Global Search** | Filename search + content search (30+ text formats), match highlighting with prev/next navigation, progressive scanning |
 | 📦 **In-Archive Search** | One-click unpack text files from preview and open the full global search interface on extracted content |
 | 🖼️ **File Preview** | Image (JPG/PNG), audio (MP3/OGG), video (MP4), text/code — jump to matching line on search results |
-| 🗜️ **ZIP/7z Compression** | Create ZIP/7z archives, 5 compression levels, AES-256 encryption |
+| 🗜️ **Compression** | ZIP/7z + gzip/bzip2/xz/zstd/lzma/lz4 (single file) + tar (folder, 5 variants), 5 levels, AES-256 (ZIP) |
 | 🔐 **Extract with Password** | Enter password for encrypted ZIP/7z/RAR archives |
+| 📊 **Dual Progress Bar** | Top bar = overall progress, bottom bar = current file progress (extract + compress) |
+| 📋 **Grouped Format Picker** | Scrollable, grouped format selection (Galgame / generic compression) for extract, batch and compress |
 | ✂️ **File Operations** | Long-press to rename, move, delete (irreversible), create folder |
 | ☑️ **Batch Multi-Select** | Multi-select mode for batch extract/compress/delete/move |
 | 📂 **Batch Preview** | Preview multiple archives at once, select files across all of them |
@@ -35,7 +43,7 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 🏠 **Root Navigation** | One-tap home button to jump to `/storage/emulated/0` |
 | 🛡️ **Tap Debounce** | 800ms cooldown prevents accidental duplicate dialogs |
 | 🌙 **Dark Theme** | Eye-friendly dark theme matching ZArchiver's color scheme |
-| 🦀 **Rust Core** | JNI-powered native `.so` — one per format for isolation |
+| 🦀 **Rust Core** | JNI-powered native `.so` — one per format for isolation (15 formats) |
 | 🔒 **Minimal Permissions** | Only requests storage access |
 
 ## Screenshots
@@ -82,11 +90,19 @@ User taps file → Kotlin UI calls format-specific JNI
           libarchive_ypf_core.so  → YPF (YU-RIS)
           libarchive_zip_core.so  → ZIP
           libarchive_sevenz_core.so → 7z
+          libarchive_rar_core.so  → RAR
+          libarchive_lz4_core.so  → LZ4
+          libarchive_gzip_core.so → GZIP
+          libarchive_bzip2_core.so → BZIP2
+          libarchive_xz_core.so   → XZ
+          libarchive_zstd_core.so → ZSTD
+          libarchive_lzma_core.so → LZMA
+          libarchive_tar_core.so  → TAR (+ tgz/tbz2/txz/tzst)
                          ↓
               Files written to selected directory
 ```
 
-Each format lives in `crates/<format>-core/` as an independent `cdylib`. Shared utilities (SyncIo, oneshot_async, JSON escaping) live in `crates/common/`.
+Each format lives in `crates/<format>-core/` as an independent `cdylib`. Shared utilities (progress stores, cancel checks, JSON escaping) live in `crates/common/`. The RAR5 streaming-filter fix is a vendored fork of `rars` (`crates/vendor/rars`, wired via `[patch.crates-io]`).
 
 ### YPF (YU-RIS) Format — Three-Layer Defense
 
@@ -111,8 +127,13 @@ XOR key auto-detection (0xFF vs 0xC9) is done per-file on the first entry.
 | **ISO 9660** | [isomage crate](https://crates.io/crates/isomage) | MIT |
 | **ZIP** | [zip crate](https://crates.io/crates/zip) | MIT |
 | **7z** | [sevenz-rust crate](https://crates.io/crates/sevenz-rust) | MIT / Apache-2.0 |
-| **RAR** | [rars crate](https://crates.io/crates/rars) | MIT / Apache-2.0 |
+| **RAR** | [rars crate](https://crates.io/crates/rars) (vendored fork with streaming filters) | MIT / Apache-2.0 |
 | **LZ4** | [lz4_flex crate](https://crates.io/crates/lz4_flex) | MIT |
+| **GZIP** | [flate2 crate](https://crates.io/crates/flate2) (Rust backend) | MIT / Apache-2.0 |
+| **BZIP2** | [oxiarc-bzip2 crate](https://crates.io/crates/oxiarc-bzip2) | Apache-2.0 |
+| **XZ / LZMA** | [lzma-rs crate](https://crates.io/crates/lzma-rs) | MIT |
+| **ZSTD** | [ruzstd crate](https://crates.io/crates/ruzstd) (decode) / [oxiarc-zstd crate](https://crates.io/crates/oxiarc-zstd) (encode) | MIT / Apache-2.0 |
+| **TAR** | [tar crate](https://crates.io/crates/tar) | MIT / Apache-2.0 |
 
 ### Core Dependencies
 
@@ -122,11 +143,16 @@ XOR key auto-detection (0xFF vs 0xC9) is done per-file on the first entry.
 | `xp3` 0.4 | MIT / Apache-2.0 | XP3 extraction |
 | `pf8` 0.1 | — | PFS/PF6/PF8 extraction |
 | `isomage` 0.1 | MIT | ISO 9660 / UDF |
-| `flate2` 1 | MIT / Apache-2.0 | zlib (YPF) |
+| `flate2` 1 | MIT / Apache-2.0 | zlib (YPF) + gzip pack/unpack |
 | `encoding_rs` 0.8 | (Apache-2.0 OR MIT) AND BSD-3-Clause | Shift-JIS (YPF) |
 | `tokio` 1 | MIT | Async I/O (XP3) |
-| `rars` 0.4 | MIT / Apache-2.0 | RAR extraction |
-| `lz4_flex` | MIT | LZ4 decompression |
+| `rars` 0.4 | MIT / Apache-2.0 | RAR extraction (vendored fork) |
+| `lz4_flex` | MIT | LZ4 pack/unpack |
+| `oxiarc-bzip2` | Apache-2.0 | BZIP2 pack/unpack |
+| `lzma-rs` | MIT | XZ / LZMA pack/unpack |
+| `ruzstd` | MIT | ZSTD decode |
+| `oxiarc-zstd` | Apache-2.0 | ZSTD encode |
+| `tar` | MIT / Apache-2.0 | TAR pack/unpack |
 
 ## License
 

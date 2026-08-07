@@ -175,4 +175,9 @@
     <string name="title_audio_player">🎵 %1$s</string>
     <string name="msg_disclaimer_agree">同意並繼續</string>
     <string name="title_preview_archive">%1$s (%2$s)</string>
+    <string name="format_group_galgame">Galgame 格式</string>
+    <string name="format_group_generic">通用壓縮格式</string>
+    <string name="format_group_single">單檔壓縮</string>
+    <string name="msg_single_file_compress">單檔壓縮僅支援單一檔案</string>
+    <string name="settings_compress_generic">通用格式 (gzip/bzip2/xz/zstd/lzma/lz4/tar)</string>
 </resources>

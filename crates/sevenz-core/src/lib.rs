@@ -207,7 +207,10 @@ fn handle_entry(
         if !entry.is_directory() { let _ = std::io::copy(reader, &mut std::io::sink()); }
         return Ok(true);
     }
-    if !entry.is_directory() { extract_progress::set_name(&name); }
+    if !entry.is_directory() {
+        extract_progress::set_name(&name);
+        extract_progress::set_file(entry.size());
+    }
     let dest = match safe_join(output, entry.name()) {
         Ok(d) => d,
         Err(_) => { fail.fetch_add(1, Ordering::SeqCst); return Ok(true); }
@@ -318,7 +321,13 @@ fn compress_7z_inner(input: &str, output: &str, level: i32, password: &str) -> R
                 compress_progress::set_name(&file_rel);
                 let e = sevenz_rust::SevenZArchiveEntry::from_path(&entry.path(), file_rel.clone());
                 match std::fs::File::open(&entry.path()) {
-                    Ok(f) => { let _ = sz.push_archive_entry(e, Some(ProgressReader::compress(f))); }
+                    Ok(f) => {
+                        compress_progress::set_file(f.metadata().map(|m| m.len()).unwrap_or(0));
+                        if sz.push_archive_entry(e, Some(ProgressReader::compress(f))).is_err() {
+                            if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+                            fail += 1;
+                        }
+                    }
                     Err(_) => { fail += 1; }
                 }
             }
@@ -352,23 +361,24 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     match guarded(|| extract_7z_selected(&inp, &out, &sel_str)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
-    match list_7z(&s(&mut e, &i)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
+    let inp = s(&mut e, &i);
+    match guarded(move || list_7z(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompressCancel(_: JNIEnv, _: JClass) { compress_progress::cancel(); }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompressProgressCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::bytes() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompressProgressTotal(_: JNIEnv, _: JClass) -> jlong { compress_progress::total_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompressProgressFileCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::file_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompressProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { compress_progress::file_total() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompressProgressName(e: JNIEnv, _: JClass) -> jstring {
     e.new_string(&compress_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szNeedsPassword(mut e: JNIEnv, _: JClass, i: JString) -> jboolean {
     let inp = s(&mut e, &i);
-    match sevenz_rust::Archive::open(&inp) {
-        Ok(arc) => {
-            for f in &arc.folders { for c in &f.coders { if c.decompression_method_id() == sevenz_rust::SevenZMethod::AES256SHA256.id() { return JNI_TRUE; } } }
-            JNI_FALSE
-        }
-        Err(er) => { let _ = e.throw_new("java/io/IOException", format!("7z: {er}")); JNI_FALSE }
-    }
+    match guarded(move || {
+        let arc = sevenz_rust::Archive::open(&inp).map_err(|e| format!("7z: {e}"))?;
+        for f in &arc.folders { for c in &f.coders { if c.decompression_method_id() == sevenz_rust::SevenZMethod::AES256SHA256.id() { return Ok(true); } } }
+        Ok(false)
+    }) { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("7z: {er}")); JNI_FALSE } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompress(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, lv: JString, pw: JString) -> jboolean {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let lvl = s(&mut e, &lv); let pwd = s(&mut e, &pw);
@@ -377,6 +387,8 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractProgressCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::bytes() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractProgressTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::total_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractProgressFileCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_total() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractProgressName(e: JNIEnv, _: JClass) -> jstring {
     e.new_string(&extract_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
@@ -386,7 +398,7 @@ fn vol_refs(vols: &[String]) -> Vec<&str> { vols.iter().map(|s| s.as_str()).coll
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szListEntriesVolumes(mut e: JNIEnv, _: JClass, v: JString) -> jstring {
     let vs = s(&mut e, &v); let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
-    match list_7z_volumes(&vol_refs(&vols)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
+    match guarded(move || list_7z_volumes(&vol_refs(&vols))) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractVolumes(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString) -> jstring {
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
@@ -406,7 +418,7 @@ fn vol_refs(vols: &[String]) -> Vec<&str> { vols.iter().map(|s| s.as_str()).coll
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szVolumesNeedsPassword(mut e: JNIEnv, _: JClass, v: JString) -> jboolean {
     let vs = s(&mut e, &v); let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
-    match sz_volumes_needs_password(&vol_refs(&vols)) { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("7z: {er}")); JNI_FALSE } }
+    match guarded(move || sz_volumes_needs_password(&vol_refs(&vols))) { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("7z: {er}")); JNI_FALSE } }
 }
 
 #[cfg(test)]

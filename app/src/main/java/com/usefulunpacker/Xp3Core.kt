@@ -6,6 +6,8 @@ object Xp3Core {
     external fun xp3ListEntries(input: String): String?
     external fun xp3ExtractProgressCount(): Long
     external fun xp3ExtractProgressTotal(): Long
+    external fun xp3ExtractProgressFileCount(): Long
+    external fun xp3ExtractProgressFileTotal(): Long
     external fun xp3ExtractProgressName(): String?
     external fun xp3ExtractCancel()
 }

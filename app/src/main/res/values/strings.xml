@@ -187,4 +187,9 @@
     <string name="title_audio_player">🎵 %1$s</string>
     <string name="msg_disclaimer_agree">Agree and continue</string>
     <string name="title_preview_archive">%1$s (%2$s)</string>
+    <string name="format_group_galgame">Galgame Formats</string>
+    <string name="format_group_generic">Generic Compression Formats</string>
+    <string name="format_group_single">Single-file Compression</string>
+    <string name="msg_single_file_compress">Single-file compression only supports a single file</string>
+    <string name="settings_compress_generic">Generic (gzip/bzip2/xz/zstd/lzma/lz4/tar)</string>
 </resources>

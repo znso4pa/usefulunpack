@@ -14,25 +14,43 @@ macro_rules! progress_store {
 
             static BYTES: AtomicU64 = AtomicU64::new(0);
             static TOTAL: AtomicU64 = AtomicU64::new(0);
+            static FILE_BYTES: AtomicU64 = AtomicU64::new(0);
+            static FILE_TOTAL: AtomicU64 = AtomicU64::new(0);
             static FNAME: Mutex<String> = Mutex::new(String::new());
             static CANCEL: AtomicBool = AtomicBool::new(false);
 
             pub fn reset(total_bytes: u64) {
                 BYTES.store(0, Ordering::SeqCst);
                 TOTAL.store(total_bytes, Ordering::SeqCst);
+                FILE_BYTES.store(0, Ordering::SeqCst);
+                FILE_TOTAL.store(0, Ordering::SeqCst);
                 CANCEL.store(false, Ordering::SeqCst);
-                *FNAME.lock().unwrap() = String::new();
+                *FNAME.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
             }
 
-            pub fn add_bytes(n: u64) { BYTES.fetch_add(n, Ordering::SeqCst); }
+            /// Marks the start of a new member: resets the per-file byte
+            /// counter and records the member's total size. Feed per-member
+            /// sizes here from each format's extract/compress loop.
+            pub fn set_file(total: u64) {
+                FILE_TOTAL.store(total, Ordering::SeqCst);
+                FILE_BYTES.store(0, Ordering::SeqCst);
+            }
 
-            pub fn set_name(name: &str) { *FNAME.lock().unwrap() = name.to_string(); }
+            /// Accumulates into both the overall and the current-file counter.
+            pub fn add_bytes(n: u64) {
+                BYTES.fetch_add(n, Ordering::SeqCst);
+                FILE_BYTES.fetch_add(n, Ordering::SeqCst);
+            }
+
+            pub fn set_name(name: &str) { *FNAME.lock().unwrap_or_else(|e| e.into_inner()) = name.to_string(); }
 
             pub fn cancel() { CANCEL.store(true, Ordering::SeqCst); }
             pub fn cancelled() -> bool { CANCEL.load(Ordering::SeqCst) }
             pub fn bytes() -> u64 { BYTES.load(Ordering::SeqCst) }
             pub fn total_bytes() -> u64 { TOTAL.load(Ordering::SeqCst) }
-            pub fn name() -> String { FNAME.lock().unwrap().clone() }
+            pub fn file_bytes() -> u64 { FILE_BYTES.load(Ordering::SeqCst) }
+            pub fn file_total() -> u64 { FILE_TOTAL.load(Ordering::SeqCst) }
+            pub fn name() -> String { FNAME.lock().unwrap_or_else(|e| e.into_inner()).clone() }
         }
     }
 }
@@ -41,18 +59,25 @@ progress_store!(extract_progress);
 progress_store!(compress_progress);
 
 /// Wraps a `Write` and accumulates written bytes into a progress store.
+/// Also aborts the write with an `Interrupted` error when the format's cancel
+/// flag is raised, so large single members stop promptly instead of running
+/// to completion before the next cancel check point.
 pub struct ProgressWriter<W> {
     inner: W,
     sink: fn(u64),
+    check: fn() -> bool,
 }
 
 impl<W> ProgressWriter<W> {
-    pub fn extract(inner: W) -> Self { Self { inner, sink: extract_progress::add_bytes } }
-    pub fn compress(inner: W) -> Self { Self { inner, sink: compress_progress::add_bytes } }
+    pub fn extract(inner: W) -> Self { Self { inner, sink: extract_progress::add_bytes, check: extract_progress::cancelled } }
+    pub fn compress(inner: W) -> Self { Self { inner, sink: compress_progress::add_bytes, check: compress_progress::cancelled } }
 }
 
 impl<W: std::io::Write> std::io::Write for ProgressWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if (self.check)() {
+            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+        }
         let n = self.inner.write(buf)?;
         (self.sink)(n as u64);
         Ok(n)
@@ -60,22 +85,41 @@ impl<W: std::io::Write> std::io::Write for ProgressWriter<W> {
     fn flush(&mut self) -> std::io::Result<()> { self.inner.flush() }
 }
 
-/// Wraps a `Read` and accumulates read bytes into a progress store.
+/// Wraps a `Read` and accumulates read bytes into a progress store. Checks
+/// the format's cancel flag on every read so compression (and any other
+/// read-driven copy) aborts promptly when the user cancels.
 pub struct ProgressReader<R> {
     inner: R,
     sink: fn(u64),
+    check: fn() -> bool,
 }
 
 impl<R> ProgressReader<R> {
-    pub fn extract(inner: R) -> Self { Self { inner, sink: extract_progress::add_bytes } }
-    pub fn compress(inner: R) -> Self { Self { inner, sink: compress_progress::add_bytes } }
+    pub fn extract(inner: R) -> Self { Self { inner, sink: extract_progress::add_bytes, check: extract_progress::cancelled } }
+    pub fn compress(inner: R) -> Self { Self { inner, sink: compress_progress::add_bytes, check: compress_progress::cancelled } }
 }
 
 impl<R: std::io::Read> std::io::Read for ProgressReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if (self.check)() {
+            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+        }
         let n = self.inner.read(buf)?;
         (self.sink)(n as u64);
         Ok(n)
+    }
+}
+
+impl<R: std::io::BufRead> std::io::BufRead for ProgressReader<R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if (self.check)() {
+            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+        }
+        self.inner.fill_buf()
+    }
+    fn consume(&mut self, amt: usize) {
+        (self.sink)(amt as u64);
+        self.inner.consume(amt);
     }
 }
 
@@ -97,7 +141,7 @@ pub fn oneshot_async<Fut: Future>(fut: Fut) -> Fut::Output {
     loop {
         match fut.as_mut().poll(&mut cx) {
             Poll::Ready(v) => return v,
-            Poll::Pending => std::hint::spin_loop(),
+            Poll::Pending => std::thread::yield_now(),
         }
     }
 }

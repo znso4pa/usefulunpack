@@ -4,7 +4,7 @@
 
 輕量級 Android 檔案管理器 & **視覺小說遊戲資源解包工具**
 
-支援 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）和 **ZIP**、**7z**、**RAR**、**LZ4** 和 **ISO 9660** 光碟映像，Rust 原生核心。
+支援 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**ISO 9660** 光碟映像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支援打包與解壓），Rust 原生核心。
 
 ---
 
@@ -16,10 +16,18 @@
 | 📦 **PFS** | 解壓 Artemis `.pfs` / `.pf6` / `.pf8` 封包 |
 | 📜 **NSA/SAR** | 解壓 NScripter `.nsa` / `.sar` 封包（LZSS + SPB） |
 | 📦 **YPF** | 解壓 YU-RIS `.ypf` 封包，三層自適應邊界檢測 |
-| 🗜️ **ZIP/7z 壓縮** | 支援 ZIP/7z 打包，5 級壓縮程度，AES-256 加密 |
+| 🗜️ **通用壓縮** | ZIP/7z + gzip/bzip2/xz/zstd/lzma/lz4（單檔）+ tar（資料夾 5 變體），5 級壓縮程度，AES-256（ZIP） |
 | 🔐 **解壓密碼** | 加密的 ZIP/7z/RAR 支援輸入密碼解壓 |
+| 📊 **雙層進度條** | 頂部=全量進度，底部=目前檔案進度（解壓+壓縮） |
+| 📋 **分組格式選擇器** | 可捲動分組格式選擇（Galgame / 通用壓縮），解壓/批次/壓縮共用 |
 | 🗜️ **RAR** | 解壓 RAR 封包（RAR4/5），支援密碼 |
-| ⚡ **LZ4** | 解壓 LZ4 幀壓縮檔案 |
+| ⚡ **LZ4** | 打包/解包 LZ4 幀壓縮檔案 |
+| 🗜️ **TAR** | 打包/解包 `.tar`、`.tar.gz`、`.tgz`、`.tar.bz2`、`.tbz2`、`.tar.xz`、`.txz`、`.tar.zst` |
+| 🗜️ **GZIP** | 打包/解包 `.gz` |
+| 🗜️ **BZIP2** | 打包/解包 `.bz2` |
+| 🗜️ **XZ** | 打包/解包 `.xz` |
+| 🗜️ **ZSTD** | 打包/解包 `.zst` |
+| 🗜️ **LZMA** | 打包/解包 `.lzma` |
 | 💿 **ISO 9660** | 瀏覽和提取 ISO 光碟映像 |
 | 🔍 **歸檔預覽** | 樹形預覽歸檔內容，可折疊/展開，複選框選擇性解壓 |
 | 📊 **預覽統計** | 即時檔案總數/總大小 + 已選統計 |
@@ -35,7 +43,7 @@
 | 🏠 **根目錄** | 一鍵回到 `/storage/emulated/0` |
 | 🛡️ **防連點** | 800ms 冷卻 |
 | 🌙 **深色主題** | 護眼暗色 |
-| 🦀 **Rust 核心** | 每種格式獨立 `.so`，互不干擾 |
+| 🦀 **Rust 核心** | 每種格式獨立 `.so`，互不干擾（15 種格式） |
 | 🔒 **最小權限** | 僅儲存權限 |
 
 ## 截圖
@@ -75,6 +83,14 @@ bash build.sh
          libarchive_ypf_core.so  → YPF (YU-RIS)
          libarchive_zip_core.so  → ZIP
          libarchive_sevenz_core.so → 7z
+         libarchive_rar_core.so  → RAR
+         libarchive_lz4_core.so  → LZ4
+         libarchive_gzip_core.so → GZIP
+         libarchive_bzip2_core.so → BZIP2
+         libarchive_xz_core.so   → XZ
+         libarchive_zstd_core.so → ZSTD
+         libarchive_lzma_core.so → LZMA
+         libarchive_tar_core.so  → TAR (+ tgz/tbz2/txz/tzst)
                   ↓
           檔案寫入目標目錄
 ```

@@ -478,19 +478,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun startBatchExtract() {
         val archives = batchArchives(); if (archives.isEmpty()) { toast(getString(R.string.no_archives)); return }
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.title_select_format))
-            .setItems(arrayOf(getString(R.string.format_xp3), getString(R.string.format_pfs), getString(R.string.format_nsa), getString(R.string.format_iso), getString(R.string.format_ypf), getString(R.string.format_zip), getString(R.string.format_7z), getString(R.string.format_rar), getString(R.string.format_lz4))) { _, which ->
-                val fmt = arrayOf("xp3", "pfs", "nsa", "iso", "ypf", "zip", "7z", "rar", "lz4")[which]
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle(getString(R.string.title_batch_archives_fmt, archives.size, fmt.uppercase()))
-                    .setItems(arrayOf(getString(R.string.action_preview), getString(R.string.action_extract))) { _, w ->
-                        when (w) {
-                            0 -> batchPreview(archives, fmt)
-                            1 -> batchDirectExtract(archives, fmt)
-                        }
-                    }.setNegativeButton(getString(R.string.action_cancel), null).show()
-            }.setNegativeButton(getString(R.string.action_cancel), null).show()
+        showFormatPicker(this, getString(R.string.title_select_format)) { fmt ->
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle(getString(R.string.title_batch_archives_fmt, archives.size, fmt.uppercase()))
+                .setItems(arrayOf(getString(R.string.action_preview), getString(R.string.action_extract))) { _, w ->
+                    when (w) {
+                        0 -> batchPreview(archives, fmt)
+                        1 -> batchDirectExtract(archives, fmt)
+                    }
+                }.setNegativeButton(getString(R.string.action_cancel), null).show()
+        }
     }
     private fun batchDirectExtract(archives: List<File>, fmt: String) {
         val parent = archives[0].parentFile ?: currentDir
@@ -533,7 +530,7 @@ class MainActivity : AppCompatActivity() {
         thread {
             val all: MutableList<Pair<File, List<ArchiveEntry>>> = mutableListOf()
             for (src in archives) {
-                val json = try { when(fmt) { "xp3"->Xp3Core.xp3ListEntries(src.path); "pfs"->PfsCore.pfsListEntries(src.path); "nsa"->NsaCore.nsaListEntries(src.path); "iso"->IsoCore.isoListEntries(src.path); "ypf"->YpfCore.ypfListEntries(src.path); "zip"->ZipCore.zipListEntries(src.path); "7z"->{ val vols = resolveSevenZVolumes(src); if (vols.size>1) SevenZCore.szListEntriesVolumes(volumeJoin(vols)) else SevenZCore.szListEntries(src.path) }; "rar"->{ val vols = resolveRarVolumes(src); if (vols.size>1) RarCore.rarListEntriesVolumes(volumeJoin(vols)) else RarCore.rarListEntries(src.path) }; "lz4"->Lz4Core.lz4ListEntries(src.path); else->null } } catch(_:Exception){null}
+                val json = try { when(fmt) { "xp3"->Xp3Core.xp3ListEntries(src.path); "pfs"->PfsCore.pfsListEntries(src.path); "nsa"->NsaCore.nsaListEntries(src.path); "iso"->IsoCore.isoListEntries(src.path); "ypf"->YpfCore.ypfListEntries(src.path); "zip"->ZipCore.zipListEntries(src.path); "7z"->{ val vols = resolveSevenZVolumes(src); if (vols.size>1) SevenZCore.szListEntriesVolumes(volumeJoin(vols)) else SevenZCore.szListEntries(src.path) }; "rar"->{ val vols = resolveRarVolumes(src); if (vols.size>1) RarCore.rarListEntriesVolumes(volumeJoin(vols)) else RarCore.rarListEntries(src.path) }; "lz4"->Lz4Core.lz4ListEntries(src.path); "gz"->GzipCore.gzListEntries(src.path); "bz2"->Bzip2Core.bz2ListEntries(src.path); "xz"->XzCore.xzListEntries(src.path); "zst"->ZstdCore.zstListEntries(src.path); "lzma"->LzmaCore.lzmaListEntries(src.path); "tar"->TarCore.tarListEntries(src.path); else->null } } catch(_:Exception){null}
                 if (json != null) all.add(src to parseEntries(json))
             }
             runOnUiThread { pd.dismiss(); if (all.isEmpty()) toast(getString(R.string.msg_cannot_read)); else showBatchPreviewDialog(all, fmt) }
@@ -785,12 +782,9 @@ class MainActivity : AppCompatActivity() {
                 .show()
             return
         }
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.title_select_format))
-            .setItems(arrayOf(getString(R.string.format_xp3), getString(R.string.format_pfs), getString(R.string.format_nsa), getString(R.string.format_iso), getString(R.string.format_ypf), getString(R.string.format_zip), getString(R.string.format_7z), getString(R.string.format_rar), getString(R.string.format_lz4))) { _, which ->
-                val format = arrayOf("xp3", "pfs", "nsa", "iso", "ypf", "zip", "7z", "rar", "lz4")[which]
-                showExtractOptions(src, format)
-            }.setNegativeButton(getString(R.string.action_cancel), null).show()
+        showFormatPicker(this, getString(R.string.title_select_format)) { format ->
+            showExtractOptions(src, format)
+        }
     }
 
 
@@ -977,6 +971,12 @@ class MainActivity : AppCompatActivity() {
                 "7z" -> { val vols = resolveSevenZVolumes(src); if (vols.size > 1) SevenZCore.szListEntriesVolumes(volumeJoin(vols)) else SevenZCore.szListEntries(src.absolutePath) }
                 "rar" -> { val vols = resolveRarVolumes(src); if (vols.size > 1) RarCore.rarListEntriesVolumes(volumeJoin(vols)) else RarCore.rarListEntries(src.absolutePath) }
                 "lz4" -> Lz4Core.lz4ListEntries(src.absolutePath)
+                "gz" -> GzipCore.gzListEntries(src.absolutePath)
+                "bz2" -> Bzip2Core.bz2ListEntries(src.absolutePath)
+                "xz" -> XzCore.xzListEntries(src.absolutePath)
+                "zst" -> ZstdCore.zstListEntries(src.absolutePath)
+                "lzma" -> LzmaCore.lzmaListEntries(src.absolutePath)
+                "tar" -> TarCore.tarListEntries(src.absolutePath)
                 else -> null
             } } catch (_: Exception) { null }
             runOnUiThread { pd.dismiss() }
@@ -1301,6 +1301,11 @@ class MainActivity : AppCompatActivity() {
 
         val zipLevelSection = buildLevelRow("ZIP " + getString(R.string.settings_compress), ZIP_LEVELS, ZIP_VALS, zipLevel) { v -> zipLevel = v }
         val szSection = buildLevelRow("7z " + getString(R.string.settings_compress), SZ_LEVELS, SZ_VALS, szLevel) { v -> szLevel = v }
+        var genericLevel = prefs.getInt("generic_level", 6).let { if (it !in intArrayOf(0,3,5,7,9)) 6 else it }
+        val genericSection = buildLevelRow(getString(R.string.settings_compress_generic), ZIP_LEVELS, ZIP_VALS, genericLevel) { v ->
+            genericLevel = v
+            prefs.edit().putInt("generic_level", v).apply()
+        }
 
         // ═══ Compact encoding row (like password toggle) ═══
         val zipEncVals = arrayOf("UTF-8", "SHIFT-JIS", "GBK")
@@ -1392,6 +1397,7 @@ class MainActivity : AppCompatActivity() {
                 addView(row1)
                 addView(zipLevelSection)
                 addView(szSection)
+                addView(genericSection)
                 // Compact encoding toggle row
                 addView(View(this@MainActivity).apply { setBackgroundColor(C["divider_subtle"]!!); layoutParams = LinearLayout.LayoutParams(MATCH, 1).apply { setMargins(24, 0, 24, 0) } })
                 addView(encRow)

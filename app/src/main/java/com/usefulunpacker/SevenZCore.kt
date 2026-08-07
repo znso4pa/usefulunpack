@@ -10,9 +10,13 @@ object SevenZCore {
     external fun szCompressCancel()
     external fun szCompressProgressCount(): Long
     external fun szCompressProgressTotal(): Long
+    external fun szCompressProgressFileCount(): Long
+    external fun szCompressProgressFileTotal(): Long
     external fun szCompressProgressName(): String?
     external fun szExtractProgressCount(): Long
     external fun szExtractProgressTotal(): Long
+    external fun szExtractProgressFileCount(): Long
+    external fun szExtractProgressFileTotal(): Long
     external fun szExtractProgressName(): String?
     external fun szExtractCancel()
     external fun szListEntriesVolumes(volumes: String): String?

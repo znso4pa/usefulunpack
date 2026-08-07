@@ -6,6 +6,8 @@ object PfsCore {
     external fun pfsListEntries(input: String): String?
     external fun pfsExtractProgressCount(): Long
     external fun pfsExtractProgressTotal(): Long
+    external fun pfsExtractProgressFileCount(): Long
+    external fun pfsExtractProgressFileTotal(): Long
     external fun pfsExtractProgressName(): String?
     external fun pfsExtractCancel()
 }

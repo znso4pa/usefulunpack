@@ -4,7 +4,7 @@ use jni::sys::{jboolean, jstring, jlong, JNI_TRUE, JNI_FALSE};
 use archive_common::{s, json_escape, extract_result_json, ProgressWriter, ProgressReader};
 use archive_common::{extract_progress, compress_progress};
 use std::fs::{self, File};
-use std::io::BufReader;
+use std::io::{self, BufReader};
 use std::path::Path;
 
 fn output_name(input: &str) -> String {
@@ -20,25 +20,28 @@ fn extract_xz(input: &str, output: &str) -> Result<u32, String> {
     let name = output_name(input);
     let dest = Path::new(output).join(&name);
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
-    let mut r = BufReader::new(File::open(input).map_err(|e| format!("xz: {e}"))?);
+    let r = BufReader::new(File::open(input).map_err(|e| format!("xz: {e}"))?);
     let mut writer = ProgressWriter::extract(File::create(&dest).map_err(|e| format!("{e}"))?);
     extract_progress::reset(0);
     extract_progress::set_name(&name);
     extract_progress::set_file(0);
-    lzma_rs::xz_decompress(&mut r, &mut writer).map_err(|e| format!("xz: {e}"))?;
+    let mut dec = xz2::read::XzDecoder::new(r);
+    io::copy(&mut dec, &mut writer).map_err(|e| format!("xz: {e}"))?;
     Ok(0)
 }
 
-fn compress_xz(input: &str, output: &str, _level: i32) -> Result<u32, String> {
+fn compress_xz(input: &str, output: &str, level: i32) -> Result<u32, String> {
     let src = File::open(input).map_err(|e| format!("{e}"))?;
     let size = src.metadata().map(|m| m.len()).unwrap_or(0);
-    let mut out_file = File::create(output).map_err(|e| format!("{e}"))?;
+    let out_file = File::create(output).map_err(|e| format!("{e}"))?;
     let name = Path::new(input).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     compress_progress::reset(size);
     compress_progress::set_name(&name);
     compress_progress::set_file(size);
-    let mut r = ProgressReader::compress(BufReader::new(src));
-    lzma_rs::xz_compress(&mut r, &mut out_file).map_err(|e| format!("xz: {e}"))?;
+    // xz preset 0-9 (liblzma) — the compression-level setting now actually applies
+    let mut enc = xz2::write::XzEncoder::new(out_file, level.clamp(0, 9) as u32);
+    io::copy(&mut ProgressReader::compress(BufReader::new(src)), &mut enc).map_err(|e| format!("xz: {e}"))?;
+    enc.finish().map_err(|e| format!("xz: {e}"))?;
     Ok(0)
 }
 
@@ -97,9 +100,10 @@ mod tests {
     }
 
     fn compress_bytes(data: &[u8]) -> Vec<u8> {
-        let mut src = &data[..];
         let mut out = Vec::new();
-        lzma_rs::xz_compress(&mut src, &mut out).unwrap();
+        let mut enc = xz2::write::XzEncoder::new(&mut out, 6);
+        std::io::Write::write_all(&mut enc, data).unwrap();
+        enc.finish().unwrap();
         out
     }
 

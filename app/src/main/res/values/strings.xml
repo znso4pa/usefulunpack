@@ -35,6 +35,7 @@
     <string name="msg_deleted">Deleted</string>
     <string name="msg_created">Created</string>
     <string name="msg_cancelled">Cancelled</string>
+    <string name="msg_op_in_progress">Another operation is in progress</string>
     <string name="msg_no_results">No results found</string>
     <string name="msg_enter_keyword">Enter a keyword</string>
     <string name="msg_select_one">Select at least one</string>
@@ -187,9 +188,10 @@
     <string name="title_audio_player">🎵 %1$s</string>
     <string name="msg_disclaimer_agree">Agree and continue</string>
     <string name="title_preview_archive">%1$s (%2$s)</string>
-    <string name="format_group_galgame">Galgame Formats</string>
+    <string name="format_group_other">Other Formats</string>
     <string name="format_group_generic">Generic Compression Formats</string>
     <string name="format_group_single">Single-file Compression</string>
     <string name="msg_single_file_compress">Single-file compression only supports a single file</string>
+    <string name="msg_ksd_need_txt">KSD packing only supports .txt text files</string>
     <string name="settings_compress_generic">Generic (gzip/bzip2/xz/zstd/lzma/lz4/tar)</string>
 </resources>

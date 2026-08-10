@@ -10,4 +10,11 @@ object PfsCore {
     external fun pfsExtractProgressFileTotal(): Long
     external fun pfsExtractProgressName(): String?
     external fun pfsExtractCancel()
+    external fun pfsCreateArchive(tool: String, input: String, output: String): String?
+    external fun pfsCompressProgressCount(): Long
+    external fun pfsCompressProgressTotal(): Long
+    external fun pfsCompressProgressFileCount(): Long
+    external fun pfsCompressProgressFileTotal(): Long
+    external fun pfsCompressProgressName(): String?
+    external fun pfsCompressCancel()
 }

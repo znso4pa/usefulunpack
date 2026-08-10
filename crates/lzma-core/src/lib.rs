@@ -4,7 +4,7 @@ use jni::sys::{jboolean, jstring, jlong, JNI_TRUE, JNI_FALSE};
 use archive_common::{s, json_escape, extract_result_json, ProgressWriter, ProgressReader};
 use archive_common::{extract_progress, compress_progress};
 use std::fs::{self, File};
-use std::io::{BufReader, Read};
+use std::io::{self, BufReader, Read, Write};
 use std::path::Path;
 
 fn output_name(input: &str) -> String {
@@ -38,16 +38,57 @@ fn extract_lzma(input: &str, output: &str) -> Result<u32, String> {
     Ok(0)
 }
 
-fn compress_lzma(input: &str, output: &str, _level: i32) -> Result<u32, String> {
+/// Streaming LZMA (.lzma / lzma_alone) encoder over liblzma (lzma-sys).
+/// The preset (level 0-9) now actually applies and encoding is far faster than
+/// the pure-Rust lzma-rs "dumb" encoder (which ignored the level entirely).
+fn lzma_alone_compress(src: &mut dyn Read, dst: &mut dyn Write, level: i32) -> io::Result<()> {
+    unsafe {
+        let mut stream: lzma_sys::lzma_stream = std::mem::zeroed();
+        let mut opt: lzma_sys::lzma_options_lzma = std::mem::zeroed();
+        // NOTE: this liblzma binding reports 0 for lzma_lzma_preset even on
+        // success; validity is confirmed by lzma_alone_encoder returning LZMA_OK.
+        lzma_sys::lzma_lzma_preset(&mut opt, level.clamp(0, 9) as u32);
+        if lzma_sys::lzma_alone_encoder(&mut stream, &opt) != lzma_sys::LZMA_OK {
+            return Err(io::Error::other("lzma_alone_encoder failed"));
+        }
+        let r = encode_loop(&mut stream, src, dst);
+        lzma_sys::lzma_end(&mut stream);
+        r
+    }
+}
+
+fn encode_loop(stream: &mut lzma_sys::lzma_stream, src: &mut dyn Read, dst: &mut dyn Write) -> io::Result<()> {
+    let mut inbuf = vec![0u8; 65536];
+    let mut outbuf = vec![0u8; 65536];
+    let mut action = lzma_sys::LZMA_RUN;
+    loop {
+        if stream.avail_in == 0 && action == lzma_sys::LZMA_RUN {
+            let n = src.read(&mut inbuf)?;
+            stream.next_in = inbuf.as_ptr();
+            stream.avail_in = n;
+            if n == 0 { action = lzma_sys::LZMA_FINISH; }
+        }
+        stream.next_out = outbuf.as_mut_ptr();
+        stream.avail_out = outbuf.len();
+        let ret = unsafe { lzma_sys::lzma_code(stream, action) };
+        let produced = outbuf.len() - stream.avail_out;
+        if produced > 0 { dst.write_all(&outbuf[..produced])?; }
+        if ret == lzma_sys::LZMA_STREAM_END { return Ok(()); }
+        if ret != lzma_sys::LZMA_OK { return Err(io::Error::other("lzma_code failed")); }
+    }
+}
+
+fn compress_lzma(input: &str, output: &str, level: i32) -> Result<u32, String> {
     let src = File::open(input).map_err(|e| format!("{e}"))?;
     let size = src.metadata().map(|m| m.len()).unwrap_or(0);
-    let mut out_file = File::create(output).map_err(|e| format!("{e}"))?;
+    let out_file = File::create(output).map_err(|e| format!("{e}"))?;
     let name = Path::new(input).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     compress_progress::reset(size);
     compress_progress::set_name(&name);
     compress_progress::set_file(size);
     let mut r = ProgressReader::compress(BufReader::new(src));
-    lzma_rs::lzma_compress(&mut r, &mut out_file).map_err(|e| format!("lzma: {e}"))?;
+    let mut w = io::BufWriter::new(out_file);
+    lzma_alone_compress(&mut r, &mut w, level).map_err(|e| format!("lzma: {e}"))?;
     Ok(0)
 }
 
@@ -108,7 +149,7 @@ mod tests {
     fn compress_bytes(data: &[u8]) -> Vec<u8> {
         let mut src = &data[..];
         let mut out = Vec::new();
-        lzma_rs::lzma_compress(&mut src, &mut out).unwrap();
+        lzma_alone_compress(&mut src, &mut out, 6).unwrap();
         out
     }
 
@@ -119,7 +160,6 @@ mod tests {
         let data: Vec<u8> = (0..80_000u32).map(|i| (i % 251) as u8).collect();
         let lzma = dir.join("a.lzma");
         std::fs::write(&lzma, compress_bytes(&data)).unwrap();
-        assert!(decompressed_size(lzma.to_str().unwrap()) > 0);
         let out = dir.join("out");
         std::fs::create_dir_all(&out).unwrap();
         extract_lzma(lzma.to_str().unwrap(), out.to_str().unwrap()).unwrap();

@@ -408,61 +408,121 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun compressMerged(items: List<File>) {
-        val inp = EditText(this).apply {
-            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-            setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
-            setText("archive")
-            setSingleLine()
-        }
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.title_compress_name))
-            .setView(inp)
-            .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
-                val name = inp.text.toString().trim().ifEmpty { "archive" }
-                val ext = "zip"; val level = prefs.getInt("zip_level", 5)
-                val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
-                val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
-                val outF = uniqueFile(currentDir, "$name.$ext")
-                val tmpDir = File(cacheDir, "batch_compress/$name")
-                tmpDir.mkdirs()
-                for (f in items) {
-                    if (f.isDirectory) f.copyRecursively(File(tmpDir, f.name))
-                    else f.copyTo(File(tmpDir, f.name), overwrite = true)
-                }
-                val pd = ProgressDialog(this).apply { setTitle(getString(R.string.title_compress_merged, ext)); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
-                thread {
-                    ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8")
-                    val ok = ZipCore.zipCompress("", tmpDir.path, outF.path, level.toString(), password)
-                    tmpDir.deleteRecursively()
-                    runOnUiThread { pd.dismiss(); if (ok) toast("${getString(R.string.msg_extract_complete)} ${outF.name}") else toast(getString(R.string.title_compress_failed)); exitMultiSelect(); nav(currentDir) }
-                }
+        // 合并只支持多条目归档格式，先选格式再命名
+        showFormatPicker(this, getString(R.string.title_select_format),
+            groups = MERGE_COMPRESS_GROUPS, labels = COMPRESS_LABELS
+        ) { fmt ->
+            val ext = COMPRESS_EXT[fmt] ?: fmt
+            val inp = EditText(this).apply {
+                setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+                setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
+                setText("archive")
+                setSingleLine()
             }
-            .setNegativeButton(getString(R.string.action_cancel), null).show()
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.title_compress_name))
+                .setView(inp)
+                .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
+                    val name = inp.text.toString().trim().ifEmpty { "archive" }
+                    val level = if (fmt == "zip") prefs.getInt("zip_level", 5) else if (fmt == "7z") prefs.getInt("sz_level", 6) else prefs.getInt("generic_level", 6)
+                    val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
+                    val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
+                    val outF = uniqueFile(currentDir, "$name.$ext")
+                    val tmpDir = File(cacheDir, "batch_compress/$name")
+                    tmpDir.mkdirs()
+                    for (f in items) {
+                        if (f.isDirectory) f.copyRecursively(File(tmpDir, f.name))
+                        else f.copyTo(File(tmpDir, f.name), overwrite = true)
+                    }
+                    var cancelled = false
+                    val accessors = compressAccessors(fmt)
+                    val pd = PollingProgressDialog(
+                        this,
+                        getString(R.string.title_compress_merged, ext),
+                        accessors,
+                        { n, b, t -> compressProgressMessage(this, n, b, t) },
+                        getString(R.string.action_cancel),
+                        { cancelled = true; accessors.cancel() }
+                    )
+                    pd.start()
+                    thread {
+                        if (!tryStartOperation(this)) return@thread
+                        try {
+                            val ok = compressDispatch(tmpDir, outF, fmt, level, password, prefs)
+                            tmpDir.deleteRecursively()
+                            runOnUiThread {
+                                pd.dismiss()
+                                if (cancelled) toast(getString(R.string.msg_cancelled))
+                                else if (ok) toast("${getString(R.string.msg_extract_complete)} ${outF.name}")
+                                else toast(getString(R.string.title_compress_failed))
+                                exitMultiSelect(); nav(currentDir)
+                            }
+                        } finally {
+                            OperationLock.release()
+                        }
+                    }
+                }
+                .setNegativeButton(getString(R.string.action_cancel), null).show()
+        }
     }
 
     private fun compressSeparate(items: List<File>) {
-        val ext = "zip"; val level = prefs.getInt("zip_level", 5)
-        val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
-        val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
-        val pd = ProgressDialog(this).apply { setTitle(getString(R.string.msg_batch_compress_title, ext)); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
-        thread {
-            var ok = true
-            for (f in items) {
-                val outF = uniqueFile(f.parentFile ?: currentDir, "${f.name}.$ext")
-                ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8")
-                val ok2 = if (f.isDirectory) {
-                    ZipCore.zipCompress("", f.path, outF.path, level.toString(), password)
-                } else {
-                    val tmpDir = File(cacheDir, "batch_compress/${f.nameWithoutExtension}")
-                    tmpDir.mkdirs()
-                    f.copyTo(File(tmpDir, f.name), overwrite = true)
-                    val result = ZipCore.zipCompress("", tmpDir.path, outF.path, level.toString(), password)
-                    tmpDir.deleteRecursively()
-                    result
-                }
-                if (!ok2) { ok = false; break }
+        showFormatPicker(this, getString(R.string.title_select_format),
+            groups = COMPRESS_GROUPS, labels = COMPRESS_LABELS
+        ) { fmt ->
+            val ext = COMPRESS_EXT[fmt] ?: fmt
+            if (fmt in SINGLE_FILE_COMPRESS && items.any { it.isDirectory }) {
+                toast(getString(R.string.msg_single_file_compress)); return@showFormatPicker
             }
-            runOnUiThread { pd.dismiss(); if (ok) toast(getString(R.string.msg_batch_compress_done)) else toast(getString(R.string.title_compress_failed)); exitMultiSelect(); nav(currentDir) }
+            if (fmt == "ksd" && items.any { !it.name.lowercase().endsWith(".txt") }) {
+                toast(getString(R.string.msg_ksd_need_txt)); return@showFormatPicker
+            }
+            val level = if (fmt == "zip") prefs.getInt("zip_level", 5) else if (fmt == "7z") prefs.getInt("sz_level", 6) else prefs.getInt("generic_level", 6)
+            val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
+            val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
+            var cancelled = false
+            val accessors = compressAccessors(fmt)
+            val pd = PollingProgressDialog(
+                this,
+                getString(R.string.msg_batch_compress_title, ext),
+                accessors,
+                { n, b, t -> compressProgressMessage(this, n, b, t) },
+                getString(R.string.action_cancel),
+                { cancelled = true; accessors.cancel() }
+            )
+            pd.start()
+            thread {
+                if (!tryStartOperation(this)) return@thread
+                try {
+                    var ok = true
+                    for (f in items) {
+                        if (cancelled) { ok = false; break }
+                        val outName = if (fmt == "ksd") "${f.nameWithoutExtension}.$ext" else "${f.name}.$ext"
+                        val outF = uniqueFile(f.parentFile ?: currentDir, outName)
+                        // zip/7z/tar 的 Rust 端 read_dir 不接受单文件输入，需临时目录包裹
+                        val ok2 = if (f.isDirectory || fmt !in setOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")) {
+                            compressDispatch(f, outF, fmt, level, password, prefs)
+                        } else {
+                            val tmpDir = File(cacheDir, "batch_compress/${f.nameWithoutExtension}")
+                            tmpDir.mkdirs()
+                            f.copyTo(File(tmpDir, f.name), overwrite = true)
+                            val result = compressDispatch(tmpDir, outF, fmt, level, password, prefs)
+                            tmpDir.deleteRecursively()
+                            result
+                        }
+                        if (!ok2) { ok = false; break }
+                    }
+                    runOnUiThread {
+                        pd.dismiss()
+                        if (cancelled) toast(getString(R.string.msg_cancelled))
+                        else if (ok) toast(getString(R.string.msg_batch_compress_done))
+                        else toast(getString(R.string.title_compress_failed))
+                        exitMultiSelect(); nav(currentDir)
+                    }
+                } finally {
+                    OperationLock.release()
+                }
+            }
         }
     }
     private fun batchArchives(): List<File> = multiSelected.filter { it.isFile && (it.extension.lowercase() in ARCHIVE_EXTS || isVolumeFile(it) != null) }
@@ -508,19 +568,24 @@ class MainActivity : AppCompatActivity() {
                 )
                 prog.start()
                 thread {
-                    var ok = true
-                    for (i in archives.indices) {
-                        if (cancelled) { ok = false; break }
-                        val out = if (w == 0) outDirs[i] else parent
-                        ok = extractByFormat(fmt, archives[i].path, out.path, "", prefs)
-                        if (!ok) break
-                    }
-                    runOnUiThread {
-                        prog.dismiss()
-                        if (cancelled) toast(getString(R.string.msg_cancelled))
-                        else if (ok) toast(getString(R.string.msg_batch_done))
-                        else toast(friendlyExtractError(this))
-                        exitMultiSelect(); nav(currentDir)
+                    if (!tryStartOperation(this)) return@thread
+                    try {
+                        var ok = true
+                        for (i in archives.indices) {
+                            if (cancelled) { ok = false; break }
+                            val out = if (w == 0) outDirs[i] else parent
+                            ok = extractByFormat(fmt, archives[i].path, out.path, "", prefs)
+                            if (!ok) break
+                        }
+                        runOnUiThread {
+                            prog.dismiss()
+                            if (cancelled) toast(getString(R.string.msg_cancelled))
+                            else if (ok) toast(getString(R.string.msg_batch_done))
+                            else toast(friendlyExtractError(this))
+                            exitMultiSelect(); nav(currentDir)
+                        }
+                    } finally {
+                        OperationLock.release()
                     }
                 }
             }.setNegativeButton(getString(R.string.action_cancel), null).show()
@@ -808,6 +873,18 @@ class MainActivity : AppCompatActivity() {
             val label = if (vols.size > 1) getString(R.string.msg_multivolume, vols.size) else ""
             tvSelected.text = "${f.name}  |  ${fmt(fileSize(f))}" + if (label.isNotEmpty()) "  |  $label" else ""
             fabExtract.visibility = View.VISIBLE
+            fabExtract.setOnClickListener { extract() }
+            return
+        }
+
+        // Compress mode: any non-archive single file → show compress FAB at bottom-right
+        if (prefs.getInt("work_mode", 0) == 1) {
+            selectedFile = f
+            tvSelected.text = "📄 ${f.name}  |  ${fmt(fileSize(f))}"
+            bottomBar.visibility = View.GONE
+            btnFolderNext.visibility = View.GONE
+            fabExtract.visibility = View.VISIBLE
+            fabExtract.setOnClickListener { showCompressFormatPicker(this, f, prefs, currentDir) { nav(currentDir) } }
             return
         }
 
@@ -898,55 +975,65 @@ class MainActivity : AppCompatActivity() {
             return if (json != null) ExtractCounts.fromJson(json) else lastExtractResult
         }
         thread {
-            val result = doExtract()
-            runOnUiThread {
-                prog.dismiss()
-                if (cancelled) {
-                    if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete()
-                    toast(getString(R.string.msg_cancelled))
-                    return@runOnUiThread
-                }
-                if (result.success > 0 && result.error == 0) { showExtractSuccess(src.name, destFile.name, result); nav(currentDir) }
-                else if (format in setOf("zip", "7z", "rar")) {
-                    if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete()
-                    val inp = EditText(this@MainActivity).apply {
-                        hint = getString(R.string.prompt_password)
-                        setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                        setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
-                        inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            if (!tryStartOperation(this)) return@thread
+            try {
+                val result = doExtract()
+                runOnUiThread {
+                    prog.dismiss()
+                    if (cancelled) {
+                        if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete()
+                        toast(getString(R.string.msg_cancelled))
+                        return@runOnUiThread
                     }
-                    AlertDialog.Builder(this@MainActivity)
-                        .setTitle(getString(R.string.title_password))
-                        .setMessage(getString(R.string.retry))
-                        .setView(inp)
-                        .setPositiveButton(getString(R.string.retry)) { _, _ ->
-                            val pwd = inp.text.toString()
-                            var cancelled2 = false
-                            val accessors2 = extractAccessors(format)
-                            val prog2 = PollingProgressDialog(
-                                this@MainActivity,
-                                "${src.name} → ${destFile.name}",
-                                accessors2,
-                                { n, b, t -> extractProgressMessage(this@MainActivity, n, b, t) },
-                                getString(R.string.action_cancel),
-                                { cancelled2 = true; accessors2.cancel() }
-                            )
-                            prog2.start()
-                            thread {
-                                val result2 = doExtract(pwd)
-                                runOnUiThread {
-                                    prog2.dismiss()
-                                    if (cancelled2) {
-                                        if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete()
-                                        toast(getString(R.string.msg_cancelled))
-                                    } else if (result2.success > 0 && result2.error == 0) { showExtractSuccess(src.name, destFile.name, result2); nav(currentDir) }
-                                    else toast(friendlyExtractError(this@MainActivity))
+                    if (result.success > 0 && result.error == 0) { showExtractSuccess(src.name, destFile.name, result); nav(currentDir) }
+                    else if (format in setOf("zip", "7z", "rar")) {
+                        if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete()
+                        val inp = EditText(this@MainActivity).apply {
+                            hint = getString(R.string.prompt_password)
+                            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+                            setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
+                            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                        }
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle(getString(R.string.title_password))
+                            .setMessage(getString(R.string.retry))
+                            .setView(inp)
+                            .setPositiveButton(getString(R.string.retry)) { _, _ ->
+                                val pwd = inp.text.toString()
+                                var cancelled2 = false
+                                val accessors2 = extractAccessors(format)
+                                val prog2 = PollingProgressDialog(
+                                    this@MainActivity,
+                                    "${src.name} → ${destFile.name}",
+                                    accessors2,
+                                    { n, b, t -> extractProgressMessage(this@MainActivity, n, b, t) },
+                                    getString(R.string.action_cancel),
+                                    { cancelled2 = true; accessors2.cancel() }
+                                )
+                                prog2.start()
+                                thread {
+                                    if (!tryStartOperation(this@MainActivity)) return@thread
+                                    try {
+                                        val result2 = doExtract(pwd)
+                                        runOnUiThread {
+                                            prog2.dismiss()
+                                            if (cancelled2) {
+                                                if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete()
+                                                toast(getString(R.string.msg_cancelled))
+                                            } else if (result2.success > 0 && result2.error == 0) { showExtractSuccess(src.name, destFile.name, result2); nav(currentDir) }
+                                            else toast(friendlyExtractError(this@MainActivity))
+                                        }
+                                    } finally {
+                                        OperationLock.release()
+                                    }
                                 }
                             }
-                        }
-                        .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete() }
-                        .show()
-                } else toast(friendlyExtractError(this@MainActivity))
+                            .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete() }
+                            .show()
+                    } else toast(friendlyExtractError(this@MainActivity))
+                }
+            } finally {
+                OperationLock.release()
             }
         }
     }
@@ -976,6 +1063,7 @@ class MainActivity : AppCompatActivity() {
                 "xz" -> XzCore.xzListEntries(src.absolutePath)
                 "zst" -> ZstdCore.zstListEntries(src.absolutePath)
                 "lzma" -> LzmaCore.lzmaListEntries(src.absolutePath)
+                "ksd" -> KsdCore.ksdListEntries(src.absolutePath)
                 "tar" -> TarCore.tarListEntries(src.absolutePath)
                 else -> null
             } } catch (_: Exception) { null }
@@ -1844,57 +1932,62 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun walkSearch(
-        query: String, dir: File, mode: Int, results: MutableList<SearchResult>, limit: Int,
+        query: String, startDir: File, mode: Int, results: MutableList<SearchResult>, limit: Int,
         maxFileSize: Long, scanned: IntArray, seenFiles: MutableSet<String>
     ) {
-        if (results.size >= limit || Thread.interrupted()) return
-        val children = dir.listFiles() ?: return
-        for (child in children) {
-            if (results.size >= limit || Thread.interrupted()) return
-            try {
-                if (child.isFile) {
-                    scanned[0]++
-                    val absPath = child.absolutePath
-                    if (seenFiles.contains(absPath)) continue
-                    if (mode == 0) {
-                        // Filename search
-                        if (child.name.lowercase().contains(query)) {
-                            seenFiles.add(absPath)
-                            results.add(SearchResult(child))
-                        }
-                    } else {
-                        // Content search: scan whole file, count matches, group per file
-                        val ext = child.extension.lowercase()
-                        if (ext in TEXT_SEARCH_EXTS && child.length() < maxFileSize) {
-                            var matchCount = 0
-                            var firstSnippet = ""
-                            var firstLine = 0
-                            var lineNum = 0
-                            try {
-                                child.bufferedReader(charset = Charsets.UTF_8).use { reader ->
-                                    reader.forEachLine { line ->
-                                        if (Thread.interrupted()) return@forEachLine
-                                        lineNum++
-                                        if (line.lowercase().contains(query)) {
-                                            matchCount++
-                                            if (firstLine == 0) {
-                                                firstLine = lineNum
-                                                firstSnippet = line.trim().take(120)
+        // Iterative DFS — deeply nested trees can't overflow the call stack.
+        val stack = ArrayDeque<File>()
+        stack.add(startDir)
+        while (stack.isNotEmpty() && results.size < limit && !Thread.interrupted()) {
+            val dir = stack.removeLast()
+            val children = dir.listFiles() ?: continue
+            for (child in children) {
+                if (results.size >= limit || Thread.interrupted()) return
+                try {
+                    if (child.isFile) {
+                        scanned[0]++
+                        val absPath = child.absolutePath
+                        if (seenFiles.contains(absPath)) continue
+                        if (mode == 0) {
+                            // Filename search
+                            if (child.name.lowercase().contains(query)) {
+                                seenFiles.add(absPath)
+                                results.add(SearchResult(child))
+                            }
+                        } else {
+                            // Content search: scan whole file, count matches, group per file
+                            val ext = child.extension.lowercase()
+                            if (ext in TEXT_SEARCH_EXTS && child.length() < maxFileSize) {
+                                var matchCount = 0
+                                var firstSnippet = ""
+                                var firstLine = 0
+                                var lineNum = 0
+                                try {
+                                    child.bufferedReader(charset = Charsets.UTF_8).use { reader ->
+                                        reader.forEachLine { line ->
+                                            if (Thread.interrupted()) return@forEachLine
+                                            lineNum++
+                                            if (line.lowercase().contains(query)) {
+                                                matchCount++
+                                                if (firstLine == 0) {
+                                                    firstLine = lineNum
+                                                    firstSnippet = line.trim().take(120)
+                                                }
                                             }
                                         }
                                     }
+                                } catch (_: Exception) { }
+                                if (matchCount > 0) {
+                                    seenFiles.add(absPath)
+                                    results.add(SearchResult(child, firstSnippet, firstLine, matchCount))
                                 }
-                            } catch (_: Exception) { }
-                            if (matchCount > 0) {
-                                seenFiles.add(absPath)
-                                results.add(SearchResult(child, firstSnippet, firstLine, matchCount))
                             }
                         }
+                    } else if (child.isDirectory) {
+                        stack.add(child)
                     }
-                } else if (child.isDirectory) {
-                    walkSearch(query, child, mode, results, limit, maxFileSize, scanned, seenFiles)
-                }
-            } catch (_: Exception) { }
+                } catch (_: Exception) { }
+            }
         }
     }
 

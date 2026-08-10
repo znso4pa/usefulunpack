@@ -4,7 +4,7 @@
 
 輕量級 Android 檔案管理器 & **視覺小說遊戲資源解包工具**
 
-支援 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**ISO 9660** 光碟映像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支援打包與解壓），Rust 原生核心。
+支援 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**KSD**（吉里吉里2）、**ISO 9660** 光碟映像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支援打包與解壓），Rust 原生核心。
 
 ---
 
@@ -12,14 +12,17 @@
 
 | 功能 | 說明 |
 |------|------|
-| ✂️ **XP3** | 解壓吉里吉里 `.xp3` 封包 |
-| 📦 **PFS** | 解壓 Artemis `.pfs` / `.pf6` / `.pf8` 封包 |
+| ✂️ **XP3** | 解壓 + 封包吉里吉里 `.xp3` |
+| 📦 **PFS** | 解壓 + 封包 Artemis `.pfs` / `.pf6` / `.pf8` |
 | 📜 **NSA/SAR** | 解壓 NScripter `.nsa` / `.sar` 封包（LZSS + SPB） |
 | 📦 **YPF** | 解壓 YU-RIS `.ypf` 封包，三層自適應邊界檢測 |
-| 🗜️ **通用壓縮** | ZIP/7z + gzip/bzip2/xz/zstd/lzma/lz4（單檔）+ tar（資料夾 5 變體），5 級壓縮程度，AES-256（ZIP） |
+| 💾 **KSD** | 解壓/打包 `.ksd`（mode 0/1/2 解擾 + UTF-16→UTF-8） |
+| 🗜️ **通用壓縮** | ZIP/7z + gzip/bzip2/xz/zstd/lzma/lz4（單檔）+ tar（資料夾 5 變體）+ xp3/pfs/ksd，5 級壓縮程度，AES-256（ZIP） |
 | 🔐 **解壓密碼** | 加密的 ZIP/7z/RAR 支援輸入密碼解壓 |
 | 📊 **雙層進度條** | 頂部=全量進度，底部=目前檔案進度（解壓+壓縮） |
-| 📋 **分組格式選擇器** | 可捲動分組格式選擇（Galgame / 通用壓縮），解壓/批次/壓縮共用 |
+| 📋 **分組格式選擇器** | 可捲動分組格式選擇（通用壓縮 / 單檔 / 其他），解壓/批次/壓縮共用 |
+| 📄 **單檔壓縮按鈕** | 壓縮模式下點擊任意檔案，右下角彈出壓縮按鈕 |
+| 📦 **批次壓縮選擇器** | 批次合併/分別壓縮都彈格式選擇器，合併排除單檔格式 |
 | 🗜️ **RAR** | 解壓 RAR 封包（RAR4/5），支援密碼 |
 | ⚡ **LZ4** | 打包/解包 LZ4 幀壓縮檔案 |
 | 🗜️ **TAR** | 打包/解包 `.tar`、`.tar.gz`、`.tgz`、`.tar.bz2`、`.tbz2`、`.tar.xz`、`.txz`、`.tar.zst` |
@@ -43,7 +46,7 @@
 | 🏠 **根目錄** | 一鍵回到 `/storage/emulated/0` |
 | 🛡️ **防連點** | 800ms 冷卻 |
 | 🌙 **深色主題** | 護眼暗色 |
-| 🦀 **Rust 核心** | 每種格式獨立 `.so`，互不干擾（15 種格式） |
+| 🦀 **Rust 核心** | 每種格式獨立 `.so`，互不干擾（16 種格式） |
 | 🔒 **最小權限** | 僅儲存權限 |
 
 ## 截圖
@@ -91,6 +94,7 @@ bash build.sh
          libarchive_zstd_core.so → ZSTD
          libarchive_lzma_core.so → LZMA
          libarchive_tar_core.so  → TAR (+ tgz/tbz2/txz/tzst)
+         libarchive_ksd_core.so  → KSD
                   ↓
           檔案寫入目標目錄
 ```

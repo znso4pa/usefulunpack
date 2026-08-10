@@ -376,12 +376,15 @@ mod manual_volumes {
     }
 
     fn walk_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for e in entries.flatten() {
-                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    walk_files(&e.path(), out);
-                } else {
-                    out.push(e.path());
+        let mut stack: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            if let Ok(entries) = std::fs::read_dir(&d) {
+                for e in entries.flatten() {
+                    if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        stack.push(e.path());
+                    } else {
+                        out.push(e.path());
+                    }
                 }
             }
         }

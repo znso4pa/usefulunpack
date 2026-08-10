@@ -17,10 +17,14 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 
 // ─── ISO 9660 ────────────────────────────────
 
-fn iso_walk<'a>(node: &'a isomage::TreeNode, prefix: &str, out: &mut Vec<(String, &'a isomage::TreeNode)>) {
-    let path = if prefix.is_empty() { node.name.clone() } else { format!("{prefix}/{}", node.name) };
-    out.push((path.clone(), node));
-    for child in &node.children { iso_walk(child, &path, out); }
+// Iterative DFS — deeply nested ISO trees can't overflow the stack.
+fn iso_walk<'a>(start: &'a isomage::TreeNode, start_prefix: &str, out: &mut Vec<(String, &'a isomage::TreeNode)>) {
+    let mut stack: Vec<(&'a isomage::TreeNode, String)> = vec![(start, start_prefix.to_string())];
+    while let Some((node, prefix)) = stack.pop() {
+        let path = if prefix.is_empty() { node.name.clone() } else { format!("{prefix}/{}", node.name) };
+        out.push((path.clone(), node));
+        for child in &node.children { stack.push((child, path.clone())); }
+    }
 }
 fn iso_map<'a>(root: &'a isomage::TreeNode) -> Vec<(String, &'a isomage::TreeNode)> {
     let mut map = Vec::new();

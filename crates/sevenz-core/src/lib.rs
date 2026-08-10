@@ -225,10 +225,14 @@ fn handle_entry(
         Err(_) => { fail.fetch_add(1, Ordering::SeqCst); return Ok(true); }
     };
     let mut writer = ProgressWriter::extract(std::io::BufWriter::new(file));
-    if std::io::copy(reader, &mut writer).is_err() {
+    let copied = std::io::copy(reader, &mut writer);
+    let _ = writer.flush();
+    drop(writer);
+    if copied.is_err() {
+        // CRC/data error: don't leave corrupt output on disk
+        let _ = std::fs::remove_file(&dest);
         fail.fetch_add(1, Ordering::SeqCst);
     }
-    let _ = writer.flush();
     Ok(true)
 }
 
@@ -304,31 +308,35 @@ fn compress_7z_inner(input: &str, output: &str, level: i32, password: &str) -> R
     sz.set_content_methods(methods);
     let mut fail = 0u32;
     fn add_dir(sz: &mut sevenz_rust::SevenZWriter<std::fs::File>, base: &str, rel: &str) -> Result<u32, String> {
-        let dir_path = if rel.is_empty() { base.to_string() } else { format!("{base}/{rel}") };
         let mut fail = 0u32;
-        let entries = std::fs::read_dir(&dir_path).map_err(|e| format!("{e}"))?;
-        for entry in entries {
-            let entry = entry.map_err(|e| format!("{e}"))?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            let file_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-            let file_type = entry.file_type().map_err(|e| format!("{e}"))?;
-            if file_type.is_dir() {
-                let e = sevenz_rust::SevenZArchiveEntry::from_path(&entry.path(), file_rel.clone());
-                let _ = sz.push_archive_entry(e, None::<std::fs::File>);
-                fail += add_dir(sz, base, &file_rel)?;
-            } else if file_type.is_file() {
-                if compress_progress::cancelled() { return Err("cancelled".to_string()); }
-                compress_progress::set_name(&file_rel);
-                let e = sevenz_rust::SevenZArchiveEntry::from_path(&entry.path(), file_rel.clone());
-                match std::fs::File::open(&entry.path()) {
-                    Ok(f) => {
-                        compress_progress::set_file(f.metadata().map(|m| m.len()).unwrap_or(0));
-                        if sz.push_archive_entry(e, Some(ProgressReader::compress(f))).is_err() {
-                            if compress_progress::cancelled() { return Err("cancelled".to_string()); }
-                            fail += 1;
+        // Iterative DFS — deeply nested trees can't overflow the stack.
+        let mut stack: Vec<String> = vec![rel.to_string()];
+        while let Some(rel) = stack.pop() {
+            let dir_path = if rel.is_empty() { base.to_string() } else { format!("{base}/{rel}") };
+            let entries = std::fs::read_dir(&dir_path).map_err(|e| format!("{e}"))?;
+            for entry in entries {
+                let entry = entry.map_err(|e| format!("{e}"))?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                let file_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+                let file_type = entry.file_type().map_err(|e| format!("{e}"))?;
+                if file_type.is_dir() {
+                    let e = sevenz_rust::SevenZArchiveEntry::from_path(&entry.path(), file_rel.clone());
+                    let _ = sz.push_archive_entry(e, None::<std::fs::File>);
+                    stack.push(file_rel);
+                } else if file_type.is_file() {
+                    if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+                    compress_progress::set_name(&file_rel);
+                    let e = sevenz_rust::SevenZArchiveEntry::from_path(&entry.path(), file_rel.clone());
+                    match std::fs::File::open(&entry.path()) {
+                        Ok(f) => {
+                            compress_progress::set_file(f.metadata().map(|m| m.len()).unwrap_or(0));
+                            if sz.push_archive_entry(e, Some(ProgressReader::compress(f))).is_err() {
+                                if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+                                fail += 1;
+                            }
                         }
+                        Err(_) => { fail += 1; }
                     }
-                    Err(_) => { fail += 1; }
                 }
             }
         }
@@ -495,12 +503,15 @@ mod manual_volumes {
     }
 
     fn walk_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for e in entries.flatten() {
-                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    walk_files(&e.path(), out);
-                } else {
-                    out.push(e.path());
+        let mut stack: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            if let Ok(entries) = std::fs::read_dir(&d) {
+                for e in entries.flatten() {
+                    if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        stack.push(e.path());
+                    } else {
+                        out.push(e.path());
+                    }
                 }
             }
         }

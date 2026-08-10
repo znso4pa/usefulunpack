@@ -77,14 +77,8 @@ fn tar_reader(input: &str) -> Result<(Box<dyn Read>, Option<std::path::PathBuf>)
         "tgz" => Ok((Box::new(flate2::read::GzDecoder::new(file)), None)),
         "tbz2" => Ok((Box::new(BzStream::new(BufReader::new(file))?), None)),
         "tzst" => Ok((Box::new(oxiarc_zstd::ZstdStreamDecoder::new(file)), None)),
-        "txz" => {
-            let tmp = std::env::temp_dir().join(format!("uu_txz_{}.tar", std::process::id()));
-            let mut r = BufReader::new(file);
-            let mut w = File::create(&tmp).map_err(|e| format!("{e}"))?;
-            lzma_rs::xz_decompress(&mut r, &mut w).map_err(|e| format!("txz: {e}"))?;
-            let back = File::open(&tmp).map_err(|e| format!("{e}"))?;
-            Ok((Box::new(back), Some(tmp)))
-        }
+        // xz2's XzDecoder is a Read — no temp-file spool needed (lzma-rs was push-style)
+        "txz" => Ok((Box::new(xz2::read::XzDecoder::new(BufReader::new(file))), None)),
         _ => Err("unsupported tar format".into()),
     }
 }
@@ -125,7 +119,7 @@ fn extract_tar(input: &str, output: &str, selected: Option<&HashSet<String>>) ->
     {
         let mut ar = tar::Archive::new(reader1);
         for entry in ar.entries().map_err(|e| format!("tar: {e}"))? {
-            let mut e = entry.map_err(|e| format!("tar: {e}"))?;
+            let e = entry.map_err(|e| format!("tar: {e}"))?;
             let path = e.path().map_err(|e| format!("tar: {e}"))?.to_string_lossy().replace('\\', "/");
             if path.is_empty() { continue; }
             let entry_type = e.header().entry_type();
@@ -183,16 +177,20 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 // ─── tar packing (compression) ───────────────────────────────────────
 
 fn collect_files(base: &str, rel: &str, files: &mut Vec<(PathBuf, String)>) -> Result<(), String> {
-    let dir = if rel.is_empty() { base.to_string() } else { format!("{base}/{rel}") };
-    for entry in fs::read_dir(&dir).map_err(|e| format!("tar: {e}"))? {
-        let entry = entry.map_err(|e| format!("tar: {e}"))?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-        let ft = entry.file_type().map_err(|e| format!("tar: {e}"))?;
-        if ft.is_dir() {
-            collect_files(base, &child_rel, files)?;
-        } else if ft.is_file() {
-            files.push((entry.path(), child_rel));
+    // Iterative DFS — deeply nested trees can't overflow the stack.
+    let mut stack: Vec<String> = vec![rel.to_string()];
+    while let Some(rel) = stack.pop() {
+        let dir = if rel.is_empty() { base.to_string() } else { format!("{base}/{rel}") };
+        for entry in fs::read_dir(&dir).map_err(|e| format!("tar: {e}"))? {
+            let entry = entry.map_err(|e| format!("tar: {e}"))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let ft = entry.file_type().map_err(|e| format!("tar: {e}"))?;
+            if ft.is_dir() {
+                stack.push(child_rel);
+            } else if ft.is_file() {
+                files.push((entry.path(), child_rel));
+            }
         }
     }
     Ok(())
@@ -261,13 +259,11 @@ fn compress_tar(input: &str, output: &str, fmt: &str, level: i32) -> Result<u32,
             zs.finish().map_err(|e| format!("tzst: {e}"))?;
         }
         "txz" => {
-            let tmp = std::env::temp_dir().join(format!("uu_txz_out_{}.tar", std::process::id()));
-            let mut tf = File::create(&tmp).map_err(|e| format!("{e}"))?;
-            fail += append_files(&files, &mut tf)?;
-            let mut r = BufReader::new(File::open(&tmp).map_err(|e| format!("{e}"))?);
-            let mut out = File::create(output).map_err(|e| format!("{e}"))?;
-            lzma_rs::xz_compress(&mut r, &mut out).map_err(|e| format!("txz: {e}"))?;
-            let _ = fs::remove_file(tmp);
+            // xz2 encoder streams the tar directly (no temp spool) with real preset
+            let out = File::create(output).map_err(|e| format!("{e}"))?;
+            let mut enc = xz2::write::XzEncoder::new(out, level.clamp(0, 9) as u32);
+            fail += append_files(&files, &mut enc)?;
+            enc.finish().map_err(|e| format!("txz: {e}"))?;
         }
         _ => return Err(format!("unsupported tar output: {fmt}")),
     }

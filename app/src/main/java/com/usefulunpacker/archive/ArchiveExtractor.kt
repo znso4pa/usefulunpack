@@ -3,12 +3,47 @@ package com.usefulunpacker
 import android.app.AlertDialog
 import android.content.SharedPreferences
 import android.widget.EditText
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import kotlin.concurrent.thread
 import java.io.File
 
-var lastExtractResult = ExtractCounts(0, 0, 0)
-var lastExtractError: String? = null
+@Volatile var lastExtractResult = ExtractCounts(0, 0, 0)
+@Volatile var lastExtractError: String? = null
+
+/**
+ * Single-operation lock. The app drives one long-running extract/compress at a
+ * time; concurrent operations would clobber the shared per-format progress
+ * statics and [lastExtractResult]. Worker threads call [acquire] before the JNI
+ * work and [release] in a `finally`, so each worker is a distinct lock holder.
+ */
+object OperationLock {
+    @Volatile private var busy = false
+    @Volatile private var holder: Thread? = null
+
+    fun acquire(): Boolean = synchronized(this) {
+        if (busy) {
+            if (holder == Thread.currentThread()) true else false
+        } else {
+            busy = true; holder = Thread.currentThread(); true
+        }
+    }
+
+    fun release() = synchronized(this) {
+        if (holder == Thread.currentThread()) {
+            busy = false; holder = null
+        }
+    }
+}
+
+/** Acquires the operation lock or toasts "busy" and returns false. */
+fun tryStartOperation(activity: AppCompatActivity): Boolean {
+    if (!OperationLock.acquire()) {
+        Toast.makeText(activity, activity.getString(R.string.msg_op_in_progress), Toast.LENGTH_SHORT).show()
+        return false
+    }
+    return true
+}
 
 /** Maps the raw JNI error message to a user-facing string. */
 fun friendlyExtractError(activity: AppCompatActivity): String {
@@ -101,6 +136,7 @@ fun extractByFormat(
             "xz" -> XzCore.xzExtract("", src, out)
             "zst" -> ZstdCore.zstExtract("", src, out)
             "lzma" -> LzmaCore.lzmaExtract("", src, out)
+            "ksd" -> KsdCore.ksdExtract("", src, out)
             "tar" -> if (selected.isEmpty()) TarCore.tarExtract("", src, out)
                      else TarCore.tarExtractSelected("", src, out, selected)
             else -> null
@@ -153,19 +189,24 @@ fun showPasswordDialog(
             ) else null
             prog?.start()
             thread {
-                val json = runCatching {
-                    when (fmt) {
-                        "zip" -> ZipCore.zipExtractWithPassword("", src, out, pwd)
-                        "7z" -> szExtractDispatch(src, out, "", pwd)
-                        "rar" -> rarExtractDispatch(src, out, sel, pwd)
-                        else -> null
+                if (!tryStartOperation(activity)) return@thread
+                try {
+                    val json = runCatching {
+                        when (fmt) {
+                            "zip" -> ZipCore.zipExtractWithPassword("", src, out, pwd)
+                            "7z" -> szExtractDispatch(src, out, "", pwd)
+                            "rar" -> rarExtractDispatch(src, out, sel, pwd)
+                            else -> null
+                        }
+                    }.onFailure { lastExtractError = it.message }.getOrNull()
+                    val r = ExtractCounts.fromJson(json); val ok = r.success > 0 && r.error == 0
+                    activity.runOnUiThread {
+                        prog?.dismiss()
+                        if (cancelled) onCancel()
+                        else onResult(ok)
                     }
-                }.onFailure { lastExtractError = it.message }.getOrNull()
-                val r = ExtractCounts.fromJson(json); val ok = r.success > 0 && r.error == 0
-                activity.runOnUiThread {
-                    prog?.dismiss()
-                    if (cancelled) onCancel()
-                    else onResult(ok)
+                } finally {
+                    OperationLock.release()
                 }
             }
         }
@@ -207,65 +248,75 @@ fun tryExtractWithPassword(
         return if (json != null) ExtractCounts.fromJson(json) else lastExtractResult
     }
     thread {
-        val result = if (fmt in setOf("zip", "7z", "rar") && sel.isNotEmpty()) {
-            val json = runCatching {
-                when (fmt) {
-                    "zip" -> ZipCore.zipExtractSelected("", src, out, sel)
-                    "7z" -> szExtractDispatch(src, out, sel, "")
-                    "rar" -> rarExtractDispatch(src, out, sel, "")
-                    else -> null
-                }
-            }.onFailure { lastExtractError = it.message }.getOrNull()
-            ExtractCounts.fromJson(json)
-        } else doExtract()
-        val ok = result.success > 0 && result.error == 0
-        activity.runOnUiThread {
-            prog?.dismiss()
-            if (cancelled) { onCancel(); return@runOnUiThread }
-            if (ok) { onResult(result) }
-            else if (fmt in setOf("zip", "7z", "rar")) {
-                val inp = EditText(activity).apply {
-                    hint = activity.getString(R.string.prompt_password)
-                    setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                    setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
-                    inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-                }
-                AlertDialog.Builder(activity)
-                    .setTitle(activity.getString(R.string.title_password))
-                    .setView(inp)
-                    .setPositiveButton(activity.getString(R.string.retry)) { _, _ ->
-                        val pwd = inp.text.toString()
-                        var cancelled2 = false
-                        val accessors2 = extractAccessors(fmt)
-                        val prog2 = if (showProgress) PollingProgressDialog(
-                            activity,
-                            activity.getString(R.string.extracting_please),
-                            accessors2,
-                            { n, b, t -> extractProgressMessage(activity, n, b, t) },
-                            activity.getString(R.string.action_cancel),
-                            { cancelled2 = true; accessors2.cancel() }
-                        ) else null
-                        prog2?.start()
-                        thread {
-                            val json2 = runCatching {
-                                when (fmt) {
-                                    "zip" -> ZipCore.zipExtractWithPassword("", src, out, pwd)
-                                    "7z" -> szExtractDispatch(src, out, sel, pwd)
-                                    "rar" -> rarExtractDispatch(src, out, sel, pwd)
-                                    else -> null
+        if (!tryStartOperation(activity)) return@thread
+        try {
+            val result = if (fmt in setOf("zip", "7z", "rar") && sel.isNotEmpty()) {
+                val json = runCatching {
+                    when (fmt) {
+                        "zip" -> ZipCore.zipExtractSelected("", src, out, sel)
+                        "7z" -> szExtractDispatch(src, out, sel, "")
+                        "rar" -> rarExtractDispatch(src, out, sel, "")
+                        else -> null
+                    }
+                }.onFailure { lastExtractError = it.message }.getOrNull()
+                ExtractCounts.fromJson(json)
+            } else doExtract()
+            val ok = result.success > 0 && result.error == 0
+            activity.runOnUiThread {
+                prog?.dismiss()
+                if (cancelled) { onCancel(); return@runOnUiThread }
+                if (ok) { onResult(result) }
+                else if (fmt in setOf("zip", "7z", "rar")) {
+                    val inp = EditText(activity).apply {
+                        hint = activity.getString(R.string.prompt_password)
+                        setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+                        setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
+                        inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                    }
+                    AlertDialog.Builder(activity)
+                        .setTitle(activity.getString(R.string.title_password))
+                        .setView(inp)
+                        .setPositiveButton(activity.getString(R.string.retry)) { _, _ ->
+                            val pwd = inp.text.toString()
+                            var cancelled2 = false
+                            val accessors2 = extractAccessors(fmt)
+                            val prog2 = if (showProgress) PollingProgressDialog(
+                                activity,
+                                activity.getString(R.string.extracting_please),
+                                accessors2,
+                                { n, b, t -> extractProgressMessage(activity, n, b, t) },
+                                activity.getString(R.string.action_cancel),
+                                { cancelled2 = true; accessors2.cancel() }
+                            ) else null
+                            prog2?.start()
+                            thread {
+                                if (!tryStartOperation(activity)) return@thread
+                                try {
+                                    val json2 = runCatching {
+                                        when (fmt) {
+                                            "zip" -> ZipCore.zipExtractWithPassword("", src, out, pwd)
+                                            "7z" -> szExtractDispatch(src, out, sel, pwd)
+                                            "rar" -> rarExtractDispatch(src, out, sel, pwd)
+                                            else -> null
+                                        }
+                                    }.onFailure { lastExtractError = it.message }.getOrNull()
+                                    val r2 = ExtractCounts.fromJson(json2)
+                                    activity.runOnUiThread {
+                                        prog2?.dismiss()
+                                        if (cancelled2) onCancel()
+                                        else onResult(r2)
+                                    }
+                                } finally {
+                                    OperationLock.release()
                                 }
-                            }.onFailure { lastExtractError = it.message }.getOrNull()
-                            val r2 = ExtractCounts.fromJson(json2)
-                            activity.runOnUiThread {
-                                prog2?.dismiss()
-                                if (cancelled2) onCancel()
-                                else onResult(r2)
                             }
                         }
-                    }
-                    .setNegativeButton(activity.getString(R.string.action_cancel), null)
-                    .show()
-            } else { onResult(result) }
+                        .setNegativeButton(activity.getString(R.string.action_cancel), null)
+                        .show()
+                } else { onResult(result) }
+            }
+        } finally {
+            OperationLock.release()
         }
     }
 }

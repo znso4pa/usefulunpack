@@ -35,6 +35,7 @@
     <string name="msg_deleted">已刪除</string>
     <string name="msg_created">已建立</string>
     <string name="msg_cancelled">已取消</string>
+    <string name="msg_op_in_progress">其他操作執行中，請稍候</string>
     <string name="msg_no_results">未找到符合結果</string>
     <string name="msg_enter_keyword">請輸入關鍵詞</string>
     <string name="msg_select_one">請至少選擇一項</string>
@@ -175,9 +176,10 @@
     <string name="title_audio_player">🎵 %1$s</string>
     <string name="msg_disclaimer_agree">同意並繼續</string>
     <string name="title_preview_archive">%1$s (%2$s)</string>
-    <string name="format_group_galgame">Galgame 格式</string>
+    <string name="format_group_other">其他格式</string>
     <string name="format_group_generic">通用壓縮格式</string>
     <string name="format_group_single">單檔壓縮</string>
     <string name="msg_single_file_compress">單檔壓縮僅支援單一檔案</string>
+    <string name="msg_ksd_need_txt">KSD 打包僅支援 .txt 文字檔</string>
     <string name="settings_compress_generic">通用格式 (gzip/bzip2/xz/zstd/lzma/lz4/tar)</string>
 </resources>

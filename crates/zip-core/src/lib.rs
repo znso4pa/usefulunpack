@@ -81,7 +81,10 @@ fn extract_zip_with_password(input: &str, output: &str, password: &str) -> Resul
         let dest = safe_join(output, &name).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
         let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
-        if std::io::copy(&mut entry, &mut out).is_err() { fail += 1; }
+        if std::io::copy(&mut entry, &mut out).is_err() {
+            let _ = std::fs::remove_file(&dest);
+            fail += 1;
+        }
     }
     Ok((total, fail))
 }
@@ -114,7 +117,10 @@ fn extract_zip_selected_inner(input: &str, output: &str, selected: &str) -> Resu
         let dest = safe_join(output, &name).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
         let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
-        if std::io::copy(&mut entry, &mut out).is_err() { fail += 1; }
+        if std::io::copy(&mut entry, &mut out).is_err() {
+            let _ = std::fs::remove_file(&dest);
+            fail += 1;
+        }
     }
     Ok((selected, fail))
 }
@@ -141,33 +147,37 @@ fn compress_zip_inner(input: &str, output: &str, level: i32, password: &str) -> 
     compress_progress::reset(total_bytes(input, ""));
 
     fn add_dir(zip: &mut zip::write::ZipWriter<std::fs::File>, base: &str, rel: &str, method: zip::CompressionMethod, level: i32, pw: Option<&str>) -> Result<u32, String> where zip::write::ZipWriter<std::fs::File>: std::io::Write {
-        let dir_path = if rel.is_empty() { base.to_string() } else { format!("{base}/{rel}") };
         let mut fail = 0u32;
-        let entries = std::fs::read_dir(&dir_path).map_err(|e| format!("{e}"))?;
-        for entry in entries {
-            if compress_progress::cancelled() { return Err("cancelled".to_string()); }
-            let entry = entry.map_err(|e| format!("{e}"))?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            let file_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-            let file_type = entry.file_type().map_err(|e| format!("{e}"))?;
-            if file_type.is_dir() {
-                // Don't add directory entries; ZIP handles dir creation on extract
-                fail += add_dir(zip, base, &file_rel, method, level, pw)?;
-            } else if file_type.is_file() {
-                let base = zip::write::FileOptions::<'_, ()>::default()
-                    .compression_method(method)
-                    .compression_level(if level <= 0 { None } else { Some(level as i64) });
-                if let Some(p) = pw {
-                    zip.start_file(&file_rel, base.with_aes_encryption(zip::AesMode::Aes256, p)).map_err(|e| format!("{e}"))?;
-                } else {
-                    zip.start_file(&file_rel, base).map_err(|e| format!("{e}"))?;
-                }
-                compress_progress::set_name(&file_rel);
-                let mut f = std::fs::File::open(&entry.path()).map_err(|e| format!("{e}"))?;
-                compress_progress::set_file(f.metadata().map(|m| m.len()).unwrap_or(0));
-                if std::io::copy(&mut ProgressReader::compress(&mut f), zip).is_err() {
-                    if compress_progress::cancelled() { return Err("cancelled".to_string()); }
-                    fail += 1;
+        // Iterative DFS — deeply nested trees can't overflow the stack.
+        let mut stack: Vec<String> = vec![rel.to_string()];
+        while let Some(rel) = stack.pop() {
+            let dir_path = if rel.is_empty() { base.to_string() } else { format!("{base}/{rel}") };
+            let entries = std::fs::read_dir(&dir_path).map_err(|e| format!("{e}"))?;
+            for entry in entries {
+                if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+                let entry = entry.map_err(|e| format!("{e}"))?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                let file_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+                let file_type = entry.file_type().map_err(|e| format!("{e}"))?;
+                if file_type.is_dir() {
+                    // Don't add directory entries; ZIP handles dir creation on extract
+                    stack.push(file_rel);
+                } else if file_type.is_file() {
+                    let base = zip::write::FileOptions::<'_, ()>::default()
+                        .compression_method(method)
+                        .compression_level(if level <= 0 { None } else { Some(level as i64) });
+                    if let Some(p) = pw {
+                        zip.start_file(&file_rel, base.with_aes_encryption(zip::AesMode::Aes256, p)).map_err(|e| format!("{e}"))?;
+                    } else {
+                        zip.start_file(&file_rel, base).map_err(|e| format!("{e}"))?;
+                    }
+                    compress_progress::set_name(&file_rel);
+                    let mut f = std::fs::File::open(&entry.path()).map_err(|e| format!("{e}"))?;
+                    compress_progress::set_file(f.metadata().map(|m| m.len()).unwrap_or(0));
+                    if std::io::copy(&mut ProgressReader::compress(&mut f), zip).is_err() {
+                        if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+                        fail += 1;
+                    }
                 }
             }
         }

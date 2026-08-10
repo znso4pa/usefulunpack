@@ -1,12 +1,15 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jstring, jlong};
-use archive_common::{s, SyncIo, oneshot_async, json_escape, derive_dirs, safe_join, extract_result_json, ProgressWriter};
-use archive_common::extract_progress;
+use archive_common::{s, SyncIo, oneshot_async, json_escape, derive_dirs, safe_join, extract_result_json, ProgressWriter, ProgressReader};
+use archive_common::{extract_progress, compress_progress};
 use xp3::read::XP3Archive;
+use xp3::header::XP3Version;
+use xp3::write::XP3Writer;
 use std::fs::{self, File};
 use std::collections::HashSet;
 use std::io::{BufReader, BufWriter};
+use std::path::{Path, PathBuf};
 
 // ─── XP3 (Kirikiri) ────────────────────────
 
@@ -165,3 +168,136 @@ pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3ExtractProgressName(en
 }
 #[no_mangle]
 pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3ExtractCancel(_: JNIEnv, _: JClass) { extract_progress::cancel(); }
+
+// ─── XP3 Pack (封包) ──────────────────────
+
+/// Collects files under `base` (or the single file itself) with `/`-separated
+/// archive paths. Iterative — no recursion, so deep trees can't overflow the stack.
+fn collect_files_xp3(base: &Path) -> Result<Vec<(PathBuf, String)>, String> {
+    let mut out = Vec::new();
+    if base.is_file() {
+        let name = base.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        out.push((base.to_path_buf(), name));
+        return Ok(out);
+    }
+    let mut stack = vec![(base.to_path_buf(), String::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        let mut entries: Vec<_> = fs::read_dir(&dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))?
+            .collect::<Result<_, _>>().map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let meta = entry.metadata().map_err(|e| format!("metadata {}: {e}", path.display()))?;
+            if meta.is_dir() {
+                stack.push((path, child_rel));
+            } else if meta.is_file() {
+                out.push((path, child_rel));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(out)
+}
+
+fn create_xp3(input: &str, output: &str, level: i32) -> Result<u32, String> {
+    let files = collect_files_xp3(Path::new(input))?;
+    if files.is_empty() { return Err("XP3: no files to archive".to_string()); }
+    let total: u64 = files.iter().map(|(p, _)| p.metadata().map(|m| m.len()).unwrap_or(0)).sum();
+    compress_progress::reset(total);
+
+    let out_file = File::create(output).map_err(|e| format!("XP3 create {output}: {e}"))?;
+    let mut writer = oneshot_async(XP3Writer::new(
+        XP3Version::Current { minor: 0 },
+        SyncIo(BufWriter::new(out_file)),
+    )).map_err(|e| format!("XP3: {e}"))?;
+
+    let lvl = level.clamp(0, 9) as u8;
+    let mut count = 0u32;
+    for (src, name) in &files {
+        if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+        let size = src.metadata().map(|m| m.len()).unwrap_or(0);
+        compress_progress::set_name(name);
+        compress_progress::set_file(size);
+        // level 0 = raw store (no zlib wrapper), matching "store" semantics
+        let compression: Option<u8> = if lvl == 0 { None } else { Some(lvl) };
+        let mut fw = oneshot_async(writer.file(name.clone(), false, compression))
+            .map_err(|e| format!("XP3 add {name}: {e}"))?;
+        let src_file = File::open(src).map_err(|e| format!("XP3 open {}: {e}", src.display()))?;
+        let mut reader = SyncIo(ProgressReader::compress(BufReader::new(src_file)));
+        if oneshot_async(tokio::io::copy(&mut reader, &mut fw)).is_err() {
+            return Err(format!("XP3 write {name}: io error"));
+        }
+        oneshot_async(fw.finish()).map_err(|e| format!("XP3 finish {name}: {e}"))?;
+        count += 1;
+    }
+    oneshot_async(writer.finish(None)).map_err(|e| format!("XP3 finalize: {e}"))?;
+    if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+    Ok(count)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CreateArchive(
+    mut env: JNIEnv, _: JClass, _t: JString, input: JString, output: JString, level: JString,
+) -> jstring {
+    let inp = s(&mut env, &input); let out = s(&mut env, &output);
+    let lvl: i32 = s(&mut env, &level).parse().unwrap_or(5);
+    match guarded(move || create_xp3(&inp, &out, lvl)) {
+        Ok(total) => { let json = extract_result_json(total, total, 0); match env.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
+        Err(er) => { let _ = env.throw_new("java/io/IOException", er); std::ptr::null_mut() }
+    }
+}
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CompressProgressCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::bytes() as jlong }
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CompressProgressTotal(_: JNIEnv, _: JClass) -> jlong { compress_progress::total_bytes() as jlong }
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CompressProgressFileCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::file_bytes() as jlong }
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CompressProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { compress_progress::file_total() as jlong }
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CompressProgressName(env: JNIEnv, _: JClass) -> jstring {
+    env.new_string(&compress_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CompressCancel(_: JNIEnv, _: JClass) { compress_progress::cancel(); }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> PathBuf { std::env::temp_dir().join(format!("uu_xp3_{}_{}", std::process::id(), tag)) }
+
+    #[test]
+    fn pack_round_trip_matches_bytes() {
+        let dir = tmp("roundtrip");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), b"hello xp3").unwrap();
+        let big: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(dir.join("sub/b.bin"), &big).unwrap();
+        let xp3 = dir.join("out.xp3");
+        let out = dir.join("out");
+        create_xp3(dir.to_str().unwrap(), xp3.to_str().unwrap(), 6).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        extract_xp3(xp3.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+        assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"hello xp3");
+        assert_eq!(std::fs::read(out.join("sub/b.bin")).unwrap(), big);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pack_single_file() {
+        let dir = tmp("single");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("one.dat"), vec![9u8; 5000]).unwrap();
+        let xp3 = dir.join("one.xp3");
+        let out = dir.join("out");
+        create_xp3(dir.join("one.dat").to_str().unwrap(), xp3.to_str().unwrap(), 0).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        extract_xp3(xp3.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+        assert_eq!(std::fs::read(out.join("one.dat")).unwrap(), vec![9u8; 5000]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

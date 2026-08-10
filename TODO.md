@@ -1,5 +1,47 @@
 # TODO
 
+## v5.7.0
+
+### 已完成
+
+- [x] **XP3 封包** — `xp3-core` 新增 `xp3CreateArchive`：`XP3Writer` 流式打包（zlib 0-9，0=raw store），`ProgressReader` 字节进度 + 取消，迭代遍历；往返测试；压缩选择器归"其他格式"组
+- [x] **PFS 封包** — `pfs-core` 新增 `pfsCreateArchive`：`Pf8Writer` 打包 PF8（XOR 加密），逐文件进度 + 取消；往返测试；归"其他格式"组
+- [x] **KSD 解压 + 打包** — 新 crate `ksd-core`（Kirikiri2）：mode 0/1 解扰 + mode 2 deflate → UTF-16→UTF-8 `.txt`；txt→mode2(zlib) 打包；解压炸弹上限 512MB + 坏魔数拒绝；解压/压缩路由 + 双进度条
+  - 流程优化：KSD 压缩仅接受 `.txt`（toast 提示 `msg_ksd_need_txt`），输出名替换扩展名（`save.txt`→`save.ksd`）；归档模式标签显示 "KSD"
+- [x] **压缩模式单文件 FAB** — 压缩模式下点击非归档单文件 → 右下角弹 FAB → 选压缩格式（不再直接弹文件信息）
+- [x] **批量压缩格式选择器** — "合并/分别压缩"都弹格式选择器；**合并**排除单文件格式（`MERGE_COMPRESS_GROUPS`）；分别压缩对 zip/7z/tar 单文件自动临时目录包裹；共用 `compressDispatch` 派发
+- [x] **删除格式分组歧义标签** — 压缩/解压选择器统一改用"通用压缩格式 / 其他格式 / 单文件压缩"，移除旧分组标签（4 语言），避免歧义纠纷
+- [x] **7z/zip CRC 损坏输出修复** — 损坏的 7z 归档被静默解出错误数据（系统 7z 报 Data Error）→ `sevenz-core`/`zip-core` 解压 copy 出错时删除损坏输出文件并计数
+- [x] **稳定修复包** — 深递归迭代化：`iso_walk`/zip·sevenz `add_dir`/tar `collect_files`/rar·sevenz `walk_files`/`walkSearch` 全改显式栈（防 Android 1MB 线程栈溢出）；竞态修复：Kotlin `OperationLock` 单操作锁（9 个 worker 包裹，并发操作 toast `msg_op_in_progress`）+ `lastExtractResult`/`lastExtractError` `@Volatile`
+- [x] **版本号 5.7.0** — `versionCode 18` / `versionName "5.7.0"`
+
+### 语料库正确性测试（files4testing v1.1.0，423 向量 + 13 faults）
+
+- 345 条正向向量（14 格式：gz/bz2/xz/lzma/zstd/lz4/zip/7z/rar/tar×5，含 password 63 + split 18）**sha256 全匹配**
+- 13 条 faults 全部正确拒绝（截断/损坏/错密码/缺卷）
+- 跳过 78 条（brotli/tar.brotli/tar.lzma/tar.lz4，app 不支持）
+
+### 性能基准（criterion，组合文件 79.5MB 解压）
+
+| 格式 | 吞吐 | 格式 | 吞吐 | 格式 | 吞吐 |
+|------|------|------|------|------|------|
+| tar | 674 MB/s | rar | 52 MB/s | 7z | 30 MB/s ⚠️ |
+| lz4 | 460 MB/s | xz | 35 MB/s | lzma | 28 MB/s |
+| zstd | 214 MB/s | tar.xz | 30 MB/s | bzip2 | 17 MB/s ⚠️ |
+| gzip | 208 MB/s | | | tar.bzip2 | 10.6 MB/s ⚠️ |
+| zip | 187 MB/s | | | | |
+
+- RAR PBKDF2：加密每文件 +10.5ms（明文 46x）— 加密多小文件归档慢（格式特性）
+
+### 待修复（性能/正确性发现）
+
+- [x] **xz 压缩 level 无效 + 解压慢** — `lzma-rs` 的 `compress::Options` 无 level 参数（`_level` 被丢弃），且 `xz_compress` 走快速低质量路径（1800MB/s 假象）。**已修**：`xz-core`/`tar-core`(txz) 改用 **`xz2`（liblzma C，本已通过 zip 依赖进入 Android 交叉编译）**——`XzEncoder::new(w, preset 0-9)` 真级别、`XzDecoder` 流式解压（txz 顺带免临时文件 spool）；xz2 解码 21 条语料 xz 向量 sha256 全匹配，压缩产物系统 `xz -d` 可解
+- [x] **lzma (.lzma) 压缩 level 无效 + 极慢** — **已修**：`lzma-core` 压缩改用 **`lzma-sys`（liblzma C FFI）** `lzma_alone_encoder` + 流式 `lzma_code`——preset 0-9 真级别（实测 l1→11.3MB / l6→8.7MB / l9→8.2MB，32MB 文本），速度 ~3x（lzma-rs 0.84→liblzma ~2.5-3 MB/s 级别 6-9，级别 1 达 29 MB/s），产物系统 `lzma -d` 可解；解码保持 lzma-rs（语料 15 向量已验）；注：liblzma alone 头写未知大小，列表预览不显示解压大小
+- [ ] **7z/bzip2 解压慢** — 纯 Rust 实现（30/17 MB/s），大归档是瓶颈，评估是否可优化
+- [ ] 完善单元测试与 CI/CD
+
+---
+
 ## 下版本计划
 
 - [x] **RAR5 filtered 流式解压（根治）** — fork rars 0.4.7 加"过滤块流式"，替代原三选一待决策
@@ -14,7 +56,7 @@
   - ISO: `cat_node` 直写 `ProgressWriter`(内部已 8MB 分块)
   - NSA: LZSS 逐符号写入 64KB 块流式落盘，stored 条目 `take()` 直流；SPB 保持整块(BMP 有 2GB 上限)
   - 新增各格式流式回归测试（含手工构造最小 ISO9660 / NSA 归档 / LZSS 编码器对称验证 / LZ4 帧头与 lz4 CLI 比对一致）
-- [ ] **通用格式对标 ZArchiver** — 补 TAR / GZ / BZ2 / XZ / Z（纯流式，低成本高回报）；CAB/ARJ/LZH 生态差视需求
+- [x] **通用格式对标 ZArchiver** — TAR / GZ / BZ2 / XZ / ZSTD / LZMA / LZ4 全部补齐（见 v5.6.0）；**Z 格式已被 tar/gz 系列淘汰，放弃**；CAB/ARJ/LZH 生态差视需求
 - [x] **解压进度** — 每个 format 加进度条（JNI 返回值已是 JSON，轮询机制复用压缩的 static atomic 模式，后改为**字节百分比**，见 v5.5.0）
   - Rust: `archive_common::extract_progress` 静态量共享于 9 个 crate,每 crate 4 个 JNI getter (`*ExtractProgressCount/Total/Name/Cancel`)
   - Kotlin: `PollingProgressDialog` 共享 helper(压缩/解压复用),接入 extractAll / extractSelected / batchDirectExtract / tryExtractWithPassword / showPasswordDialog
@@ -23,8 +65,8 @@
   - Rust: `rar-core` 用 `extract_volumes_to` 原生解压多卷;`sevenz-core` 新增 `ConcatReader`(零拷贝 Read+Seek 拼接)+ 7z 魔数校验
   - Kotlin: `resolveRarVolumes`(partN + rNN 命名)/ `resolveSevenZVolumes`(按基名分组,修同目录混放多组时拼错卷),`isVolumeFile` 识别,选中显示"共 N 卷"
   - 完整对齐: 全量/预览/选择性/密码/进度/取消;ZIP 分卷因库不支持排除
-- [ ] **XP3 封包** — XP3 格式的打包/压缩功能
-- [ ] **PFS 封包** — PFS/PF6/PF8 格式的打包/压缩功能
+- [x] **XP3 封包** — XP3 格式的打包/压缩功能（见 v5.7.0）
+- [x] **PFS 封包** — PFS/PF6/PF8 格式的打包/压缩功能（见 v5.7.0）
 - [ ] **UI 重构** — 优化交互流程
 - [ ] 完善单元测试与 CI/CD
 
@@ -79,7 +121,7 @@
 - [ ] **`lastExtractResult`/`lastExtractError` 全局跨线程** — 同上,worker 线程写、UI 线程读;单操作串行下安全,多操作并发有竞态
 - [ ] **RAR 加密大量小文件慢** — rars 每文件 PBKDF2(~2s/个),几百个小文件加密归档要解很久;非 bug,性能特性(换官方 unrar 可显著改善)
 - [ ] **`oneshot_async` 忙等** — `spin_loop()` 轮询 Pending;若 future 永不完成会死循环卡死。当前 xp3 用的同步 reader 总返回 Ready/Err,低概率
-- [ ] **深递归** — `iso_walk`/压缩 `add_dir`/`deleteWithProgress` 对极深目录可能栈溢出;galgame 目录深度有限,低风险
+- [ ] **深递归** — `iso_walk`/压缩 `add_dir`/`deleteWithProgress` 对极深目录可能栈溢出;实际目录深度有限,低风险
 
 ---
 

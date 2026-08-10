@@ -38,6 +38,7 @@
     <string name="msg_deleted">已删除</string>
     <string name="msg_created">已创建</string>
     <string name="msg_cancelled">已取消</string>
+    <string name="msg_op_in_progress">已有操作进行中，请等待</string>
     <string name="msg_no_results">未找到匹配结果</string>
     <string name="msg_enter_keyword">请输入关键词</string>
     <string name="msg_select_one">请至少选择一项</string>
@@ -187,9 +188,10 @@
     <string name="title_audio_player">🎵 %1$s</string>
     <string name="msg_disclaimer_agree">同意并继续</string>
     <string name="title_preview_archive">%1$s (%2$s)</string>
-    <string name="format_group_galgame">Galgame 格式</string>
+    <string name="format_group_other">其他格式</string>
     <string name="format_group_generic">通用压缩格式</string>
     <string name="format_group_single">单文件压缩</string>
     <string name="msg_single_file_compress">单文件压缩仅支持单个文件</string>
+    <string name="msg_ksd_need_txt">KSD 打包仅支持 .txt 文本文件</string>
     <string name="settings_compress_generic">通用格式 (gzip/bzip2/xz/zstd/lzma/lz4/tar)</string>
 </resources>

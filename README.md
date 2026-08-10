@@ -4,7 +4,7 @@
 
 A lightweight Android file manager and archive extraction tool for visual novel game files.
 
-Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF** (YU-RIS), **ZIP**, **7z**, **RAR**, **LZ4**, and **ISO 9660** disc images — with native Rust-powered extraction.
+Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF** (YU-RIS), **KSD** (Kirikiri2), **ZIP**, **7z**, **RAR**, **LZ4**, and **ISO 9660** disc images — with native Rust-powered extraction and packing.
 
 ---
 
@@ -12,10 +12,11 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 
 | Feature | Description |
 |---------|-------------|
-| 📁 **XP3** | Unpack Kirikiri `.xp3` archives |
-| 📦 **PFS** | Unpack Artemis `.pfs` / `.pf6` / `.pf8` archives |
+| 📁 **XP3** | Pack & unpack Kirikiri `.xp3` archives |
+| 📦 **PFS** | Pack & unpack Artemis `.pfs` / `.pf6` / `.pf8` archives |
 | 📜 **NSA/SAR** | Unpack NScripter `.nsa` / `.sar` archives (LZSS + SPB) |
 | 📦 **YPF** | Unpack YU-RIS `.ypf` archives with adaptive boundary detection |
+| 💾 **KSD** | Pack/unpack `.ksd` files — mode 0/1/2 scrambling + UTF-16 ↔ UTF-8 |
 | 💿 **ISO 9660** | Browse and extract ISO disc images (CD/DVD/BD) via isomage |
 | 🗜️ **RAR** | Unpack RAR archives (RAR4/5) with password support |
 | 🗜️ **TAR** | Pack/unpack `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.zst` |
@@ -30,10 +31,12 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 🔎 **Global Search** | Filename search + content search (30+ text formats), match highlighting with prev/next navigation, progressive scanning |
 | 📦 **In-Archive Search** | One-click unpack text files from preview and open the full global search interface on extracted content |
 | 🖼️ **File Preview** | Image (JPG/PNG), audio (MP3/OGG), video (MP4), text/code — jump to matching line on search results |
-| 🗜️ **Compression** | ZIP/7z + gzip/bzip2/xz/zstd/lzma/lz4 (single file) + tar (folder, 5 variants), 5 levels, AES-256 (ZIP) |
+| 🗜️ **Compression** | ZIP/7z + gzip/bzip2/xz/zstd/lzma/lz4 (single file) + tar (folder, 5 variants) + xp3/pfs/ksd, 5 levels, AES-256 (ZIP) |
 | 🔐 **Extract with Password** | Enter password for encrypted ZIP/7z/RAR archives |
 | 📊 **Dual Progress Bar** | Top bar = overall progress, bottom bar = current file progress (extract + compress) |
-| 📋 **Grouped Format Picker** | Scrollable, grouped format selection (Galgame / generic compression) for extract, batch and compress |
+| 📋 **Grouped Format Picker** | Scrollable, grouped format selection (generic / single-file / other) for extract, batch and compress |
+| 📄 **Single-File Compress FAB** | In compress mode, tap any file to get a bottom-right compress button |
+| 📦 **Batch Compress Picker** | Merge / separate batch compress both ask for a format; merge excludes single-file formats |
 | ✂️ **File Operations** | Long-press to rename, move, delete (irreversible), create folder |
 | ☑️ **Batch Multi-Select** | Multi-select mode for batch extract/compress/delete/move |
 | 📂 **Batch Preview** | Preview multiple archives at once, select files across all of them |
@@ -43,7 +46,7 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 🏠 **Root Navigation** | One-tap home button to jump to `/storage/emulated/0` |
 | 🛡️ **Tap Debounce** | 800ms cooldown prevents accidental duplicate dialogs |
 | 🌙 **Dark Theme** | Eye-friendly dark theme matching ZArchiver's color scheme |
-| 🦀 **Rust Core** | JNI-powered native `.so` — one per format for isolation (15 formats) |
+| 🦀 **Rust Core** | JNI-powered native `.so` — one per format for isolation (16 formats) |
 | 🔒 **Minimal Permissions** | Only requests storage access |
 
 ## Screenshots
@@ -98,6 +101,7 @@ User taps file → Kotlin UI calls format-specific JNI
           libarchive_zstd_core.so → ZSTD
           libarchive_lzma_core.so → LZMA
           libarchive_tar_core.so  → TAR (+ tgz/tbz2/txz/tzst)
+          libarchive_ksd_core.so  → KSD
                          ↓
               Files written to selected directory
 ```
@@ -131,7 +135,8 @@ XOR key auto-detection (0xFF vs 0xC9) is done per-file on the first entry.
 | **LZ4** | [lz4_flex crate](https://crates.io/crates/lz4_flex) | MIT |
 | **GZIP** | [flate2 crate](https://crates.io/crates/flate2) (Rust backend) | MIT / Apache-2.0 |
 | **BZIP2** | [oxiarc-bzip2 crate](https://crates.io/crates/oxiarc-bzip2) | Apache-2.0 |
-| **XZ / LZMA** | [lzma-rs crate](https://crates.io/crates/lzma-rs) | MIT |
+| **XZ / LZMA** | [xz2 crate](https://crates.io/crates/xz2) (liblzma, .xz) + [lzma-sys](https://crates.io/crates/lzma-sys) (.lzma) | Public domain (liblzma) / 0BSD |
+| **KSD** | [krkr-save-tools](https://github.com/Luv-Ray/krkr-save-tools), [KirikiriTools](https://github.com/arcusmaximus/KirikiriTools) | MIT |
 | **ZSTD** | [ruzstd crate](https://crates.io/crates/ruzstd) (decode) / [oxiarc-zstd crate](https://crates.io/crates/oxiarc-zstd) (encode) | MIT / Apache-2.0 |
 | **TAR** | [tar crate](https://crates.io/crates/tar) | MIT / Apache-2.0 |
 
@@ -140,16 +145,16 @@ XOR key auto-detection (0xFF vs 0xC9) is done per-file on the first entry.
 | Crate | License | Usage |
 |-------|---------|-------|
 | `jni` 0.21 | MIT / Apache-2.0 | Android JNI bridge |
-| `xp3` 0.4 | MIT / Apache-2.0 | XP3 extraction |
-| `pf8` 0.1 | — | PFS/PF6/PF8 extraction |
+| `xp3` 0.4 | MIT / Apache-2.0 | XP3 pack/unpack |
+| `pf8` 0.1 | — | PFS/PF6/PF8 pack/unpack |
 | `isomage` 0.1 | MIT | ISO 9660 / UDF |
-| `flate2` 1 | MIT / Apache-2.0 | zlib (YPF) + gzip pack/unpack |
+| `flate2` 1 | MIT / Apache-2.0 | zlib (YPF/KSD) + gzip pack/unpack |
 | `encoding_rs` 0.8 | (Apache-2.0 OR MIT) AND BSD-3-Clause | Shift-JIS (YPF) |
 | `tokio` 1 | MIT | Async I/O (XP3) |
 | `rars` 0.4 | MIT / Apache-2.0 | RAR extraction (vendored fork) |
 | `lz4_flex` | MIT | LZ4 pack/unpack |
 | `oxiarc-bzip2` | Apache-2.0 | BZIP2 pack/unpack |
-| `lzma-rs` | MIT | XZ / LZMA pack/unpack |
+| `xz2` / `lzma-sys` | 0BSD | XZ + LZMA (liblzma) pack/unpack |
 | `ruzstd` | MIT | ZSTD decode |
 | `oxiarc-zstd` | Apache-2.0 | ZSTD encode |
 | `tar` | MIT / Apache-2.0 | TAR pack/unpack |

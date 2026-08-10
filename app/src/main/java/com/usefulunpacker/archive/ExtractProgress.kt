@@ -33,11 +33,14 @@ fun extractAccessors(fmt: String): ProgressAccessors = when (fmt) {
     "xz" -> ProgressAccessors({ XzCore.xzExtractProgressCount() }, { XzCore.xzExtractProgressTotal() }, { XzCore.xzExtractProgressFileCount() }, { XzCore.xzExtractProgressFileTotal() }, { XzCore.xzExtractProgressName() }, { XzCore.xzExtractCancel() })
     "zst" -> ProgressAccessors({ ZstdCore.zstExtractProgressCount() }, { ZstdCore.zstExtractProgressTotal() }, { ZstdCore.zstExtractProgressFileCount() }, { ZstdCore.zstExtractProgressFileTotal() }, { ZstdCore.zstExtractProgressName() }, { ZstdCore.zstExtractCancel() })
     "lzma" -> ProgressAccessors({ LzmaCore.lzmaExtractProgressCount() }, { LzmaCore.lzmaExtractProgressTotal() }, { LzmaCore.lzmaExtractProgressFileCount() }, { LzmaCore.lzmaExtractProgressFileTotal() }, { LzmaCore.lzmaExtractProgressName() }, { LzmaCore.lzmaExtractCancel() })
+    "ksd" -> ProgressAccessors({ KsdCore.ksdExtractProgressCount() }, { KsdCore.ksdExtractProgressTotal() }, { KsdCore.ksdExtractProgressFileCount() }, { KsdCore.ksdExtractProgressFileTotal() }, { KsdCore.ksdExtractProgressName() }, { KsdCore.ksdExtractCancel() })
     "tar" -> ProgressAccessors({ TarCore.tarExtractProgressCount() }, { TarCore.tarExtractProgressTotal() }, { TarCore.tarExtractProgressFileCount() }, { TarCore.tarExtractProgressFileTotal() }, { TarCore.tarExtractProgressName() }, { TarCore.tarExtractCancel() })
     else -> throw IllegalArgumentException("unsupported extract format: $fmt")
 }
 
 fun compressAccessors(fmt: String): ProgressAccessors = when (fmt) {
+    "xp3" -> ProgressAccessors({ Xp3Core.xp3CompressProgressCount() }, { Xp3Core.xp3CompressProgressTotal() }, { Xp3Core.xp3CompressProgressFileCount() }, { Xp3Core.xp3CompressProgressFileTotal() }, { Xp3Core.xp3CompressProgressName() }, { Xp3Core.xp3CompressCancel() })
+    "pfs" -> ProgressAccessors({ PfsCore.pfsCompressProgressCount() }, { PfsCore.pfsCompressProgressTotal() }, { PfsCore.pfsCompressProgressFileCount() }, { PfsCore.pfsCompressProgressFileTotal() }, { PfsCore.pfsCompressProgressName() }, { PfsCore.pfsCompressCancel() })
     "zip" -> ProgressAccessors({ ZipCore.zipCompressProgressCount() }, { ZipCore.zipCompressProgressTotal() }, { ZipCore.zipCompressProgressFileCount() }, { ZipCore.zipCompressProgressFileTotal() }, { ZipCore.zipCompressProgressName() }, { ZipCore.zipCompressCancel() })
     "7z" -> ProgressAccessors({ SevenZCore.szCompressProgressCount() }, { SevenZCore.szCompressProgressTotal() }, { SevenZCore.szCompressProgressFileCount() }, { SevenZCore.szCompressProgressFileTotal() }, { SevenZCore.szCompressProgressName() }, { SevenZCore.szCompressCancel() })
     "gz" -> ProgressAccessors({ GzipCore.gzCompressProgressCount() }, { GzipCore.gzCompressProgressTotal() }, { GzipCore.gzCompressProgressFileCount() }, { GzipCore.gzCompressProgressFileTotal() }, { GzipCore.gzCompressProgressName() }, { GzipCore.gzCompressCancel() })
@@ -46,6 +49,7 @@ fun compressAccessors(fmt: String): ProgressAccessors = when (fmt) {
     "zst" -> ProgressAccessors({ ZstdCore.zstCompressProgressCount() }, { ZstdCore.zstCompressProgressTotal() }, { ZstdCore.zstCompressProgressFileCount() }, { ZstdCore.zstCompressProgressFileTotal() }, { ZstdCore.zstCompressProgressName() }, { ZstdCore.zstCompressCancel() })
     "lzma" -> ProgressAccessors({ LzmaCore.lzmaCompressProgressCount() }, { LzmaCore.lzmaCompressProgressTotal() }, { LzmaCore.lzmaCompressProgressFileCount() }, { LzmaCore.lzmaCompressProgressFileTotal() }, { LzmaCore.lzmaCompressProgressName() }, { LzmaCore.lzmaCompressCancel() })
     "lz4" -> ProgressAccessors({ Lz4Core.lz4CompressProgressCount() }, { Lz4Core.lz4CompressProgressTotal() }, { Lz4Core.lz4CompressProgressFileCount() }, { Lz4Core.lz4CompressProgressFileTotal() }, { Lz4Core.lz4CompressProgressName() }, { Lz4Core.lz4CompressCancel() })
+    "ksd" -> ProgressAccessors({ KsdCore.ksdCompressProgressCount() }, { KsdCore.ksdCompressProgressTotal() }, { KsdCore.ksdCompressProgressFileCount() }, { KsdCore.ksdCompressProgressFileTotal() }, { KsdCore.ksdCompressProgressName() }, { KsdCore.ksdCompressCancel() })
     "tar", "tgz", "tbz2", "txz", "tzst" -> ProgressAccessors({ TarCore.tarCompressProgressCount() }, { TarCore.tarCompressProgressTotal() }, { TarCore.tarCompressProgressFileCount() }, { TarCore.tarCompressProgressFileTotal() }, { TarCore.tarCompressProgressName() }, { TarCore.tarCompressCancel() })
     else -> throw IllegalArgumentException("unsupported compress format: $fmt")
 }

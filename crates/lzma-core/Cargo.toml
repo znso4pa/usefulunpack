@@ -10,3 +10,4 @@ crate-type = ["cdylib"]
 archive_common = { path = "../common" }
 jni = "0.21"
 lzma-rs = "0.3"
+lzma-sys = "0.1"

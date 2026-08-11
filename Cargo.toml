@@ -31,5 +31,7 @@ lto = true
 
 # Local fork of rars with streaming RAR5 filter support
 # (upstream refuses to stream filtered members over the buffered-decode limit)
+# Local fork of sevenz-rust with liblzma LZMA/LZMA2 decoding (decompression speed)
 [patch.crates-io]
 rars = { path = "crates/vendor/rars" }
+sevenz-rust = { path = "crates/vendor/sevenz-rust" }

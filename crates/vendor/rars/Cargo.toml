@@ -7,6 +7,11 @@ description = "High-level Rust API for reading, extracting, writing, and repairi
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/bitplane/rars"
 
+# Standalone workspace root so the fork's own test suite can run via
+# `cargo test --manifest-path Cargo.toml` (patched into the parent workspace,
+# not a member).
+[workspace]
+
 [features]
 fast = []
 parallel = ["dep:rayon"]

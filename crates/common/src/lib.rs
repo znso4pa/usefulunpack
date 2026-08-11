@@ -1,6 +1,7 @@
 use jni::JNIEnv;
 use jni::objects::JString;
 use std::collections::BTreeSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -219,4 +220,106 @@ pub fn safe_join(output: &str, archive_path: &str) -> Result<PathBuf, String> {
 
 pub fn extract_result_json(total: u32, success: u32, error: u32) -> String {
     format!(r#"{{"total":{},"success":{},"error":{}}}"#, total, success, error)
+}
+
+/// Byte-splits a file into `<path>.001/.002/...` parts of `part_size` bytes
+/// (7-Zip `-v` semantics), then removes the original. `part_size == 0` is a
+/// no-op returning 1. Returns the number of parts written.
+pub fn split_volumes(path: &str, part_size: u64) -> Result<u64, String> {
+    if part_size == 0 {
+        return Ok(1);
+    }
+    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut reader = std::io::BufReader::new(f);
+    let mut buf = [0u8; 256 * 1024];
+    let mut idx: u64 = 0;
+    let mut cur: Option<std::fs::File> = None;
+    let mut written_in_part: u64 = 0;
+    let mut any = false;
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        any = true;
+        let mut off = 0;
+        while off < n {
+            if cur.is_none() {
+                idx += 1;
+                let part_path = format!("{path}.{idx:03}");
+                cur = Some(std::fs::File::create(&part_path).map_err(|e| e.to_string())?);
+                written_in_part = 0;
+            }
+            let take = ((n - off) as u64).min(part_size - written_in_part);
+            std::io::Write::write_all(cur.as_mut().unwrap(), &buf[off..off + take as usize])
+                .map_err(|e| e.to_string())?;
+            off += take as usize;
+            written_in_part += take;
+            if written_in_part == part_size {
+                cur = None;
+            }
+        }
+    }
+    if !any {
+        let part_path = format!("{path}.001");
+        std::fs::File::create(&part_path).map_err(|e| e.to_string())?;
+        idx = 1;
+    }
+    std::fs::remove_file(path).ok();
+    Ok(idx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_volumes_edge_cases() {
+        let dir = std::env::temp_dir().join(format!("uu_common_split_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 1. part_size == 0 → no-op, original untouched
+        let f = dir.join("a.bin");
+        std::fs::write(&f, b"hello").unwrap();
+        assert_eq!(split_volumes(f.to_str().unwrap(), 0).unwrap(), 1);
+        assert!(f.exists());
+
+        // 2. empty file → single empty part
+        let e = dir.join("e.bin");
+        std::fs::File::create(&e).unwrap();
+        assert_eq!(split_volumes(e.to_str().unwrap(), 1024).unwrap(), 1);
+        assert!(dir.join("e.bin.001").exists());
+        assert_eq!(std::fs::metadata(dir.join("e.bin.001")).unwrap().len(), 0);
+
+        // 3. exact multiple of part_size
+        let m = dir.join("m.bin");
+        std::fs::write(&m, vec![0xAB; 4096]).unwrap();
+        let parts = split_volumes(m.to_str().unwrap(), 1024).unwrap();
+        assert_eq!(parts, 4);
+        for i in 1..=4 {
+            let p = dir.join(format!("m.bin.{i:03}"));
+            assert_eq!(std::fs::metadata(&p).unwrap().len(), 1024);
+        }
+
+        // 4. non-exact remainder → last part is smaller
+        let n = dir.join("n.bin");
+        std::fs::write(&n, vec![0xCD; 2500]).unwrap();
+        let parts = split_volumes(n.to_str().unwrap(), 1024).unwrap();
+        assert_eq!(parts, 3);
+        assert_eq!(std::fs::metadata(dir.join("n.bin.001")).unwrap().len(), 1024);
+        assert_eq!(std::fs::metadata(dir.join("n.bin.003")).unwrap().len(), 452);
+
+        // 5. concatenation reconstructs the original bytes
+        let mut joined = Vec::new();
+        let mut i = 1u32;
+        loop {
+            let p = dir.join(format!("n.bin.{i:03}"));
+            if !p.exists() { break; }
+            joined.extend(std::fs::read(&p).unwrap());
+            i += 1;
+        }
+        assert_eq!(joined, vec![0xCD; 2500]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

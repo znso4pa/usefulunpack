@@ -32,6 +32,7 @@ private fun doCompress(activity: AppCompatActivity, dir: File, currentDir: File,
     val level = if (fmt == "zip") prefs.getInt("zip_level", 5) else if (fmt == "7z") prefs.getInt("sz_level", 6) else prefs.getInt("generic_level", 6)
     val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
     val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
+    val splitEnabled = prefs.getLong("compress_split_size", 0L) > 0 && fmt in setOf("zip", "7z")
     var cancelled = false
     val accessors = compressAccessors(fmt)
     val prog = PollingProgressDialog(
@@ -53,7 +54,11 @@ private fun doCompress(activity: AppCompatActivity, dir: File, currentDir: File,
             activity.runOnUiThread {
                 prog.dismiss()
                 if (cancelled) { Toast.makeText(activity, activity.getString(R.string.msg_cancelled), Toast.LENGTH_SHORT).show() }
-                else if (ok) { Toast.makeText(activity, "${activity.getString(R.string.msg_extract_complete)} ${outFile.name}", Toast.LENGTH_SHORT).show(); onComplete() }
+                else if (ok) {
+                    val shown = if (splitEnabled) "${outFile.name}.001" else outFile.name
+                    Toast.makeText(activity, "${activity.getString(R.string.msg_extract_complete)} $shown", Toast.LENGTH_SHORT).show()
+                    onComplete()
+                }
                 else Toast.makeText(activity, activity.getString(R.string.title_compress_failed), Toast.LENGTH_SHORT).show()
             }
         } finally {
@@ -64,13 +69,16 @@ private fun doCompress(activity: AppCompatActivity, dir: File, currentDir: File,
 
 /** 通用压缩派发：任何来源（单文件/目录/临时合并目录）→ 指定格式，供单文件、批量合并、批量分别共用。 */
 fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password: String, prefs: SharedPreferences): Boolean {
+    // 分卷大小（字节），仅 zip/7z 支持；0 = 不分卷
+    val split = prefs.getLong("compress_split_size", 0L)
+    val splitStr = if (split > 0 && fmt in setOf("zip", "7z")) split.toString() else "0"
     return try {
         when (fmt) {
             "xp3" -> Xp3Core.xp3CreateArchive("", src.path, outFile.path, level.toString()) != null
             "pfs" -> PfsCore.pfsCreateArchive("", src.path, outFile.path) != null
             "ksd" -> KsdCore.ksdCompress("", src.path, outFile.path, level.toString()) != null
-            "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); ZipCore.zipCompress("", src.path, outFile.path, level.toString(), password) }
-            "7z" -> SevenZCore.szCompress("", src.path, outFile.path, level.toString(), password)
+            "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); ZipCore.zipCompress("", src.path, outFile.path, level.toString(), password, splitStr) }
+            "7z" -> SevenZCore.szCompress("", src.path, outFile.path, level.toString(), password, splitStr)
             "tar", "tgz", "tbz2", "txz", "tzst" -> TarCore.tarCompress("", src.path, outFile.path, fmt, level.toString())
             "gz" -> GzipCore.gzCompress("", src.path, outFile.path, level.toString())
             "bz2" -> Bzip2Core.bz2Compress("", src.path, outFile.path, level.toString())

@@ -8,14 +8,11 @@ import androidx.appcompat.app.AppCompatActivity
 import kotlin.concurrent.thread
 import java.io.File
 
-@Volatile var lastExtractResult = ExtractCounts(0, 0, 0)
-@Volatile var lastExtractError: String? = null
-
 /**
  * Single-operation lock. The app drives one long-running extract/compress at a
  * time; concurrent operations would clobber the shared per-format progress
- * statics and [lastExtractResult]. Worker threads call [acquire] before the JNI
- * work and [release] in a `finally`, so each worker is a distinct lock holder.
+ * statics. Worker threads call [acquire] before the JNI work and [release] in
+ * a `finally`, so each worker is a distinct lock holder.
  */
 object OperationLock {
     @Volatile private var busy = false
@@ -46,8 +43,8 @@ fun tryStartOperation(activity: AppCompatActivity): Boolean {
 }
 
 /** Maps the raw JNI error message to a user-facing string. */
-fun friendlyExtractError(activity: AppCompatActivity): String {
-    val msg = lastExtractError
+fun friendlyExtractError(activity: AppCompatActivity, error: String?): String {
+    val msg = error
     if (msg.isNullOrEmpty()) return activity.getString(R.string.title_extract_failed)
     val m = msg.lowercase()
     return when {
@@ -80,17 +77,40 @@ fun rarExtractDispatch(src: String, out: String, sel: String, pw: String): Strin
     }
 }
 
+/** ZIP selected+password is now a first-class JNI combo; plain full/password paths remain. */
+fun zipExtractDispatch(src: String, out: String, sel: String, pw: String): String? {
+    val vols = resolveZipVolumes(File(src))
+    return if (vols.size > 1) {
+        val joined = volumeJoin(vols)
+        when {
+            sel.isNotEmpty() && pw.isNotEmpty() -> ZipCore.zipExtractSelectedVolumesWithPassword("", joined, out, sel, pw)
+            pw.isNotEmpty() -> ZipCore.zipExtractVolumesWithPassword("", joined, out, pw)
+            sel.isNotEmpty() -> ZipCore.zipExtractSelectedVolumes("", joined, out, sel)
+            else -> ZipCore.zipExtractVolumes("", joined, out)
+        }
+    } else {
+        when {
+            sel.isNotEmpty() && pw.isNotEmpty() -> ZipCore.zipExtractSelectedWithPassword("", src, out, sel, pw)
+            pw.isNotEmpty() -> ZipCore.zipExtractWithPassword("", src, out, pw)
+            sel.isNotEmpty() -> ZipCore.zipExtractSelected("", src, out, sel)
+            else -> ZipCore.zipExtract("", src, out)
+        }
+    }
+}
+
 fun szExtractDispatch(src: String, out: String, sel: String, pw: String): String? {
     val vols = resolveSevenZVolumes(File(src))
     return if (vols.size > 1) {
         val joined = volumeJoin(vols)
         when {
+            sel.isNotEmpty() && pw.isNotEmpty() -> SevenZCore.szExtractSelectedVolumesWithPassword("", joined, out, sel, pw)
             sel.isNotEmpty() -> SevenZCore.szExtractSelectedVolumes("", joined, out, sel)
             pw.isNotEmpty() -> SevenZCore.szExtractVolumesWithPassword("", joined, out, pw)
             else -> SevenZCore.szExtractVolumes("", joined, out)
         }
     } else {
         when {
+            sel.isNotEmpty() && pw.isNotEmpty() -> SevenZCore.szExtractSelectedWithPassword("", src, out, sel, pw)
             sel.isNotEmpty() -> SevenZCore.szExtractSelected("", src, out, sel)
             pw.isNotEmpty() -> SevenZCore.szExtractWithPassword("", src, out, pw)
             else -> SevenZCore.szExtract("", src, out)
@@ -108,13 +128,19 @@ fun szVolumesNeedsPassword(src: String): Boolean {
     return if (vols.size > 1) SevenZCore.szVolumesNeedsPassword(volumeJoin(vols)) else SevenZCore.szNeedsPassword(src)
 }
 
+fun zipVolumesNeedsPassword(src: String): Boolean {
+    val vols = resolveZipVolumes(File(src))
+    return if (vols.size > 1) ZipCore.zipVolumesNeedsPassword(volumeJoin(vols)) else ZipCore.zipNeedsPassword(src)
+}
+
 fun rarVolumeList(src: String): String = volumeJoin(resolveRarVolumes(File(src)))
 fun szVolumeList(src: String): String = volumeJoin(resolveSevenZVolumes(File(src)))
+fun zipVolumeList(src: String): String = volumeJoin(resolveZipVolumes(File(src)))
 
 fun extractByFormat(
     format: String, src: String, out: String, selected: String,
-    prefs: SharedPreferences
-): Boolean {
+    prefs: SharedPreferences, password: String = ""
+): ExtractOutcome {
     return try {
         val json = when (format) {
             "xp3" -> if (selected.isEmpty()) Xp3Core.xp3Extract("", src, out)
@@ -125,11 +151,11 @@ fun extractByFormat(
                      else IsoCore.isoExtractSelected("", src, out, selected)
             "ypf" -> if (selected.isEmpty()) YpfCore.ypfExtract("", src, out)
                      else YpfCore.ypfExtractSelected("", src, out, selected)
-            "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); if (selected.isEmpty()) ZipCore.zipExtract("", src, out) else ZipCore.zipExtractSelected("", src, out, selected) }
-            "7z" -> szExtractDispatch(src, out, selected, "")
+            "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); zipExtractDispatch(src, out, selected, password) }
+            "7z" -> szExtractDispatch(src, out, selected, password)
             "nsa" -> if (selected.isEmpty()) NsaCore.nsaExtract("", src, out)
                      else NsaCore.nsaExtractSelected("", src, out, selected)
-            "rar" -> rarExtractDispatch(src, out, selected, "")
+            "rar" -> rarExtractDispatch(src, out, selected, password)
             "lz4" -> Lz4Core.lz4Extract("", src, out)
             "gz" -> GzipCore.gzExtract("", src, out)
             "bz2" -> Bzip2Core.bz2Extract("", src, out)
@@ -141,15 +167,39 @@ fun extractByFormat(
                      else TarCore.tarExtractSelected("", src, out, selected)
             else -> null
         }
-        val r = ExtractCounts.fromJson(json)
-        lastExtractResult = r
-        lastExtractError = null
-        r.success > 0 && r.error == 0
+        ExtractOutcome(ExtractCounts.fromJson(json), null)
     } catch (e: Exception) {
-        lastExtractResult = ExtractCounts(0, 0, 0)
-        lastExtractError = e.message
-        false
+        ExtractOutcome(ExtractCounts(0, 0, 0), e.message)
     }
+}
+
+/**
+ * Synchronously asks for a password on the UI thread and blocks the caller
+ * (a background thread) until the user confirms or cancels. Returns the
+ * entered password, or null when cancelled. Never called on the main thread.
+ */
+fun promptPasswordSync(activity: AppCompatActivity, message: String = ""): String? {
+    val latch = java.util.concurrent.CountDownLatch(1)
+    val holder = arrayOf<String?>(null)
+    activity.runOnUiThread {
+        val inp = EditText(activity).apply {
+            hint = activity.getString(R.string.prompt_password)
+            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+            setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val dlg = AlertDialog.Builder(activity)
+            .setTitle(activity.getString(R.string.title_password))
+            .setView(inp)
+            .setPositiveButton(activity.getString(R.string.action_confirm)) { _, _ -> holder[0] = inp.text.toString(); latch.countDown() }
+            .setNegativeButton(activity.getString(R.string.action_cancel)) { _, _ -> latch.countDown() }
+            .create()
+        dlg.setOnDismissListener { latch.countDown() }
+        if (message.isNotEmpty()) dlg.setMessage(message)
+        dlg.show()
+    }
+    latch.await()
+    return holder[0]
 }
 
 fun extractProgressMessage(activity: AppCompatActivity, name: String, bytes: Long, total: Long): String =
@@ -164,7 +214,7 @@ fun showPasswordDialog(
     sel: String = "",
     showProgress: Boolean = true,
     onCancel: () -> Unit = {},
-    onResult: (Boolean) -> Unit
+    onResult: (ExtractOutcome) -> Unit
 ) {
     val inp = EditText(activity).apply {
         hint = activity.getString(R.string.prompt_password)
@@ -191,19 +241,20 @@ fun showPasswordDialog(
             thread {
                 if (!tryStartOperation(activity)) return@thread
                 try {
+                    var err: String? = null
                     val json = runCatching {
                         when (fmt) {
-                            "zip" -> ZipCore.zipExtractWithPassword("", src, out, pwd)
+                            "zip" -> zipExtractDispatch(src, out, sel, pwd)
                             "7z" -> szExtractDispatch(src, out, "", pwd)
                             "rar" -> rarExtractDispatch(src, out, sel, pwd)
                             else -> null
                         }
-                    }.onFailure { lastExtractError = it.message }.getOrNull()
-                    val r = ExtractCounts.fromJson(json); val ok = r.success > 0 && r.error == 0
+                    }.onFailure { err = it.message }.getOrNull()
+                    val outcome = ExtractOutcome(ExtractCounts.fromJson(json), err)
                     activity.runOnUiThread {
                         prog?.dismiss()
                         if (cancelled) onCancel()
-                        else onResult(ok)
+                        else onResult(outcome)
                     }
                 } finally {
                     OperationLock.release()
@@ -219,8 +270,9 @@ fun tryExtractWithPassword(
     fmt: String, src: String, out: String, sel: String,
     prefs: SharedPreferences,
     showProgress: Boolean = true,
+    initialPassword: String = "",
     onCancel: () -> Unit = {},
-    onResult: (ExtractCounts) -> Unit
+    onResult: (ExtractOutcome) -> Unit
 ) {
     var cancelled = false
     val accessors = extractAccessors(fmt)
@@ -234,34 +286,30 @@ fun tryExtractWithPassword(
     ) else null
     prog?.start()
 
-    fun doExtract(pwd: String = ""): ExtractCounts {
-        lastExtractResult = ExtractCounts(0, 0, 0)
-        lastExtractError = null
-        val json = runCatching {
+    fun doExtract(pwd: String = ""): ExtractOutcome {
+        return runCatching {
             when (fmt) {
-                "zip" -> if (pwd.isEmpty()) ZipCore.zipExtract("", src, out) else ZipCore.zipExtractWithPassword("", src, out, pwd)
-                "7z" -> szExtractDispatch(src, out, "", pwd)
-                "rar" -> rarExtractDispatch(src, out, "", pwd)
-                else -> { extractByFormat(fmt, src, out, sel, prefs); null }
+                "zip" -> ExtractOutcome(ExtractCounts.fromJson(zipExtractDispatch(src, out, sel, pwd)), null)
+                "7z" -> ExtractOutcome(ExtractCounts.fromJson(szExtractDispatch(src, out, "", pwd)), null)
+                "rar" -> ExtractOutcome(ExtractCounts.fromJson(rarExtractDispatch(src, out, "", pwd)), null)
+                else -> extractByFormat(fmt, src, out, sel, prefs)
             }
-        }.onFailure { lastExtractError = it.message }.getOrNull()
-        return if (json != null) ExtractCounts.fromJson(json) else lastExtractResult
+        }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
     }
     thread {
         if (!tryStartOperation(activity)) return@thread
         try {
             val result = if (fmt in setOf("zip", "7z", "rar") && sel.isNotEmpty()) {
-                val json = runCatching {
+                runCatching {
                     when (fmt) {
-                        "zip" -> ZipCore.zipExtractSelected("", src, out, sel)
-                        "7z" -> szExtractDispatch(src, out, sel, "")
-                        "rar" -> rarExtractDispatch(src, out, sel, "")
-                        else -> null
+                        "zip" -> ExtractOutcome(ExtractCounts.fromJson(zipExtractDispatch(src, out, sel, initialPassword)), null)
+                        "7z" -> ExtractOutcome(ExtractCounts.fromJson(szExtractDispatch(src, out, sel, initialPassword)), null)
+                        "rar" -> ExtractOutcome(ExtractCounts.fromJson(rarExtractDispatch(src, out, sel, initialPassword)), null)
+                        else -> ExtractOutcome(ExtractCounts(0, 0, 0), null)
                     }
-                }.onFailure { lastExtractError = it.message }.getOrNull()
-                ExtractCounts.fromJson(json)
-            } else doExtract()
-            val ok = result.success > 0 && result.error == 0
+                }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
+            } else doExtract(initialPassword)
+            val ok = result.counts.ok
             activity.runOnUiThread {
                 prog?.dismiss()
                 if (cancelled) { onCancel(); return@runOnUiThread }
@@ -292,19 +340,18 @@ fun tryExtractWithPassword(
                             thread {
                                 if (!tryStartOperation(activity)) return@thread
                                 try {
-                                    val json2 = runCatching {
+                                    val outcome2 = runCatching {
                                         when (fmt) {
-                                            "zip" -> ZipCore.zipExtractWithPassword("", src, out, pwd)
-                                            "7z" -> szExtractDispatch(src, out, sel, pwd)
-                                            "rar" -> rarExtractDispatch(src, out, sel, pwd)
-                                            else -> null
+                                            "zip" -> ExtractOutcome(ExtractCounts.fromJson(zipExtractDispatch(src, out, sel, pwd)), null)
+                                            "7z" -> ExtractOutcome(ExtractCounts.fromJson(szExtractDispatch(src, out, sel, pwd)), null)
+                                            "rar" -> ExtractOutcome(ExtractCounts.fromJson(rarExtractDispatch(src, out, sel, pwd)), null)
+                                            else -> ExtractOutcome(ExtractCounts(0, 0, 0), null)
                                         }
-                                    }.onFailure { lastExtractError = it.message }.getOrNull()
-                                    val r2 = ExtractCounts.fromJson(json2)
+                                    }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
                                     activity.runOnUiThread {
                                         prog2?.dismiss()
                                         if (cancelled2) onCancel()
-                                        else onResult(r2)
+                                        else onResult(outcome2)
                                     }
                                 } finally {
                                     OperationLock.release()

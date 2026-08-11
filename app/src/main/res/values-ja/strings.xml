@@ -182,4 +182,10 @@
     <string name="msg_single_file_compress">単一ファイル圧縮は単一ファイルのみ対応</string>
     <string name="msg_ksd_need_txt">KSD パックは .txt テキストファイルのみ対応</string>
     <string name="settings_compress_generic">汎用形式 (gzip/bzip2/xz/zstd/lzma/lz4/tar)</string>
+    <string name="split_title">分割サイズ (zip/7z)</string>
+    <string name="split_none">分割なし</string>
+    <string name="split_custom">カスタム</string>
+    <string name="split_min_note">最小 1MB</string>
+    <string name="split_invalid">1〜2048 の値を入力してください</string>
+    <string name="pwd_note">パスワードは zip/7z のみ有効</string>
 </resources>

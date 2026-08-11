@@ -2,7 +2,7 @@
 
 [**中文**](README-zh.md) | [**English**](README.md) | [**繁體中文**](README-zh-TW.md) | [**日本語**](README-ja.md)
 
-A lightweight Android file manager and archive extraction tool for visual novel game files.
+A lightweight Android file manager and archive packing/unpacking tool.
 
 Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF** (YU-RIS), **KSD** (Kirikiri2), **ZIP**, **7z**, **RAR**, **LZ4**, and **ISO 9660** disc images — with native Rust-powered extraction and packing.
 
@@ -32,7 +32,10 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 📦 **In-Archive Search** | One-click unpack text files from preview and open the full global search interface on extracted content |
 | 🖼️ **File Preview** | Image (JPG/PNG), audio (MP3/OGG), video (MP4), text/code — jump to matching line on search results |
 | 🗜️ **Compression** | ZIP/7z + gzip/bzip2/xz/zstd/lzma/lz4 (single file) + tar (folder, 5 variants) + xp3/pfs/ksd, 5 levels, AES-256 (ZIP) |
-| 🔐 **Extract with Password** | Enter password for encrypted ZIP/7z/RAR archives |
+| 📚 **Multi-Volume** | Unpack `.7z.001` / `.zip.001` / `.rar` split volumes; pack zip/7z into byte-split volumes (7-Zip compatible) |
+| 🎚️ **Custom Split Size** | Split zip/7z output at a custom size (MB/GB, 1MB–2GB) |
+| 🔐 **Extract with Password** | Prompt-first password dialog for encrypted ZIP/7z/RAR; batch extraction asks once and reuses it |
+| 🔒 **Password Badge** | Archives that need a password show a lock icon in the file browser and in the preview list |
 | 📊 **Dual Progress Bar** | Top bar = overall progress, bottom bar = current file progress (extract + compress) |
 | 📋 **Grouped Format Picker** | Scrollable, grouped format selection (generic / single-file / other) for extract, batch and compress |
 | 📄 **Single-File Compress FAB** | In compress mode, tap any file to get a bottom-right compress button |
@@ -127,7 +130,7 @@ XOR key auto-detection (0xFF vs 0xC9) is done per-file on the first entry.
 | **XP3** | [xp3 crate](https://crates.io/crates/xp3) | MIT / Apache-2.0 |
 | **PFS / PF6 / PF8** | [pf8 crate](https://crates.io/crates/pf8) | See [crates.io/pf8](https://crates.io/crates/pf8) |
 | **NSA / SAR** | [NSA 格式规范](https://orin.page/w/index.php?title=NSA), LZSS/SPB via [GARbro](https://github.com/morkt/GARbro) / [ONScripter](https://github.com/nscripter/nscripter) | Public spec / MIT / GPL |
-| **YPF** | [YU-RIS 解包工具](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker) (Kaitai), [GARbro](https://github.com/morkt/GARbro) SwapTable, XOR + Shift-JIS, zlib | Public spec / MIT |
+| **YPF** | [YU-RIS 格式解析参考](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker) (Kaitai), [GARbro](https://github.com/morkt/GARbro) SwapTable, XOR + Shift-JIS, zlib | Public spec / MIT |
 | **ISO 9660** | [isomage crate](https://crates.io/crates/isomage) | MIT |
 | **ZIP** | [zip crate](https://crates.io/crates/zip) | MIT |
 | **7z** | [sevenz-rust crate](https://crates.io/crates/sevenz-rust) | MIT / Apache-2.0 |

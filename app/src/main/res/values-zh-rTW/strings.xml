@@ -182,4 +182,10 @@
     <string name="msg_single_file_compress">單檔壓縮僅支援單一檔案</string>
     <string name="msg_ksd_need_txt">KSD 打包僅支援 .txt 文字檔</string>
     <string name="settings_compress_generic">通用格式 (gzip/bzip2/xz/zstd/lzma/lz4/tar)</string>
+    <string name="split_title">分卷大小 (zip/7z)</string>
+    <string name="split_none">不分卷</string>
+    <string name="split_custom">自訂</string>
+    <string name="split_min_note">最小 1MB</string>
+    <string name="split_invalid">請輸入 1-2048 之間的有效值</string>
+    <string name="pwd_note">密碼僅對 zip/7z 生效</string>
 </resources>

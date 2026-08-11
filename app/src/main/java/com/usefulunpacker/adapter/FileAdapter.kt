@@ -23,6 +23,7 @@ class FileAdapter(
 ) : BaseAdapter() {
     private val inflater = LayoutInflater.from(context)
     var multiSelected_: Set<File> = emptySet()
+    var passwordProtected: Set<String> = emptySet()
 
     override fun getCount() = files.size
     override fun getItem(pos: Int) = files[pos]
@@ -63,7 +64,9 @@ class FileAdapter(
             val n = f.name.lowercase()
             val res = when { n.endsWith(".xp3")||n.endsWith(".pfs") -> android.R.drawable.ic_menu_compass; n.endsWith(".apk") -> android.R.drawable.ic_menu_manage; else -> android.R.drawable.ic_menu_gallery }
             icon.setImageResource(res); icon.setColorFilter(C["primary"]!!)
-            label.text = f.name; size.text = fmt(fileSize(f)); date.text = df.format(Date(f.lastModified()))
+            label.text = f.name
+            size.text = (if (f.absolutePath in passwordProtected) "🔒 " else "") + fmt(fileSize(f))
+            date.text = df.format(Date(f.lastModified()))
         }
         return view
     }

@@ -1,5 +1,82 @@
 # TODO
 
+## v5.9.x (密码锁 + 批量密码 + 自定义分卷 + 选中密码解压)
+
+### 已完成
+
+- [x] **主文件列表密码锁 🔒** — `FileAdapter` 加 `passwordProtected` 集合渲染锁；`nav()` 后台线程对 zip/7z/rar（含分卷）调 `isPasswordProtected` 检测并 `notifyDataSetChanged`；`FileUtils.isPasswordProtected`（try/catch，稳健）
+- [x] **预览条目锁回归 zip/7z** — zip 列表用 `by_index_raw().encrypted()` 发射真实 `"e"`；7z 按文件夹 AES coder 检测发射真实 `"e"`（此前自 v4.2.0 起硬编码 false）
+- [x] **批量一次密码复用** — `batchDirectExtract`/批量预览点文件/批量选解压：预先检测→`promptPasswordSync` 弹一次→应用到所有归档；`extractByFormat` 加 `password` 参数；新增同步密码框 `promptPasswordSync`（CountDownLatch）
+- [x] **预览/解压密码提示加固** — `previewFileEntry` 用稳健 `isPasswordProtected`；`extractAll` 密码归档先弹框再解压（不再"直接密码错误"）；`previewArchive` 打开即弹密码框并透传给条目预览，新增 `szListEntriesWithPassword`（头加密 7z 可列目录）
+- [x] **选中+密码解压只解选中** — `extractSelected` zip/7z/rar 分支重写（预检弹框 + 失败重试框，不再直接 toast）；zip/7z 新增 4 个 selected+password JNI 组合（单文件/分卷），dispatch 优先路由选中+密码（此前密码非空忽略选中走全量解压）
+- [x] **自定义分卷大小** — 设置分卷行：不分卷/1MB/100MB/1GB/**自定义**（MB/GB 切换，1~2048 校验）+ "最小 1MB" 提示；密码行标注"仅 zip/7z 生效"；卷名正则 `\d{2,3}`→`\d{2,}` 支持 >999 卷
+- [x] 4 语言新增 `split_custom`/`split_min_note`/`split_invalid`/`pwd_note`
+- [x] 回归测试：zip 4 组合写→读回、7z 密码分卷 total>0、zip 密码 total>0、`password_selected_extracts_only_selected`；修复 zip 测试临时目录并行碰撞（`tmp()` 唯一计数器）
+
+### 待处理
+
+- [ ] **UI 重构** — 优化交互流程
+- [ ] **进度静态量每操作局部上下文** — 若要真正并发再做
+
+---
+
+## v5.8.1 (真机修复)
+
+### 已完成
+
+- [x] **ZIP 分卷解压 EOCD 失败** — 根因：`extractAll`/`extractSelected` 的 zip 分支直接调 `ZipCore.zipExtract(src.path)`（单文件 API），对分卷 zip 等于只读 `.001`，EOCD 在最后卷 → "cannot find EOCD"。改走 `zipExtractDispatch`（自动解析分卷）。单文件密码 zip 自解压正常、无密码分卷正常、密码分卷失败 —— 该组合首次暴露此路径
+- [x] **7z/zip 分卷非首卷(.002/003)不被识别** — `isVolumeFile` 检查被点击文件自身的魔数，非首卷无魔数 → 判普通文件。改为解析卷集后对**首卷**查魔数（复用 resolve*）
+- [x] **7z/zip 密码分卷进度 total=0B** —
+  - 7z：压缩器设密码时 `set_encrypt_header(true)` → 头加密 → 无密码读头失败 → total 算 0。`extract_7z_with_password`/`extract_7z_volumes` 改带密码读头算 total；**密码须用 `Password::from`（UTF-16LE），否则 AES 解不了头**
+  - zip：`by_index` 对 AES 条目无密码返回 PASSWORD_REQUIRED → 算 total 全跳过。进度/列目录/加密检测全部改用 **`by_index_raw`**（纯元数据，不需要密码）
+- [x] **szNeedsPassword/szVolumesNeedsPassword 头加密归档** — 无密码读头失败不再抛错，密码类错误返回 `true`（需要密码）
+- [x] **zip 密码分卷列目录/预览** — `list_zip_from` 用 `by_index_raw`，加密条目也能列全（之前返回空列表）
+- [x] 回归测试：zip 4 组合写→读回（含 30MB/1MB×29 分卷）、7z 密码分卷 total>0、zip 密码 total>0
+
+### 待处理
+
+- [ ] **UI 重构** — 优化交互流程（分卷压缩入口已加在压缩设置，仍可考虑压缩流程内联入口）
+- [ ] **进度静态量每操作局部上下文** — 若要真正并发再做
+
+---
+
+## v5.8.0
+
+### 已完成
+
+- [x] **7z 解压提速 ~7.7x（30 → ~232 MB/s）** — fork `sevenz-rust 0.6.1` 到 `crates/vendor/sevenz-rust`（`[patch.crates-io]`），`decoders.rs` 的 LZMA/LZMA2 解码改用 **`lzma-sys`（liblzma）** `lzma_raw_decoder` 流式解码：LZMA1 从 5 字节 props 解 lc/lp/pb+dict、LZMA2 用 dict_size；`lzma_raw_decoder_memusage` 保 `MAX_MEM_LIMIT` 语义；`Drop` 里 `lzma_end` 释放
+  - 分卷路径自动受益（`ConcatReader` → 同一解码栈）；实测 p7zip LZMA2（mx=5/9，含加密 + 分卷）sha256 全匹配；修复 release-only SIGSEGV（过滤器 options 悬垂指针：原实现返回 tuple 使 `&mut opt` 指向已失效栈帧，改 `&mut` 参数让 opt 活在调用帧）
+  - BCJ2 多流路径保留 lzma-rust 原实现；压缩侧仍 lzma-rust（未动）
+- [x] **bzip2 解压提速 ~1.8x（40-52 → 73-88 MB/s）** — 评估后 `bzip2-core`/`tar-core` 由 oxiarc-bzip2 换 **`bzip2` crate（C libbz2，bzip2-sys 本已经 zip 3.0 进依赖树）**；解码取消改用 `CancelReader`（输入侧读粒度检查）；系统 `bzip2` 双向互操作测试
+- [x] **ZIP 分卷解压** — 补 TODO 缺口：`zip-core` 加 `ConcatReader`（复用 7z 模式）+ 5 个 volume JNI（list/extract/selected/password/needsPassword）；`FileUtils` 加 `resolveZipVolumes`（`.zip.001` 字节分卷 + best-effort `.z01/.z02/.zip` 真分卷）+ `isVolumeFile` 按魔数区分 zip(PK)/7z；MainActivity/ArchiveExtractor/ZipCore.kt 路由接入（列/预览/全量/选择/密码/进度/取消，对齐 rar/7z）；实测 7-Zip 生成的分卷 zip 全通
+- [x] **7z + ZIP 分卷压缩** — `szCompress`/`zipCompress` 加 `splitSize` 参数（7-Zip `-v` 语义：压缩后按字节切成 `.001/.002/...` 并删原文件）；`archive_common::split_volumes` 共享 helper；压缩设置对话框新增"分卷大小"选择行（不分卷/1MB/5MB/100MB/1GB，pref `compress_split_size`）；`compressDispatch` 透传；完成 toast 显示首个分卷名；4 语言新增 `split_title`/`split_none`
+- [x] **版本号 5.8.0** — `versionCode 19` / `versionName "5.8.0"`
+- [x] **CI/CD 搭建** — `.github/workflows/ci.yml`：ubuntu 上 `cargo test --workspace` + 两个 fork（sevenz-rust/rars）独立测试套件 + clippy（非致命）；fork 的 Cargo.toml 加空 `[workspace]` 表使其可独立 `cargo test --manifest-path`（598 + 20 用例全过）；新增 `archive_common::split_volumes` 边界单测（空文件/整除/余数/拼接还原/0=no-op）
+
+### 测试
+
+- `cargo test --workspace` 21 套件全绿；7z/bzip2/zip/tar release 模式通过
+- 新增：7z 压缩分卷往返、zip 分卷 list/extract/selected、zip 压缩分卷往返、bzip2 系统互操作
+- 实测：p7zip 真实分卷 7z（mx=5/9、加密、200MB 随机）解出 sha256 全匹配；p7zip 分卷 zip 解出 0 失败
+
+### 性能（实测，16" M1）
+
+| 项 | 前 | 后 |
+|------|------|------|
+| 7z 解压 | 30 MB/s | **~232 MB/s** |
+| bzip2 解压 | 40-52 MB/s | **73-88 MB/s** |
+
+### 待处理
+
+- [ ] **UI 重构** — 优化交互流程
+- [x] 完善单元测试与 CI/CD — 见 v5.8.0 CI/CD 搭建
+- [x] **`lastExtractResult`/`lastExtractError` 全局跨线程（已修）** — 彻底移除两个进程级 `@Volatile` 全局，新增 `ExtractOutcome(counts, error)` 按操作显式传参：`extractByFormat` 返回 `ExtractOutcome`，`tryExtractWithPassword`/`showPasswordDialog` 回调改传 `ExtractOutcome`，`friendlyExtractError` 改收显式 error 参数；消除 worker→UI 间的共享可变状态
+- [x] **进度静态量跨线程竞争（已修）** — 审计发现 5 处后台提取未持 `OperationLock`（批量预览点击、批量/单归档内容搜索提取、搜索结果按需解压、`extractSelected` zip/7z 分支）会与前台操作并发写同一格式 progress 静态量 → 全部补 `OperationLock`；每个 cdylib 独立静态副本（无跨格式污染），每次操作开头 `reset()`（含清 CANCEL）。若未来要真正并发，需把 progress 静态量改每操作局部上下文（涉及全部 crate，暂不做）
+- [x] **RAR 加密大量小文件慢（已评估：不可优化）** — RAR5 每个文件自带独立 salt+kdf_count（fork 自带 writer 实测 6 文件 = 6 个不同 salt，且 rars 与真实 WinRAR 归档互操作验证），PBKDF2(2^15 HMAC-SHA256) 每文件必跑一次，是格式特性非实现问题；`sha2` 已用 SIMD；换官方 unrar 同样逐文件 KDF，无法改善
+- [ ] **`.z01` 真分卷 best-effort** — 拼接依赖 zip crate 接受多盘 EOCD（`disk_number` 检查通常能过，但 `number_of_files_on_this_disk` 字段可能少计）；无 WinRAR 样本难以完全验证，已按 best-effort 实现
+
+---
+
 ## v5.7.0
 
 ### 已完成
@@ -37,8 +114,8 @@
 
 - [x] **xz 压缩 level 无效 + 解压慢** — `lzma-rs` 的 `compress::Options` 无 level 参数（`_level` 被丢弃），且 `xz_compress` 走快速低质量路径（1800MB/s 假象）。**已修**：`xz-core`/`tar-core`(txz) 改用 **`xz2`（liblzma C，本已通过 zip 依赖进入 Android 交叉编译）**——`XzEncoder::new(w, preset 0-9)` 真级别、`XzDecoder` 流式解压（txz 顺带免临时文件 spool）；xz2 解码 21 条语料 xz 向量 sha256 全匹配，压缩产物系统 `xz -d` 可解
 - [x] **lzma (.lzma) 压缩 level 无效 + 极慢** — **已修**：`lzma-core` 压缩改用 **`lzma-sys`（liblzma C FFI）** `lzma_alone_encoder` + 流式 `lzma_code`——preset 0-9 真级别（实测 l1→11.3MB / l6→8.7MB / l9→8.2MB，32MB 文本），速度 ~3x（lzma-rs 0.84→liblzma ~2.5-3 MB/s 级别 6-9，级别 1 达 29 MB/s），产物系统 `lzma -d` 可解；解码保持 lzma-rs（语料 15 向量已验）；注：liblzma alone 头写未知大小，列表预览不显示解压大小
-- [ ] **7z/bzip2 解压慢** — 纯 Rust 实现（30/17 MB/s），大归档是瓶颈，评估是否可优化
-- [ ] 完善单元测试与 CI/CD
+- [x] **7z/bzip2 解压慢** — 已修（见 v5.8.0）：7z 换 liblzma（30→~232 MB/s）、bzip2 换 C libbz2（17→~80 MB/s）
+- [x] 完善单元测试与 CI/CD — 见 v5.8.0 CI/CD 搭建
 
 ---
 
@@ -68,7 +145,7 @@
 - [x] **XP3 封包** — XP3 格式的打包/压缩功能（见 v5.7.0）
 - [x] **PFS 封包** — PFS/PF6/PF8 格式的打包/压缩功能（见 v5.7.0）
 - [ ] **UI 重构** — 优化交互流程
-- [ ] 完善单元测试与 CI/CD
+- [x] 完善单元测试与 CI/CD — 见 v5.8.0 CI/CD 搭建
 
 ---
 
@@ -119,7 +196,7 @@
 
 - [ ] **进度静态量跨线程竞争** — `extract_progress`/`compress_progress` + `CANCEL` 全局,若两个解压/压缩并发会互相覆盖;app 当前单操作模型(低风险),可考虑每操作局部上下文
 - [ ] **`lastExtractResult`/`lastExtractError` 全局跨线程** — 同上,worker 线程写、UI 线程读;单操作串行下安全,多操作并发有竞态
-- [ ] **RAR 加密大量小文件慢** — rars 每文件 PBKDF2(~2s/个),几百个小文件加密归档要解很久;非 bug,性能特性(换官方 unrar 可显著改善)
+- [x] **RAR 加密大量小文件慢（已评估：不可优化）** — 见 v5.8.0（RAR5 每文件独立 salt，KDF 每文件必跑，格式特性）
 - [ ] **`oneshot_async` 忙等** — `spin_loop()` 轮询 Pending;若 future 永不完成会死循环卡死。当前 xp3 用的同步 reader 总返回 Ready/Err,低概率
 - [ ] **深递归** — `iso_walk`/压缩 `add_dir`/`deleteWithProgress` 对极深目录可能栈溢出;实际目录深度有限,低风险
 

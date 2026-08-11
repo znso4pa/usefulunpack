@@ -1,0 +1,121 @@
+# Local fork of sevenz-rust 0.6.1 (baseline: crates.io 0.6.1, Apache-2.0).
+# Patch: LZMA/LZMA2 decoding swapped from lzma-rust to liblzma (lzma-sys raw
+# decoder) for ~4x decompression speed. Only src/decoders.rs is modified.
+# Keep the diff minimal when rebasing on newer upstream releases.
+#
+# Standalone workspace root so the fork's own test suite can run via
+# `cargo test --manifest-path Cargo.toml` (it is patched into the parent
+# workspace via [patch.crates-io], not a member).
+
+[workspace]
+
+[package]
+edition = "2021"
+rust-version = "1.70.0"
+name = "sevenz-rust"
+version = "0.6.1"
+description = "A 7z decompressor/compressor written in pure rust"
+homepage = "https://github.com/dyz1990/sevenz-rust"
+readme = "README.md"
+keywords = [
+    "7z",
+    "7zip",
+    "sevenz",
+    "decompress",
+]
+license = "Apache-2.0"
+repository = "https://github.com/dyz1990/sevenz-rust"
+
+[lib]
+crate-type = [
+    "cdylib",
+    "rlib",
+]
+
+[[example]]
+name = "compress"
+required-features = [
+    "compress",
+    "aes256",
+]
+
+[[example]]
+name = "decompress"
+required-features = [
+    "compress",
+    "aes256",
+]
+
+[[example]]
+name = "advance"
+required-features = [
+    "compress",
+    "aes256",
+]
+
+[dependencies.aes]
+version = "0.8"
+optional = true
+
+[dependencies.bit-set]
+version = "0.6.0"
+
+[dependencies.byteorder]
+version = "1.5"
+
+[dependencies.bzip2]
+version = "0.4.4"
+optional = true
+
+[dependencies.cbc]
+version = "0.1"
+optional = true
+
+[dependencies.crc]
+version = "3.0.1"
+
+[dependencies.filetime_creation]
+version = "0.2"
+
+[dependencies.lzma-rust]
+version = "0.1.7"
+default-features = false
+
+[dependencies.lzma-sys]
+version = "0.1"
+
+[dependencies.nt-time]
+version = "0.8.0"
+
+[dependencies.rand]
+version = "0.8"
+optional = true
+
+[dependencies.sha2]
+version = "^0.10"
+
+[dependencies.zstd]
+version = "0.13.0"
+optional = true
+
+[dev-dependencies.rand]
+version = "0.8"
+
+[dev-dependencies.tempfile]
+version = "3.8.1"
+
+[features]
+aes256 = [
+    "aes",
+    "cbc",
+    "rand",
+]
+bzip2 = ["dep:bzip2"]
+compress = ["lzma-rust/encoder"]
+default = ["compress"]
+
+[target."cfg(target_arch = \"wasm32\")".dependencies.js-sys]
+version = "0.3.66"
+
+[target."cfg(target_arch = \"wasm32\")".dependencies.wasm-bindgen]
+version = "0.2"

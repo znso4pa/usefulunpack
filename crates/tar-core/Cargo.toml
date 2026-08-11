@@ -11,6 +11,6 @@ archive_common = { path = "../common" }
 jni = "0.21"
 tar = "0.4"
 flate2 = "1"
-oxiarc-bzip2 = "0.4"
+bzip2 = "0.5"
 xz2 = "0.1"
 oxiarc-zstd = "0.4"

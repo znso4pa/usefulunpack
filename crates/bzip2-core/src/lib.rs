@@ -4,45 +4,19 @@ use jni::sys::{jboolean, jstring, jlong, JNI_TRUE, JNI_FALSE};
 use archive_common::{s, json_escape, extract_result_json, ProgressWriter, ProgressReader};
 use archive_common::{extract_progress, compress_progress};
 use std::fs::{self, File};
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Read};
 use std::path::Path;
 
-/// Streaming reader over oxiarc-bzip2's block API, with a cancel check
-/// between blocks.
-struct BzStream<R: Read> {
-    decoder: oxiarc_bzip2::BzDecoder<R>,
-    buf: Vec<u8>,
-    pos: usize,
-}
+/// Read adapter that fails on cancel (checked per input read) without
+/// counting progress bytes — the C `BzDecoder` pulls from this as needed.
+struct CancelReader<R: Read>(R);
 
-impl<R: Read> BzStream<R> {
-    fn new(reader: R) -> Result<Self, String> {
-        Ok(Self {
-            decoder: oxiarc_bzip2::BzDecoder::new(reader).map_err(|e| format!("bzip2: {e}"))?,
-            buf: Vec::new(),
-            pos: 0,
-        })
-    }
-}
-
-impl<R: Read> Read for BzStream<R> {
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        loop {
-            if extract_progress::cancelled() {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
-            }
-            if self.pos < self.buf.len() {
-                let n = out.len().min(self.buf.len() - self.pos);
-                out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
-                self.pos += n;
-                return Ok(n);
-            }
-            match self.decoder.read_block() {
-                Ok(Some(block)) => { self.buf = block; self.pos = 0; }
-                Ok(None) => return Ok(0),
-                Err(e) => return Err(io::Error::other(format!("bzip2: {e}"))),
-            }
+impl<R: Read> Read for CancelReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if extract_progress::cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
         }
+        self.0.read(buf)
     }
 }
 
@@ -59,7 +33,8 @@ fn extract_bz2(input: &str, output: &str) -> Result<u32, String> {
     let name = output_name(input);
     let dest = Path::new(output).join(&name);
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
-    let mut dec = BzStream::new(BufReader::new(File::open(input).map_err(|e| format!("bzip2: {e}"))?))?;
+    let file = BufReader::new(File::open(input).map_err(|e| format!("bzip2: {e}"))?);
+    let mut dec = bzip2::read::BzDecoder::new(CancelReader(file));
     let mut writer = ProgressWriter::extract(File::create(&dest).map_err(|e| format!("{e}"))?);
     extract_progress::reset(0);
     extract_progress::set_name(&name);
@@ -68,31 +43,18 @@ fn extract_bz2(input: &str, output: &str) -> Result<u32, String> {
     Ok(0)
 }
 
-/// Streaming writer over oxiarc-bzip2's block API (write_block buffers
-/// internally, so arbitrary-size writes coalesce into full bzip2 blocks).
-struct BzWriter<W: Write>(oxiarc_bzip2::BzEncoder<W>);
-
-impl<W: Write> Write for BzWriter<W> {
-    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        self.0.write_block(data).map_err(|e| io::Error::other(format!("bzip2: {e}")))?;
-        Ok(data.len())
-    }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
-}
-
 fn compress_bz2(input: &str, output: &str, level: i32) -> Result<u32, String> {
     let src = File::open(input).map_err(|e| format!("{e}"))?;
     let size = src.metadata().map(|m| m.len()).unwrap_or(0);
     let out = File::create(output).map_err(|e| format!("{e}"))?;
-    let lvl = oxiarc_bzip2::CompressionLevel::new(level.clamp(1, 9) as u8);
-    let enc = oxiarc_bzip2::BzEncoder::new(out, lvl).map_err(|e| format!("bzip2: {e}"))?;
-    let mut w = BzWriter(enc);
+    let lvl = bzip2::Compression::new(level.clamp(1, 9) as u32);
+    let mut enc = bzip2::write::BzEncoder::new(out, lvl);
     let name = Path::new(input).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     compress_progress::reset(size);
     compress_progress::set_name(&name);
     compress_progress::set_file(size);
-    io::copy(&mut ProgressReader::compress(src), &mut w).map_err(|e| format!("bzip2: {e}"))?;
-    w.0.finish().map_err(|e| format!("bzip2: {e}"))?;
+    io::copy(&mut ProgressReader::compress(src), &mut enc).map_err(|e| format!("bzip2: {e}"))?;
+    enc.finish().map_err(|e| format!("bzip2: {e}"))?;
     Ok(0)
 }
 
@@ -186,6 +148,43 @@ mod tests {
         blob.truncate(blob.len() / 2);
         std::fs::write(&bad, &blob).unwrap();
         assert!(extract_bz2(bad.to_str().unwrap(), out.to_str().unwrap()).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn system_bzip2_interop() {
+        // Skip when no system bzip2 is available (not required for CI).
+        let bz = ["/usr/bin/bzip2", "/opt/homebrew/bin/bzip2"].iter()
+            .find(|p| std::path::Path::new(p).exists());
+        let Some(bz_bin) = bz else { eprintln!("[interop] system bzip2 not found, skipped"); return };
+        let dir = tmp("interop");
+        std::fs::create_dir_all(&dir).unwrap();
+        let data: Vec<u8> = (0..200_000u32).map(|i| (i.wrapping_mul(31) % 251) as u8).collect();
+        let src = dir.join("p.bin");
+        let bz2 = dir.join("p.bin.bz2");
+        std::fs::write(&src, &data).unwrap();
+        // Our encoder → system decoder
+        compress_bz2(src.to_str().unwrap(), bz2.to_str().unwrap(), 6).unwrap();
+        let sys_out = std::process::Command::new(bz_bin).arg("-dc").arg(&bz2).output().unwrap();
+        assert!(sys_out.status.success(), "system bzip2 failed to decode our output");
+        assert_eq!(sys_out.stdout, data, "system bzip2 decoded different bytes");
+        // System encoder → our decoder
+        let enc = std::process::Command::new(bz_bin)
+            .arg("-kc").arg("-9").stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let mut child = enc;
+        {
+            let mut stdin = child.stdin.take().unwrap();
+            std::io::Write::write_all(&mut stdin, &data).unwrap();
+        }
+        let out_bz = child.wait_with_output().unwrap();
+        assert!(out_bz.status.success(), "system bzip2 encode failed");
+        let sys_bz = dir.join("sys.bin.bz2");
+        std::fs::write(&sys_bz, &out_bz.stdout).unwrap();
+        let out_dir = dir.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        extract_bz2(sys_bz.to_str().unwrap(), out_dir.to_str().unwrap()).unwrap();
+        assert_eq!(std::fs::read(out_dir.join("sys.bin")).unwrap(), data, "our decoder mismatch");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

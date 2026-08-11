@@ -194,4 +194,10 @@
     <string name="msg_single_file_compress">Single-file compression only supports a single file</string>
     <string name="msg_ksd_need_txt">KSD packing only supports .txt text files</string>
     <string name="settings_compress_generic">Generic (gzip/bzip2/xz/zstd/lzma/lz4/tar)</string>
+    <string name="split_title">Split volumes (zip/7z)</string>
+    <string name="split_none">No split</string>
+    <string name="split_custom">Custom</string>
+    <string name="split_min_note">min 1MB</string>
+    <string name="split_invalid">Enter a size from 1 to 2048</string>
+    <string name="pwd_note">Password applies to zip/7z only</string>
 </resources>

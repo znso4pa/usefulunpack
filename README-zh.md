@@ -2,7 +2,7 @@
 
 [**中文**](README-zh.md) | [**English**](README.md) | [**繁體中文**](README-zh-TW.md) | [**日本語**](README-ja.md)
 
-轻量级 Android 文件管理器 & **视觉小说游戏资源解包工具**
+轻量级 Android 文件管理器 & 归档打包/解压工具
 
 支持 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**KSD**（吉里吉里2）、**ISO 9660** 光盘镜像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支持打包与解压），Rust 原生核心。
 
@@ -38,7 +38,10 @@
 | 📌 **书签** | 文件夹星标 + 侧滑抽屉 |
 | 🏠 **根目录** | 一键回到 `/storage/emulated/0` |
 | 🗜️ **通用压缩** | ZIP/7z + gzip/bzip2/xz/zstd/lzma/lz4（单文件）+ tar（文件夹 5 变体）+ xp3/pfs/ksd，5 级压缩程度，AES-256（ZIP） |
-| 🔐 **解压密码** | 加密的 ZIP/7z 支持输入密码解压 |
+| 📚 **分卷支持** | 解压 `.7z.001` / `.zip.001` / `.rar` 分卷；zip/7z 压缩支持按大小切分卷（兼容 7-Zip） |
+| 🎚️ **自定义分卷大小** | 分卷大小自定义（MB/GB，1MB~2GB） |
+| 🔐 **解压密码** | 加密的 ZIP/7z/RAR 先弹密码框再解压；批量解压只需输入一次密码，全部归档复用 |
+| 🔒 **密码标记** | 文件浏览器和预览列表中，需要密码的归档显示锁图标 |
 | 📊 **双层进度条** | 顶部=全量进度，底部=当前文件进度（解压+压缩） |
 | 📋 **分组格式选择器** | 可滚动分组格式选择（通用压缩 / 单文件 / 其他），解压/批量/压缩共用 |
 | 📄 **单文件压缩按钮** | 压缩模式下点击任意文件，右下角弹出压缩按钮 |
@@ -120,7 +123,7 @@ XOR 密钥（0xFF / 0xC9）按文件首条目自动判断。
 | **XP3** | [xp3 crate](https://crates.io/crates/xp3) | MIT / Apache-2.0 |
 | **PFS / PF6 / PF8** | [pf8 crate](https://crates.io/crates/pf8) | 见 crates.io |
 | **NSA / SAR** | [NSA 格式规范](https://orin.page/w/index.php?title=NSA), LZSS/SPB via [GARbro](https://github.com/morkt/GARbro) / [ONScripter](https://github.com/nscripter/nscripter) | 公开规范 / MIT / GPL |
-| **YPF** | [YU-RIS 解包工具](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker) (Kaitai), [GARbro](https://github.com/morkt/GARbro) SwapTable, XOR + Shift-JIS, zlib | 公开规范 / MIT |
+| **YPF** | [YU-RIS 格式解析参考](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker) (Kaitai), [GARbro](https://github.com/morkt/GARbro) SwapTable, XOR + Shift-JIS, zlib | 公开规范 / MIT |
 | **ISO 9660** | [isomage crate](https://crates.io/crates/isomage) | MIT |
 | **ZIP** | [zip crate](https://crates.io/crates/zip) | MIT |
 | **7z** | [sevenz-rust crate](https://crates.io/crates/sevenz-rust) | MIT / Apache-2.0 |

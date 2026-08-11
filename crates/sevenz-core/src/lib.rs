@@ -14,22 +14,33 @@ use std::sync::Mutex;
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn list_from_archive(archive: &Archive) -> String {
-    let mut all: Vec<(String, u64, bool)> = Vec::new();
-    for entry in &archive.files {
+    // Per-folder AES detection: a file is encrypted when its folder contains an
+    // AES256SHA256 coder. Used to surface the "🔒" flag in the preview list.
+    let folder_encrypted: Vec<bool> = archive.folders.iter().map(|f| {
+        f.coders.iter().any(|c| c.decompression_method_id() == SevenZMethod::AES256SHA256.id())
+    }).collect();
+    let encrypted: Vec<bool> = archive.files.iter().enumerate().map(|(i, _)| {
+        archive.stream_map.file_folder_index.get(i)
+            .and_then(|o| *o)
+            .and_then(|fi| folder_encrypted.get(fi).copied())
+            .unwrap_or(false)
+    }).collect();
+    let mut all: Vec<(String, u64, bool, bool)> = Vec::new();
+    for (idx, entry) in archive.files.iter().enumerate() {
         let name = entry.name().replace('\\', "/").trim_matches('/').to_string();
         if name.is_empty() { continue; }
-        all.push((name.clone(), entry.size(), entry.is_directory()));
+        all.push((name.clone(), entry.size(), entry.is_directory(), encrypted.get(idx).copied().unwrap_or(false)));
         let mut path = String::new();
         for part in name.split('/') {
             if part.is_empty() { continue; }
             path = if path.is_empty() { part.to_string() } else { format!("{path}/{part}") };
-            if !all.iter().any(|(p,_,_)| p == &path) { all.push((path.clone(), 0u64, true)); }
+            if !all.iter().any(|(p,_,_,_)| p == &path) { all.push((path.clone(), 0u64, true, false)); }
         }
     }
     all.sort_by(|a,b| a.0.cmp(&b.0));
     all.dedup_by(|a,b| a.0 == b.0);
-    let items: Vec<String> = all.iter().map(|(n,s,d)|
-        format!(r#"{{"n":"{}","s":{},"d":{},"e":false}}"#, json_escape(n), *s, *d)
+    let items: Vec<String> = all.iter().map(|(n,s,d,e)|
+        format!(r#"{{"n":"{}","s":{},"d":{},"e":{}}}"#, json_escape(n), *s, *d, *e)
     ).collect();
     format!("[{}]", items.join(","))
 }
@@ -141,7 +152,11 @@ fn extract_7z_volumes(paths: &[&str], output: &str, selected: Option<&HashSet<St
     if !looks_like_7z(paths[0])? { return Err("7z: not a valid 7z split archive".into()); }
     let mut list_reader = ConcatReader::open(paths)?;
     let len = list_reader.len;
-    let (result_total, prog_total) = Archive::read(&mut list_reader, len, &[])
+    // Pass the password so encrypted-header archives still yield a real total
+    // (Archive::read with no password fails before the folder list is available).
+    // Password is UTF-16LE (Password::from), matching the extract path.
+    let pwd = sevenz_rust::Password::from(password);
+    let (result_total, prog_total) = Archive::read(&mut list_reader, len, pwd.as_slice())
         .map(|a| {
             let matching: Vec<_> = a.files.iter().filter(|f| {
                 let name = normalize_entry_name(f.name());
@@ -175,7 +190,16 @@ fn sz_volumes_needs_password(paths: &[&str]) -> Result<bool, String> {
             for f in &arc.folders { for c in &f.coders { if c.decompression_method_id() == SevenZMethod::AES256SHA256.id() { return Ok(true); } } }
             Ok(false)
         }
-        Err(er) => Err(format!("7z: {er}")),
+        // Encrypted headers can't be read without the password — that itself
+        // means a password is required.
+        Err(er) => {
+            let m = format!("{er}").to_lowercase();
+            if m.contains("password") || m.contains("encrypted") || m.contains("decode") || m.contains("aes") {
+                Ok(true)
+            } else {
+                Err(format!("7z: {er}"))
+            }
+        }
     }
 }
 
@@ -240,13 +264,24 @@ fn extract_7z_all(input: &str, output: &str) -> Result<(u32, u32), String> {
     extract_7z(input, output, None)
 }
 fn extract_7z_with_password(input: &str, output: &str, password: &str) -> Result<(u32, u32), String> {
-    let total = sevenz_rust::Archive::open(input).map(|a| a.files.len() as u32).unwrap_or(0);
-    let prog_total = sevenz_rust::Archive::open(input)
-        .map(|a| a.files.iter().filter(|f| {
-            let name = normalize_entry_name(f.name());
-            !name.is_empty() && !f.is_directory()
-        }).map(|f| f.size()).sum::<u64>())
-        .unwrap_or(0);
+    // Read the folder list with the password so encrypted-header archives
+    // still report a real progress total.
+    let (total, prog_total) = {
+        let mut file = std::fs::File::open(input).map_err(|e| format!("7z: {e}"))?;
+        let len = file.metadata().map_err(|e| format!("7z: {e}"))?.len();
+        // Password is UTF-16LE (Password::from), matching the extract path.
+        let pwd = sevenz_rust::Password::from(password);
+        sevenz_rust::Archive::read(&mut file, len, pwd.as_slice())
+            .map(|a| {
+                let total = a.files.len() as u32;
+                let prog = a.files.iter().filter(|f| {
+                    let name = normalize_entry_name(f.name());
+                    !name.is_empty() && !f.is_directory()
+                }).map(|f| f.size()).sum::<u64>();
+                (total, prog)
+            })
+            .unwrap_or((0, 0))
+    };
     extract_progress::reset(prog_total);
     let file = std::fs::File::open(input).map_err(|e| format!("7z: {e}"))?;
     let fail = AtomicU32::new(0);
@@ -266,6 +301,40 @@ fn extract_7z_selected(input: &str, output: &str, selected: &str) -> Result<(u32
         return Ok((0, 0));
     }
     extract_7z(input, output, Some(&paths))
+}
+
+fn extract_7z_selected_with_password(input: &str, output: &str, selected: &str, password: &str) -> Result<(u32, u32), String> {
+    let paths: HashSet<String> = selected
+        .lines()
+        .map(normalize_entry_name)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if paths.is_empty() {
+        return Ok((0, 0));
+    }
+    // total with the password (encrypted headers can't be read without it)
+    let (total, prog_total) = {
+        let mut file = std::fs::File::open(input).map_err(|e| format!("7z: {e}"))?;
+        let len = file.metadata().map_err(|e| format!("7z: {e}"))?.len();
+        let pwd = sevenz_rust::Password::from(password);
+        sevenz_rust::Archive::read(&mut file, len, pwd.as_slice())
+            .map(|a| {
+                let total = a.files.len() as u32;
+                let prog = a.files.iter().filter(|f| {
+                    let name = normalize_entry_name(f.name());
+                    !name.is_empty() && !f.is_directory() && is_selected(&name, Some(&paths))
+                }).map(|f| f.size()).sum::<u64>();
+                (total, prog)
+            })
+            .unwrap_or((0, 0))
+    };
+    extract_progress::reset(prog_total);
+    let file = std::fs::File::open(input).map_err(|e| format!("7z: {e}"))?;
+    let fail = AtomicU32::new(0);
+    decompress_with_extract_fn_and_password(file, output, password.into(), |entry, reader, _| {
+        handle_entry(entry, reader, output, Some(&paths), &fail)
+    }).map_err(|e| format!("7z: {e}"))?;
+    Ok((total, fail.load(Ordering::SeqCst)))
 }
 
 fn total_bytes_7z(base: &str, rel: &str) -> u64 {
@@ -368,9 +437,26 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel);
     match guarded(|| extract_7z_selected(&inp, &out, &sel_str)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractSelectedWithPassword(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel: JString, pw: JString) -> jstring {
+    let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel); let pwd = s(&mut e, &pw);
+    match guarded(|| extract_7z_selected_with_password(&inp, &out, &sel_str, &pwd)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
+}
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
     let inp = s(&mut e, &i);
     match guarded(move || list_7z(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szListEntriesWithPassword(mut e: JNIEnv, _: JClass, i: JString, pw: JString) -> jstring {
+    let inp = s(&mut e, &i); let pwd = s(&mut e, &pw);
+    // For header-encrypted archives the folder list is only readable with the
+    // password (Password is UTF-16LE).
+    let r = guarded(move || {
+        let mut file = std::fs::File::open(&inp).map_err(|e| format!("7z: {e}"))?;
+        let len = file.metadata().map_err(|e| format!("7z: {e}"))?.len();
+        let pass = sevenz_rust::Password::from(pwd.as_str());
+        let arc = sevenz_rust::Archive::read(&mut file, len, pass.as_slice()).map_err(|e| format!("7z: {e}"))?;
+        Ok(list_from_archive(&arc))
+    });
+    match r { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompressCancel(_: JNIEnv, _: JClass) { compress_progress::cancel(); }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompressProgressCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::bytes() as jlong }
@@ -383,15 +469,35 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szNeedsPassword(mut e: JNIEnv, _: JClass, i: JString) -> jboolean {
     let inp = s(&mut e, &i);
     match guarded(move || {
-        let arc = sevenz_rust::Archive::open(&inp).map_err(|e| format!("7z: {e}"))?;
-        for f in &arc.folders { for c in &f.coders { if c.decompression_method_id() == sevenz_rust::SevenZMethod::AES256SHA256.id() { return Ok(true); } } }
-        Ok(false)
+        match sevenz_rust::Archive::open(&inp) {
+            Ok(arc) => {
+                for f in &arc.folders { for c in &f.coders { if c.decompression_method_id() == sevenz_rust::SevenZMethod::AES256SHA256.id() { return Ok(true); } } }
+                Ok(false)
+            }
+            // Encrypted headers can't be read without the password — that itself
+            // means a password is required.
+            Err(er) => {
+                let m = format!("{er}").to_lowercase();
+                if m.contains("password") || m.contains("encrypted") || m.contains("decode") || m.contains("aes") {
+                    Ok(true)
+                } else {
+                    Err(format!("7z: {er}"))
+                }
+            }
+        }
     }) { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("7z: {er}")); JNI_FALSE } }
 }
-#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompress(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, lv: JString, pw: JString) -> jboolean {
-    let inp = s(&mut e, &i); let out = s(&mut e, &o); let lvl = s(&mut e, &lv); let pwd = s(&mut e, &pw);
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompress(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, lv: JString, pw: JString, sp: JString) -> jboolean {
+    let inp = s(&mut e, &i); let out = s(&mut e, &o); let lvl = s(&mut e, &lv); let pwd = s(&mut e, &pw); let split = s(&mut e, &sp);
     let level: i32 = lvl.parse().unwrap_or(6);
-    match guarded(|| compress_7z_inner(&inp, &out, level, &pwd)) { Ok(0) => JNI_TRUE, Ok(f) => { let _ = e.throw_new("java/io/IOException", format!("7z compress: {f} failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("7z compress: {er}")); JNI_FALSE } }
+    let split_size: u64 = split.parse().unwrap_or(0);
+    match guarded(|| {
+        let f = compress_7z_inner(&inp, &out, level, &pwd)?;
+        if f == 0 && split_size > 0 {
+            archive_common::split_volumes(&out, split_size)?;
+        }
+        Ok(f)
+    }) { Ok(0) => JNI_TRUE, Ok(f) => { let _ = e.throw_new("java/io/IOException", format!("7z compress: {f} failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("7z compress: {er}")); JNI_FALSE } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractProgressCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::bytes() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractProgressTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::total_bytes() as jlong }
@@ -418,6 +524,12 @@ fn vol_refs(vols: &[String]) -> Vec<&str> { vols.iter().map(|s| s.as_str()).coll
     let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(|| extract_7z_volumes(&vol_refs(&vols), &out, Some(&ss), "")) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractSelectedVolumesWithPassword(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString, sel: JString, pw: JString) -> jstring {
+    let vs = s(&mut e, &v); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel); let pwd = s(&mut e, &pw); let _ = std::fs::create_dir_all(&out);
+    let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
+    let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
+    match guarded(|| extract_7z_volumes(&vol_refs(&vols), &out, Some(&ss), &pwd)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractVolumesWithPassword(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString, pw: JString) -> jstring {
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let pwd = s(&mut e, &pw); let _ = std::fs::create_dir_all(&out);
@@ -486,6 +598,93 @@ mod tests {
         std::fs::write(&p1, b"not a 7z archive at all").unwrap();
         assert!(list_7z_volumes(&[p1.to_str().unwrap()]).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn compress_with_split_round_trip() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("uu_7z_splitc_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"split compression world").unwrap();
+        // pseudo-random, non-compressible payload so the archive exceeds the split size
+        let mut seed: u64 = 0x1234_5678_9abc_def0;
+        let payload: Vec<u8> = (0..200_000u32).map(|_| { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (seed >> 33) as u8 }).collect();
+        std::fs::write(dir.join("b.bin"), payload).unwrap();
+        let arc = std::env::temp_dir().join(format!("uu_7z_splitc_out_{}.7z", std::process::id()));
+        let arc_s = arc.to_string_lossy().to_string();
+        compress_7z_inner(&dir.to_string_lossy(), &arc_s, 5, "").expect("compress");
+        let parts = archive_common::split_volumes(&arc_s, 1000).expect("split");
+        assert!(parts >= 2, "expected multiple parts, got {parts}");
+        assert!(!arc.exists(), "original should be removed");
+
+        let mut refs: Vec<String> = Vec::new();
+        let mut idx = 1u32;
+        loop {
+            let p = format!("{arc_s}.{idx:03}");
+            if !std::path::Path::new(&p).exists() { break; }
+            refs.push(p);
+            idx += 1;
+        }
+        let pref: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
+        let list = list_7z_volumes(&pref).expect("list split");
+        assert!(list.contains("a.txt") && list.contains("b.bin"));
+        assert!(!list.contains("s.7z"), "archive must not contain itself: {list}");
+
+        let out = dir.join("out");
+        let out_s = out.to_string_lossy().to_string();
+        let (total, error) = extract_7z_volumes(&pref, &out_s, None, "").expect("extract split");
+        assert_eq!(error, 0);
+        assert_eq!(total, 2);
+        assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"split compression world");
+        assert_eq!(std::fs::read(out.join("b.bin")).unwrap().len(), 200000);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn password_split_round_trip_reports_progress_total() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("uu_7z_pwsplit_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"password 7z split").unwrap();
+        let mut seed: u64 = 0xdead_beef_cafe_f00d;
+        let payload: Vec<u8> = (0..120_000u32).map(|_| { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (seed >> 33) as u8 }).collect();
+        std::fs::write(dir.join("b.bin"), &payload).unwrap();
+        // encrypt_header = true (as the app does when a password is set)
+        let arc = std::env::temp_dir().join(format!("uu_7z_pwsplit_out_{}.7z", std::process::id()));
+        let arc_s = arc.to_string_lossy().to_string();
+        compress_7z_inner(&dir.to_string_lossy(), &arc_s, 5, "secret").expect("compress");
+
+        // single-file password path must report a non-zero progress total
+        extract_progress::reset(0);
+        let out1 = std::env::temp_dir().join(format!("uu_7z_pwsplit_o1_{}", std::process::id()));
+        std::fs::create_dir_all(&out1).unwrap();
+        let (total, error) = extract_7z_with_password(&arc_s, out1.to_str().unwrap(), "secret").expect("extract pw");
+        assert_eq!(error, 0);
+        assert_eq!(total, 2);
+        assert!(extract_progress::total_bytes() > 0, "password single must report a real total, got {}", extract_progress::total_bytes());
+
+        // split path with password must also report a non-zero total
+        let parts = archive_common::split_volumes(&arc_s, 40_000).expect("split");
+        let mut refs: Vec<String> = Vec::new();
+        let mut idx = 1u32;
+        loop {
+            let p = format!("{arc_s}.{idx:03}");
+            if !std::path::Path::new(&p).exists() { break; }
+            refs.push(p); idx += 1;
+        }
+        assert!(parts >= 2, "expected >= 2 parts, got {parts}");
+        let pref: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
+        extract_progress::reset(0);
+        let out2 = std::env::temp_dir().join(format!("uu_7z_pwsplit_o2_{}", std::process::id()));
+        std::fs::create_dir_all(&out2).unwrap();
+        let (total2, error2) = extract_7z_volumes(&pref, out2.to_str().unwrap(), None, "secret").expect("extract pw split");
+        assert_eq!(error2, 0);
+        assert_eq!(total2, 2);
+        assert!(extract_progress::total_bytes() > 0, "password split must report a real total, got {}", extract_progress::total_bytes());
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&out1).ok();
+        std::fs::remove_dir_all(&out2).ok();
     }
 }
 

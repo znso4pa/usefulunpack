@@ -8,53 +8,17 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};
 use std::path::PathBuf;
 
-/// Streaming reader over oxiarc-bzip2's block API (used by .tar.bz2/.tbz2).
-struct BzStream<R: Read> {
-    decoder: oxiarc_bzip2::BzDecoder<R>,
-    buf: Vec<u8>,
-    pos: usize,
-}
+/// Read adapter that fails on cancel (checked per input read) without
+/// counting progress bytes — the C `BzDecoder` pulls from this as needed.
+struct CancelReader<R: Read>(R);
 
-impl<R: Read> BzStream<R> {
-    fn new(reader: R) -> Result<Self, String> {
-        Ok(Self {
-            decoder: oxiarc_bzip2::BzDecoder::new(reader).map_err(|e| format!("bzip2: {e}"))?,
-            buf: Vec::new(),
-            pos: 0,
-        })
-    }
-}
-
-impl<R: Read> Read for BzStream<R> {
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        loop {
-            if extract_progress::cancelled() {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
-            }
-            if self.pos < self.buf.len() {
-                let n = out.len().min(self.buf.len() - self.pos);
-                out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
-                self.pos += n;
-                return Ok(n);
-            }
-            match self.decoder.read_block() {
-                Ok(Some(block)) => { self.buf = block; self.pos = 0; }
-                Ok(None) => return Ok(0),
-                Err(e) => return Err(io::Error::other(format!("bzip2: {e}"))),
-            }
+impl<R: Read> Read for CancelReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if extract_progress::cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
         }
+        self.0.read(buf)
     }
-}
-
-/// Streaming writer over oxiarc-bzip2's block API (used by .tar.bz2/.tbz2).
-struct BzWriter<W: Write>(oxiarc_bzip2::BzEncoder<W>);
-
-impl<W: Write> Write for BzWriter<W> {
-    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        self.0.write_block(data).map_err(|e| io::Error::other(format!("bzip2: {e}")))?;
-        Ok(data.len())
-    }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
 }
 
 /// Derives the tar compression variant from the input name.
@@ -75,7 +39,7 @@ fn tar_reader(input: &str) -> Result<(Box<dyn Read>, Option<std::path::PathBuf>)
     match tar_fmt(input) {
         "tar" => Ok((Box::new(file), None)),
         "tgz" => Ok((Box::new(flate2::read::GzDecoder::new(file)), None)),
-        "tbz2" => Ok((Box::new(BzStream::new(BufReader::new(file))?), None)),
+        "tbz2" => Ok((Box::new(bzip2::read::BzDecoder::new(CancelReader(BufReader::new(file)))), None)),
         "tzst" => Ok((Box::new(oxiarc_zstd::ZstdStreamDecoder::new(file)), None)),
         // xz2's XzDecoder is a Read — no temp-file spool needed (lzma-rs was push-style)
         "txz" => Ok((Box::new(xz2::read::XzDecoder::new(BufReader::new(file))), None)),
@@ -246,11 +210,12 @@ fn compress_tar(input: &str, output: &str, fmt: &str, level: i32) -> Result<u32,
             gz.finish().map_err(|e| format!("tgz: {e}"))?;
         }
         "tbz2" => {
-            let lvl = oxiarc_bzip2::CompressionLevel::new(level.clamp(1, 9) as u8);
-            let enc = oxiarc_bzip2::BzEncoder::new(File::create(output).map_err(|e| format!("{e}"))?, lvl).map_err(|e| format!("bzip2: {e}"))?;
-            let mut bz = BzWriter(enc);
+            let mut bz = bzip2::write::BzEncoder::new(
+                File::create(output).map_err(|e| format!("{e}"))?,
+                bzip2::Compression::new(level.clamp(1, 9) as u32),
+            );
             fail += append_files(&files, &mut bz)?;
-            bz.0.finish().map_err(|e| format!("tbz2: {e}"))?;
+            bz.finish().map_err(|e| format!("tbz2: {e}"))?;
         }
         "tzst" => {
             let level = if level < 1 { 3 } else { level.min(22) };

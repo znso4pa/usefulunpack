@@ -58,17 +58,33 @@ fun copyToClipboard(context: Context, text: String) {
 
 private val PART_RAR_RE = Regex("""^(.+)\.part(\d+)\.rar$""", RegexOption.IGNORE_CASE)
 private val OLD_RAR_RE = Regex("""^(.+)\.([r-z])\d{2}$""", RegexOption.IGNORE_CASE)
-private val SZ_VOL_RE = Regex("""^(.+)\.(?:7z\.)?(\d{2,3})$""", RegexOption.IGNORE_CASE)
+private val SZ_VOL_RE = Regex("""^(.+)\.(?:7z\.)?(\d{2,})$""", RegexOption.IGNORE_CASE)
+private val ZIP_VOL_RE = Regex("""^(.+\.zip)\.(\d{2,})$""", RegexOption.IGNORE_CASE)
+private val PKW_Z_RE = Regex("""^(.+)\.z(\d{2})$""", RegexOption.IGNORE_CASE)
 private val SZ_MAGIC = byteArrayOf(0x37, 0x7A, 0xBC.toByte(), 0xAF.toByte(), 0x27, 0x1C)
+private val PK_MAGIC = byteArrayOf(0x50, 0x4B)
 
 fun isRarVolumeName(name: String): Boolean = PART_RAR_RE.containsMatchIn(name) || OLD_RAR_RE.containsMatchIn(name)
 fun isSevenZVolumeName(name: String): Boolean = SZ_VOL_RE.containsMatchIn(name)
+fun isZipVolumeName(name: String): Boolean = ZIP_VOL_RE.containsMatchIn(name) || PKW_Z_RE.containsMatchIn(name)
 
-/** Returns "rar"/"7z" when the file is a volume part, else null. */
-fun isVolumeFile(f: File): String? = when {
-    isRarVolumeName(f.name) -> "rar"
-    isSevenZVolumeName(f.name) -> "7z"
-    else -> null
+fun startsWithZipMagic(f: File): Boolean = try {
+    val sig = ByteArray(4)
+    FileInputStream(f).use { it.read(sig) }
+    sig[0] == PK_MAGIC[0] && sig[1] == PK_MAGIC[1]
+} catch (_: Exception) { false }
+
+/**
+ * Returns "rar"/"7z"/"zip" when the file is a volume part (by name + the
+ * first part's magic), else null. `.zip.001` also matches the 7z volume-name
+ * regex, so zip must be checked first and each branch must resolve the set
+ * (a `when` branch that yields null would short-circuit the others).
+ */
+fun isVolumeFile(f: File): String? {
+    if (isRarVolumeName(f.name)) return "rar"
+    if (isZipVolumeName(f.name) && resolveZipVolumes(f).size > 1) return "zip"
+    if (isSevenZVolumeName(f.name) && resolveSevenZVolumes(f).size > 1) return "7z"
+    return null
 }
 
 fun startsWith7zMagic(f: File): Boolean = try {
@@ -133,10 +149,75 @@ fun resolveSevenZVolumes(f: File): List<File> {
     return parts.map { it.second }
 }
 
+/**
+ * Resolves the split parts of a zip archive:
+ * - `name.zip.001/.002` (7-Zip byte-split) or
+ * - `name.z01/.z02/.zip` (PKWARE true split).
+ * Only returns a set when multiple parts exist and the first part carries the
+ * zip magic; otherwise returns the selected file alone.
+ */
+fun resolveZipVolumes(f: File): List<File> {
+    val dir = f.parentFile ?: return listOf(f)
+    val siblings = dir.listFiles()?.toList().orEmpty()
+
+    val byteMatch = ZIP_VOL_RE.find(f.name)
+    if (byteMatch != null) {
+        val base = byteMatch.groupValues[1]
+        val parts = siblings.mapNotNull { f2 ->
+            val m = ZIP_VOL_RE.find(f2.name) ?: return@mapNotNull null
+            if (m.groupValues[1] != base) return@mapNotNull null
+            m.groupValues[2].toIntOrNull()?.let { it to f2 }
+        }.sortedBy { it.first }.map { it.second }
+        if (parts.size >= 2 && startsWithZipMagic(parts.first())) return parts
+        return listOf(f)
+    }
+
+    val pkMatch = PKW_Z_RE.find(f.name)
+    if (pkMatch != null) {
+        val base = pkMatch.groupValues[1]
+        val zParts = siblings.mapNotNull { f2 ->
+            val m = PKW_Z_RE.find(f2.name) ?: return@mapNotNull null
+            if (m.groupValues[1] != base) return@mapNotNull null
+            m.groupValues[2].toIntOrNull()?.let { it to f2 }
+        }.sortedBy { it.first }.map { it.second }
+        val final = siblings.firstOrNull { it.name == "$base.zip" }
+        val all = if (final != null) zParts + final else zParts
+        if (all.size >= 2 && startsWithZipMagic(all.first())) return all
+        return listOf(f)
+    }
+    return listOf(f)
+}
+
 fun volumePathList(src: File, fmt: String): List<File> = when (fmt) {
     "rar" -> resolveRarVolumes(src)
     "7z" -> resolveSevenZVolumes(src)
+    "zip" -> resolveZipVolumes(src)
     else -> listOf(src)
 }
 
 fun volumeJoin(vols: List<File>): String = vols.joinToString("\n") { it.path }
+
+private fun passwordFormatOf(f: File): String? {
+    val n = f.name.lowercase()
+    return when {
+        n.endsWith(".rar") || isRarVolumeName(f.name) -> "rar"
+        n.endsWith(".7z") || isSevenZVolumeName(f.name) -> "7z"
+        n.endsWith(".zip") || isZipVolumeName(f.name) -> "zip"
+        else -> null
+    }
+}
+
+/**
+ * Detects whether an archive (or volume set) needs a password. Covers the
+ * password-capable formats zip/7z/rar (single or split). Exceptions are
+ * swallowed — a broken file is simply "not password protected".
+ */
+fun isPasswordProtected(f: File): Boolean {
+    return try {
+        when (passwordFormatOf(f) ?: return false) {
+            "rar" -> rarVolumesNeedsPassword(f.path)
+            "7z" -> szVolumesNeedsPassword(f.path)
+            else -> zipVolumesNeedsPassword(f.path)
+        }
+    } catch (_: Exception) { false }
+}

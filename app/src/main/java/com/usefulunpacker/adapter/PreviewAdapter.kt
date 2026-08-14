@@ -93,7 +93,7 @@ class PreviewAdapter(
         }
 
         if (entry.isDirectory) {
-            icon.setImageResource(android.R.drawable.ic_menu_compass)
+            icon.setImageResource(R.drawable.ic_folder)
             icon.setColorFilter(C["warning"]!!)
             val toggle = View.OnClickListener {
                 if (expandedPaths.contains(entry.path)) expandedPaths.remove(entry.path)
@@ -105,13 +105,9 @@ class PreviewAdapter(
             val arrow = if (expandedPaths.contains(entry.path)) "▼ " else "▶ "
             label.text = "$arrow${entry.name}"
         } else {
-            val ext = entry.path.lowercase()
-            val res = when {
-                ext.endsWith(".xp3") || ext.endsWith(".pfs") -> android.R.drawable.ic_menu_compass
-                else -> android.R.drawable.ic_menu_gallery
-            }
-            icon.setImageResource(res)
-            icon.setColorFilter(C["primary"]!!)
+            val fmt = formatOfName(entry.path)
+            icon.setImageResource(if (fmt != null) R.drawable.ic_archive else R.drawable.ic_file)
+            icon.setColorFilter(iconTintForName(entry.path))
             label.text = entry.name
             val click = View.OnClickListener { onFileClick(entry) }
             icon.setOnClickListener(click)

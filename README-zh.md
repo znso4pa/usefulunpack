@@ -51,7 +51,11 @@
 | 📂 **批量预览** | 多选归档统一查看内容并勾选解压 |
 | 🛡️ **防连点** | 800ms 冷却 |
 | 🌙 **深色主题** | 护眼暗色 |
-| 🦀 **Rust 核心** | 每种格式独立 `.so`，互不干扰（16 种格式） |
+| 🔬 **签名扫描** | Rust scan-core 引擎：21 种签名 / 67 个魔数模式任意偏移检测，逐格式头部验证（真实大小 + 文件数），AhoCorasick 多模式匹配，流式扫描（整文件不进内存），一键解压或切割（dd）原始片段 |
+| 🔤 **文本编码** | 全局文本编码设置（UTF-8 / SHIFT-JIS / GBK / UTF-16）严格应用于所有文本预览与内容搜索（UTF-8/UTF-16 自动去 BOM）；检测到大量乱码时提示到设置切换 |
+| ✂️ **精确切割** | 签名扫描的切割/解压按验证出的归档大小（zip/rar/7z/zstd/lz4/iso）精确切取——夹在其它文件中间的归档（如 `mp4 + zip + mp4`）能干净提出，不带尾部数据，解压成功 |
+| 📲 **APK 安装** | 点 APK 调系统安装器（FileProvider + PackageInstaller 兜底）；安装前可选保留副本（部分系统安装器装完会删除安装包） |
+| 🦀 **Rust 核心** | 每种格式独立 `.so`，互不干扰（17 种格式，含签名扫描） |
 | 🔒 **最小权限** | 仅存储权限 |
 
 ## 截图
@@ -135,6 +139,7 @@ XOR 密钥（0xFF / 0xC9）按文件首条目自动判断。
 | **KSD** | [krkr-save-tools](https://github.com/Luv-Ray/krkr-save-tools)、[KirikiriTools](https://github.com/arcusmaximus/KirikiriTools) | MIT |
 | **ZSTD** | [ruzstd crate](https://crates.io/crates/ruzstd)（解压）/ [oxiarc-zstd crate](https://crates.io/crates/oxiarc-zstd)（压缩） | MIT / Apache-2.0 |
 | **TAR** | [tar crate](https://crates.io/crates/tar) | MIT / Apache-2.0 |
+| **签名扫描** | 魔数定义与验证思路参考 [binwalk](https://github.com/ReFirmLabs/binwalk) | MIT |
 
 ## 许可证
 

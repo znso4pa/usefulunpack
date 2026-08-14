@@ -22,6 +22,7 @@ object SevenZCore {
     external fun szExtractProgressName(): String?
     external fun szExtractCancel()
     external fun szListEntriesVolumes(volumes: String): String?
+    external fun szListEntriesVolumesWithPassword(volumes: String, password: String): String?
     external fun szExtractVolumes(tool: String, volumes: String, output: String): String?
     external fun szExtractSelectedVolumes(tool: String, volumes: String, output: String, selected: String): String?
     external fun szExtractSelectedVolumesWithPassword(tool: String, volumes: String, output: String, selected: String, password: String): String?

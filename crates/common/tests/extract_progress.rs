@@ -7,9 +7,9 @@ static LOCK: Mutex<()> = Mutex::new(());
 #[test]
 fn reset_clears_state() {
     let _g = LOCK.lock().unwrap();
+    extract_progress::clear_cancel();
     extract_progress::reset(1024);
     extract_progress::add_bytes(256);
-    extract_progress::cancel();
     extract_progress::reset(2048);
     assert_eq!(extract_progress::bytes(), 0);
     assert_eq!(extract_progress::total_bytes(), 2048);
@@ -33,13 +33,18 @@ fn add_bytes_accumulates_and_sets_name() {
 }
 
 #[test]
-fn cancel_flag_is_set_and_cleared_by_reset() {
+fn cancel_flag_survives_reset_and_clears_explicitly() {
     let _g = LOCK.lock().unwrap();
-    extract_progress::reset(1);
+    extract_progress::clear_cancel();
     assert!(!extract_progress::cancelled());
     extract_progress::cancel();
     assert!(extract_progress::cancelled());
+    // A cancel pressed during a pre-scan must survive into the extraction
+    // phase — reset() deliberately preserves the flag.
     extract_progress::reset(1);
+    assert!(extract_progress::cancelled());
+    // Only an explicit clear_cancel() at a fresh operation start clears it.
+    extract_progress::clear_cancel();
     assert!(!extract_progress::cancelled());
 }
 

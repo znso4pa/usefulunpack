@@ -25,9 +25,17 @@ macro_rules! progress_store {
                 TOTAL.store(total_bytes, Ordering::SeqCst);
                 FILE_BYTES.store(0, Ordering::SeqCst);
                 FILE_TOTAL.store(0, Ordering::SeqCst);
-                CANCEL.store(false, Ordering::SeqCst);
+                // NOTE: the CANCEL flag is deliberately preserved — a cancel
+                // pressed during a pre-scan must survive into the extraction
+                // phase. Call clear_cancel() at the very start of a fresh
+                // operation (before any pre-scan) instead.
                 *FNAME.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
             }
+
+            /// Clears the cancel flag. Call once at the start of each new
+            /// operation (JNI entry, before the pre-scan) so a stale cancel
+            /// from a previous operation can't poison this one.
+            pub fn clear_cancel() { CANCEL.store(false, Ordering::SeqCst); }
 
             /// Marks the start of a new member: resets the per-file byte
             /// counter and records the member's total size. Feed per-member
@@ -60,9 +68,11 @@ progress_store!(extract_progress);
 progress_store!(compress_progress);
 
 /// Wraps a `Write` and accumulates written bytes into a progress store.
-/// Also aborts the write with an `Interrupted` error when the format's cancel
-/// flag is raised, so large single members stop promptly instead of running
-/// to completion before the next cancel check point.
+/// Also aborts the write with an `Other` error when the format's cancel flag
+/// is raised, so large single members stop promptly instead of running to
+/// completion before the next cancel check point. NOTE: `Other` — never
+/// `Interrupted` — because std's `io::copy`/`write_all` retry Interrupted
+/// forever, which would spin at 100% CPU on cancel instead of aborting.
 pub struct ProgressWriter<W> {
     inner: W,
     sink: fn(u64),
@@ -77,7 +87,7 @@ impl<W> ProgressWriter<W> {
 impl<W: std::io::Write> std::io::Write for ProgressWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if (self.check)() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "cancelled"));
         }
         let n = self.inner.write(buf)?;
         (self.sink)(n as u64);
@@ -103,7 +113,7 @@ impl<R> ProgressReader<R> {
 impl<R: std::io::Read> std::io::Read for ProgressReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if (self.check)() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "cancelled"));
         }
         let n = self.inner.read(buf)?;
         (self.sink)(n as u64);
@@ -114,7 +124,7 @@ impl<R: std::io::Read> std::io::Read for ProgressReader<R> {
 impl<R: std::io::BufRead> std::io::BufRead for ProgressReader<R> {
     fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
         if (self.check)() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "cancelled"));
         }
         self.inner.fill_buf()
     }
@@ -139,10 +149,22 @@ pub fn oneshot_async<Fut: Future>(fut: Fut) -> Fut::Output {
     let mut cx = Context::from_waker(&waker);
     let mut fut = fut;
     let mut fut = unsafe { Pin::new_unchecked(&mut fut) };
+    let mut polls: u32 = 0;
     loop {
         match fut.as_mut().poll(&mut cx) {
             Poll::Ready(v) => return v,
-            Poll::Pending => std::thread::yield_now(),
+            Poll::Pending => {
+                polls += 1;
+                // The XP3 readers are synchronous (always Ready/Err), so
+                // Pending should never persist. A future stuck in Pending
+                // would otherwise spin at 100% CPU forever — bail after a
+                // large number of polls; the panic is converted to an error
+                // by the JNI `guarded` wrapper.
+                if polls > 1_000_000 {
+                    panic!("oneshot_async: future never completed");
+                }
+                std::thread::yield_now();
+            }
         }
     }
 }

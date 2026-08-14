@@ -42,7 +42,7 @@ struct CancellableReader<R: Read>(R);
 impl<R: Read> Read for CancellableReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if extract_progress::cancelled() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "cancelled"));
         }
         self.0.read(buf)
     }
@@ -105,6 +105,7 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
     match guarded(move || list_lz4_inner(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_Lz4Core_lz4Extract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
     match guarded(move || decompress_lz4_inner(&inp, &out)) { Ok(f) => { let json = extract_result_json(1, if f==0{1}else{0}, f); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
@@ -118,6 +119,7 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_Lz4Core_lz4ExtractCancel(_: JNIEnv, _: JClass) { extract_progress::cancel(); }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_Lz4Core_lz4Compress(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, lv: JString) -> jboolean {
+    compress_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let lvl: i32 = s(&mut e, &lv).parse().unwrap_or(5);
     match guarded(move || compress_lz4(&inp, &out, lvl)) {
         Ok(0) => JNI_TRUE,

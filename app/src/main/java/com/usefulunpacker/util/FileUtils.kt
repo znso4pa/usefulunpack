@@ -5,7 +5,61 @@ import android.content.ClipboardManager
 import android.content.Context
 import java.io.File
 import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
 import java.security.MessageDigest
+
+/** Global text-encoding pref values (general settings). UTF-16 auto-detects
+ *  the BOM and defaults to little-endian without one (galgame convention). */
+val TEXT_ENCODINGS = arrayOf("UTF-8", "SHIFT-JIS", "GBK", "UTF-16")
+
+/** Decodes [data] STRICTLY as [encoding]: BOM handling for UTF-8/UTF-16,
+ *  REPLACE for malformed/unmappable bytes — never silent loss, never errors.
+ *  Every text preview and content search goes through here. */
+fun decodeTextStrict(data: ByteArray, encoding: String): String {
+    return when (encoding) {
+        "UTF-16" -> {
+            val (bytes, cs) = when {
+                data.size >= 2 && data[0] == 0xFF.toByte() && data[1] == 0xFE.toByte() ->
+                    data.copyOfRange(2, data.size) to Charsets.UTF_16LE
+                data.size >= 2 && data[0] == 0xFE.toByte() && data[1] == 0xFF.toByte() ->
+                    data.copyOfRange(2, data.size) to Charsets.UTF_16BE
+                else -> data to Charsets.UTF_16LE
+            }
+            decodeReplace(bytes, cs)
+        }
+        "UTF-8" -> {
+            val bytes = if (data.size >= 3 && data[0] == 0xEF.toByte() && data[1] == 0xBB.toByte() && data[2] == 0xBF.toByte())
+                data.copyOfRange(3, data.size) else data
+            decodeReplace(bytes, Charsets.UTF_8)
+        }
+        else -> decodeReplace(data, Charset.forName(encoding))
+    }
+}
+
+private fun decodeReplace(bytes: ByteArray, cs: Charset): String {
+    val decoder = cs.newDecoder()
+        .onMalformedInput(CodingErrorAction.REPLACE)
+        .onUnmappableCharacter(CodingErrorAction.REPLACE)
+    return try {
+        decoder.decode(ByteBuffer.wrap(bytes)).toString()
+    } catch (_: CharacterCodingException) {
+        String(bytes, cs)
+    }
+}
+
+/** True when the decoded text carries an unusual number of replacement
+ *  characters (U+FFFD) — the file was likely decoded with the wrong
+ *  encoding. Threshold: >= 2% of the text, with a floor of 8 to avoid
+ *  noise on tiny files. */
+fun textLooksGarbled(text: String): Boolean {
+    if (text.isEmpty()) return false
+    var bad = 0
+    for (c in text) if (c == '\uFFFD') { bad++; if (bad >= 8 && bad * 50 >= text.length) return true }
+    return bad >= 8 && bad * 50 >= text.length
+}
 
 fun fileSize(f: File): Long = try {
     android.system.Os.stat(f.absolutePath).st_size
@@ -21,6 +75,17 @@ fun fmt(b: Long): String = when {
     b >= 1_048_576 -> "${"%.1f".format(b / 1_048_576.0)} MB"
     b >= 1024 -> "${"%.1f".format(b / 1024.0)} KB"
     else -> "$b B"
+}
+
+/** Rust safe_join parity for entry paths: rejects `..` components, absolute
+ *  paths, drive letters (`:`) and NUL. Returns the normalized relative path
+ *  or null when the entry must be skipped. Kotlin-side file creation (search
+ *  placeholder files) must apply the same rules as the Rust extractors. */
+fun sanitizeEntryPath(p: String): String? {
+    val s = p.replace('\\', '/')
+    if (s.isEmpty() || s.contains('\u0000') || s.startsWith('/') || s.contains(':')) return null
+    if (s.split('/').any { it == ".." }) return null
+    return s
 }
 
 fun uniqueFile(parent: File, name: String): File {
@@ -122,7 +187,12 @@ fun resolveRarVolumes(f: File): List<File> {
             val digits = m.groupValues[2].drop(1).toInt()
             (letter.code - 'r'.code) * 100 + digits to f2
         }.sortedBy { it.first }.map { it.second }
-    val first = siblings.filter { it.name == "$base.rar" || it.name == "$base.part1.rar" }
+    // Prefer the partN scheme when `foo.part1.rar` exists — a plain `foo.rar`
+    // next to `foo.part1.rar` is ambiguous (often a duplicate/first copy), so
+    // don't prepend it and misorder the set.
+    val part1 = siblings.firstOrNull { it.name == "$base.part1.rar" }
+    val first = if (part1 != null) listOf(part1)
+                else siblings.filter { it.name == "$base.rar" }
     val combined = (first + modern + old).distinctBy { it.path }
     if (combined.isEmpty()) return listOf(f)
     return if (combined.none { it.path == f.path }) combined + f else combined
@@ -185,6 +255,19 @@ fun resolveZipVolumes(f: File): List<File> {
         if (all.size >= 2 && startsWithZipMagic(all.first())) return all
         return listOf(f)
     }
+
+    // Tapping the FINAL `.zip` of a PKWARE true split should resolve the whole
+    // set too (its `.z01/.z02...` siblings carry the leading magic).
+    if (f.name.lowercase().endsWith(".zip")) {
+        val base = f.name.dropLast(4)
+        val zParts = siblings.mapNotNull { f2 ->
+            val m = PKW_Z_RE.find(f2.name) ?: return@mapNotNull null
+            if (m.groupValues[1] != base) return@mapNotNull null
+            m.groupValues[2].toIntOrNull()?.let { it to f2 }
+        }.sortedBy { it.first }.map { it.second }
+        val all = zParts + f
+        if (all.size >= 2 && startsWithZipMagic(all.first())) return all
+    }
     return listOf(f)
 }
 
@@ -220,4 +303,42 @@ fun isPasswordProtected(f: File): Boolean {
             else -> zipVolumesNeedsPassword(f.path)
         }
     } catch (_: Exception) { false }
+}
+
+/**
+ * Detects the archive format from a file name (delegates to the shared
+ * [formatOfName] mapping). Volume parts (`foo.7z.001`) are not handled here —
+ * callers should prefer the result of [isVolumeFile] and only fall back to
+ * this. Returns null when the extension is unknown, so the caller can fall
+ * back to the manual format picker.
+ */
+fun detectFormat(f: File): String? = formatOfName(f.name)
+
+/**
+ * Sniffs a file's magic bytes to identify archives that lost their extension
+ * (e.g. `game.xp3` renamed to `game`). Returns a format key or null. Only
+ * covers formats with a stable leading signature; unknown magic files are
+ * left to the normal file handling.
+ */
+fun detectFormatByMagic(f: File): String? {
+    if (!f.isFile) return null
+    val sig = try {
+        val buf = ByteArray(9)
+        val n = FileInputStream(f).use { it.read(buf) }
+        if (n <= 0) return null else buf.copyOf(n)
+    } catch (_: Exception) { return null }
+    fun has(prefix: ByteArray): Boolean =
+        sig.size >= prefix.size && sig.copyOf(prefix.size).contentEquals(prefix)
+    return when {
+        has(byteArrayOf(0x37, 0x7A, 0xBC.toByte(), 0xAF.toByte(), 0x27, 0x1C)) -> "7z"
+        has(byteArrayOf(0x50, 0x4B)) -> "zip"
+        has(byteArrayOf(0x52, 0x61, 0x72, 0x21, 0x1A, 0x07)) -> "rar"
+        has(byteArrayOf(0x1F, 0x8B.toByte())) -> "gz"
+        has(byteArrayOf(0x42, 0x5A, 0x68)) -> "bz2"
+        has(byteArrayOf(0xFD.toByte(), 0x37, 0x7A, 0x58, 0x5A, 0x00)) -> "xz"
+        has(byteArrayOf(0x28, 0xB5.toByte(), 0x2F, 0xFD.toByte())) -> "zst"
+        has(byteArrayOf(0x04, 0x22, 0x4D, 0x18)) -> "lz4"
+        has("XP3".toByteArray(Charsets.US_ASCII)) -> "xp3"
+        else -> null
+    }
 }

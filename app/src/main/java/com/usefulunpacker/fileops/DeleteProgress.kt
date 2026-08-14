@@ -1,6 +1,7 @@
 package com.usefulunpacker
 
 import android.app.ProgressDialog
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 import kotlin.concurrent.thread
@@ -20,7 +21,16 @@ fun deleteWithProgress(
         show()
     }
     thread {
-        if (!tryStartOperation(activity)) return@thread
+        // Plain acquire on the worker side: tryStartOperation toasts from a
+        // background thread (dropped) and leaves the progress dialog spinning
+        // on refusal — dismiss it and surface the busy toast on the UI thread.
+        if (!OperationLock.acquire()) {
+            activity.runOnUiThread {
+                pd.dismiss()
+                Toast.makeText(activity, activity.getString(R.string.msg_op_in_progress), Toast.LENGTH_SHORT).show()
+            }
+            return@thread
+        }
         try {
             if (singleFile) {
                 val f = targets[0]

@@ -51,19 +51,20 @@ class FileAdapter(
         if (f.isDirectory) {
             starBtn.visibility = View.VISIBLE
             val bm = bookmarks.contains(f.absolutePath)
-            starBtn.setImageResource(if (bm) android.R.drawable.btn_star_big_on else android.R.drawable.btn_star_big_off)
+            starBtn.setImageResource(if (bm) R.drawable.ic_star_on else R.drawable.ic_star_off)
             starBtn.setColorFilter(if (bm) 0xFFffc107.toInt() else 0xFF666666.toInt())
             starBtn.setOnClickListener {
                 onBookmarkToggled(f.absolutePath)
                 notifyDataSetChanged()
             }
-            icon.setImageResource(android.R.drawable.ic_menu_compass); icon.setColorFilter(C["warning"]!!)
+            icon.setImageResource(R.drawable.ic_folder); icon.setColorFilter(C["warning"]!!)
             label.text = f.name; size.text = ""; date.text = ""
         } else {
             starBtn.visibility = View.GONE
-            val n = f.name.lowercase()
-            val res = when { n.endsWith(".xp3")||n.endsWith(".pfs") -> android.R.drawable.ic_menu_compass; n.endsWith(".apk") -> android.R.drawable.ic_menu_manage; else -> android.R.drawable.ic_menu_gallery }
-            icon.setImageResource(res); icon.setColorFilter(C["primary"]!!)
+            val isApk = f.name.lowercase().endsWith(".apk")
+            val isArc = isArchiveFile(f)
+            icon.setImageResource(if (isApk || isArc) R.drawable.ic_archive else R.drawable.ic_file)
+            icon.setColorFilter(if (isApk) 0xFF1976D2.toInt() else iconTintFor(f))
             label.text = f.name
             size.text = (if (f.absolutePath in passwordProtected) "🔒 " else "") + fmt(fileSize(f))
             date.text = df.format(Date(f.lastModified()))

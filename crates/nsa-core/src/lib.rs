@@ -67,7 +67,12 @@ fn nsa_lzss_decompress_to<W: Write>(data: &[u8], out_len: u32, writer: &mut W) -
         } else {
             let i = br.get_bits(LZSS_EI)? as usize;
             let j = br.get_bits(LZSS_EJ)? as usize;
-            for k in 0..=j + 1 {
+            // Clamp the back-reference to the declared output size: a
+            // malformed stream can point past out_len and overrun the output.
+            // The reference covers j+2 bytes (the old loop ran 0..=j+1).
+            let remaining = out_len as u64 - written;
+            let n = ((j + 2) as u64).min(remaining) as usize;
+            for k in 0..n {
                 let c = ring[(i + k) & (LZSS_N - 1)];
                 buf.push(c);
                 ring[r] = c; r = (r + 1) & (LZSS_N - 1);
@@ -92,9 +97,11 @@ fn nsa_spb_decompress(data: &[u8], usize: u32) -> Result<Vec<u8>, String> {
     let width_pad = (4u32.wrapping_sub(width * 3) & 3) as usize;
     let stride = (width as usize) * 3 + width_pad;
     let total_size = stride * height as usize + 54;
-    // Guard against corrupt width/height blowing up the allocation (u16 pair can
-    // declare ~12.8GB); cap at 2GB to fail cleanly instead of aborting on OOM.
-    if total_size > 2 * 1024 * 1024 * 1024 || usize as u64 > 2 * 1024 * 1024 * 1024 {
+    // Guard against corrupt width/height blowing up the allocation (a u16
+    // pair can declare ~12.8GB). Real SPB illustrations are BMPs far below
+    // 64MB — cap there to fail cleanly instead of aborting on OOM.
+    const SPB_MAX: u64 = 64 * 1024 * 1024;
+    if total_size as u64 > SPB_MAX || usize as u64 > SPB_MAX {
         return Err("spb: image too large".into());
     }
     let data = &data[4..];
@@ -235,6 +242,7 @@ fn list_nsa(input: &str) -> Result<String, String> {
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = fs::create_dir_all(&out);
     match guarded(move || {
         let (ents, ds, mut f) = open_nsa(&inp)?;
@@ -253,6 +261,7 @@ fn list_nsa(input: &str) -> Result<String, String> {
     }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel_j: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel_j);
     match guarded(move || {
         let ss: HashSet<&str> = sel_str.lines().filter(|l| !l.is_empty()).collect();
@@ -383,6 +392,60 @@ mod tests {
         assert_eq!(std::fs::read(out.join("a/stored.bin")).unwrap(), data_stored);
         assert_eq!(std::fs::read(out.join("b/lzss.bin")).unwrap(), data_lzss);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lzss_tail_backref_clamped_to_declared_size() {
+        // 8 literals then a back-reference asking for 11 more bytes while
+        // only 2 remain (declared size 10). Without the clamp the decoder
+        // overruns the declared output; with it, output == exactly 10 bytes.
+        const N: usize = LZSS_N;
+        let mut out = Vec::new();
+        let mut cur: u8 = 0;
+        let mut nbits: u8 = 0;
+        fn put_bit(out: &mut Vec<u8>, cur: &mut u8, nbits: &mut u8, bit: bool) {
+            *cur = (*cur << 1) | bit as u8;
+            *nbits += 1;
+            if *nbits == 8 { out.push(*cur); *cur = 0; *nbits = 0; }
+        }
+        fn put_bits(out: &mut Vec<u8>, cur: &mut u8, nbits: &mut u8, mut v: u32, n: u8) {
+            for _ in 0..n { put_bit(out, cur, nbits, v & (1 << (n - 1)) != 0); v <<= 1; }
+        }
+        for b in b"ABCDEFGH" {
+            put_bit(&mut out, &mut cur, &mut nbits, true);
+            put_bits(&mut out, &mut cur, &mut nbits, *b as u32, 8);
+        }
+        // back-ref pointing at the first literal (ring write starts at
+        // N-F=239): j=10 → asks for 12 bytes (j+2) past the 8 literals
+        put_bit(&mut out, &mut cur, &mut nbits, false);
+        put_bits(&mut out, &mut cur, &mut nbits, (N - LZSS_F) as u32, 8);
+        put_bits(&mut out, &mut cur, &mut nbits, 10, 4);
+        if nbits > 0 { out.push(cur << (8 - nbits)); }
+
+        let mut buf = Vec::new();
+        nsa_lzss_decompress_to(&out, 10, &mut buf).unwrap();
+        assert_eq!(buf.len(), 10, "output must be clamped to the declared size");
+        assert_eq!(&buf[0..8], b"ABCDEFGH");
+        assert_eq!(&buf[8..10], b"AB", "clamped tail must be the first 2 back-ref bytes");
+    }
+
+    #[test]
+    fn spb_huge_dimensions_rejected() {
+        // width=height=0xFFFF declares ~12.8GB of pixels; the 64MB cap must
+        // reject it before the allocation.
+        let mut data = vec![0u8; 16];
+        data[0] = 0xFF; data[1] = 0xFF; // width 65535
+        data[2] = 0xFF; data[3] = 0xFF; // height 65535
+        let err = nsa_spb_decompress(&data, 100).unwrap_err();
+        assert!(err.contains("too large"), "unexpected error: {err}");
+        // Small dimensions pass the size gate — any failure here must not be
+        // the size cap.
+        let mut ok = vec![0u8; 16];
+        ok[0] = 0x10; ok[1] = 0x00; // width 16
+        ok[2] = 0x10; ok[3] = 0x00; // height 16
+        if let Err(e) = nsa_spb_decompress(&ok, 100) {
+            assert!(!e.contains("too large"), "small dims must pass the size gate: {e}");
+        }
     }
 
     #[test]

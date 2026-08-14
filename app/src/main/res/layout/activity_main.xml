@@ -32,7 +32,7 @@
                 android:id="@+id/btnDrawer"
                 android:layout_width="44dp"
                 android:layout_height="44dp"
-                android:src="@android:drawable/ic_menu_more"
+                android:src="@drawable/ic_drawer"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:tint="@color/ui_icon_tint" />
 
@@ -40,7 +40,7 @@
                 android:id="@+id/btnRoot"
                 android:layout_width="44dp"
                 android:layout_height="44dp"
-                android:src="@android:drawable/ic_menu_compass"
+                android:src="@drawable/ic_home"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:tint="@color/ui_base"
                 android:contentDescription="回到根目录" />
@@ -84,7 +84,7 @@
                 android:id="@+id/btnUp"
                 android:layout_width="32dp"
                 android:layout_height="32dp"
-                android:src="@android:drawable/arrow_up_float"
+                android:src="@drawable/ic_back"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:tint="@color/ui_icon_tint" />
 

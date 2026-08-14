@@ -47,8 +47,9 @@ fn rar_writer<'a>(
         if extract_progress::cancelled() { return Err(rars::Error::Cancelled); }
         let name = meta.name_lossy().replace('\\', "/").trim_matches('/').to_string();
         if meta.is_directory || name.is_empty() || name.ends_with('/') {
-            let dest = safe_join(out_base, &name).unwrap_or_default();
-            std::fs::create_dir_all(&dest).ok();
+            if let Ok(dest) = safe_join(out_base, &name) {
+                std::fs::create_dir_all(&dest).ok();
+            }
             return Ok(Box::new(std::io::sink()) as Box<dyn Write>);
         }
         if let Some(ref sel) = sel_set {
@@ -58,7 +59,13 @@ fn rar_writer<'a>(
         }
         extract_progress::set_name(&name);
         extract_progress::set_file(sizes.get(&name).copied().unwrap_or(0));
-        let dest = safe_join(out_base, &name).unwrap_or_else(|_| Path::new(out_base).join(&name));
+        // No fallback join: a rejected path (../, absolute, drive letter) must
+        // never be written — count it as failed and sink the entry, exactly
+        // like zip/nsa/7z/pfs.
+        let dest = match safe_join(out_base, &name) {
+            Ok(d) => d,
+            Err(_) => { fail.fetch_add(1, Ordering::SeqCst); return Ok(Box::new(std::io::sink()) as Box<dyn Write>); }
+        };
         if let Some(p) = Path::new(&dest).parent() { std::fs::create_dir_all(p).ok(); }
         let out_file = match std::fs::File::create(&dest) {
             Ok(f) => f,
@@ -96,6 +103,7 @@ fn extract_rar_inner(input: &str, output: &str, selected: Option<&HashSet<String
     let mut prog_total = 0u64;
     let mut sizes: HashMap<String, u64> = HashMap::new();
     for member in archive.members() {
+        if extract_progress::cancelled() { return Err("cancelled".to_string()); }
         let name = member.meta.name_lossy().replace('\\', "/").trim_matches('/').to_string();
         if member.meta.is_directory || name.is_empty() || name.ends_with('/') { continue; }
         let matches = match &sel_set {
@@ -126,6 +134,7 @@ fn extract_rar_volumes_inner(paths: &[&str], output: &str, selected: Option<&Has
     let mut sizes: HashMap<String, u64> = HashMap::new();
     for archive in &archives {
         for member in archive.members() {
+            if extract_progress::cancelled() { return Err("cancelled".to_string()); }
             let name = member.meta.name_lossy().replace('\\', "/").trim_matches('/').to_string();
             if member.meta.is_directory || name.is_empty() || name.ends_with('/') { continue; }
             if !seen.insert(name.clone()) { continue; }
@@ -205,15 +214,18 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
     let inp = s(&mut e, &i); match guarded(move || list_rar_inner(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
     match guarded(move || extract_rar_inner(&inp, &out, None, "")) { Ok((total, f)) => { let json = extract_result_json(total, total.saturating_sub(f), f); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel);
     let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect();
     match guarded(move || extract_rar_inner(&inp, &out, Some(&ss), "")) { Ok((total, f)) => { let json = extract_result_json(total, total.saturating_sub(f), f); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractWithPassword(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, pw: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let pwd = s(&mut e, &pw); let _ = std::fs::create_dir_all(&out);
     match guarded(move || extract_rar_inner(&inp, &out, None, &pwd)) { Ok((total, f)) => { let json = extract_result_json(total, total.saturating_sub(f), f); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
@@ -222,6 +234,7 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
     match guarded(move || rar_needs_password_inner(&inp)) { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("rar: {er}")); JNI_FALSE } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractSelectedWithPassword(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel: JString, pw: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel); let pwd = s(&mut e, &pw); let _ = std::fs::create_dir_all(&out);
     let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect();
     match guarded(move || extract_rar_inner(&inp, &out, Some(&ss), &pwd)) { Ok((total, f)) => { let json = extract_result_json(total, total.saturating_sub(f), f); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
@@ -242,22 +255,26 @@ fn volume_refs(vols: &[String]) -> Vec<&str> { vols.iter().map(|s| s.as_str()).c
     match guarded(move || list_rar_volumes_inner(&volume_refs(&vols))) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractVolumes(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
     let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(move || extract_rar_volumes_inner(&volume_refs(&vols), &out, None, "")) { Ok((total, f)) => { let json = extract_result_json(total, total.saturating_sub(f), f); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractSelectedVolumes(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString, sel: JString) -> jstring {
+    extract_progress::clear_cancel();
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel);
     let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(move || extract_rar_volumes_inner(&volume_refs(&vols), &out, Some(&ss), "")) { Ok((total, f)) => { let json = extract_result_json(total, total.saturating_sub(f), f); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractVolumesWithPassword(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString, pw: JString) -> jstring {
+    extract_progress::clear_cancel();
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let pwd = s(&mut e, &pw); let _ = std::fs::create_dir_all(&out);
     let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(move || extract_rar_volumes_inner(&volume_refs(&vols), &out, None, &pwd)) { Ok((total, f)) => { let json = extract_result_json(total, total.saturating_sub(f), f); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractSelectedVolumesWithPassword(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString, sel: JString, pw: JString) -> jstring {
+    extract_progress::clear_cancel();
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel); let pwd = s(&mut e, &pw); let _ = std::fs::create_dir_all(&out);
     let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
@@ -319,6 +336,49 @@ mod tests {
         std::fs::remove_dir_all(&out).ok();
         for p in &vols { std::fs::remove_file(p).ok(); }
         if let Some(dir) = vols[0].parent() { std::fs::remove_dir_all(dir).ok(); }
+    }
+
+    #[test]
+    fn traversal_entry_rejected_and_counted() {
+        // An entry named "../evil.txt" must never be written anywhere — the
+        // safe_join failure counts the entry as failed and sinks its data
+        // (no fallback join that escapes the output directory).
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let data: Vec<u8> = (0..2048u32).map(|i| (i % 251) as u8).collect();
+        let entry = StoredEntry {
+            name: b"../evil.txt",
+            data: &data,
+            file_time: 0,
+            file_attr: 0,
+            password: None,
+            file_comment: None,
+        };
+        let opts = WriterOptions::new(ArchiveVersion::Rar14, FeatureSet::store_only());
+        // The RAR13 writer always splits into at least two volumes.
+        let vols = write_stored_volumes(entry, opts, 1024).expect("write archive");
+        assert!(vols.len() >= 2);
+        let dir = std::env::temp_dir().join(format!("uu_rar_trav_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut paths = Vec::new();
+        for (i, v) in vols.iter().enumerate() {
+            let p = dir.join(format!("vol{i}.rar"));
+            std::fs::write(&p, v).unwrap();
+            paths.push(p);
+        }
+        let path_strs: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        let refs: Vec<&str> = path_strs.iter().map(|s| s.as_str()).collect();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let (total, fail) = extract_rar_volumes_inner(
+            &refs, out.to_str().unwrap(), None, ""
+        ).expect("extract must complete");
+        assert_eq!(total, 1);
+        assert_eq!(fail, 1, "traversal entry must be counted as failed");
+        // out/../evil.txt == dir/evil.txt is the exact escape target
+        assert!(!dir.join("evil.txt").exists(), "must not escape into the parent dir");
+        assert!(!out.join("evil.txt").exists());
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "nothing may be written");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 

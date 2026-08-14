@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app browses absolute paths anywhere on shared storage
+     (MANAGE_EXTERNAL_STORAGE), so map the filesystem root. Only the single
+     URI granted via FLAG_GRANT_READ_URI_PERMISSION is ever shared. -->
+<paths>
+    <root-path name="root" path="." />
+</paths>

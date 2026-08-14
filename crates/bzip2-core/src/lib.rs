@@ -14,7 +14,7 @@ struct CancelReader<R: Read>(R);
 impl<R: Read> Read for CancelReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if extract_progress::cancelled() {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+            return Err(io::Error::new(io::ErrorKind::Other, "cancelled"));
         }
         self.0.read(buf)
     }
@@ -72,6 +72,7 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
     match guarded(move || list_bz2(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_Bzip2Core_bz2Extract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = fs::create_dir_all(&out);
     match guarded(move || extract_bz2(&inp, &out)) {
         Ok(f) => { let json = extract_result_json(1, if f == 0 { 1 } else { 0 }, f); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
@@ -88,6 +89,7 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_Bzip2Core_bz2ExtractCancel(_: JNIEnv, _: JClass) { extract_progress::cancel(); }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_Bzip2Core_bz2Compress(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, lv: JString) -> jboolean {
+    compress_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let lvl: i32 = s(&mut e, &lv).parse().unwrap_or(5);
     match guarded(move || compress_bz2(&inp, &out, lvl)) {
         Ok(0) => JNI_TRUE,

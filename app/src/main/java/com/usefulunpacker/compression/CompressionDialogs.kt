@@ -33,6 +33,9 @@ private fun doCompress(activity: AppCompatActivity, dir: File, currentDir: File,
     val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
     val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
     val splitEnabled = prefs.getLong("compress_split_size", 0L) > 0 && fmt in setOf("zip", "7z")
+    // Acquire the lock BEFORE showing the progress dialog — otherwise a busy
+    // lock leaves the dialog spinning forever with the work silently dropped.
+    if (!tryStartOperation(activity)) return
     var cancelled = false
     val accessors = compressAccessors(fmt)
     val prog = PollingProgressDialog(
@@ -45,10 +48,16 @@ private fun doCompress(activity: AppCompatActivity, dir: File, currentDir: File,
     )
     prog.start()
     thread {
-        if (!tryStartOperation(activity)) return@thread
         try {
             var ok = compressDispatch(dir, outFile, fmt, level, password, prefs)
             if (cancelled || !ok) {
+                // split_volumes already removed the original; remove the
+                // `.001/.002/...` parts too, not just outFile.
+                outFile.parentFile?.listFiles()?.filter { f ->
+                    f.name.startsWith(outFile.name + ".") &&
+                    f.name.substringAfterLast('.').isNotEmpty() &&
+                    f.name.substringAfterLast('.').all { it.isDigit() }
+                }?.forEach { it.delete() }
                 var deleted = false; for (i in 0..10) { deleted = outFile.delete(); if (deleted) break else Thread.sleep(200) }
             }
             activity.runOnUiThread {
@@ -77,7 +86,7 @@ fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password
             "xp3" -> Xp3Core.xp3CreateArchive("", src.path, outFile.path, level.toString()) != null
             "pfs" -> PfsCore.pfsCreateArchive("", src.path, outFile.path) != null
             "ksd" -> KsdCore.ksdCompress("", src.path, outFile.path, level.toString()) != null
-            "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); ZipCore.zipCompress("", src.path, outFile.path, level.toString(), password, splitStr) }
+            "zip" -> ZipCore.zipCompress("", src.path, outFile.path, level.toString(), password, splitStr)
             "7z" -> SevenZCore.szCompress("", src.path, outFile.path, level.toString(), password, splitStr)
             "tar", "tgz", "tbz2", "txz", "tzst" -> TarCore.tarCompress("", src.path, outFile.path, fmt, level.toString())
             "gz" -> GzipCore.gzCompress("", src.path, outFile.path, level.toString())

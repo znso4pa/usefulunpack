@@ -11,25 +11,21 @@ import java.io.File
 /**
  * Single-operation lock. The app drives one long-running extract/compress at a
  * time; concurrent operations would clobber the shared per-format progress
- * statics. Worker threads call [acquire] before the JNI work and [release] in
- * a `finally`, so each worker is a distinct lock holder.
+ * statics. Acquire/release are a plain mutual-exclusion pair: the UI thread
+ * (or any entry thread) calls [acquire] before showing the progress dialog and
+ * the worker thread calls [release] in a `finally`. Release is intentionally
+ * thread-agnostic — the acquire and release always happen on different threads
+ * (UI acquires, worker releases), so a holder check would never fire.
  */
 object OperationLock {
     @Volatile private var busy = false
-    @Volatile private var holder: Thread? = null
 
     fun acquire(): Boolean = synchronized(this) {
-        if (busy) {
-            if (holder == Thread.currentThread()) true else false
-        } else {
-            busy = true; holder = Thread.currentThread(); true
-        }
+        if (busy) false else { busy = true; true }
     }
 
     fun release() = synchronized(this) {
-        if (holder == Thread.currentThread()) {
-            busy = false; holder = null
-        }
+        busy = false
     }
 }
 
@@ -48,8 +44,14 @@ fun friendlyExtractError(activity: AppCompatActivity, error: String?): String {
     if (msg.isNullOrEmpty()) return activity.getString(R.string.title_extract_failed)
     val m = msg.lowercase()
     return when {
+        // Rust sevenz-rust Error Display = Debug, so variants are camelCase
+        // with no spaces: PasswordRequired / MaybeBadPassword /
+        // ChecksumVerificationFailed. Match both spaced prose and the
+        // camelCase spellings.
         m.contains("wrong password") || m.contains("bad password") || m.contains("password required") ||
-            m.contains("maybe bad password") || m.contains("checksum verification failed") ->
+            m.contains("maybe bad password") || m.contains("checksum verification failed") ||
+            m.contains("passwordrequired") || m.contains("maybebadpassword") ||
+            m.contains("checksumverificationfailed") ->
             activity.getString(R.string.err_pwd_wrong)
         m.contains("buffered") || m.contains("configured limit") || m.contains("decode limit") || m.contains("memory") ->
             activity.getString(R.string.err_large_member)
@@ -176,29 +178,49 @@ fun extractByFormat(
 /**
  * Synchronously asks for a password on the UI thread and blocks the caller
  * (a background thread) until the user confirms or cancels. Returns the
- * entered password, or null when cancelled. Never called on the main thread.
+ * entered password, or null when cancelled / the activity is gone / timed
+ * out. Never called on the main thread.
  */
 fun promptPasswordSync(activity: AppCompatActivity, message: String = ""): String? {
     val latch = java.util.concurrent.CountDownLatch(1)
     val holder = arrayOf<String?>(null)
     activity.runOnUiThread {
-        val inp = EditText(activity).apply {
-            hint = activity.getString(R.string.prompt_password)
-            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-            setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        // The activity may be finishing (e.g. rotation/back): showing a
+        // dialog on a dead window throws BadTokenException and would leave
+        // the caller blocked forever — count down and bail out instead.
+        if (activity.isFinishing || activity.isDestroyed) {
+            latch.countDown()
+            return@runOnUiThread
         }
-        val dlg = AlertDialog.Builder(activity)
-            .setTitle(activity.getString(R.string.title_password))
-            .setView(inp)
-            .setPositiveButton(activity.getString(R.string.action_confirm)) { _, _ -> holder[0] = inp.text.toString(); latch.countDown() }
-            .setNegativeButton(activity.getString(R.string.action_cancel)) { _, _ -> latch.countDown() }
-            .create()
-        dlg.setOnDismissListener { latch.countDown() }
-        if (message.isNotEmpty()) dlg.setMessage(message)
-        dlg.show()
+        try {
+            val inp = EditText(activity).apply {
+                hint = activity.getString(R.string.prompt_password)
+                setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+                setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
+                inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            }
+            val dlg = AlertDialog.Builder(activity)
+                .setTitle(activity.getString(R.string.title_password))
+                .setView(inp)
+                .setPositiveButton(activity.getString(R.string.action_confirm)) { _, _ -> holder[0] = inp.text.toString(); latch.countDown() }
+                .setNegativeButton(activity.getString(R.string.action_cancel)) { _, _ -> latch.countDown() }
+                .create()
+            dlg.setOnDismissListener { latch.countDown() }
+            if (message.isNotEmpty()) dlg.setMessage(message)
+            dlg.show()
+        } catch (_: Exception) {
+            // BadTokenException / WindowManager errors: never leave the
+            // caller blocked on the latch.
+            latch.countDown()
+        }
     }
-    latch.await()
+    // 30s ceiling so a wedged UI can't block the worker thread forever.
+    val finished = try {
+        latch.await(30, java.util.concurrent.TimeUnit.SECONDS)
+    } catch (_: InterruptedException) {
+        false
+    }
+    if (!finished) return null
     return holder[0]
 }
 
@@ -226,6 +248,10 @@ fun showPasswordDialog(
         .setTitle(activity.getString(R.string.title_password))
         .setView(inp)
         .setPositiveButton(activity.getString(R.string.retry)) { _, _ ->
+            // Acquire the lock BEFORE showing the progress dialog — otherwise a
+            // busy lock leaves the dialog spinning forever with the work silently
+            // dropped.
+            if (!tryStartOperation(activity)) return@setPositiveButton
             val pwd = inp.text.toString()
             var cancelled = false
             val accessors = extractAccessors(fmt)
@@ -239,13 +265,12 @@ fun showPasswordDialog(
             ) else null
             prog?.start()
             thread {
-                if (!tryStartOperation(activity)) return@thread
                 try {
                     var err: String? = null
                     val json = runCatching {
                         when (fmt) {
                             "zip" -> zipExtractDispatch(src, out, sel, pwd)
-                            "7z" -> szExtractDispatch(src, out, "", pwd)
+                            "7z" -> szExtractDispatch(src, out, sel, pwd)
                             "rar" -> rarExtractDispatch(src, out, sel, pwd)
                             else -> null
                         }
@@ -274,6 +299,9 @@ fun tryExtractWithPassword(
     onCancel: () -> Unit = {},
     onResult: (ExtractOutcome) -> Unit
 ) {
+    // Acquire the lock BEFORE showing the progress dialog — otherwise a busy
+    // lock leaves the dialog spinning forever with the work silently dropped.
+    if (!tryStartOperation(activity)) return
     var cancelled = false
     val accessors = extractAccessors(fmt)
     val prog = if (showProgress) PollingProgressDialog(
@@ -297,7 +325,6 @@ fun tryExtractWithPassword(
         }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
     }
     thread {
-        if (!tryStartOperation(activity)) return@thread
         try {
             val result = if (fmt in setOf("zip", "7z", "rar") && sel.isNotEmpty()) {
                 runCatching {
@@ -325,6 +352,8 @@ fun tryExtractWithPassword(
                         .setTitle(activity.getString(R.string.title_password))
                         .setView(inp)
                         .setPositiveButton(activity.getString(R.string.retry)) { _, _ ->
+                            // Lock first, then the progress dialog (see above).
+                            if (!tryStartOperation(activity)) return@setPositiveButton
                             val pwd = inp.text.toString()
                             var cancelled2 = false
                             val accessors2 = extractAccessors(fmt)
@@ -338,7 +367,6 @@ fun tryExtractWithPassword(
                             ) else null
                             prog2?.start()
                             thread {
-                                if (!tryStartOperation(activity)) return@thread
                                 try {
                                     val outcome2 = runCatching {
                                         when (fmt) {

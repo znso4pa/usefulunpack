@@ -15,7 +15,7 @@ struct CancelReader<R: Read>(R);
 impl<R: Read> Read for CancelReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if extract_progress::cancelled() {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+            return Err(io::Error::new(io::ErrorKind::Other, "cancelled"));
         }
         self.0.read(buf)
     }
@@ -255,10 +255,12 @@ fn finish_jstring(env: &mut JNIEnv, result: Result<(u32, u32), String>) -> jstri
     }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_TarCore_tarExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = fs::create_dir_all(&out);
     finish_jstring(&mut e, guarded(move || extract_tar(&inp, &out, None)))
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_TarCore_tarExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel);
     let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect();
     if ss.is_empty() { return finish_jstring(&mut e, Ok((0, 0))); }
@@ -275,6 +277,7 @@ fn finish_jstring(env: &mut JNIEnv, result: Result<(u32, u32), String>) -> jstri
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_TarCore_tarExtractCancel(_: JNIEnv, _: JClass) { extract_progress::cancel(); }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_TarCore_tarCompress(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, fmt: JString, lv: JString) -> jboolean {
+    compress_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let f = s(&mut e, &fmt); let lvl: i32 = s(&mut e, &lv).parse().unwrap_or(5);
     match guarded(move || compress_tar(&inp, &out, &f, lvl)) {
         Ok(0) => JNI_TRUE,

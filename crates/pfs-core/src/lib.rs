@@ -49,6 +49,7 @@ pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsExtract(
     mut env: JNIEnv, _class: JClass,
     _tool: JString, input: JString, output: JString,
 ) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut env, &input); let out = s(&mut env, &output);
     match guarded(move || {
         let _ = fs::create_dir_all(&out);
@@ -117,6 +118,7 @@ pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsExtractSelected(
     mut env: JNIEnv, _: JClass,
     _t: JString, input: JString, output: JString, selected: JString,
 ) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut env, &input); let out = s(&mut env, &output); let sel_str = s(&mut env, &selected);
     match guarded(move || extract_pfs_selected(&inp, &out, &sel_str)) {
         Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match env.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
@@ -247,6 +249,7 @@ fn create_pfs(input: &str, output: &str) -> Result<u32, String> {
 pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsCreateArchive(
     mut env: JNIEnv, _: JClass, _t: JString, input: JString, output: JString,
 ) -> jstring {
+    compress_progress::clear_cancel();
     let inp = s(&mut env, &input); let out = s(&mut env, &output);
     match guarded(move || create_pfs(&inp, &out)) {
         Ok(total) => { let json = extract_result_json(total, total, 0); match env.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }

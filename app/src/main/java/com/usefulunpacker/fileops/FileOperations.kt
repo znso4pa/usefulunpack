@@ -37,7 +37,9 @@ fun showRenameDialog(activity: AppCompatActivity, f: File, currentDir: File, boo
 }
 
 fun compareFiles(activity: AppCompatActivity, a: File, b: File, bookmarks: MutableList<String>, currentDir: File, onSaved: () -> Unit) {
-    val info = "${a.name}\n大小: ${fmt(fileSize(a))}\n时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(a.lastModified()))}\n\n${b.name}\n大小: ${fmt(fileSize(b))}\n时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(b.lastModified()))}\n\n"
+    val df = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+    val info = "${a.name}\n${activity.getString(R.string.label_size, fmt(fileSize(a)))}\n${activity.getString(R.string.label_time, df.format(Date(a.lastModified())))}\n\n" +
+        "${b.name}\n${activity.getString(R.string.label_size, fmt(fileSize(b)))}\n${activity.getString(R.string.label_time, df.format(Date(b.lastModified())))}\n\n"
     val extA = a.name.lowercase().substringAfterLast('.')
     val extB = b.name.lowercase().substringAfterLast('.')
     val previewable = setOf("jpg","jpeg","png","txt","json","ini","ks","lua","py","js","html","css","xml","cfg","log","md")
@@ -45,7 +47,7 @@ fun compareFiles(activity: AppCompatActivity, a: File, b: File, bookmarks: Mutab
     AlertDialog.Builder(activity)
         .setTitle(activity.getString(R.string.title_compare))
         .setMessage(info + if (canPreview) activity.getString(R.string.msg_both_files_previewable) else activity.getString(R.string.msg_same_size, (fileSize(a) == fileSize(b)).toString()))
-        .setPositiveButton(if (canPreview) activity.getString(R.string.preview_both) else "确定") { _, _ ->
+        .setPositiveButton(if (canPreview) activity.getString(R.string.preview_both) else activity.getString(R.string.action_confirm)) { _, _ ->
             if (canPreview) { previewLocalFile(activity, a); previewLocalFile(activity, b) }
         }
         .setNegativeButton(activity.getString(R.string.action_cancel), null).show()

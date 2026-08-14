@@ -144,6 +144,7 @@ fn extract_zip_from<R: Read + Seek>(
     let pw = if password.is_empty() { None } else { Some(password.as_bytes()) };
     let mut prog_total = 0u64;
     for i in 0..archive.len() {
+        if extract_progress::cancelled() { return Err("cancelled".to_string()); }
         if let Ok(entry) = archive.by_index_raw(i) {
             let name = decode_entry_name(&entry, &enc).replace('\\', "/").trim_matches('/').to_string();
             if name.is_empty() || entry.is_dir() { continue; }
@@ -285,18 +286,22 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
     }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractWithPassword(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, pw: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let pwd = s(&mut e, &pw);
     match guarded(move || extract_zip_with_password(&inp, &out, &pwd)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
     match guarded(move || extract_zip_all_inner(&inp, &out)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel);
     match guarded(move || extract_zip_selected_inner(&inp, &out, &sel_str)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractSelectedWithPassword(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel: JString, pw: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel); let pwd = s(&mut e, &pw);
     let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(move || {
@@ -313,6 +318,7 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
     e.new_string(&compress_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipCompress(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, lv: JString, pw: JString, sp: JString) -> jboolean {
+    compress_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let lvl = s(&mut e, &lv); let pwd = s(&mut e, &pw); let split = s(&mut e, &sp);
     let level: i32 = lvl.parse().unwrap_or(5);
     let split_size: u64 = split.parse().unwrap_or(0);
@@ -346,22 +352,26 @@ fn vol_list(vs: &str) -> Vec<String> { vs.lines().filter(|l| !l.is_empty()).map(
     match guarded(move || list_zip_volumes(&vol_refs(&vols))) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractVolumes(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
     let vols = vol_list(&vs);
     match guarded(move || extract_zip_volumes(&vol_refs(&vols), &out, "", None)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractSelectedVolumes(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString, sel: JString) -> jstring {
+    extract_progress::clear_cancel();
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel);
     let vols = vol_list(&vs);
     let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(move || extract_zip_volumes(&vol_refs(&vols), &out, "", Some(&ss))) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractVolumesWithPassword(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString, pw: JString) -> jstring {
+    extract_progress::clear_cancel();
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let pwd = s(&mut e, &pw); let _ = std::fs::create_dir_all(&out);
     let vols = vol_list(&vs);
     match guarded(move || extract_zip_volumes(&vol_refs(&vols), &out, &pwd, None)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractSelectedVolumesWithPassword(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString, sel: JString, pw: JString) -> jstring {
+    extract_progress::clear_cancel();
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel); let pwd = s(&mut e, &pw); let _ = std::fs::create_dir_all(&out);
     let vols = vol_list(&vs);
     let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();

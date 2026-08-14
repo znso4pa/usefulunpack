@@ -116,16 +116,21 @@
     <string name="search_button">🔍 搜尋</string>
     <string name="preview">🔍 预览</string>
     <string name="extract_selected">解壓所选</string>
+    <string name="extract_all">解壓全部</string>
     <string name="reading">读取中…</string>
     <string name="preparing_search">準備搜尋</string>
     <string name="extracting_texts">正在提取文本檔案…</string>
     <string name="no_permission">無存取權限</string>
     <string name="empty_folder">空資料夾</string>
-    <string name="encoding_title">編碼</string>
     <string name="encoding_hint">如遇到編碼報錯請更換嘗試 if encoding errors occur</string>
     <string name="encoding_utf8">UTF-8 (預設)</string>
     <string name="encoding_sjis">SHIFT-JIS (日本語)</string>
     <string name="encoding_gbk">GBK (中文)</string>
+    <string name="encoding_utf16">UTF-16</string>
+    <string name="settings_text_encoding">文字編碼</string>
+    <string name="settings_zip_encoding">ZIP 檔名編碼（僅解壓）</string>
+    <string name="msg_encoding_applied">已切換為 %1$s</string>
+    <string name="preview_encoding_hint">偵測到大量亂碼：目前以 %1$s 解碼。可在 設定 → 文字編碼 中切換</string>
     <string name="msg_encoding_error">編碼錯誤，請在設定中更換編碼格式, try a different encoding in settings</string>
     <string name="err_not_archive">不是支援的壓縮檔格式</string>
     <string name="err_pwd_wrong">密碼錯誤，解壓失敗</string>
@@ -188,4 +193,180 @@
     <string name="split_min_note">最小 1MB</string>
     <string name="split_invalid">請輸入 1-2048 之間的有效值</string>
     <string name="pwd_note">密碼僅對 zip/7z 生效</string>
+
+    <!-- ═══ i18n round-up (hardcoded strings moved into resources) ═══ -->
+    <string name="default_new_folder_name">新建資料夾</string>
+    <string name="folder_selected">📁 %1$s</string>
+    <string name="file_selected">📄 %1$s  |  %2$s</string>
+    <string name="calc_size">計算</string>
+    <string name="selected_count">%1$d 項</string>
+    <string name="multi_selected_count">已選 %1$d 項</string>
+    <string name="batch_compress_merge">📦 合併為一個壓縮包</string>
+    <string name="batch_compress_separate">📦 分別壓縮（各一個）</string>
+    <string name="extract_separate_dirs">📁 各單獨資料夾（%1$s）</string>
+    <string name="reading_archives">正在讀取 %1$d 個歸檔…</string>
+    <string name="batch_preview_stats">%1$d 歸檔 / %2$d 檔案 / %3$s  |  已選 %4$d 項, %5$s</string>
+    <string name="batch_preview_title">批次預覽 %1$s</string>
+    <string name="calc_failed">計算失敗</string>
+    <string name="title_mode_archive">  [📦歸檔]</string>
+    <string name="title_mode_compress">  [🗜️壓縮]</string>
+    <string name="extract_result_stats">總條目：%1$d\n✅ 成功：%2$d\n❌ 錯誤：%3$d\n📦 其他：%4$d</string>
+    <string name="extract_new_folder">📁 %1$s: %2$s</string>
+    <string name="preview_stats">共 %1$d 檔案，%2$s  |  已選 %3$d 項，%4$s</string>
+    <string name="preview_title">預覽 %1$s</string>
+    <string name="bg_set">✅ 已設定自訂背景</string>
+    <string name="bg_change">更換</string>
+    <string name="bg_pick">選擇圖片</string>
+    <string name="bg_clear">清除</string>
+    <string name="bg_alpha">透明度: %1$d%%</string>
+    <string name="search_scope">📁 搜尋範圍: %1$s</string>
+    <string name="match_tag">  (%1$d 處匹配)</string>
+    <string name="line_tag">  [行 %1$d]</string>
+    <string name="search_result_stats">找到 %1$d 個結果（共掃描 %2$d 個檔案）</string>
+    <string name="search_progress_stats">搜尋中… 已掃描 %1$d 個檔案，找到 %2$d 個結果</string>
+    <string name="bookmark_item">📁 %1$s</string>
+    <string name="label_size">大小: %1$s</string>
+    <string name="label_time">時間: %1$s</string>
+    <string name="cannot_read_file">無法讀取檔案: %1$s</string>
+    <string name="file_line_title">%1$s (行 %2$d)</string>
+    <string name="terminal_cd_prompt">cd: %1$s</string>
+    <string name="terminal_help_text">內建命令: ls / pwd / cd &lt;路徑&gt; / cd .. / help / 其他命令透傳 shell</string>
+    <string name="terminal_empty">空</string>
+    <string name="terminal_not_found">找不到: %1$s</string>
+    <string name="terminal_exec_failed">命令執行失敗</string>
+    <string name="terminal_title">終端機</string>
+    <string name="terminal_run">執行</string>
+    <string name="terminal_help_btn">說明</string>
+    <string name="cmd_desc_list">列出目前目錄</string>
+    <string name="cmd_desc_pwd">顯示目前路徑</string>
+    <string name="cmd_desc_up">切換到上層目錄</string>
+    <string name="cmd_desc_help">查看說明</string>
+    <string name="disclaimer_body">UsefulUnpack 是通用的檔案歸檔管理工具。
+
+本軟體：
+· 不包含、不提供、不繞過任何 DRM 或複製保護
+· 所有格式解析基於公開規範或開源實作
+· 不託管任何版權內容或素材
+
+使用者應遵守當地法律法規，僅對您合法擁有的檔案使用本工具。
+開發者不對任何非法或不當使用承擔責任。
+
+繼續使用即表示您同意以上條款。</string>
+
+
+    <!-- ═══ settings/search UI refactor ═══ -->
+    <string name="action_change">更改</string>
+    <string name="parent_dir">上一層</string>
+    <string name="pick_this_dir">選擇此目錄</string>
+
+    <string name="bg_not_set">未設定</string>
+
+
+    <!-- ═══ Help / disclaimer (settings) ═══ -->
+    <string name="settings_help">📖 使用手冊</string>
+    <string name="settings_disclaimer">⚖️ 免責聲明</string>
+    <string name="help_section_formats">支援的格式</string>
+    <string name="help_section_tutorials">功能教學</string>
+    <string-array name="help_formats">
+        <item>XP3 (.xp3) — 解壓 + 壓縮
+Kirikiri 封包；zlib 壓縮等級 0-9</item>
+        <item>PFS / PF6 / PF8 — 解壓 + 壓縮
+Artemis 封包；壓縮輸出 PF8（XOR 加密）</item>
+        <item>NSA / SAR (.nsa/.sar) — 僅解壓
+NScripter 封包（LZSS + SPB）；SPB 點陣圖條目有 2GB 上限</item>
+        <item>ISO 9660 (.iso) — 僅瀏覽/解壓
+光碟映像（CD/DVD/BD）</item>
+        <item>YPF (.ypf) — 僅解壓
+YU-RIS 封包；檔名 XOR + Shift-JIS 混淆，金鑰自動偵測</item>
+        <item>ZIP (.zip) — 解壓 + 壓縮
+AES-256 加密、5 級（0=僅儲存）、編碼可切 UTF-8/SHIFT-JIS/GBK
+限制：.zip.001 位元組分卷支援；.z01 真分卷為 best-effort（未完整驗證）</item>
+        <item>7z (.7z) — 解壓 + 壓縮
+0/3/6/9/12 級；設密碼即頭加密（列目錄需密碼）；.7z.001 分卷支援</item>
+        <item>RAR (.rar) — 僅解壓
+RAR4/5，密碼 + 分卷支援；不支援壓縮（RARLAB 版權限制）
+注意：頭加密 RAR 列目錄受限，可走解壓密碼重試；加密多小檔解壓較慢（每檔獨立金鑰衍生）</item>
+        <item>LZ4 (.lz4) — 解壓 + 壓縮
+LZ4 幀格式</item>
+        <item>GZIP (.gz) — 解壓 + 壓縮
+支援多成員拼接檔案</item>
+        <item>BZIP2 (.bz2) — 解壓 + 壓縮</item>
+        <item>XZ (.xz) — 解壓 + 壓縮
+liblzma，壓縮等級 0-9</item>
+        <item>ZSTD (.zst) — 解壓 + 壓縮</item>
+        <item>LZMA (.lzma) — 解壓 + 壓縮
+注意：列表預覽不顯示解壓大小（alone 頭未記錄大小）</item>
+        <item>TAR — 解壓 + 壓縮
+.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
+        <item>KSD (.ksd) — 解壓 + 壓縮
+Kirikiri2 存檔；壓縮僅接受 .txt 文字</item>
+    </string-array>
+    <string-array name="help_tutorials">
+        <item>壓縮設定
+設定 → 壓縮：壓縮等級（zip/7z/通用）、分卷大小（zip/7z）、ZIP 編碼、壓縮密碼；點「確定」一次儲存；工作模式（歸檔/壓縮）切換後標題列會更新</item>
+        <item>全域搜尋
+頂部選單 → 全域搜尋：檔名 / 內容兩種模式；內容搜尋會先詢問單檔大小上限；點結果可預覽，符合處高亮並可前後跳轉；結果多時點「繼續掃描」</item>
+        <item>歸檔內搜尋
+開啟歸檔預覽後，點右上角搜尋圖示：先解出全部文字檔，再進入全域搜尋全文檢索；點結果按需解出原檔預覽</item>
+        <item>批次操作
+長按檔案進入多選，底部出現批次列：批次解壓/壓縮/預覽/刪除/移動；跨目錄導航會自動退出多選；批次預覽可一次查看多個歸檔並跨歸檔選檔</item>
+        <item>分卷
+解壓：直接點 .7z.001 / .zip.001 / .part01.rar 任意一卷即可，自動合併；壓縮：zip/7z 在壓縮設定選分卷大小（不分卷/1MB/100MB/1GB/自訂），輸出為 .001/.002…（7-Zip 相容）</item>
+        <item>密碼
+zip/7z/rar 加密歸檔預覽時輸入一次密碼，之後「解壓全部/解壓選中」複用不再重複輸入；批次操作只需輸一次密碼；需要密碼的歸檔會顯示 🔒</item>
+        <item>書籤
+資料夾行末星標或抽屜「+ 加入目前路徑」收藏；刪除資料夾時其書籤自動清理；長按書籤刪除</item>
+        <item>檔案資訊
+長按檔案 → 資訊：顯示大小/時間/MD5/SHA-256，雜湊可一鍵複製</item>
+        <item>互動流程
+點歸檔 → 右下角按鈕 → 直接進入歸檔預覽（格式自動辨識）；預覽內「解壓全部」一鍵解壓到同名資料夾，「解壓選中」可選擇目標位置</item>
+            <item>格式掃描（binwalk）\n長按檔案 → 掃描：偵測檔案內嵌的壓縮包/圖片等簽名（如影片內嵌 ZIP），列出偏移與格式，ZIP 附檔案數。每條命中兩個按鈕：「解壓」直接預覽/解壓歸檔，「切割」儲存原始片段為獨立檔案；失敗會提示具體原因</item>
+</string-array>
+
+
+    <!-- ═══ APK install ═══ -->
+    <string name="install_apk">安裝</string>
+    <string name="err_install_apk">安裝失敗：%1$s</string>
+
+
+    <!-- ═══ APK install (fallback + guidance) ═══ -->
+    <string name="msg_installing">正在呼叫系統安裝器…</string>
+    <string name="install_warn_delete">部分系統安裝器（如榮耀/EMUI）安裝完成後會刪除安裝包。請選擇是否保留副本。</string>
+    <string name="install_now">直接安裝</string>
+    <string name="install_keep_copy">保留副本並安裝</string>
+    <string name="install_backup_done">安裝包副本已保留至 %1$s</string>
+    <string name="msg_install_unknown">安裝需要「安裝未知應用」權限。是否前往設定開啟？</string>
+    <string name="title_install_failed">安裝失敗</string>
+
+
+    <!-- ═══ Signature scan (binwalk-like) ═══ -->
+    <string name="action_scan">🔍 掃描</string>
+    <string name="scan_progress">正在掃描…</string>
+    <string name="scan_progress_bytes">正在掃描… %1$s / %2$s</string>
+    <string name="scan_decimal">十進位</string>
+    <string name="scan_hex">十六進位</string>
+    <string name="scan_description">描述</string>
+    <string name="scan_no_results">未發現檔案簽名</string>
+    <string name="scan_footer">已分析 %1$d 個檔案，%2$d 種檔案簽名（%3$d 個魔數模式），耗時 %4$d 毫秒</string>
+    <string name="scan_dir_error">無法掃描資料夾</string>
+
+
+    <!-- ═══ Separate (dd carve) ═══ -->
+    <string name="separate">分離</string>
+    <string name="separate_new_folder">📁 分離到（新資料夾）：%1$s</string>
+    <string name="separate_to_current">分離到 目前目錄</string>
+    <string name="msg_carving">正在分離…</string>
+    <string name="msg_carving_bytes">正在分離… %1$s / %2$s</string>
+    <string name="msg_separate_done">已分離：%1$s</string>
+    <string name="msg_separate_non_archive">該段不是壓縮包，將儲存為獨立檔案</string>
+    <string name="msg_separate_needs_carve">此格式需先分離（切出壓縮包）後再解壓</string>
+    <string name="msg_separate_rar_deep">RAR 嵌入位置過深（超過 8MB），需先分離再解壓</string>
+    <string name="msg_separate_zip_invalid">該位置不是有效的 ZIP 壓縮包（可能誤報）</string>
+    <string name="msg_separate_rar_invalid">該位置不是有效的 RAR 壓縮包（可能誤報）</string>
+    <string name="msg_separate_rar_encrypted">該 RAR 已加密，分離提取時請輸入解壓碼</string>
+    <string name="msg_separate_iso_invalid">該位置不是有效的 ISO 9660 映像（可能為誤報）</string>
+    <string name="scan_extract">解壓</string>
+    <string name="scan_carve">切割 (dd)</string>
+    <string name="scan_extract_not_archive">此命中不是壓縮包，請用「切割」儲存原始片段</string>
+    <string name="scan_zip_info">，檔案數：%1$d</string>
 </resources>

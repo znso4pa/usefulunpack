@@ -1,5 +1,10 @@
 package com.usefulunpacker
 
+import java.io.File
+
+// Layout params helpers (moved out of MainActivity's companion object).
+internal val MATCH = android.widget.LinearLayout.LayoutParams.MATCH_PARENT
+internal val WRAP = android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
 val C = mapOf(
     "accent" to 0xFF35acc6.toInt(),
     "primary" to 0xFFe0f9ff.toInt(),
@@ -21,9 +26,74 @@ val C = mapOf(
     "search_hilite_oth" to 0x33FFAA00.toInt(),
 )
 
+// 归档格式 → 文件图标着色（ZArchiver 风格，按格式区分）
+val FORMAT_COLORS = mapOf(
+    "xp3" to 0xFFf39c12.toInt(),
+    "pfs" to 0xFFe74c3c.toInt(),
+    "nsa" to 0xFF9b59b6.toInt(),
+    "iso" to 0xFF1abc9c.toInt(),
+    "ypf" to 0xFFe91e63.toInt(),
+    "zip" to 0xFF3498db.toInt(),
+    "7z" to 0xFF8e44ad.toInt(),
+    "rar" to 0xFFc0392b.toInt(),
+    "lz4" to 0xFF16a085.toInt(),
+    "gz" to 0xFF7f8c8d.toInt(),
+    "bz2" to 0xFF7f8c8d.toInt(),
+    "xz" to 0xFF7f8c8d.toInt(),
+    "zst" to 0xFF7f8c8d.toInt(),
+    "lzma" to 0xFF7f8c8d.toInt(),
+    "tar" to 0xFF7f8c8d.toInt(),
+    "ksd" to 0xFF95a5a6.toInt(),
+)
+private val FILE_GRAY = 0xFFb0b0b0.toInt()
+
+/**
+ * Maps an archive file name to its format key (single source of truth used by
+ * [detectFormat], [iconTintForName] and the format pickers). Multi-extension
+ * tar variants must be checked before `substringAfterLast`, otherwise
+ * `foo.tar.gz` would be misdetected as GZIP.
+ */
+fun formatOfName(name: String): String? {
+    val n = name.lowercase()
+    if (n.endsWith(".tar.gz") || n.endsWith(".tar.bz2") ||
+        n.endsWith(".tar.xz") || n.endsWith(".tar.zst")) return "tar"
+    return when (n.substringAfterLast('.')) {
+        "xp3" -> "xp3"
+        "pfs", "pf6", "pf8" -> "pfs"
+        "nsa", "sar" -> "nsa"
+        "iso" -> "iso"
+        "ypf" -> "ypf"
+        "zip" -> "zip"
+        "7z" -> "7z"
+        "rar" -> "rar"
+        "lz4" -> "lz4"
+        "gz" -> "gz"
+        "bz2" -> "bz2"
+        "xz" -> "xz"
+        "zst" -> "zst"
+        "lzma" -> "lzma"
+        "tar", "tgz", "tbz2", "txz", "tzst" -> "tar"
+        "ksd" -> "ksd"
+        else -> null
+    }
+}
+
+fun isArchiveFile(f: File): Boolean =
+    formatOfName(f.name) != null || isVolumeFile(f) != null
+
+fun iconTintForName(name: String): Int {
+    val fmt = formatOfName(name) ?: return FILE_GRAY
+    return FORMAT_COLORS[fmt] ?: FILE_GRAY
+}
+
+fun iconTintFor(f: File): Int {
+    val fmt = formatOfName(f.name) ?: isVolumeFile(f) ?: return FILE_GRAY
+    return FORMAT_COLORS[fmt] ?: FILE_GRAY
+}
+
 val ARCHIVE_EXTS = setOf(
     "xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso", "ypf", "zip", "7z", "rar", "lz4",
-    "gz", "bz2", "xz", "zst", "lzma", "tar", "tgz", "tbz2", "txz", "ksd",
+    "gz", "bz2", "xz", "zst", "lzma", "tar", "tgz", "tbz2", "txz", "tzst", "ksd",
 )
 
 // 归档模式格式选择器：格式 key → 显示标签
@@ -89,3 +159,8 @@ val TEXT_SEARCH_EXTS = setOf(
     "c", "cpp", "h", "hpp", "swift", "rb", "php", "pl", "sql", "tsv",
     "srt", "ass", "lrc", "bat", "cmd", "ps1", "go", "dart", "r", "csv"
 )
+
+/** Content search loads whole files into RAM (strict decode), so even the
+ *  "extreme" size limit never lets a file above this into content search —
+ *  a multi-hundred-MB text file would OOM the device. */
+const val CONTENT_SEARCH_MAX = 50L * 1024 * 1024

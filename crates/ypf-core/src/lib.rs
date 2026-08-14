@@ -141,8 +141,12 @@ fn ypf_extract_one(f: &mut File, e: &YpfEntry, out: &str, fsize: u64) -> Result<
     let mut out_file = ProgressWriter::extract(std::fs::File::create(&d).map_err(|x| format!("{x}"))?);
     let limited = (&mut *f).take(e.asize as u64);
     if e.compressed {
-        let mut dec = ZlibDecoder::new(limited);
-        std::io::copy(&mut dec, &mut out_file).map_err(|x| format!("YPF zlib: {x}"))?;
+        let dec = ZlibDecoder::new(limited);
+        // Cap the decompressed output at the declared size: a malicious
+        // entry can declare a small usize while inflating far larger (disk
+        // exhaustion bomb). Read::take truncates silently to usize.
+        let mut capped = dec.take(e.usize as u64);
+        std::io::copy(&mut capped, &mut out_file).map_err(|x| format!("YPF zlib: {x}"))?;
     } else {
         let mut raw = limited;
         std::io::copy(&mut raw, &mut out_file).map_err(|x| format!("{x}"))?;
@@ -220,10 +224,12 @@ fn extract_ypf_selected(i: &str, o: &str, s: &str) -> Result<(u32, u32), String>
 // malicious input cannot cross the JNI boundary and kill the process.
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
     match guard_panic(move || extract_ypf_all(&inp, &out)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel_j: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel_j);
     match guard_panic(move || extract_ypf_selected(&inp, &out, &sel_str)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
@@ -286,6 +292,35 @@ mod tests {
 
         assert_eq!(std::fs::read(out.join("a/z.bin")).unwrap(), data);
         assert_eq!(std::fs::read(out.join("b/raw.bin")).unwrap(), data);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn inflated_output_clamped_to_declared_size() {
+        // Declared usize = 1 KiB, but the zlib stream inflates to 1 MiB.
+        // The decompressed output must be clamped to the declared size
+        // (disk-exhaustion guard), never grow unbounded.
+        let data: Vec<u8> = vec![0x41; 1024 * 1024];
+        let compressed = zlib(&data);
+        assert!(compressed.len() < 4096, "zlib of 1MiB 'A' must be tiny");
+        let dir = std::env::temp_dir().join(format!("uu_ypf_clamp_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fpath = dir.join("payload.bin");
+        std::fs::write(&fpath, &compressed).unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let mut f = File::open(&fpath).unwrap();
+        let entry = YpfEntry {
+            name: "clamped.bin".into(),
+            _file_type: 0,
+            compressed: true,
+            usize: 1024,
+            asize: compressed.len() as u32,
+            offset: 0,
+        };
+        ypf_extract_one(&mut f, &entry, out.to_str().unwrap(), compressed.len() as u64).unwrap();
+        let got = std::fs::read(out.join("clamped.bin")).unwrap();
+        assert_eq!(got.len(), 1024, "output must be clamped to the declared size");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

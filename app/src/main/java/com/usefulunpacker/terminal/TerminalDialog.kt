@@ -15,13 +15,13 @@ import java.io.File
 
 fun showTerminal(activity: AppCompatActivity, currentDir: File, onNavigate: (File) -> Unit) {
     val inp = EditText(activity).apply {
-        hint = "cd: $currentDir"
+        hint = activity.getString(R.string.terminal_cd_prompt, currentDir)
         setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
         setBackgroundColor(C["surface"]!!); textSize = 12f; minLines = 1; maxLines = 1
         setSingleLine(true)
     }
     val out = TextView(activity).apply {
-        text = "cd: $currentDir"
+        text = activity.getString(R.string.terminal_cd_prompt, currentDir)
         setTextColor(C["secondary"]!!); textSize = 11f
         setBackgroundColor(C["nav_bg"]!!); setPadding(12, 12, 12, 12)
         minLines = 6; gravity = Gravity.TOP or Gravity.START
@@ -39,11 +39,11 @@ fun showTerminal(activity: AppCompatActivity, currentDir: File, onNavigate: (Fil
         val args = parts.drop(1)
         thread {
             val r = when (name) {
-                "help" -> "内置命令: ls / pwd / cd <路径> / cd .. / help / 其他命令透传shell".trimIndent()
+                "help" -> activity.getString(R.string.terminal_help_text)
                 "ls" -> currentDir.listFiles()?.joinToString("\n") {
                     val marker = if (it.isDirectory) "/" else ""
                     "${it.name}$marker  ${fmt(fileSize(it))}"
-                } ?: "empty"
+                } ?: activity.getString(R.string.terminal_empty)
                 "pwd" -> currentDir.absolutePath
                 "cd" -> {
                     val target = args.getOrNull(0) ?: ""
@@ -53,22 +53,22 @@ fun showTerminal(activity: AppCompatActivity, currentDir: File, onNavigate: (Fil
                     if (newDir != null && newDir.isDirectory) {
                         activity.runOnUiThread { onNavigate(newDir) }
                         "→ ${newDir.absolutePath}"
-                    } else "not found: $target"
+                    } else activity.getString(R.string.terminal_not_found, target)
                 }
                 else -> runCatching {
                     ProcessBuilder("/system/bin/sh", "-c", "cd \"${currentDir.absolutePath}\" && $cmd")
                         .redirectErrorStream(true).start()
                         .let { String(it.inputStream.readBytes()) }
-                }.getOrDefault("命令执行失败")
+                }.getOrDefault(activity.getString(R.string.terminal_exec_failed))
             }
             activity.runOnUiThread { out.text = r.take(4000) }
         }
     }
 
-    val dlg = AlertDialog.Builder(activity).setTitle("Terminal").setView(layout)
-        .setPositiveButton("Run", null)
-        .setNegativeButton("Close", null)
-        .setNeutralButton("Help", null)
+    val dlg = AlertDialog.Builder(activity).setTitle(activity.getString(R.string.terminal_title)).setView(layout)
+        .setPositiveButton(activity.getString(R.string.terminal_run), null)
+        .setNegativeButton(activity.getString(R.string.action_close), null)
+        .setNeutralButton(activity.getString(R.string.terminal_help_btn), null)
         .create()
     dlg.setOnShowListener {
         dlg.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener { val c = inp.text.toString().trim(); if (c.isNotEmpty()) exec(c) }
@@ -82,10 +82,10 @@ fun showTerminal(activity: AppCompatActivity, currentDir: File, onNavigate: (Fil
 
 fun showTerminalHelp(activity: AppCompatActivity, inp: EditText, onApply: (String) -> Unit) {
     val commands = listOf(
-        "列出当前目录" to "ls",
-        "显示当前路径" to "pwd",
-        "切换到上级目录" to "cd ..",
-        "查看帮助" to "help",
+        activity.getString(R.string.cmd_desc_list) to "ls",
+        activity.getString(R.string.cmd_desc_pwd) to "pwd",
+        activity.getString(R.string.cmd_desc_up) to "cd ..",
+        activity.getString(R.string.cmd_desc_help) to "help",
     )
     var selectedCmd = ""
     var lastSelected = -1

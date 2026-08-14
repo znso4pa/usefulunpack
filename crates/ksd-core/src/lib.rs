@@ -78,8 +78,13 @@ fn decompress_mode2(data: &[u8]) -> Result<(Vec<u8>, u64), String> {
     // compressed_len includes the 2-byte zlib header — skip it, then raw deflate
     let deflate_data = &data[16 + 2..16 + compressed_len];
     let mut dec = DeflateDecoder::new(deflate_data);
+    // Cap the DECODED output at the declared size too: a malicious file can
+    // declare a small uncompressed_len while carrying a stream that inflates
+    // far larger (bomb). Read::take truncates silently to the declared size,
+    // matching the clamp semantics of the NSA/YPF streaming paths.
+    let mut limited = dec.take(uncompressed_len as u64);
     let mut out = Vec::with_capacity(uncompressed_len.min(1 << 20));
-    dec.read_to_end(&mut out).map_err(|e| format!("KSD: inflate {e}"))?;
+    limited.read_to_end(&mut out).map_err(|e| format!("KSD: inflate {e}"))?;
     Ok((out, uncompressed_len as u64))
 }
 
@@ -90,9 +95,19 @@ fn decode_utf16le(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
+/// Pre-checks the file size (metadata) before loading it into RAM, so a huge
+/// file can't OOM the device before the size cap below is ever reached.
+fn ksd_read(input: &str) -> Result<Vec<u8>, String> {
+    let len = std::fs::metadata(input).map_err(|e| format!("KSD read {input}: {e}"))?.len();
+    if len > MAX_MODE2_OUT as u64 {
+        return Err(format!("KSD: file too large ({len})"));
+    }
+    fs::read(input).map_err(|e| format!("KSD read {input}: {e}"))
+}
+
 /// Reads the header and returns (mode, uncompressed_size if known).
 fn probe_ksd(input: &str) -> Result<(u8, Option<u64>), String> {
-    let data = fs::read(input).map_err(|e| format!("KSD read {input}: {e}"))?;
+    let data = ksd_read(input)?;
     if data.len() < 5 || data[0] != 0xFE || data[1] != 0xFE || data[3] != 0xFF || data[4] != 0xFE {
         return Err("KSD: bad magic or BOM".to_string());
     }
@@ -116,7 +131,7 @@ fn list_ksd(input: &str) -> Result<String, String> {
 }
 
 fn extract_ksd(input: &str, output: &str) -> Result<u32, String> {
-    let data = fs::read(input).map_err(|e| format!("KSD read {input}: {e}"))?;
+    let data = ksd_read(input)?;
     if data.len() < 5 || data[0] != 0xFE || data[1] != 0xFE || data[3] != 0xFF || data[4] != 0xFE {
         return Err("KSD: bad magic or BOM".to_string());
     }
@@ -176,6 +191,7 @@ fn compress_ksd(input: &str, output: &str, level: i32) -> Result<u32, String> {
     match guarded(move || list_ksd(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_KsdCore_ksdExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = fs::create_dir_all(&out);
     match guarded(move || extract_ksd(&inp, &out)) {
         Ok(f) => { let json = extract_result_json(1, if f == 0 { 1 } else { 0 }, f); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
@@ -183,6 +199,7 @@ fn compress_ksd(input: &str, output: &str, level: i32) -> Result<u32, String> {
     }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_KsdCore_ksdCompress(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, lv: JString) -> jstring {
+    compress_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let lvl: i32 = s(&mut e, &lv).parse().unwrap_or(6);
     match guarded(move || compress_ksd(&inp, &out, lvl)) {
         Ok(f) => { let json = extract_result_json(1, if f == 0 { 1 } else { 0 }, f); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
@@ -295,6 +312,59 @@ mod tests {
         let o = dir.join("out");
         std::fs::create_dir_all(&o).unwrap();
         assert!(extract_ksd(f.to_str().unwrap(), o.to_str().unwrap()).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn mode2_declared_small_actual_big_clamped() {
+        // Declared uncompressed_len = 1 KiB but the deflate stream inflates
+        // to 1 MiB: the decoded buffer must be clamped to the declared size
+        // (silent truncation, like NSA/YPF), never grow unbounded.
+        let dir = tmp("clamp");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut enc = ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+        enc.write_all(&[0x41u8; 1024 * 1024]).unwrap();
+        let compressed = enc.finish().unwrap();
+        assert!(compressed.len() < 4096, "zlib of 1MiB 'A' must be tiny, got {}", compressed.len());
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0xFE, 0xFE, 2, 0xFF, 0xFE]);
+        buf.extend_from_slice(&(compressed.len() as i64).to_le_bytes());
+        buf.extend_from_slice(&(1024i64).to_le_bytes()); // declared 1 KiB
+        buf.extend_from_slice(&compressed);
+        let f = dir.join("clamp.ksd");
+        std::fs::write(&f, &buf).unwrap();
+
+        // Direct check: the decoded buffer must be clamped to the declared
+        // size (1 MiB of 'A' inflates to 1 MiB raw, declared only 1 KiB).
+        let (out, total) = decompress_mode2(&buf[5..]).unwrap();
+        assert_eq!(out.len(), 1024, "decoded buffer must be clamped to the declared size");
+        assert_eq!(total, 1024);
+
+        // Full extract path also completes: 1024 raw bytes = 512 UTF-16
+        // units of U+4141 → 512 chars × 3 UTF-8 bytes = 1536 bytes on disk.
+        let o = dir.join("out");
+        std::fs::create_dir_all(&o).unwrap();
+        extract_ksd(f.to_str().unwrap(), o.to_str().unwrap()).unwrap();
+        let got = std::fs::read(o.join("clamp.txt")).unwrap();
+        assert_eq!(got.len(), 1536, "512 units of U+4141 → 3 UTF-8 bytes each");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn oversize_file_rejected_before_read() {
+        // A sparse file > 512MB must be rejected from metadata alone — the
+        // whole file is never read into RAM.
+        let dir = tmp("oversize");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("big.ksd");
+        let file = std::fs::File::create(&f).unwrap();
+        file.set_len(513 * 1024 * 1024).unwrap();
+        drop(file);
+        let o = dir.join("out");
+        std::fs::create_dir_all(&o).unwrap();
+        let err = extract_ksd(f.to_str().unwrap(), o.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("too large"), "unexpected error: {err}");
+        assert!(probe_ksd(f.to_str().unwrap()).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

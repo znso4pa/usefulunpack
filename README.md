@@ -47,10 +47,30 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 🗂 **File Browser** | ZArchiver-style UI with path breadcrumb, fast scroll, folder ⭐ bookmarks |
 | 📌 **Bookmarks** | Quick-access paths via star button on folders or slide-out drawer |
 | 🏠 **Root Navigation** | One-tap home button to jump to `/storage/emulated/0` |
+| ⚡ **One-Tap Preview** | Tap an archive → FAB → direct archive preview; format auto-detected from the extension (`.tar.gz`/`.tgz`/`.pf6`/`.sar`…), no extra chooser dialogs |
+| 📦 **Extract All** | One-click "Extract all" in the preview extracts to a deduped sibling folder; reuses the password entered during preview |
+| 🧩 **Extensionless Detection** | Magic-byte sniffing recognizes archives that lost their extension or were mislabeled, with a manual format picker as fallback |
+| 🔬 **Signature Scan** | Rust scan-core engine: 21 signatures / 67 magic patterns at any offset, per-format header validation (real size + file counts), Aho-Corasick matching, streaming scan (no whole-file load), one tap to extract or carve (dd) the raw segment |
+| 🔤 **Text Encoding** | Global text-encoding setting (UTF-8 / Shift-JIS / GBK / UTF-16) applied strictly to every text preview and content search — BOM-aware UTF-8/UTF-16; when heavy garble is detected it prompts you to switch the encoding in Settings |
+| ✂️ **Exact Carve** | Signature-scan carve/extract cuts the validated archive size (zip/rar/7z/zstd/lz4/iso) exactly — an archive embedded between other files (e.g. `mp4 + zip + mp4`) is carved cleanly without the trailing data and extracts successfully |
+| 📲 **APK Install** | Tap an APK to hand it to the system installer (FileProvider + PackageInstaller fallback); optional backup copy next to the original before install for ROMs that delete the APK afterwards |
+| 📂 **GUI Folder Picker** | Full-screen directory picker (drill-down / parent / select-this-folder) for choosing the search scope |
+| 🎛️ **Settings UI** | Standard list-style settings — general (language / text encoding / ZIP filename encoding), compression (levels / split size / password), UI; mode & password switches |
+| 🎨 **Per-format Icons** | Material vector icons, color-coded per archive format (zip blue, 7z purple, rar red, xp3 orange, …) |
 | 🛡️ **Tap Debounce** | 800ms cooldown prevents accidental duplicate dialogs |
 | 🌙 **Dark Theme** | Eye-friendly dark theme matching ZArchiver's color scheme |
-| 🦀 **Rust Core** | JNI-powered native `.so` — one per format for isolation (16 formats) |
+| 🦀 **Rust Core** | JNI-powered native `.so` — one per format for isolation (17 formats incl. signature scan) |
 | 🔒 **Minimal Permissions** | Only requests storage access |
+
+Signature scan details (parser + size-skip semantics, following the approach of the MIT-licensed binwalk project):
+
+| Design | How it works |
+|--------|--------------|
+| Engine | Aho-Corasick multi-pattern matching over 1 MiB streaming chunks (magics straddling a boundary still match); 21 signatures / 67 magic patterns |
+| Validation | Every hit runs a per-format header parser (ZIP EOCD, RAR EOF marker + volume flags, PNG chunk walk, JPEG marker walk, gzip/bzip2/xz/zstd/lz4/lzma header checks, …) — false positives are dropped |
+| Size skip | Validated hits with a known size are skipped past entirely (e.g. a 5.3 GB RAR resolves in ~4 ms from its EOF marker) |
+| Post-pass | Same-offset conflicts resolved by confidence; hits inside an identified region removed; unknown sizes extended to the next hit or EOF |
+| Memory | Streaming scan never loads the whole file — GB-sized files scan with a fixed ~1 MiB window |
 
 ## Screenshots
 
@@ -111,6 +131,8 @@ User taps file → Kotlin UI calls format-specific JNI
 
 Each format lives in `crates/<format>-core/` as an independent `cdylib`. Shared utilities (progress stores, cancel checks, JSON escaping) live in `crates/common/`. The RAR5 streaming-filter fix is a vendored fork of `rars` (`crates/vendor/rars`, wired via `[patch.crates-io]`).
 
+The Android side is split by domain — `MainActivity` (~360 lines) only wires `onCreate`; file browsing, multi-select, batch operations, extract/preview flows, settings and search each live in their own file (`browse/`, `batch/`, `extract/`, `search/`, `bookmarks/`, `ui/`, `archive/`, `fileops/`), exposing functions as `MainActivity` extensions so every entry point keeps the same signature.
+
 ### YPF (YU-RIS) Format — Three-Layer Defense
 
 YPF uses obfuscated filenames (XOR + Shift-JIS). The parser applies three layers:
@@ -142,6 +164,7 @@ XOR key auto-detection (0xFF vs 0xC9) is done per-file on the first entry.
 | **KSD** | [krkr-save-tools](https://github.com/Luv-Ray/krkr-save-tools), [KirikiriTools](https://github.com/arcusmaximus/KirikiriTools) | MIT |
 | **ZSTD** | [ruzstd crate](https://crates.io/crates/ruzstd) (decode) / [oxiarc-zstd crate](https://crates.io/crates/oxiarc-zstd) (encode) | MIT / Apache-2.0 |
 | **TAR** | [tar crate](https://crates.io/crates/tar) | MIT / Apache-2.0 |
+| **Signature scan** | Magic definitions and validation approach referenced from [binwalk](https://github.com/ReFirmLabs/binwalk) | MIT |
 
 ### Core Dependencies
 

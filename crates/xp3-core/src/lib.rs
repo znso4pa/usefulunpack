@@ -27,6 +27,7 @@ pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3Extract(
     mut env: JNIEnv, _class: JClass,
     _tool: JString, input: JString, output: JString,
 ) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut env, &input); let out = s(&mut env, &output);
     match guarded(move || extract_xp3(&inp, &out)) {
         Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match env.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
@@ -106,6 +107,7 @@ pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3ExtractSelected(
     mut env: JNIEnv, _: JClass,
     _t: JString, input: JString, output: JString, selected: JString,
 ) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut env, &input); let out = s(&mut env, &output); let sel_str = s(&mut env, &selected);
     match guarded(move || extract_xp3_selected(&inp, &out, &sel_str)) {
         Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match env.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
@@ -241,6 +243,7 @@ fn create_xp3(input: &str, output: &str, level: i32) -> Result<u32, String> {
 pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CreateArchive(
     mut env: JNIEnv, _: JClass, _t: JString, input: JString, output: JString, level: JString,
 ) -> jstring {
+    compress_progress::clear_cancel();
     let inp = s(&mut env, &input); let out = s(&mut env, &output);
     let lvl: i32 = s(&mut env, &level).parse().unwrap_or(5);
     match guarded(move || create_xp3(&inp, &out, lvl)) {

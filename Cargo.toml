@@ -17,6 +17,7 @@ members = [
     "crates/lzma-core",
     "crates/tar-core",
     "crates/ksd-core",
+    "crates/scan-core",
 ]
 resolver = "2"
 

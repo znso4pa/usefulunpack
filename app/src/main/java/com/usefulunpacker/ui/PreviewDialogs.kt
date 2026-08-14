@@ -46,7 +46,16 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
 }
 
 fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int = 0, highlightQuery: String = "") {
-    val raw = runCatching { file.readText() }.getOrElse { "无法读取文件: ${it.message}" }
+    // Strict decode with the user-chosen global text encoding (BOM-aware
+    // UTF-8/UTF-16, REPLACE for invalid bytes — see decodeTextStrict).
+    val encoding = (activity as? MainActivity)?.prefs?.getString("text_encoding", "UTF-8") ?: "UTF-8"
+    val raw = runCatching { decodeTextStrict(file.readBytes(), encoding) }
+        .getOrElse { activity.getString(R.string.cannot_read_file, it.message ?: "") }
+    // Wrong-encoding detection: too many replacement chars → guide the user
+    // to the general settings instead of leaving them with garble.
+    if (textLooksGarbled(raw)) {
+        Toast.makeText(activity, activity.getString(R.string.preview_encoding_hint, encoding), Toast.LENGTH_LONG).show()
+    }
     val displayText = raw.take(50000)
     val matchPos = mutableListOf<Int>()
 
@@ -164,7 +173,7 @@ fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int 
         scrollToMatch(curMatch)
     }
 
-    val title = if (highlightLine > 0) "${file.name} (行 $highlightLine)" else file.name
+    val title = if (highlightLine > 0) activity.getString(R.string.file_line_title, file.name, highlightLine) else file.name
     AlertDialog.Builder(activity)
         .setTitle(title)
         .setView(root)
@@ -192,8 +201,12 @@ fun playAudio(activity: AppCompatActivity, file: File) {
 
 fun playVideo(activity: AppCompatActivity, file: File) {
     try {
+        // Uri.fromFile throws FileUriExposedException on API 24+ — always go
+        // through the FileProvider (same one the APK installer uses).
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            activity, "${activity.packageName}.fileprovider", file)
         activity.startActivity(Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(Uri.fromFile(file), "video/mp4")
+            setDataAndType(uri, "video/mp4")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         })

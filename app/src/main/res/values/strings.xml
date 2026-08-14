@@ -128,16 +128,21 @@
     <string name="search_button">🔍 Search</string>
     <string name="preview">🔍 Preview</string>
     <string name="extract_selected">Extract selected</string>
+    <string name="extract_all">Extract all</string>
     <string name="reading">Reading…</string>
     <string name="preparing_search">Preparing search</string>
     <string name="extracting_texts">Extracting text files…</string>
     <string name="no_permission">No permission</string>
     <string name="empty_folder">Empty folder</string>
-    <string name="encoding_title">Encoding</string>
     <string name="encoding_hint">Try changing if encoding errors occur</string>
     <string name="encoding_utf8">UTF-8 (default)</string>
     <string name="encoding_sjis">SHIFT-JIS (日本語)</string>
     <string name="encoding_gbk">GBK (中文)</string>
+    <string name="encoding_utf16">UTF-16</string>
+    <string name="settings_text_encoding">Text encoding</string>
+    <string name="settings_zip_encoding">ZIP filename encoding (extract only)</string>
+    <string name="msg_encoding_applied">Switched to %1$s</string>
+    <string name="preview_encoding_hint">Detected many garbled characters: decoded as %1$s. Change it in Settings → Text encoding</string>
     <string name="msg_encoding_error">Encoding error, try a different encoding in settings</string>
     <string name="err_not_archive">Not a supported archive format</string>
     <string name="err_pwd_wrong">Wrong password, extraction failed</string>
@@ -200,4 +205,180 @@
     <string name="split_min_note">min 1MB</string>
     <string name="split_invalid">Enter a size from 1 to 2048</string>
     <string name="pwd_note">Password applies to zip/7z only</string>
+
+    <!-- ═══ i18n round-up (hardcoded strings moved into resources) ═══ -->
+    <string name="default_new_folder_name">New folder</string>
+    <string name="folder_selected">📁 %1$s</string>
+    <string name="file_selected">📄 %1$s  |  %2$s</string>
+    <string name="calc_size">Calculate</string>
+    <string name="selected_count">%1$d items</string>
+    <string name="multi_selected_count">Selected: %1$d</string>
+    <string name="batch_compress_merge">📦 Merge into one archive</string>
+    <string name="batch_compress_separate">📦 Compress each separately</string>
+    <string name="extract_separate_dirs">📁 Separate folders (%1$s)</string>
+    <string name="reading_archives">Reading %1$d archives…</string>
+    <string name="batch_preview_stats">%1$d archives / %2$d files / %3$s  |  selected %4$d, %5$s</string>
+    <string name="batch_preview_title">Batch preview %1$s</string>
+    <string name="calc_failed">Calculation failed</string>
+    <string name="title_mode_archive">  [📦 Archive]</string>
+    <string name="title_mode_compress">  [🗜️ Compress]</string>
+    <string name="extract_result_stats">Total: %1$d\n✅ Success: %2$d\n❌ Errors: %3$d\n📦 Other: %4$d</string>
+    <string name="extract_new_folder">📁 %1$s: %2$s</string>
+    <string name="preview_stats">%1$d files, %2$s  |  selected %3$d, %4$s</string>
+    <string name="preview_title">Preview %1$s</string>
+    <string name="bg_set">✅ Custom background set</string>
+    <string name="bg_change">Change</string>
+    <string name="bg_pick">Pick image</string>
+    <string name="bg_clear">Clear</string>
+    <string name="bg_alpha">Opacity: %1$d%%</string>
+    <string name="search_scope">📁 Search scope: %1$s</string>
+    <string name="match_tag">  (%1$d matches)</string>
+    <string name="line_tag">  [line %1$d]</string>
+    <string name="search_result_stats">%1$d results (scanned %2$d files)</string>
+    <string name="search_progress_stats">Searching… scanned %1$d files, %2$d results</string>
+    <string name="bookmark_item">📁 %1$s</string>
+    <string name="label_size">Size: %1$s</string>
+    <string name="label_time">Time: %1$s</string>
+    <string name="cannot_read_file">Cannot read file: %1$s</string>
+    <string name="file_line_title">%1$s (line %2$d)</string>
+    <string name="terminal_cd_prompt">cd: %1$s</string>
+    <string name="terminal_help_text">Built-in commands: ls / pwd / cd &lt;path&gt; / cd .. / help / others passed to shell</string>
+    <string name="terminal_empty">empty</string>
+    <string name="terminal_not_found">not found: %1$s</string>
+    <string name="terminal_exec_failed">Command execution failed</string>
+    <string name="terminal_title">Terminal</string>
+    <string name="terminal_run">Run</string>
+    <string name="terminal_help_btn">Help</string>
+    <string name="cmd_desc_list">List current directory</string>
+    <string name="cmd_desc_pwd">Show current path</string>
+    <string name="cmd_desc_up">Go to parent directory</string>
+    <string name="cmd_desc_help">Show help</string>
+    <string name="disclaimer_body">UsefulUnpack is a general-purpose file archive management tool.
+
+This software:
+· Does not include, provide, or bypass any DRM or copy protection
+· All format parsers are based on public specifications or open-source implementations
+· Does not host any copyrighted content or assets
+
+Users must comply with local laws and use this tool only on files you legally own.
+The developer assumes no responsibility for any illegal or improper use.
+
+By continuing you agree to the above terms.</string>
+
+
+    <!-- ═══ settings/search UI refactor ═══ -->
+    <string name="action_change">Change</string>
+    <string name="parent_dir">Parent directory</string>
+    <string name="pick_this_dir">Select this folder</string>
+
+    <string name="bg_not_set">Not set</string>
+
+
+    <!-- ═══ Help / disclaimer (settings) ═══ -->
+    <string name="settings_help">📖 Help &amp; Docs</string>
+    <string name="settings_disclaimer">⚖️ Disclaimer</string>
+    <string name="help_section_formats">Supported Formats</string>
+    <string name="help_section_tutorials">Tutorials</string>
+    <string-array name="help_formats">
+        <item>XP3 (.xp3) — Extract &amp; Pack
+Kirikiri archive; zlib levels 0-9</item>
+        <item>PFS / PF6 / PF8 — Extract &amp; Pack
+Artemis archive; pack outputs PF8 (XOR-encrypted)</item>
+        <item>NSA / SAR (.nsa/.sar) — Extract only
+NScripter archive (LZSS + SPB); SPB bitmap entries have a 2GB cap</item>
+        <item>ISO 9660 (.iso) — Browse &amp; Extract
+Disc images (CD/DVD/BD)</item>
+        <item>YPF (.ypf) — Extract only
+YU-RIS archive; filenames are XOR + Shift-JIS obfuscated, key auto-detected</item>
+        <item>ZIP (.zip) — Extract &amp; Pack
+AES-256 encryption, 5 levels (0 = store), encoding switchable UTF-8/SHIFT-JIS/GBK
+Limits: byte-split .zip.001 supported; .z01 true split is best-effort (not fully verified)</item>
+        <item>7z (.7z) — Extract &amp; Pack
+Levels 0/3/6/9/12; setting a password also encrypts headers (listing needs the password); .7z.001 volumes supported</item>
+        <item>RAR (.rar) — Extract only
+RAR4/5, password + volumes supported; no compression (RARLAB license)
+Note: header-encrypted RAR listing is limited — use the password retry on extract; encrypted many-small-file archives extract slowly (per-file key derivation)</item>
+        <item>LZ4 (.lz4) — Extract &amp; Pack
+LZ4 frame format</item>
+        <item>GZIP (.gz) — Extract &amp; Pack
+Supports concatenated multi-member files</item>
+        <item>BZIP2 (.bz2) — Extract &amp; Pack</item>
+        <item>XZ (.xz) — Extract &amp; Pack
+liblzma, compression levels 0-9</item>
+        <item>ZSTD (.zst) — Extract &amp; Pack</item>
+        <item>LZMA (.lzma) — Extract &amp; Pack
+Note: preview list does not show decompressed size (alone header has no size)</item>
+        <item>TAR — Extract &amp; Pack
+.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
+        <item>KSD (.ksd) — Extract &amp; Pack
+Kirikiri2 save; packing accepts .txt only</item>
+    </string-array>
+    <string-array name="help_tutorials">
+        <item>Compression settings
+Settings → Compression: levels (zip/7z/generic), split size (zip/7z), ZIP encoding, password; "OK" saves everything at once; the work mode (archive/compress) updates the title bar</item>
+        <item>Global search
+Top menu → Global search: filename / content modes; content search first asks for a per-file size cap; tap a result to preview with match highlighting and prev/next jump; tap "Continue scan" when results are truncated</item>
+        <item>Search inside an archive
+Open an archive preview, tap the search icon: text files are unpacked first, then the global search runs over them; tapping a result extracts the real file on demand</item>
+        <item>Batch operations
+Long-press to multi-select; the batch bar offers extract / compress / preview / delete / move; navigating to another folder auto-exits multi-select; batch preview shows several archives at once and lets you pick files across all of them</item>
+        <item>Volumes
+Extract: tap any part of .7z.001 / .zip.001 / .part01.rar and it is joined automatically; Pack: pick a split size for zip/7z in compression settings (none/1MB/100MB/1GB/custom), output is .001/.002… (7-Zip compatible)</item>
+        <item>Passwords
+Enter the password once when previewing an encrypted zip/7z/rar; "Extract all / selected" then reuse it without re-prompting; batch operations ask once; password-protected archives show a 🔒 badge</item>
+        <item>Bookmarks
+Star a folder (row star or drawer "+ add current path"); deleting a folder cleans up its bookmark automatically; long-press a bookmark to remove it</item>
+        <item>File info
+Long-press a file → Info: shows size/date/MD5/SHA-256 with one-tap copy</item>
+        <item>Interaction flow
+Tap an archive → bottom-right button → direct archive preview (format auto-detected); "Extract all" unpacks to a sibling folder, "Extract selected" lets you choose the destination</item>
+            <item>Signature scan (binwalk)\nLong-press a file → Scan: detects embedded archive/image signatures (e.g. a ZIP embedded inside a video), listing offsets and formats with ZIP file counts. Each hit has two buttons: "Extract" opens archives directly for preview/extraction, "Carve (dd)" saves the raw segment as a standalone file; failures show the specific reason</item>
+</string-array>
+
+
+    <!-- ═══ APK install ═══ -->
+    <string name="install_apk">Install</string>
+    <string name="err_install_apk">Install failed: %1$s</string>
+
+
+    <!-- ═══ APK install (fallback + guidance) ═══ -->
+    <string name="msg_installing">Starting system installer…</string>
+    <string name="msg_install_unknown">Installing needs the “Install unknown apps” permission. Open settings to allow it?</string>
+    <string name="title_install_failed">Install failed</string>
+    <string name="install_warn_delete">Some system installers (e.g. Honor/EMUI) delete the APK after installing. Choose whether to keep a copy.</string>
+    <string name="install_now">Install now</string>
+    <string name="install_keep_copy">Keep a copy and install</string>
+    <string name="install_backup_done">APK copy kept at %1$s</string>
+
+
+    <!-- ═══ Signature scan (binwalk-like) ═══ -->
+    <string name="action_scan">🔍 Scan</string>
+    <string name="scan_progress">Scanning…</string>
+    <string name="scan_progress_bytes">Scanning… %1$s / %2$s</string>
+    <string name="scan_decimal">DECIMAL</string>
+    <string name="scan_hex">HEXADECIMAL</string>
+    <string name="scan_description">DESCRIPTION</string>
+    <string name="scan_no_results">No signatures found</string>
+    <string name="scan_footer">Analyzed %1$d file for %2$d file signatures (%3$d magic patterns) in %4$d ms</string>
+    <string name="scan_dir_error">Cannot scan a folder</string>
+
+
+    <!-- ═══ Separate (dd carve) ═══ -->
+    <string name="separate">Separate</string>
+    <string name="separate_new_folder">📁 Separate to (new folder): %1$s</string>
+    <string name="separate_to_current">Separate to current directory</string>
+    <string name="msg_carving">Separating…</string>
+    <string name="msg_carving_bytes">Separating… %1$s / %2$s</string>
+    <string name="msg_separate_done">Separated: %1$s</string>
+    <string name="msg_separate_non_archive">This segment is not an archive; it will be saved as a standalone file</string>
+    <string name="msg_separate_needs_carve">This format must be separated (carved out) before extraction</string>
+    <string name="msg_separate_rar_deep">The RAR is embedded too deep (beyond 8MB); separate it first</string>
+    <string name="msg_separate_zip_invalid">This location is not a valid ZIP archive (possible false positive)</string>
+    <string name="msg_separate_rar_invalid">This location is not a valid RAR archive (possible false positive)</string>
+    <string name="msg_separate_rar_encrypted">This RAR is encrypted; enter the password when extracting</string>
+    <string name="msg_separate_iso_invalid">This location is not a valid ISO 9660 image (possible false positive)</string>
+    <string name="scan_extract">Extract</string>
+    <string name="scan_carve">Carve (dd)</string>
+    <string name="scan_extract_not_archive">This hit is not an archive; use Carve to save the raw segment</string>
+    <string name="scan_zip_info">, file count: %1$d</string>
 </resources>

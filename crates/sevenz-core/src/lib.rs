@@ -147,6 +147,18 @@ fn list_7z_volumes(paths: &[&str]) -> Result<String, String> {
     Ok(list_from_archive(&archive))
 }
 
+fn list_7z_volumes_with_password(paths: &[&str], password: &str) -> Result<String, String> {
+    if paths.is_empty() { return Err("7z: empty volume list".into()); }
+    if !looks_like_7z(paths[0])? { return Err("7z: not a valid 7z split archive".into()); }
+    let mut reader = ConcatReader::open(paths)?;
+    let len = reader.len;
+    // Header-encrypted (-mhe=on) split archives can only be listed with the
+    // password (Password is UTF-16LE), matching extract_7z_volumes.
+    let pass = sevenz_rust::Password::from(password);
+    let archive = Archive::read(&mut reader, len, pass.as_slice()).map_err(|e| format!("7z: {e}"))?;
+    Ok(list_from_archive(&archive))
+}
+
 fn extract_7z_volumes(paths: &[&str], output: &str, selected: Option<&HashSet<String>>, password: &str) -> Result<(u32, u32), String> {
     if paths.is_empty() { return Err("7z: empty volume list".into()); }
     if !looks_like_7z(paths[0])? { return Err("7z: not a valid 7z split archive".into()); }
@@ -160,7 +172,7 @@ fn extract_7z_volumes(paths: &[&str], output: &str, selected: Option<&HashSet<St
         .map(|a| {
             let matching: Vec<_> = a.files.iter().filter(|f| {
                 let name = normalize_entry_name(f.name());
-                !name.is_empty() && !f.is_directory() && is_selected(&name, selected)
+                !extract_progress::cancelled() && !name.is_empty() && !f.is_directory() && is_selected(&name, selected)
             }).collect();
             (matching.len() as u32, matching.iter().map(|f| f.size()).sum::<u64>())
         })
@@ -204,11 +216,22 @@ fn sz_volumes_needs_password(paths: &[&str]) -> Result<bool, String> {
 }
 
 fn extract_7z(input: &str, output: &str, selected: Option<&HashSet<String>>) -> Result<(u32, u32), String> {
-    let total = sevenz_rust::Archive::open(input).map(|a| a.files.len() as u32).unwrap_or(0);
+    // total must reflect the SELECTED entries, not the whole archive — a
+    // selective extract reporting the full count produces a false "success"
+    // when the selection is empty / matches nothing.
+    let total = sevenz_rust::Archive::open(input)
+        .map(|a| match selected {
+            Some(sel) => a.files.iter().filter(|f| {
+                let name = normalize_entry_name(f.name());
+                !extract_progress::cancelled() && !name.is_empty() && !f.is_directory() && is_selected(&name, Some(sel))
+            }).count() as u32,
+            None => a.files.len() as u32,
+        })
+        .unwrap_or(0);
     let prog_total = sevenz_rust::Archive::open(input)
         .map(|a| a.files.iter().filter(|f| {
             let name = normalize_entry_name(f.name());
-            !name.is_empty() && !f.is_directory() && is_selected(&name, selected)
+            !extract_progress::cancelled() && !name.is_empty() && !f.is_directory() && is_selected(&name, selected)
         }).map(|f| f.size()).sum::<u64>())
         .unwrap_or(0);
     extract_progress::reset(prog_total);
@@ -240,20 +263,30 @@ fn handle_entry(
         Err(_) => { fail.fetch_add(1, Ordering::SeqCst); return Ok(true); }
     };
     if entry.is_directory() {
-        if !dest.exists() { let _ = std::fs::create_dir_all(&dest); }
+        if !dest.exists() {
+            if std::fs::create_dir_all(&dest).is_err() {
+                fail.fetch_add(1, Ordering::SeqCst);
+            }
+        }
         return Ok(true);
     }
-    if let Some(parent) = dest.parent() { let _ = std::fs::create_dir_all(parent); }
+    if let Some(parent) = dest.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            fail.fetch_add(1, Ordering::SeqCst);
+            return Ok(true);
+        }
+    }
     let file = match std::fs::File::create(&dest) {
         Ok(f) => f,
         Err(_) => { fail.fetch_add(1, Ordering::SeqCst); return Ok(true); }
     };
     let mut writer = ProgressWriter::extract(std::io::BufWriter::new(file));
     let copied = std::io::copy(reader, &mut writer);
-    let _ = writer.flush();
+    let flushed = writer.flush();
     drop(writer);
-    if copied.is_err() {
-        // CRC/data error: don't leave corrupt output on disk
+    if copied.is_err() || flushed.is_err() {
+        // CRC/data/flush error (e.g. ENOSPC surfaces at flush): don't leave
+        // corrupt output on disk
         let _ = std::fs::remove_file(&dest);
         fail.fetch_add(1, Ordering::SeqCst);
     }
@@ -312,18 +345,21 @@ fn extract_7z_selected_with_password(input: &str, output: &str, selected: &str, 
     if paths.is_empty() {
         return Ok((0, 0));
     }
-    // total with the password (encrypted headers can't be read without it)
+    // total with the password (encrypted headers can't be read without it).
+    // Count only the SELECTED non-dir entries so an empty/no-match selection
+    // reports a real total instead of a false full-archive success.
     let (total, prog_total) = {
         let mut file = std::fs::File::open(input).map_err(|e| format!("7z: {e}"))?;
         let len = file.metadata().map_err(|e| format!("7z: {e}"))?.len();
         let pwd = sevenz_rust::Password::from(password);
         sevenz_rust::Archive::read(&mut file, len, pwd.as_slice())
             .map(|a| {
-                let total = a.files.len() as u32;
-                let prog = a.files.iter().filter(|f| {
+                let matching: Vec<_> = a.files.iter().filter(|f| {
                     let name = normalize_entry_name(f.name());
                     !name.is_empty() && !f.is_directory() && is_selected(&name, Some(&paths))
-                }).map(|f| f.size()).sum::<u64>();
+                }).collect();
+                let total = matching.len() as u32;
+                let prog = matching.iter().map(|f| f.size()).sum::<u64>();
                 (total, prog)
             })
             .unwrap_or((0, 0))
@@ -426,18 +462,22 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractWithPassword(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, pw: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let pwd = s(&mut e, &pw); let _ = std::fs::create_dir_all(&out);
     match guarded(|| extract_7z_with_password(&inp, &out, &pwd)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
     match guarded(|| extract_7z_all(&inp, &out)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel);
     match guarded(|| extract_7z_selected(&inp, &out, &sel_str)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractSelectedWithPassword(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel: JString, pw: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel); let pwd = s(&mut e, &pw);
     match guarded(|| extract_7z_selected_with_password(&inp, &out, &sel_str, &pwd)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
@@ -488,6 +528,7 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     }) { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("7z: {er}")); JNI_FALSE } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szCompress(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, lv: JString, pw: JString, sp: JString) -> jboolean {
+    compress_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let lvl = s(&mut e, &lv); let pwd = s(&mut e, &pw); let split = s(&mut e, &sp);
     let level: i32 = lvl.parse().unwrap_or(6);
     let split_size: u64 = split.parse().unwrap_or(0);
@@ -514,24 +555,33 @@ fn vol_refs(vols: &[String]) -> Vec<&str> { vols.iter().map(|s| s.as_str()).coll
     let vs = s(&mut e, &v); let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(move || list_7z_volumes(&vol_refs(&vols))) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
 }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szListEntriesVolumesWithPassword(mut e: JNIEnv, _: JClass, v: JString, pw: JString) -> jstring {
+    let vs = s(&mut e, &v); let pwd = s(&mut e, &pw);
+    let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
+    match guarded(move || list_7z_volumes_with_password(&vol_refs(&vols), &pwd)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
+}
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractVolumes(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let _ = std::fs::create_dir_all(&out);
     let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(|| extract_7z_volumes(&vol_refs(&vols), &out, None, "")) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractSelectedVolumes(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString, sel: JString) -> jstring {
+    extract_progress::clear_cancel();
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel);
     let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(|| extract_7z_volumes(&vol_refs(&vols), &out, Some(&ss), "")) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractSelectedVolumesWithPassword(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString, sel: JString, pw: JString) -> jstring {
+    extract_progress::clear_cancel();
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel); let pwd = s(&mut e, &pw); let _ = std::fs::create_dir_all(&out);
     let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(|| extract_7z_volumes(&vol_refs(&vols), &out, Some(&ss), &pwd)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractVolumesWithPassword(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString, pw: JString) -> jstring {
+    extract_progress::clear_cancel();
     let vs = s(&mut e, &v); let out = s(&mut e, &o); let pwd = s(&mut e, &pw); let _ = std::fs::create_dir_all(&out);
     let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(|| extract_7z_volumes(&vol_refs(&vols), &out, None, &pwd)) { Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }

@@ -21,6 +21,7 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 fn iso_walk<'a>(start: &'a isomage::TreeNode, start_prefix: &str, out: &mut Vec<(String, &'a isomage::TreeNode)>) {
     let mut stack: Vec<(&'a isomage::TreeNode, String)> = vec![(start, start_prefix.to_string())];
     while let Some((node, prefix)) = stack.pop() {
+        if extract_progress::cancelled() { return; }
         let path = if prefix.is_empty() { node.name.clone() } else { format!("{prefix}/{}", node.name) };
         out.push((path.clone(), node));
         for child in &node.children { stack.push((child, path.clone())); }
@@ -112,6 +113,7 @@ fn extract_iso_selected(input: &str, output: &str, selected: &str) -> Result<(u3
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoExtractCancel(_: JNIEnv, _: JClass) { extract_progress::cancel(); }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = fs::create_dir_all(&out);
     match guarded(move || extract_iso_all(&inp, &out)) {
         Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
@@ -119,6 +121,7 @@ fn extract_iso_selected(input: &str, output: &str, selected: &str) -> Result<(u3
     }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoExtractSelected(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, sel_j: JString) -> jstring {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let sel_str = s(&mut e, &sel_j);
     match guarded(move || extract_iso_selected(&inp, &out, &sel_str)) {
         Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }

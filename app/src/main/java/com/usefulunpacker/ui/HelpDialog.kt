@@ -29,15 +29,16 @@ internal fun MainActivity.showHelpDialog() {
         setPadding(20, 8, 20, 8)
         if (title.isNotEmpty()) addView(TextView(act).apply {
             text = title
-            setTextColor(C["primary"]!!)
-            textSize = 14f
+            setTextColor(C["accent"]!!)
+            textSize = 13f
             setTypeface(null, Typeface.BOLD)
         })
         if (body.isNotEmpty()) addView(TextView(act).apply {
             text = body
-            setTextColor(C["secondary"]!!)
+            setTextColor(C["primary"]!!)
             textSize = 12f
-            setPadding(0, 2, 0, 0)
+            setLineSpacing(0f, 1.1f)
+            setPadding(0, 3, 0, 0)
         })
     }
 

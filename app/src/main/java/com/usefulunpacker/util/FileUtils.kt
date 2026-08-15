@@ -289,7 +289,10 @@ fun startsWithZipMagic(f: File): Boolean = try {
  * (a `when` branch that yields null would short-circuit the others).
  */
 fun isVolumeFile(f: File): String? {
-    if (isRarVolumeName(f.name)) return "rar"
+    // `.z01/.z02` matches the legacy RAR volume regex, but a PKWARE zip
+    // multi-disk part starts with the zip local-header magic — sniff before
+    // calling it a RAR volume so `.zNN` zip sets resolve correctly.
+    if (isRarVolumeName(f.name) && !startsWithZipMagic(f)) return "rar"
     if (isZipVolumeName(f.name) && resolveZipVolumes(f).size > 1) return "zip"
     if (isSevenZVolumeName(f.name) && resolveSevenZVolumes(f).size > 1) return "7z"
     return null
@@ -327,7 +330,7 @@ fun resolveRarVolumes(f: File): List<File> {
         .mapNotNull { f2 ->
             val m = OLD_RAR_RE.find(f2.name) ?: return@mapNotNull null
             val letter = m.groupValues[2][0]
-            val digits = m.groupValues[2].drop(1).toInt()
+            val digits = m.groupValues[2].drop(1).toIntOrNull() ?: return@mapNotNull null
             (letter.code - 'r'.code) * 100 + digits to f2
         }.sortedBy { it.first }.map { it.second }
     // Prefer the partN scheme when `foo.part1.rar` exists — a plain `foo.rar`

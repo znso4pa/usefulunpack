@@ -302,11 +302,13 @@ class MainActivity : AppCompatActivity() {
         val tvBatchCount = TextView(this).apply { setTextColor(C["primary"]!!); textSize = 12f }
         fun b(text: String, color: Int) = Button(this).apply { this.text = text; setTextColor(color); background = null; textSize = 12f; isAllCaps = false; setPadding(4, 0, 4, 0) }
         val btnBatchExtract = b(getString(R.string.batch_extract), C["accent"]!!).apply { setOnClickListener { startBatchExtract() } }
+        val btnBatchPreview = b(getString(R.string.action_preview), C["accent"]!!).apply { setOnClickListener { startBatchPreviewOnly() } }
         val btnBatchCompress = b(getString(R.string.batch_compress), C["accent"]!!).apply { setOnClickListener { startBatchCompress() } }
         val btnBatchMove = b(getString(R.string.action_move), C["accent"]!!).apply { setOnClickListener { startBatchMove() } }
         val btnBatchDelete = b(getString(R.string.action_delete), C["error"]!!).apply { setOnClickListener { confirmBatchDelete() } }
         val btnBatchCancel = b("✕ " + getString(R.string.action_cancel), C["tertiary"]!!).apply { setOnClickListener { exitMultiSelect() } }
         batchBar.addView(tvBatchCount, LinearLayout.LayoutParams(0, WRAP, 1f))
+        batchBar.addView(btnBatchPreview)
         batchBar.addView(btnBatchExtract)
         batchBar.addView(btnBatchCompress)
         batchBar.addView(btnBatchMove)

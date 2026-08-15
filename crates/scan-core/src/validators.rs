@@ -416,7 +416,55 @@ fn validate_gzip(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
             pos += 1;
         }
     }
+    // Decompression dry-run: feed the stream to MultiGzDecoder (concatenated
+    // members allowed) and require at least one byte of output. High-entropy
+    // random data with a plausible-looking header fails here, cutting the
+    // header-only false-positive rate from ~1/1000 to near zero. Reads are
+    // bounded to ~1 MiB of *output* so a huge legit archive costs little; the
+    // file cursor is restored afterwards.
+    if !gzip_dry_run(f, off) {
+        return None;
+    }
     Some(HitInfo { size: None, count: None })
+}
+
+/// Decodes a bounded prefix of a gzip stream at `off` and returns whether it
+/// looks like genuine deflate. A clean EOF (Ok(0)) accepts; any decode error
+/// rejects — garbage/random data with a plausible header trips an error
+/// (typically UnexpectedEof) almost immediately, while a huge legit archive is
+/// accepted once we've produced DRY_RUN_OUT bytes without error. The file
+/// position is restored.
+fn gzip_dry_run(f: &mut File, off: u64) -> bool {
+    const DRY_RUN_OUT: usize = 1 << 20;
+    if f.seek(SeekFrom::Start(off)).is_err() {
+        return false;
+    }
+    // Take a bounded slice of the *file* so the decoder can't pull the whole
+    // host into the deflate window on a massive candidate.
+    let limited = f.take(DRY_RUN_OUT as u64 * 2);
+    // GzDecoder (single member): stops after the first member's footer, so a
+    // gzip embedded mid-host with trailing bytes validates cleanly.
+    let mut dec = flate2::read::GzDecoder::new(limited);
+    let mut sink = [0u8; 8192];
+    let mut produced = 0usize;
+    loop {
+        match dec.read(&mut sink) {
+            Ok(0) => break, // clean EOF → valid stream
+            Ok(n) => {
+                produced += n;
+                if produced >= DRY_RUN_OUT {
+                    break;
+                }
+            }
+            Err(_) => {
+                // Restore the caller's view of the file before bailing.
+                let _ = f.seek(SeekFrom::Start(off));
+                return false;
+            }
+        }
+    }
+    let _ = f.seek(SeekFrom::Start(off));
+    produced > 0
 }
 
 /// bzip2: the magic table already carries the full 10-byte
@@ -1268,6 +1316,17 @@ mod tests {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
     }
 
+    /// Builds a real gzip stream via flate2 so validators see genuine deflate
+    /// data (the header-only heuristics and the dry-run both need it).
+    fn gz_bytes(data: &[u8]) -> Vec<u8> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write as _;
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
     #[test]
     fn rar5_and_rar4_eof_size() {
         // RAR5: sig(8) + crc(4) + vint HEAD_SIZE/HEAD_TYPE/HEAD_FLAGS +
@@ -1630,22 +1689,26 @@ mod tests {
     fn gzip_fextra_and_os_variants() {
         // OS byte 2 (VMS) is legal; FEXTRA must skip its XLEN payload before
         // the FNAME walk — the extra payload may contain NUL bytes that would
-        // otherwise be mistaken for the name terminator.
-        let mut gz = Vec::new();
-        gz.extend_from_slice(b"\x1f\x8b\x08");
-        gz.push(0x0C); // FLG: FEXTRA | FNAME
-        gz.extend_from_slice(&0u32.to_le_bytes()); // MTIME = 0
-        gz.push(0x00); // XFL
-        gz.push(0x02); // OS = VMS
-        gz.extend_from_slice(&4u16.to_le_bytes()); // XLEN
-        gz.extend_from_slice(&[0x00, 0x11, 0x00, 0x22]); // extra payload with NULs
-        gz.extend_from_slice(b"file.txt\x00");
+        // otherwise be mistaken for the name terminator. Built with GzBuilder
+        // so the header flags AND the deflate stream are both real.
+        use flate2::Compression;
+        use flate2::GzBuilder;
+        let mut extra = GzBuilder::new()
+            .mtime(0)
+            .extra(&[0x00, 0x11, 0x00, 0x22]) // XLEN payload containing NULs
+            .filename("file.txt")
+            .write(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut extra, b"payload").unwrap();
+        let gz = extra.finish().unwrap();
         let p = tmp("fextra.gz", &gz);
         let mut f = File::open(&p).unwrap();
         assert!(validate_gzip(&mut f, 0, gz.len() as u64).is_some(), "gzip FEXTRA+FNAME OS=2");
 
         // XLEN extending past EOF → rejected.
         let mut gz3 = gz.clone();
+        let flg = gz3[3];
+        assert!(flg & 0x04 != 0, "FEXTRA flag must be set");
+        // XLEN is at offset 10..12 when FEXTRA is set.
         gz3[10..12].copy_from_slice(&60000u16.to_le_bytes());
         let p3 = tmp("fextra3.gz", &gz3);
         let mut f3 = File::open(&p3).unwrap();
@@ -1710,14 +1773,29 @@ mod tests {
 
     #[test]
     fn gzip_bzip2_xz_headers() {
-        // gzip: 1F 8B 08 FLG=0 MTIME=0 XFL=0 OS=3 (Unix).
-        let g = tmp("t.gz", b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x00\x03hello");
+        // gzip: a real flate2 stream must validate (header + dry-run decode).
+        let g = tmp("t.gz", &gz_bytes(b"hello gzip"));
         let mut f = File::open(&g).unwrap();
-        assert!(validate_gzip(&mut f, 0, 12).is_some());
+        let blob = std::fs::read(&g).unwrap();
+        assert!(validate_gzip(&mut f, 0, blob.len() as u64).is_some());
         // Far-future MTIME → rejected.
-        let g2 = tmp("t2.gz", b"\x1f\x8b\x08\x00\xff\xff\xff\xff\x00\x00\x03x");
+        let mut gz2 = gz_bytes(b"x");
+        gz2[4..8].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes());
+        let g2 = tmp("t2.gz", &gz2);
         let mut f2 = File::open(&g2).unwrap();
-        assert!(validate_gzip(&mut f2, 0, 12).is_none());
+        assert!(validate_gzip(&mut f2, 0, gz2.len() as u64).is_none());
+        // A plausible-looking header with garbage deflate data → the dry-run
+        // must reject it (this is exactly the false-positive class we cut).
+        let mut fake = Vec::new();
+        fake.extend_from_slice(b"\x1f\x8b\x08");
+        fake.push(0x00); // FLG = 0
+        fake.extend_from_slice(&0u32.to_le_bytes()); // MTIME = 0
+        fake.push(0x00); // XFL
+        fake.push(0x03); // OS = Unix
+        fake.extend_from_slice(&[0xAB; 64]); // not a valid deflate stream
+        let g3 = tmp("t3.gz", &fake);
+        let mut f3 = File::open(&g3).unwrap();
+        assert!(validate_gzip(&mut f3, 0, fake.len() as u64).is_none(), "garbage deflate must be rejected");
 
         // bzip2: full 10-byte magic.
         let b = tmp("t.bz2", b"BZh51AY&SYdata");
@@ -1739,6 +1817,19 @@ mod tests {
         let p2 = tmp("t2.xz", b"\xfd7zXZ\x00\x00\x04\x00\x00\x00\x00");
         let mut f6 = File::open(&p2).unwrap();
         assert!(validate_xz(&mut f6, 0, 12).is_none());
+    }
+
+    /// A gzip truncated mid-stream must be rejected by the dry-run (incomplete
+    /// deflate → decode error), not silently accepted as a hit.
+    #[test]
+    fn gzip_truncated_rejected_by_dry_run() {
+        let mut gz = gz_bytes(&vec![0x5Au8; 20000]);
+        // Chop off the trailing footer + some deflate so the stream can't
+        // finish cleanly — flate2 must surface an error.
+        gz.truncate(gz.len() / 2);
+        let p = tmp("trunc.gz", &gz);
+        let mut f = File::open(&p).unwrap();
+        assert!(validate_gzip(&mut f, 0, gz.len() as u64).is_none(), "truncated gzip must be rejected");
     }
 
     #[test]

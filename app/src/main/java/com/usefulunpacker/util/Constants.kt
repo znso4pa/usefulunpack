@@ -115,12 +115,12 @@ val FORMAT_GROUPS = listOf(
 val COMPRESS_GROUPS = listOf(
     Pair(R.string.format_group_generic, listOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")),
     Pair(R.string.format_group_single, listOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "ksd")),
-    Pair(R.string.format_group_other, listOf("xp3", "pfs")),
+    Pair(R.string.format_group_other, listOf("xp3", "pfs", "nsa", "iso")),
 )
 
 // 压缩输出扩展名（dir.name + 该扩展名）
 val COMPRESS_EXT = mapOf(
-    "xp3" to "xp3", "pfs" to "pfs",
+    "xp3" to "xp3", "pfs" to "pfs", "nsa" to "nsa", "iso" to "iso",
     "zip" to "zip", "7z" to "7z",
     "tar" to "tar", "tgz" to "tar.gz", "tbz2" to "tar.bz2", "txz" to "tar.xz", "tzst" to "tar.zst",
     "gz" to "gz", "bz2" to "bz2", "xz" to "xz", "zst" to "zst", "lzma" to "lzma", "lz4" to "lz4",
@@ -133,12 +133,12 @@ val SINGLE_FILE_COMPRESS = setOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "ksd")
 // 批量"合并为一个压缩包"可用格式（多条目归档，排除单文件格式）
 val MERGE_COMPRESS_GROUPS = listOf(
     Pair(R.string.format_group_generic, listOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")),
-    Pair(R.string.format_group_other, listOf("xp3", "pfs")),
+    Pair(R.string.format_group_other, listOf("xp3", "pfs", "nsa", "iso")),
 )
 
 // 压缩模式格式选择器：格式 key → 显示标签
 val COMPRESS_LABELS = mapOf(
-    "xp3" to "XP3 (.xp3)", "pfs" to "PFS (.pfs/.pf8)",
+    "xp3" to "XP3 (.xp3)", "pfs" to "PFS (.pfs/.pf8)", "nsa" to "NSA (.nsa/.sar)", "iso" to "ISO (.iso)",
     "zip" to "ZIP (.zip)", "7z" to "7z (.7z)",
     "tar" to "TAR (.tar)", "tgz" to "TAR.GZ (.tar.gz)", "tbz2" to "TAR.BZ2 (.tar.bz2)",
     "txz" to "TAR.XZ (.tar.xz)", "tzst" to "TAR.ZST (.tar.zst)",
@@ -151,10 +151,11 @@ val TEXT_SEARCH_EXTS = setOf(
     "txt", "json", "ini", "ks", "lua", "py", "js", "html", "css", "xml", "cfg", "log",
     "rtf", "md", "yaml", "yml", "toml", "conf", "properties", "sh", "java", "kt", "rs",
     "c", "cpp", "h", "hpp", "swift", "rb", "php", "pl", "sql", "tsv",
-    "srt", "ass", "lrc", "vtt", "bat", "cmd", "ps1", "go", "dart", "r", "csv", "tjs"
+    "srt", "ass", "lrc", "vtt", "bat", "cmd", "ps1", "go", "dart", "r", "csv", "tjs",
+    "xhtml", "vsq", "ksc"
 )
 
-val PREVIEW_EXTS = setOf("jpg", "jpeg", "png", "gif", "webp", "mp3", "ogg", "mp4") + TEXT_SEARCH_EXTS
+val PREVIEW_EXTS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "mp3", "ogg", "mp4") + TEXT_SEARCH_EXTS
 
 /** Script/plain-text extensions the 编辑 (localization) workflow treats as editable. */
 val EDIT_SCRIPT_EXTS = setOf("ks", "tjs", "csv", "txt", "ini", "cfg", "json", "log")

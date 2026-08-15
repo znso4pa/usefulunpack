@@ -21,7 +21,13 @@ fn extract_xz(input: &str, output: &str) -> Result<u32, String> {
     let dest = Path::new(output).join(&name);
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
     let r = BufReader::new(File::open(input).map_err(|e| format!("xz: {e}"))?);
-    let mut writer = ProgressWriter::extract(File::create(&dest).map_err(|e| format!("{e}"))?);
+    // No declared uncompressed size in the xz stream flags → bound output with
+    // the shared hard cap so a crafted bomb can't fill disk.
+    let mut writer = ProgressWriter::extract(
+        archive_common::BoundedWriter::new(
+            File::create(&dest).map_err(|e| format!("{e}"))?,
+            archive_common::DEFAULT_EXTRACT_CAP,
+        ));
     extract_progress::reset(0);
     extract_progress::set_name(&name);
     extract_progress::set_file(0);

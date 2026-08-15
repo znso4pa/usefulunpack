@@ -12,7 +12,49 @@ fn output_name(input: &str) -> String {
     Path::new(input).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "output".to_string())
 }
 
-/// gzip footer holds the uncompressed size (mod 2^32).
+/// Count gzip member starts (magic `1F 8B 08`) in the file. The footer ISIZE
+/// only reflects the *last* member, so a multi-member stream's true output is
+/// the sum of all members and can't be bounded by a single footer. The
+/// streaming decoder accepts concatenated members; a stray `1F 8B 08` inside
+/// deflate payload is ~1/16M per position — a tolerable heuristic.
+fn gzip_member_count(input: &str) -> u64 {
+    let Ok(mut f) = File::open(input) else { return 0 };
+    let mut count = 0u64;
+    let mut carry: [u8; 2] = [0, 0];
+    let mut first = true;
+    let mut buf = [0u8; 1 << 16];
+    loop {
+        let n = match f.read(&mut buf) { Ok(n) => n, Err(_) => break };
+        if n == 0 { break; }
+        let mut i = 0usize;
+        if !first {
+            // Cross-boundary magic: two possible straddles.
+            // (a) `1F 8B` at the very end of the previous chunk, `08` here:
+            if carry[1] == 0x1f && buf[0] == 0x8b && n > 1 && buf[1] == 0x08 {
+                count += 1;
+            }
+            // (b) `1F` at the end of the previous chunk, `8B 08` here:
+            if carry[0] == 0x1f && carry[1] == 0x8b && n > 0 && buf[0] == 0x08 {
+                count += 1;
+            }
+        }
+        while i + 2 < n {
+            if buf[i] == 0x1f && buf[i + 1] == 0x8b && buf[i + 2] == 0x08 {
+                count += 1;
+                i += 3;
+            } else {
+                i += 1;
+            }
+        }
+        carry = [buf[n - 2], buf[n - 1]];
+        first = false;
+    }
+    count
+}
+
+/// gzip footer holds the uncompressed size (mod 2^32) of the *last* member.
+/// Only meaningful for single-member files; multi-member streams fall back to
+/// the shared hard cap (see extract_gz).
 fn decompressed_size(input: &str) -> u64 {
     let Ok(mut f) = File::open(input) else { return 0 };
     let Ok(m) = f.metadata() else { return 0 };
@@ -34,8 +76,17 @@ fn extract_gz(input: &str, output: &str) -> Result<u32, String> {
     // MultiGzDecoder handles concatenated multi-member .gz files (some tools
     // produce these); plain GzDecoder stops after the first member.
     let mut dec = flate2::read::MultiGzDecoder::new(File::open(input).map_err(|e| format!("gzip: {e}"))?);
-    let mut writer = ProgressWriter::extract(File::create(&dest).map_err(|e| format!("{e}"))?);
-    extract_progress::reset(decompressed_size(input));
+    // Cap output at the footer ISIZE for single-member files; multi-member
+    // streams (rare, concatenated) fall back to the shared hard cap because no
+    // single footer bounds their total output.
+    let members = gzip_member_count(input);
+    let declared = if members <= 1 { decompressed_size(input) } else { 0 };
+    let mut writer = ProgressWriter::extract(
+        archive_common::BoundedWriter::new(
+            File::create(&dest).map_err(|e| format!("{e}"))?,
+            if declared > 0 { declared } else { archive_common::DEFAULT_EXTRACT_CAP },
+        ));
+    extract_progress::reset(if members <= 1 { declared } else { 0 });
     extract_progress::set_name(&name);
     extract_progress::set_file(extract_progress::total_bytes());
     if let Err(e) = io::copy(&mut dec, &mut writer) {
@@ -179,6 +230,78 @@ mod tests {
         blob.truncate(blob.len() / 2);
         std::fs::write(&bad, &blob).unwrap();
         assert!(extract_gz(bad.to_str().unwrap(), out.to_str().unwrap()).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lying_isize_bounds_output() {
+        // The footer ISIZE is trusted as the output cap. Craft a stream that
+        // really decodes to 1000 bytes but whose footer claims 100: the cap
+        // must stop the copy at 100 bytes and fail, so a bomb can't write
+        // beyond the declared size.
+        let dir = tmp("bomb");
+        std::fs::create_dir_all(&dir).unwrap();
+        let big: Vec<u8> = vec![0xABu8; 1000];
+        let mut blob = gz_bytes(&big);
+        let body_len = blob.len();
+        let isize = 100u32.to_le_bytes();
+        blob[body_len - 4..].copy_from_slice(&isize);
+        let p = dir.join("bomb.gz");
+        std::fs::write(&p, &blob).unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let res = extract_gz(p.to_str().unwrap(), out.to_str().unwrap());
+        assert!(res.is_err(), "declared-size lie must fail, got {res:?}");
+        let got = std::fs::read(out.join("bomb")).unwrap_or_default();
+        assert!(got.len() <= 100, "output capped at declared size, got {}", got.len());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Cross-chunk magic detection (the counting reads in 64 KiB chunks):
+    /// a `1F 8B 08` straddling a chunk boundary must be counted exactly once,
+    /// whether it splits as `1F | 8B 08` (case a) or `1F 8B | 08` (case b).
+    #[test]
+    fn gzip_member_count_straddles_chunk_boundary() {
+        let dir = tmp("straddle");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Case a: `1F` is the LAST byte of chunk 1, `8B 08` at chunk 2 start.
+        // Fill 65535 bytes so byte 65535 (0-indexed) lands at chunk boundary.
+        let mut a = vec![0x41u8; 65535];
+        a.push(0x1f);            // 65535 → this is chunk[1]'s last byte
+        a.extend_from_slice(&[0x8b, 0x08, 0x00]); // next chunk starts here
+        let pa = dir.join("a.gz");
+        std::fs::write(&pa, &a).unwrap();
+        // chunk1 = [0..65536): the 0x1f is at 65535. chunk2 = [65536..]: 8B 08 00
+        assert_eq!(gzip_member_count(pa.to_str().unwrap()), 1, "case a straddle");
+
+        // Case b: `1F 8B` are the last TWO bytes of chunk 1, `08` at start of 2.
+        let mut b = vec![0x42u8; 65534];
+        b.push(0x1f);
+        b.push(0x8b);
+        b.extend_from_slice(&[0x08, 0x00]);
+        let pb = dir.join("b.gz");
+        std::fs::write(&pb, &b).unwrap();
+        assert_eq!(gzip_member_count(pb.to_str().unwrap()), 1, "case b straddle");
+
+        // Non-straddling occurrences still counted (same chunk).
+        let mut c = vec![0x43u8; 100];
+        c.extend_from_slice(&[0x1f, 0x8b, 0x08]);
+        let pc = dir.join("c.gz");
+        std::fs::write(&pc, &c).unwrap();
+        assert_eq!(gzip_member_count(pc.to_str().unwrap()), 1, "same-chunk magic");
+
+        // Real two-member gzip is counted as 2 members (decodes fully).
+        let mut two = gz_bytes(b"first member");
+        two.extend_from_slice(&gz_bytes(b"second member"));
+        let pt = dir.join("two.gz");
+        std::fs::write(&pt, &two).unwrap();
+        assert_eq!(gzip_member_count(pt.to_str().unwrap()), 2, "real two-member gzip");
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        extract_gz(pt.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+        let got = std::fs::read(out.join("two")).unwrap();
+        assert_eq!(String::from_utf8_lossy(&got), "first membersecond member");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

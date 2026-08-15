@@ -35,7 +35,13 @@ fn extract_bz2(input: &str, output: &str) -> Result<u32, String> {
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
     let file = BufReader::new(File::open(input).map_err(|e| format!("bzip2: {e}"))?);
     let mut dec = bzip2::read::BzDecoder::new(CancelReader(file));
-    let mut writer = ProgressWriter::extract(File::create(&dest).map_err(|e| format!("{e}"))?);
+    // No declared uncompressed size in the bzip2 header → bound output with the
+    // shared hard cap so a crafted bomb can't fill disk.
+    let mut writer = ProgressWriter::extract(
+        archive_common::BoundedWriter::new(
+            File::create(&dest).map_err(|e| format!("{e}"))?,
+            archive_common::DEFAULT_EXTRACT_CAP,
+        ));
     extract_progress::reset(0);
     extract_progress::set_name(&name);
     extract_progress::set_file(0);

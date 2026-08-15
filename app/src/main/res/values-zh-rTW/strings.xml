@@ -14,7 +14,7 @@
     <string name="msg_editor_too_large">檔案過大,無法在應用程式內編輯(&gt;2MB)</string>
     <string name="msg_tjs_compiled">編譯後的 TJS 腳本（TJS2 二進位）,無法以文字預覽</string>
     <string name="edit_archive">編輯</string>
-    <string name="edit_only_pack">僅支援可封包的格式（XP3/PFS）</string>
+    <string name="edit_only_pack">僅支援可封包的格式（XP3/PFS/ISO/NSA）</string>
     <string name="edit_archive_title">編輯腳本</string>
     <string name="edit_repack">重新打包</string>
     <string name="edit_no_scripts">找不到可編輯的腳本</string>
@@ -28,6 +28,19 @@
     <string name="action_move">✂️ 移動</string>
     <string name="action_copy_path">📋 複製路徑</string>
     <string name="action_file_info">ℹ️ 檔案資訊</string>
+    <string name="action_convert_cso">轉換為 CSO (.cso)</string>
+    <string name="action_convert_iso">轉換為 ISO (.iso)</string>
+    <string name="zip_manage">🗂️ 條目</string>
+    <string name="zip_manage_delete">刪除選中條目</string>
+    <string name="zip_manage_add">從本機檔案新增條目</string>
+    <string name="zip_add_title">新增條目</string>
+    <string name="zip_add_pick">選擇本機檔案</string>
+    <string name="zip_add_name">條目名（留空 = 用檔名）</string>
+    <string name="zip_confirm_delete">確定從壓縮包中刪除選中的條目？</string>
+    <string name="zip_multi_disk_no_edit">多碟 ZIP 分割（.z01/.zip）不支援編輯</string>
+    <string name="msg_converting">正在轉換</string>
+    <string name="title_convert_failed">轉換失敗</string>
+    <string name="msg_convert_done">已轉換: %1$s</string>
     <string name="action_new_folder">新資料夾</string>
     <string name="nav_home">回到根目錄</string>
     <string name="nav_up">上一層</string>
@@ -222,6 +235,7 @@
     <string name="extract_separate_dirs">📁 各單獨資料夾（%1$s）</string>
     <string name="reading_archives">正在讀取 %1$d 個歸檔…</string>
     <string name="batch_preview_stats">%1$d 歸檔 / %2$d 檔案 / %3$s  |  已選 %4$d 項, %5$s</string>
+    <string name="batch_preview_mixed">批量預覽需要同一種格式的歸檔</string>
     <string name="batch_preview_title">批次預覽 %1$s</string>
     <string name="calc_failed">計算失敗</string>
     <string name="title_mode_archive">  [📦歸檔]</string>
@@ -283,33 +297,41 @@
     <string name="settings_disclaimer">⚖️ 免責聲明</string>
     <string name="help_section_formats">支援的格式</string>
     <string name="help_section_tutorials">功能教學</string>
-    <string-array name="help_formats">
+        <string-array name="help_formats">
         <item>XP3 (.xp3) — 解壓 + 壓縮
-Kirikiri 封包；zlib 壓縮等級 0-9</item>
+Kirikiri 封包；zlib 壓縮級別 0-9；可編輯腳本（編輯 → 解包 → 改腳本 → 重新打包為 name-cn.xp3）</item>
         <item>PFS / PF6 / PF8 — 解壓 + 壓縮
-Artemis 封包；壓縮輸出 PF8（XOR 加密）</item>
-        <item>NSA / SAR (.nsa/.sar) — 僅解壓
-NScripter 封包（LZSS + SPB）；SPB 點陣圖條目有 2GB 上限</item>
-        <item>ISO 9660 (.iso) — 僅瀏覽/解壓
-光碟映像（CD/DVD/BD）</item>
+Artemis 封包；壓縮輸出 PF8（XOR 加密）；可編輯腳本（重新打包為 name-cn.pfs）</item>
+        <item>NSA / SAR (.nsa/.sar) — 解壓 + 壓縮
+NScripter 封包（LZSS + SPB）；封包用 LZSS（不縮小則存原始）；可編輯腳本（重新打包為 name-cn.nsa）
+限制：SPB 點陣圖條目有 2GB 上限；超過 4GiB 的封包無法封包</item>
+        <item>ISO 9660 (.iso) — 解壓 + 壓縮
+光碟映像（CD/DVD/BD）；可封包（Level 1）並轉為 PSP CISO（CSO）
+限制：封包用 8.3 大寫檔名 + 1GiB 總上限；超過 4GiB 的單檔被拒絕</item>
+        <item>CSO (.cso) — 轉換
+PSP 壓縮映像；點 .cso 轉回 ISO；ISO 預覽提供「轉 CSO」
+限制：格式資料區上限 2GiB（31 位元偏移）</item>
         <item>YPF (.ypf) — 僅解壓
 YU-RIS 封包；檔名 XOR + Shift-JIS 混淆，金鑰自動偵測</item>
         <item>ZIP (.zip) — 解壓 + 壓縮
 AES-256 加密、5 級（0=僅儲存）、編碼可切 UTF-8/SHIFT-JIS/GBK
-限制：.zip.001 位元組分卷支援；.z01 真分卷為 best-effort（未完整驗證）</item>
+支援就地條目管理：編輯 / 刪除 / 新增條目（僅非分割封包）
+限制：.zip.001 位元組分割與 PKWARE 多碟 .z01/.z02/.zip 可解壓（條目需在單碟內；跨碟不支援）；多碟封包不可編輯</item>
         <item>7z (.7z) — 解壓 + 壓縮
-0/3/6/9/12 級；設密碼即頭加密（列目錄需密碼）；.7z.001 分卷支援</item>
+0/3/6/9/12 級；設密碼即頭加密（列目錄需密碼）；.7z.001 分割支援</item>
         <item>RAR (.rar) — 僅解壓
-RAR4/5，密碼 + 分卷支援；不支援壓縮（RARLAB 版權限制）
+RAR4/5，密碼 + 分割支援；不支援壓縮（RARLAB 版權限制）
 注意：頭加密 RAR 列目錄受限，可走解壓密碼重試；加密多小檔解壓較慢（每檔獨立金鑰衍生）</item>
         <item>LZ4 (.lz4) — 解壓 + 壓縮
-LZ4 幀格式</item>
+LZ4 幀格式；輸出有封頂防止解壓炸彈</item>
         <item>GZIP (.gz) — 解壓 + 壓縮
-支援多成員拼接檔案</item>
-        <item>BZIP2 (.bz2) — 解壓 + 壓縮</item>
+支援多成員拼接檔案；輸出按宣告大小封頂</item>
+        <item>BZIP2 (.bz2) — 解壓 + 壓縮
+頭無大小資訊，輸出有封頂防炸彈</item>
         <item>XZ (.xz) — 解壓 + 壓縮
-liblzma，壓縮等級 0-9</item>
-        <item>ZSTD (.zst) — 解壓 + 壓縮</item>
+liblzma，壓縮級別 0-9；輸出有封頂</item>
+        <item>ZSTD (.zst) — 解壓 + 壓縮
+頭無大小資訊，輸出有封頂防炸彈</item>
         <item>LZMA (.lzma) — 解壓 + 壓縮
 注意：列表預覽不顯示解壓大小（alone 頭未記錄大小）</item>
         <item>TAR — 解壓 + 壓縮
@@ -317,30 +339,36 @@ liblzma，壓縮等級 0-9</item>
         <item>KSD (.ksd) — 解壓 + 壓縮
 Kirikiri2 存檔；壓縮僅接受 .txt 文字</item>
     </string-array>
-    <string-array name="help_tutorials">
+        <string-array name="help_tutorials">
         <item>壓縮設定
-設定 → 壓縮：壓縮等級（zip/7z/通用）、分卷大小（zip/7z）、ZIP 編碼、壓縮密碼；點「確定」一次儲存；工作模式（歸檔/壓縮）切換後標題列會更新</item>
+設定 → 壓縮：壓縮等級（zip/7z/通用）、分割大小（zip/7z）、ZIP 編碼、壓縮密碼；點「確定」一次儲存；工作模式（封包/壓縮）切換後標題欄會更新</item>
         <item>全域搜尋
-頂部選單 → 全域搜尋：檔名 / 內容兩種模式；內容搜尋會先詢問單檔大小上限；點結果可預覽，符合處高亮並可前後跳轉；結果多時點「繼續掃描」</item>
-        <item>歸檔內搜尋
-開啟歸檔預覽後，點右上角搜尋圖示：先解出全部文字檔，再進入全域搜尋全文檢索；點結果按需解出原檔預覽</item>
+頂部選單 → 全域搜尋：檔名 / 內容兩種模式；內容搜尋會先詢問單檔大小上限；點結果可預覽，匹配處高亮並可前後跳轉；結果多時點「繼續掃描」</item>
+        <item>封包內搜尋
+開啟封包預覽後，點右上角搜尋圖示：先解出全部文字檔，再進入全域搜尋全文檢索；點結果按需解出原檔預覽</item>
         <item>批次操作
-長按檔案進入多選，底部出現批次列：批次解壓/壓縮/預覽/刪除/移動；跨目錄導航會自動退出多選；批次預覽可一次查看多個歸檔並跨歸檔選檔</item>
-        <item>分卷
-解壓：直接點 .7z.001 / .zip.001 / .part01.rar 任意一卷即可，自動合併；壓縮：zip/7z 在壓縮設定選分卷大小（不分卷/1MB/100MB/1GB/自訂），輸出為 .001/.002…（7-Zip 相容）</item>
+長按檔案進入多選，底部出現批次欄：批次預覽/解壓/壓縮/刪除/移動；跨目錄導航會自動退出多選。批次預覽僅限同格式封包，可一次查看多個封包並跨封包選檔</item>
+        <item>分割
+解壓：直接點 .7z.001 / .zip.001 / .z01 / .part01.rar 任一卷即可，自動合併；PKWARE 多碟（.z01/.z02/.zip）按獨立碟讀取（條目須在單碟內）。壓縮：zip/7z 在壓縮設定選分割大小（不分卷/1MB/100MB/1GB/自訂），輸出為 .001/.002…（7-Zip 相容）</item>
         <item>密碼
-zip/7z/rar 加密歸檔預覽時輸入一次密碼，之後「解壓全部/解壓選中」複用不再重複輸入；批次操作只需輸一次密碼；需要密碼的歸檔會顯示 🔒</item>
+zip/7z/rar 加密封包預覽時輸入一次密碼，之後「解壓全部/解壓選中」複用不再重複輸入；批次操作只需輸一次密碼；需要密碼的封包會顯示 🔒</item>
         <item>書籤
-資料夾行末星標或抽屜「+ 加入目前路徑」收藏；刪除資料夾時其書籤自動清理；長按書籤刪除</item>
+資料夾行末星標或抽屜「+ 新增目前路徑」收藏；刪除資料夾時其書籤自動清理；長按書籤刪除</item>
         <item>檔案資訊
 長按檔案 → 資訊：顯示大小/時間/MD5/SHA-256，雜湊可一鍵複製</item>
         <item>互動流程
-點歸檔 → 右下角按鈕 → 直接進入歸檔預覽（格式自動辨識）；預覽內「解壓全部」一鍵解壓到同名資料夾，「解壓選中」可選擇目標位置</item>
-            <item>格式掃描（binwalk）\n長按檔案 → 掃描：偵測檔案內嵌的壓縮包/圖片等簽名（如影片內嵌 ZIP），列出偏移與格式，ZIP 附檔案數。每條命中兩個按鈕：「解壓」直接預覽/解壓歸檔，「切割」儲存原始片段為獨立檔案；失敗會提示具體原因</item>
-        <item>在歸檔內編輯腳本\n開啟 XP3/PFS 預覽，點「編輯」：自動解包 → 彈出腳本清單（.ks/.tjs/.csv/…）→ 點一個用顯式編碼編輯（儲存保留原位元組序）→ 「重新打包」在同目錄產生「原名-cn.xp3/pfs」</item>
-        <item>編碼與亂碼\n每個預覽/編輯器都有編碼列：點它切換 UTF-8/SHIFT-JIS/GBK/UTF-16，文字立即重新渲染；帶 BOM 的 UTF-16/UTF-8 檔案自動以正確編碼開啟；用錯的非 UTF-8 編碼讀檔時會提示「看起來是 UTF-8」</item>
-        <item>捲動與自動重新整理\n長清單右側有常駐可拖把手（抓住拖動即可跳轉）；文字預覽/編輯器也有可拖捲動軸。目前資料夾內容變化（重新命名/移動/刪除/解壓/壓縮或 USB 等外部變更）時檔案清單自動重新整理</item>
-</string-array>
+點封包 → 右下角按鈕 → 直接進入封包預覽（格式自動辨識）；預覽內「解壓全部」一鍵解壓到同名資料夾，「解壓所選」可選擇目標位置</item>
+        <item>格式掃描（binwalk）
+長按檔案 → 掃描：偵測檔案內嵌的壓縮包/圖片等簽名（如影片內嵌 ZIP），列出偏移與格式，ZIP 附檔數。每條命中兩個按鈕：「解壓」直接預覽/解壓封包，「切割」儲存原始片段為獨立檔；失敗會提示具體原因</item>
+        <item>封包內編輯腳本
+開啟 XP3/PFS/ISO/NSA 預覽，點「編輯」：自動解包 → 彈出腳本列表（.ks/.tjs/.csv/…）→ 點一個用顯式編碼編輯（儲存保留原位元組序）→ 「重新打包」在同目錄生成「原名-cn.xp3/pfs/iso/nsa」。ISO 重封用 Level-1 8.3 名 + 1GiB 上限</item>
+        <item>就地編輯 ZIP 條目
+ZIP 預覽裡點「條目」：刪除選中條目（有確認框）或從本機檔新增條目（選檔 → 命名 → deflate 寫入）。未動條目位元組級保留。多碟 ZIP 不可編輯</item>
+        <item>編碼與亂碼
+每個預覽/編輯器都有編碼行：點它切換 UTF-8/SHIFT-JIS/GBK/UTF-16，文字立即重渲染；帶 BOM 的 UTF-16/UTF-8 檔自動按正確編碼開啟；用錯的非 UTF-8 編碼讀檔時會提示「看起來是 UTF-8」</item>
+        <item>捲動與自動重新整理
+長列表右側有常顯可拖把手（抓住拖動即可跳轉）；文字預覽/編輯器也有可拖捲軸。目前目錄內容變化（重新命名/移動/刪除/解壓/壓縮或 USB 等外部改動）時檔案列表自動重新整理</item>
+    </string-array>
 
 
     <!-- ═══ APK install ═══ -->

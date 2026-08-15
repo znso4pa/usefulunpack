@@ -1,10 +1,12 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
-use jni::sys::{jstring, jlong};
+use jni::sys::{jstring, jlong, jboolean, JNI_TRUE, JNI_FALSE};
 use archive_common::{s, json_escape, safe_join, extract_result_json, ProgressWriter};
-use archive_common::extract_progress;
+use archive_common::{extract_progress, compress_progress};
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
@@ -133,6 +135,311 @@ fn extract_iso_selected(input: &str, output: &str, selected: &str) -> Result<(u3
     match guarded(move || list_iso(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
 }
 
+// ─── ISO 9660 (Level 1) writer ────────────────────────────────
+//
+// Layout: sector 0-15 system area (zeroed), 16 = PVD, 17 = descriptor
+// terminator, 18-19 unused; directories and file data are packed into the
+// sectors that follow, each 2048 bytes. Level 1 naming: files are
+// `NAME.EXT;1` with the name ≤ 8 chars and extension ≤ 3 (both uppercase),
+// directories `NAME;1` ≤ 8 chars. Subdirectory records reference the child
+// directory's data sector; file records reference the file's data sector.
+
+const ISO_SECTOR: u64 = 2048;
+const ISO_PVD_SECTOR: u64 = 16;
+
+/// One planned file: its ISO-level name, source path, size.
+struct IsoFile {
+    iso_name: String,
+    src: PathBuf,
+    size: u64,
+    sector: u64,
+}
+
+/// One planned directory (built recursively).
+struct IsoDir {
+    iso_name: String,        // ISO-level dir name ("" for root)
+    files: Vec<IsoFile>,
+    dirs: Vec<IsoDir>,
+    sector: u64,             // data sector (assigned in layout pass)
+    data_len: u32,           // directory data byte count (records only)
+}
+
+/// Converts a host filename to ISO 9660 Level 1: only `[A-Z0-9_]` survive
+/// (Level 1 forbids lowercase and most punctuation; internal dots would break
+/// the 8.3 split), capped at 8 for the stem and 3 for the extension. Returns
+/// (name, extension).
+fn l1_split(name: &str) -> (String, String) {
+    let upper = name.to_uppercase();
+    let clean: String = upper.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { ' ' }).collect();
+    // Split on the first space run — everything after a non-identifier char
+    // becomes the extension hint (the LAST token, matching file.ext semantics).
+    let parts: Vec<&str> = clean.split(' ').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return ("FILE".to_string(), String::new());
+    }
+    if parts.len() == 1 {
+        let stem = &parts[0][..parts[0].len().min(8)];
+        return (stem.to_string(), String::new());
+    }
+    let stem = &parts[0][..parts[0].len().min(8)];
+    // Last identifier is the extension; anything between is folded into stem.
+    let ext = &parts[parts.len() - 1][..parts[parts.len() - 1].len().min(3)];
+    (stem.to_string(), ext.to_string())
+}
+
+/// Resolves 8.3 name collisions within one directory: files and subdirectories
+/// share the same Level-1 namespace, and two hostnames can map to the same
+/// truncated ISO name. A duplicate gets a `~N` suffix on the stem (e.g.
+/// LONGFILE.TXT → LONGFI~1.TXT) so every record stays unique.
+fn dedup_iso_names(files: &mut Vec<IsoFile>, dirs: &mut Vec<IsoDir>) {
+    use std::collections::HashMap;
+    let mut seen: HashMap<String, u32> = HashMap::new();
+    let mut fix = |iso_name: &mut String| {
+        let mut n = *seen.get(iso_name).unwrap_or(&0);
+        seen.insert(iso_name.clone(), n + 1);
+        if n > 0 {
+            // suffix ~N must fit in 8-char stem: base name minus suffix.
+            // Strip the `;N` version marker first so the suffix lands before it
+            // (a `;` mid-name would be an illegal Level-1 name).
+            let (base, ver) = match iso_name.rfind(';') {
+                Some(i) => (iso_name[..i].to_string(), iso_name[i..].to_string()),
+                None => (iso_name.clone(), String::new()),
+            };
+            loop {
+                let (stem, ext) = match base.rfind('.') {
+                    Some(i) => (base[..i].to_string(), base[i..].to_string()),
+                    None => (base.clone(), String::new()),
+                };
+                let suffix = format!("~{}", n);
+                let room = 8usize.saturating_sub(suffix.len());
+                let new_stem = if stem.len() > room {
+                    format!("{}{}", &stem[..room], suffix)
+                } else {
+                    format!("{}{}", stem, suffix)
+                };
+                let candidate = format!("{}{}{}", new_stem, ext, ver);
+                let c = seen.entry(candidate.clone()).or_insert(0);
+                *c += 1;
+                if *c == 1 {
+                    *iso_name = candidate;
+                    break;
+                }
+                n += 1;
+            }
+        }
+    };
+    for f in files.iter_mut() { fix(&mut f.iso_name); }
+    for d in dirs.iter_mut() { fix(&mut d.iso_name); }
+}
+
+/// Collects files under `base` into a directory tree (rel paths use '/').
+fn collect_iso_tree(base: &Path) -> Result<IsoDir, String> {
+    fn build(base: &Path, rel: &str) -> Result<IsoDir, String> {
+        let mut dir = IsoDir {
+            iso_name: if rel.is_empty() { String::new() } else {
+                let n = rel.rsplit('/').next().unwrap_or(rel);
+                let (s, _e) = l1_split(n); s
+            },
+            files: Vec::new(),
+            dirs: Vec::new(),
+            sector: 0,
+            data_len: 0,
+        };
+        let mut entries: Vec<_> = fs::read_dir(base).map_err(|e| format!("read_dir {}: {e}", base.display()))?
+            .collect::<Result<_, _>>().map_err(|e| format!("read_dir {}: {e}", base.display()))?;
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let meta = entry.metadata().map_err(|e| format!("metadata {}: {e}", path.display()))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if meta.is_file() {
+                if meta.len() >= u32::MAX as u64 {
+                    return Err(format!("ISO: file too large for Level 1 (>4GiB): {name}"));
+                }
+                let (stem, ext) = l1_split(&name);
+                let iso_name = if ext.is_empty() { format!("{stem};1") } else { format!("{stem}.{ext};1") };
+                dir.files.push(IsoFile {
+                    iso_name, src: path, size: meta.len(), sector: 0,
+                });
+            } else if meta.is_dir() {
+                let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+                let sub = build(&path, &child_rel)?;
+                dir.dirs.push(sub);
+            }
+        }
+        dedup_iso_names(&mut dir.files, &mut dir.dirs);
+        Ok(dir)
+    }
+    if base.is_file() {
+        let name = base.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let parent = base.parent().unwrap_or(base);
+        let mut root = IsoDir { iso_name: String::new(), files: Vec::new(), dirs: Vec::new(), sector: 0, data_len: 0 };
+        let (stem, ext) = l1_split(&name);
+        let iso_name = if ext.is_empty() { format!("{stem};1") } else { format!("{stem}.{ext};1") };
+        root.files.push(IsoFile { iso_name, src: base.to_path_buf(), size: base.metadata().map(|m| m.len()).unwrap_or(0), sector: 0 });
+        let _ = parent;
+        return Ok(root);
+    }
+    build(base, "")
+}
+
+/// Builds one directory record blob for a file or child dir.
+fn iso_dir_record(iso_name: &str, extent: u64, data_len: u64, is_dir: bool) -> Vec<u8> {
+    let flags: u8 = if is_dir { 0x02 } else { 0x00 };
+    let name_bytes = iso_name.as_bytes();
+    let pad = (name_bytes.len() + 1) % 2; // odd name → pad byte so records are even
+    let mut rec = vec![0u8; 33 + name_bytes.len() + pad];
+    rec[0] = rec.len() as u8;                 // record length
+    rec[1] = 0;                               // extended attribute record length
+    let ext = extent as u32;
+    rec[2..6].copy_from_slice(&ext.to_le_bytes());
+    rec[6..10].copy_from_slice(&ext.to_be_bytes());
+    let dl = data_len as u32;
+    rec[10..14].copy_from_slice(&dl.to_le_bytes());
+    rec[14..18].copy_from_slice(&dl.to_be_bytes());
+    // date (7 bytes): 6 packed digits + GMT offset — zero is "not recorded".
+    // rec[18..25] stays zero.
+    rec[25] = flags;                          // file flags
+    rec[26] = 0; rec[27] = 0;                 // unit size, interleave gap
+    rec[28..30].copy_from_slice(&1u16.to_le_bytes()); // volume seq num LE
+    rec[30..32].copy_from_slice(&1u16.to_be_bytes()); // volume seq num BE
+    rec[32] = name_bytes.len() as u8;
+    rec[33..33 + name_bytes.len()].copy_from_slice(name_bytes);
+    rec
+}
+
+/// Serializes a directory's data area (records for '.', '..', files, child dirs).
+/// `parent_sector` is the parent directory's data sector (root points at itself).
+fn iso_dir_data(dir: &IsoDir, parent_sector: u64) -> Vec<u8> {
+    let mut blob = Vec::new();
+    blob.extend(iso_dir_record("\x00", dir.sector, dir.data_len as u64, true));        // "."
+    blob.extend(iso_dir_record("\x01", parent_sector, 0, true));                       // ".."
+    for f in &dir.files {
+        blob.extend(iso_dir_record(&f.iso_name, f.sector, f.size, false));
+    }
+    for d in &dir.dirs {
+        blob.extend(iso_dir_record(&d.iso_name, d.sector, d.data_len as u64, true));
+    }
+    blob
+}
+
+/// Recursive sector allocation: a directory is assigned its data sector, then
+/// its files, then each child directory (recursively — children get sectors
+/// AND their own children/files, depth-first). Returns the next free sector.
+fn alloc_dir(dir: &mut IsoDir, mut s: u64) -> u64 {
+    dir.sector = s;
+    s += (dir.data_len as u64).div_ceil(ISO_SECTOR);
+    for f in &mut dir.files {
+        f.sector = s;
+        s += (f.size).div_ceil(ISO_SECTOR);
+    }
+    for d in &mut dir.dirs {
+        s = alloc_dir(d, s);
+    }
+    s
+}
+
+/// Two-pass layout: compute every directory's data_len bottom-up (record blob
+/// lengths depend only on names/sizes, not sectors), then allocate sectors
+/// recursively depth-first.
+fn layout_iso(root: &mut IsoDir, next_sector: u64) -> u64 {
+    // Pre-pass: compute every directory's data_len bottom-up.
+    fn compute_lens(dir: &mut IsoDir) {
+        for d in &mut dir.dirs { compute_lens(d); }
+        let mut len: u64 = 0;
+        len += iso_dir_record("\x00", 0, 0, true).len() as u64;
+        len += iso_dir_record("\x01", 0, 0, true).len() as u64;
+        for f in &dir.files { len += iso_dir_record(&f.iso_name, 0, 0, false).len() as u64; }
+        for d in &dir.dirs { len += iso_dir_record(&d.iso_name, 0, 0, true).len() as u64; }
+        dir.data_len = len as u32;
+    }
+    compute_lens(root);
+    alloc_dir(root, next_sector)
+}
+
+/// Writes the finished ISO image. `root` must be laid out first.
+fn write_iso(root: &IsoDir, output: &str) -> Result<(), String> {
+    // Total size: last data block end. Walk the tree to find max sector+blocks.
+    fn tree_end(dir: &IsoDir) -> u64 {
+        let mut end = dir.sector + (dir.data_len as u64).div_ceil(ISO_SECTOR);
+        for f in &dir.files {
+            end = end.max(f.sector + (f.size).div_ceil(ISO_SECTOR));
+        }
+        for d in &dir.dirs { end = end.max(tree_end(d)); }
+        end
+    }
+    let total_blocks = tree_end(root);
+    let mut img = vec![0u8; (total_blocks * ISO_SECTOR) as usize];
+    // PVD.
+    let pvd = &mut img[(ISO_PVD_SECTOR * ISO_SECTOR) as usize..((ISO_PVD_SECTOR + 1) * ISO_SECTOR) as usize];
+    pvd[0] = 1;
+    pvd[1..6].copy_from_slice(b"CD001");
+    pvd[6] = 1;
+    // Volume space size (blocks, LE+BE).
+    pvd[80..84].copy_from_slice(&(total_blocks as u32).to_le_bytes());
+    pvd[84..88].copy_from_slice(&(total_blocks as u32).to_be_bytes());
+    // Root dir record at PVD offset 156.
+    let root_rec = iso_dir_record("\x00", root.sector, root.data_len as u64, true);
+    pvd[156..156 + root_rec.len()].copy_from_slice(&root_rec);
+    // Descriptor terminator at sector 17.
+    let term = &mut img[(17 * ISO_SECTOR) as usize..(18 * ISO_SECTOR) as usize];
+    term[0] = 255;
+    term[1..6].copy_from_slice(b"CD001");
+    term[6] = 1;
+    // Directory data + file data.
+    fn write_node(img: &mut [u8], dir: &IsoDir, parent_sector: u64) -> Result<(), String> {
+        let blob = iso_dir_data(dir, parent_sector);
+        let base = (dir.sector * ISO_SECTOR) as usize;
+        img[base..base + blob.len()].copy_from_slice(&blob);
+        for f in &dir.files {
+            let start = (f.sector * ISO_SECTOR) as usize;
+            let mut src = fs::File::open(&f.src).map_err(|e| format!("ISO open {}: {e}", f.src.display()))?;
+            src.read_exact(&mut img[start..start + f.size as usize])
+                .map_err(|e| format!("ISO read {}: {e}", f.src.display()))?;
+        }
+        for d in &dir.dirs { write_node(img, d, dir.sector)?; }
+        Ok(())
+    }
+    write_node(&mut img, root, root.sector)?;
+    fs::write(output, &img).map_err(|e| format!("ISO write {output}: {e}"))
+}
+
+/// Packs a directory (or single file) into an ISO 9660 Level 1 image.
+fn create_iso(input: &str, output: &str) -> Result<u32, String> {
+    let mut root = collect_iso_tree(Path::new(input))?;
+    if root.files.is_empty() && root.dirs.is_empty() {
+        return Err("ISO: no files to archive".to_string());
+    }
+    let total: u64 = root.files.iter().map(|f| f.size).sum();
+    // The writer builds the whole image in memory (simplest correct layout);
+    // cap the total so a multi-GB directory can't OOM the app.
+    if total > 1024 * 1024 * 1024 {
+        return Err("ISO: total size exceeds 1 GiB (packing limit)".to_string());
+    }
+    compress_progress::reset(total);
+    layout_iso(&mut root, 20);
+    write_iso(&root, output)?;
+    Ok(root.files.len() as u32)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoCreateArchive(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jboolean {
+    compress_progress::clear_cancel();
+    let inp = s(&mut e, &i); let out = s(&mut e, &o);
+    match guarded(move || create_iso(&inp, &out)) {
+        Ok(_) => JNI_TRUE,
+        Err(er) => { let _ = e.throw_new("java/io/IOException", format!("iso: {er}")); JNI_FALSE }
+    }
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoCompressProgressCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoCompressProgressTotal(_: JNIEnv, _: JClass) -> jlong { compress_progress::total_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoCompressProgressFileCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::file_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoCompressProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { compress_progress::file_total() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoCompressProgressName(e: JNIEnv, _: JClass) -> jstring {
+    e.new_string(&compress_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoCompressCancel(_: JNIEnv, _: JClass) { compress_progress::cancel(); }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +510,125 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         extract_iso_all(iso_path.to_str().unwrap(), out.to_str().unwrap()).unwrap();
         assert_eq!(std::fs::read(out.join("HELLO.TXT")).unwrap(), content);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// create_iso (Level 1 writer) → list + extract round-trips.
+    #[test]
+    fn create_iso_then_extract_round_trip() {
+        let dir = std::env::temp_dir().join(format!("uu_iso_w_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src/sub")).unwrap();
+        let a = dir.join("src/hello.txt");
+        let b = dir.join("src/sub/data.bin");
+        let content_a = b"hello iso world";
+        let content_b: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&a, content_a).unwrap();
+        std::fs::write(&b, &content_b).unwrap();
+
+        let iso_path = dir.join("out.iso");
+        create_iso(dir.join("src").to_str().unwrap(), iso_path.to_str().unwrap()).expect("create_iso");
+
+        let list = list_iso(iso_path.to_str().unwrap()).unwrap();
+        assert!(list.contains("HELLO.TXT"), "list: {list}");
+        assert!(list.contains("DATA.BIN"), "list: {list}");
+
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        extract_iso_all(iso_path.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+        assert_eq!(std::fs::read(out.join("HELLO.TXT")).unwrap(), content_a);
+        assert_eq!(std::fs::read(out.join("SUB/DATA.BIN")).unwrap(), content_b);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Deeply nested directories (4+ levels) must survive layout + extraction —
+    /// sector allocation is recursive, not limited to two levels.
+    #[test]
+    fn create_iso_deep_nesting_round_trip() {
+        let dir = std::env::temp_dir().join(format!("uu_iso_deep_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("a/b/c/d")).unwrap();
+        std::fs::write(dir.join("a/root.txt"), b"root").unwrap();
+        std::fs::write(dir.join("a/b/one.txt"), b"one").unwrap();
+        std::fs::write(dir.join("a/b/c/two.txt"), b"two").unwrap();
+        std::fs::write(dir.join("a/b/c/d/three.txt"), b"three").unwrap();
+        let iso_path = dir.join("deep.iso");
+        create_iso(dir.join("a").to_str().unwrap(), iso_path.to_str().unwrap()).expect("create_iso deep");
+
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        extract_iso_all(iso_path.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+        assert_eq!(std::fs::read(out.join("ROOT.TXT")).unwrap(), b"root");
+        assert_eq!(std::fs::read(out.join("B/ONE.TXT")).unwrap(), b"one");
+        assert_eq!(std::fs::read(out.join("B/C/TWO.TXT")).unwrap(), b"two");
+        assert_eq!(std::fs::read(out.join("B/C/D/THREE.TXT")).unwrap(), b"three");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 8.3 collisions get distinct `~N` names so records don't overwrite.
+    #[test]
+    fn create_iso_dedups_83_collisions() {
+        let dir = std::env::temp_dir().join(format!("uu_iso_dedup_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("longfilename.txt"), b"first").unwrap();
+        std::fs::write(dir.join("longfilenam2.txt"), b"second").unwrap();
+        let iso_path = dir.join("d.iso");
+        create_iso(dir.to_str().unwrap(), iso_path.to_str().unwrap()).expect("create_iso dedup");
+
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        extract_iso_all(iso_path.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+        // Both files must exist under distinct names with correct contents.
+        let files = std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect::<Vec<_>>();
+        assert_eq!(files.len(), 2, "both deduped files present: {files:?}");
+        let mut contents: Vec<String> = Vec::new();
+        for f in files {
+            contents.push(String::from_utf8_lossy(&std::fs::read(out.join(&f)).unwrap()).to_string());
+        }
+        contents.sort();
+        assert_eq!(contents, vec!["first".to_string(), "second".to_string()]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Files ≥ 4 GiB are rejected up front (Level 1 size field is u32).
+    #[test]
+    fn create_iso_rejects_over_4gib() {
+        // A sparse file > 4 GiB (occupies no real disk) must be rejected.
+        let dir = std::env::temp_dir().join(format!("uu_iso_big_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.bin");
+        let f = std::fs::OpenOptions::new().create(true).write(true).open(&big).unwrap();
+        f.set_len(u32::MAX as u64 + 1).unwrap();
+        drop(f);
+        let iso_path = dir.join("big.iso");
+        assert!(create_iso(dir.to_str().unwrap(), iso_path.to_str().unwrap()).is_err(),
+            ">4GiB file must be rejected");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Extensionless files that collide after 8.3 truncation must get a legal
+    /// `~N` name with the `;1` version marker preserved (not a mid-name `;`).
+    #[test]
+    fn create_iso_dedup_extensionless_collision() {
+        let dir = std::env::temp_dir().join(format!("uu_iso_extless_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Both truncate to "ABCDEFGH;1" under Level 1 (8-char stem, no ext);
+        // distinct under a case-insensitive FS (macOS default).
+        std::fs::write(dir.join("abcdefgh"), b"one").unwrap();
+        std::fs::write(dir.join("abcdefghi"), b"two").unwrap();
+        let iso_path = dir.join("d.iso");
+        create_iso(dir.to_str().unwrap(), iso_path.to_str().unwrap()).expect("create_iso extless dedup");
+
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        extract_iso_all(iso_path.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+        let files = std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect::<Vec<_>>();
+        assert_eq!(files.len(), 2, "both extless files present: {files:?}");
+        let mut contents: Vec<String> = Vec::new();
+        for f in files {
+            // The deduped name may be ABCDEF~1 or similar — just check contents.
+            contents.push(String::from_utf8_lossy(&std::fs::read(out.join(&f)).unwrap()).to_string());
+        }
+        contents.sort();
+        assert_eq!(contents, vec!["one".to_string(), "two".to_string()]);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -22,7 +22,13 @@ fn extract_zst(input: &str, output: &str) -> Result<u32, String> {
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
     let mut dec = ruzstd::decoding::StreamingDecoder::new(File::open(input).map_err(|e| format!("zstd: {e}"))?)
         .map_err(|e| format!("zstd: {e}"))?;
-    let mut writer = ProgressWriter::extract(File::create(&dest).map_err(|e| format!("{e}"))?);
+    // Frame header may carry a content size, but the streaming decoder doesn't
+    // expose it pre-decode → bound output with the shared hard cap.
+    let mut writer = ProgressWriter::extract(
+        archive_common::BoundedWriter::new(
+            File::create(&dest).map_err(|e| format!("{e}"))?,
+            archive_common::DEFAULT_EXTRACT_CAP,
+        ));
     extract_progress::reset(0);
     extract_progress::set_name(&name);
     extract_progress::set_file(0);

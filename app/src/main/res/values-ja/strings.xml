@@ -6,6 +6,22 @@
     <string name="action_preview">プレビュー</string>
     <string name="action_confirm">決定</string>
     <string name="action_cancel">キャンセル</string>
+    <string name="action_edit">編集</string>
+    <string name="action_save">保存</string>
+    <string name="title_text_editor">テキスト編集</string>
+    <string name="msg_saved">保存しました</string>
+    <string name="preview_looks_utf8_hint">このファイルは UTF-8 のように見えます——文字がおかしい場合は 設定→テキストエンコーディング で UTF-8 に切り替えてください</string>
+    <string name="msg_editor_too_large">ファイルが大きすぎてアプリ内で編集できません(&gt;2MB)</string>
+    <string name="msg_tjs_compiled">コンパイル済み TJS スクリプト（TJS2 バイナリ）のため、テキストとしてプレビューできません</string>
+    <string name="edit_archive">編集</string>
+    <string name="edit_only_pack">対応するのはパック可能な形式のみです（XP3/PFS）</string>
+    <string name="edit_archive_title">スクリプト編集</string>
+    <string name="edit_repack">再パック</string>
+    <string name="edit_no_scripts">編集可能なスクリプトが見つかりません</string>
+    <string name="edit_done">%1$s を作成しました</string>
+    <string name="msg_repacking">再パック中</string>
+    <string name="title_compress_options">圧縮オプション</string>
+    <string name="title_level">圧縮レベル</string>
     <string name="action_close">閉じる</string>
     <string name="action_search">検索</string>
     <string name="action_delete">🗑️ 削除</string>
@@ -321,6 +337,9 @@ Kirikiri2 セーブ；圧縮は .txt のみ受付</item>
         <item>操作フロー
 アーカイブをタップ → 右下ボタン → 直接プレビュー（形式自動認識）；「すべて解凍」で同名フォルダへ一括解凍、「選択解凍」で保存先を選択</item>
             <item>シグネチャスキャン（binwalk）\nファイル長押し → スキャン：埋め込まれた圧縮/画像シグネチャを検出（動画内に埋め込まれた ZIP 等）、オフセットと形式を表示、ZIP はファイル数付き。各ヒットに2つのボタン：「解凍」はアーカイブを直接プレビュー/解凍、「切り出し」は生のセグメントを独立ファイルとして保存；失敗時は具体的な理由を表示</item>
+        <item>アーカイブ内のスクリプト編集\nXP3/PFS プレビューを開き「編集」をタップ：自動で解凍 → スクリプト一覧（.ks/.tjs/.csv/…）→ 1つを選んで明示的エンコーディングで編集（保存時は元のバイト順を維持）→「再パック」で同フォルダに「原名-cn.xp3/pfs」を作成</item>
+        <item>エンコーディングと文字化け\n各プレビュー/エディタにエンコーディング行があります：タップで UTF-8/SHIFT-JIS/GBK/UTF-16 を切替、テキストは即座に再描画；BOM 付きの UTF-16/UTF-8 ファイルは正しいエンコーディングで自動オープン；非 UTF-8 の誤ったエンコーディングで読むと「UTF-8 に見えます」とヒント</item>
+        <item>スクロールと自動更新\n長いリストの右側に常時表示のドラッグハンドル（掴んでドラッグで移動）；テキストプレビュー/エディタにもドラッグ可能なスクロールバー。現在のフォルダに変更（名前変更/移動/削除/解凍/圧縮、USB 等の外部変更）があるとファイル一覧が自動更新されます</item>
 </string-array>
 
 
@@ -369,4 +388,20 @@ Kirikiri2 セーブ；圧縮は .txt のみ受付</item>
     <string name="scan_carve">切り出し (dd)</string>
     <string name="scan_extract_not_archive">このヒットはアーカイブではありません。「切り出し」で生のセグメントを保存してください</string>
     <string name="scan_zip_info">、ファイル数：%1$d</string>
+    <string name="drawer_quick_paths">クイックパス</string>
+    <string name="drawer_add_current">+ 現在のパスを追加</string>
+    <string-array name="search_size_limits">
+        <item>100 KB</item>
+        <item>500 KB</item>
+        <item>1 MB</item>
+        <item>5 MB</item>
+        <item>10 MB</item>
+    </string-array>
+    <string name="unit_mb">MB</string>
+    <string name="unit_gb">GB</string>
+    <string-array name="split_size_labels">
+        <item>1MB</item>
+        <item>100MB</item>
+        <item>1GB</item>
+    </string-array>
 </resources>

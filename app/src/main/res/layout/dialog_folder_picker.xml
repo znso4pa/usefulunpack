@@ -49,6 +49,10 @@
         android:layout_weight="1"
         android:divider="@color/divider"
         android:dividerHeight="1dp"
-        android:listSelector="#40ffffff" />
+        android:listSelector="#40ffffff"
+        android:fastScrollEnabled="true"
+        android:fastScrollAlwaysVisible="true"
+        android:fastScrollThumbDrawable="@drawable/fastscroll_thumb"
+        android:fastScrollTrackDrawable="@drawable/fastscroll_track" />
 
 </LinearLayout>

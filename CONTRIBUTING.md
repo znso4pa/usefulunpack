@@ -35,14 +35,26 @@ Please include screenshots or a brief note confirming each item in the PR descri
 ```
 usefulunpack/
 ├── app/src/main/java/com/usefulunpacker/   # Android app (Kotlin)
-│   ├── MainActivity.kt                     # UI, file browser, extraction workflow
+│   ├── MainActivity.kt                     # Activity shell — lifecycle + wiring; the logic
+│   │                                       #   was split out below (MainActivity is ~360 lines)
+│   ├── browse/                             # nav()/select()/extract flow, multi-select
+│   ├── batch/                              # batch extract / compress / preview
+│   ├── extract/                            # extract-all / extract-selected, preview flow, edit+repack
+│   ├── search/                             # global search, in-archive search, search-source resolution
+│   ├── ui/                                 # dialogs: settings, help, folder picker, text preview/editor, format picker
+│   ├── fileops/                            # signature scan, carve, delete-with-progress, rename/move
+│   ├── compression/                        # compress dispatch + inline compress options
+│   ├── archive/                            # extractor helpers + PollingProgressDialog accessors
+│   ├── util/                               # constants, file utils, text encoding auto-detection
 │   ├── Xp3Core.kt / ZipCore.kt / ...       # Per-format JNI bridge objects
 │   └── ArchiveCore.kt                      # Shared helpers
 ├── crates/                                  # Rust native libraries
-│   ├── common/                              # Shared utilities (json_escape, safe_join, etc.)
-│   ├── xp3-core/ / pfs-core/ / ...         # Per-format cdylib crates
-│   ├── rar-core/                            # RAR extraction (rars crate)
-│   └── lz4-core/                            # LZ4 decompression (lz4_flex crate)
+│   ├── common/                              # Shared utilities (json_escape, safe_join, progress statics, BoundedWriter, etc.)
+│   ├── xp3-core/ / pfs-core/ / nsa-core/ / ypf-core/ / iso-core/   # Per-format cdylib crates
+│   ├── zip-core/ / sevenz-core/ / rar-core/ / tar-core/ / ksd-core/
+│   ├── lz4-core/ / gzip-core/ / bzip2-core/ / xz-core/ / zstd-core/ / lzma-core/
+│   ├── scan-core/                           # Signature scan engine (binwalk-style, no deps)
+│   └── vendor/                              # Vendored forks (rars, sevenz-rust, isomage) + [patch.crates-io]
 ├── build.sh                                 # One-command: Rust cross-compile + Gradle APK
 ├── Cargo.toml                               # Workspace root
 └── build.gradle                             # Gradle project config
@@ -68,7 +80,7 @@ Each format is an independent `.so` loaded via `System.loadLibrary`. Kotlin `*Co
 bash build.sh
 ```
 
-This cross-compiles all 9 Rust crates for `arm64-v8a`, `armeabi-v7a`, `x86_64`, copies `.so` files into `app/src/main/jniLibs/`, then runs `gradlew assembleRelease`.
+This cross-compiles all Rust workspace crates for `arm64-v8a`, `armeabi-v7a`, `x86_64`, copies `.so` files into `app/src/main/jniLibs/`, then runs `gradlew assembleRelease`.
 
 ## Adding a New Archive Format
 
@@ -85,7 +97,8 @@ This cross-compiles all 9 Rust crates for `arm64-v8a`, `armeabi-v7a`, `x86_64`, 
    - `EXT_FORMAT_MAP` — add file extension mapping (if any)
    - `tryExtractWithPassword()` / `showPasswordDialog()` — add password branches if encryption is supported
 5. Add the crate to `Cargo.toml` workspace members and `build.sh` `CRATES` array
-6. Add string resources for error messages in `res/values/strings.xml`
+6. Report byte-level progress: call `extract_progress::reset/set_file/add_bytes` (and `compress_progress::*` for packing) so the shared dual-bar dialog works, and register the format in Kotlin `extractAccessors()`/`compressAccessors()`
+7. Add string resources for error messages in `res/values/strings.xml`
 
 ## Code Conventions
 
@@ -100,12 +113,25 @@ This cross-compiles all 9 Rust crates for `arm64-v8a`, `armeabi-v7a`, `x86_64`, 
 
 ## Testing
 
-Currently tested via manual APK installation and smoke-test extraction. For Rust changes, run at minimum:
+Rust unit tests + manual APK smoke tests. CI runs the full workspace suite; run it locally before opening a PR:
 ```bash
-cargo check -p archive_<name>_core
+cargo test --workspace
 ```
 
-Future goal: automated unit tests in each crate and CI/CD with cross-compilation verification.
+What the Rust tests cover (so you know what to keep green):
+- **Round-trips / real corpus** — each `*_core` crate packs then extracts, and checks byte equality. A real-world corpus (`files4testing` ~423 vectors + 13 injected faults across 14 formats) is used for compatibility: valid archives must extract with matching hashes, and the injected faults (truncated / corrupted / wrong password / missing volume) must be cleanly rejected.
+- **Security / malicious headers** — unit tests assert that crafted inputs are rejected without abort: decompression bombs (output capped via `BoundedWriter`/declared sizes), huge header quantities (7z num_files/coders, ISO directory sizes), negative/overflowing lengths (KSD, PFS offsets), path traversal (`safe_join`), and stack-depth limits (ISO directories).
+- **Signature scan** — scan-core ships real-compressed-sample vectors (gzip/bzip2/xz/zstd/lz4/lzma) so byte-order / bitfield regressions are caught.
+
+Kotlin changes are smoke-tested by building the APK:
+```bash
+bash build.sh   # or: ./gradlew :app:assembleRelease  (Kotlin-only changes)
+```
+
+Real-device points to check before merging UI/ROM-sensitive changes:
+- Honor/EMUI: custom ScrollViews/TextViews/EditTexts must NOT enable native scrollbars (the ROM NPEs in `onDrawScrollBars`); lists use the draggable fast-scroll handle instead.
+- Cancel mid-extraction into a fresh folder must delete the whole output; a cancelled carve must not hand a partial file to the extractor.
+- Text preview/editor: UTF-16/UTF-8 BOM auto-detection, encoding inline switch, and the "looks like UTF-8" hint on garbled reads.
 
 ## Before Submitting a PR
 

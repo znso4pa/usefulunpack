@@ -35,14 +35,26 @@
 ```
 usefulunpack/
 ├── app/src/main/java/com/usefulunpacker/   # Android 应用 (Kotlin)
-│   ├── MainActivity.kt                     # 界面、文件浏览器、解压流程
+│   ├── MainActivity.kt                     # Activity 外壳 — 生命周期与装配；业务逻辑已拆出
+│   │                                       #   （MainActivity 约 360 行）
+│   ├── browse/                             # nav()/select()/解压流程、多选
+│   ├── batch/                              # 批量解压/压缩/预览
+│   ├── extract/                            # 解压全部/所选、预览流程、编辑+重打包
+│   ├── search/                             # 全局搜索、归档内搜索、搜索源解析
+│   ├── ui/                                 # 对话框：设置、帮助、文件夹选择、文本预览/编辑器、格式选择
+│   ├── fileops/                            # 签名扫描、切割、删除进度、重命名/移动
+│   ├── compression/                        # 压缩派发 + 内联压缩选项
+│   ├── archive/                            # 解压辅助 + PollingProgressDialog 访问器
+│   ├── util/                               # 常量、文件工具、文本编码自动探测
 │   ├── Xp3Core.kt / ZipCore.kt / ...       # 各格式 JNI 桥接对象
 │   └── ArchiveCore.kt                      # 共享工具函数
 ├── crates/                                  # Rust 原生库
-│   ├── common/                              # 共享工具 (json_escape, safe_join 等)
-│   ├── xp3-core/ / pfs-core/ / ...         # 各格式 cdylib crate
-│   ├── rar-core/                            # RAR 解压 (rars crate)
-│   └── lz4-core/                            # LZ4 解压缩 (lz4_flex crate)
+│   ├── common/                              # 共享工具 (json_escape, safe_join, 进度静态量, BoundedWriter 等)
+│   ├── xp3-core/ / pfs-core/ / nsa-core/ / ypf-core/ / iso-core/   # 各格式 cdylib crate
+│   ├── zip-core/ / sevenz-core/ / rar-core/ / tar-core/ / ksd-core/
+│   ├── lz4-core/ / gzip-core/ / bzip2-core/ / xz-core/ / zstd-core/ / lzma-core/
+│   ├── scan-core/                           # 签名扫描引擎 (binwalk 风格, 零依赖)
+│   └── vendor/                              # 内购分叉 (rars, sevenz-rust, isomage) + [patch.crates-io]
 ├── build.sh                                 # 一键构建: Rust 交叉编译 + Gradle APK
 ├── Cargo.toml                               # 工作区根配置
 └── build.gradle                             # Gradle 项目配置
@@ -100,12 +112,25 @@ bash build.sh
 
 ## 测试
 
-目前通过手动安装 APK 和冒烟测试进行验证。对于 Rust 的更改，至少运行：
+Rust 单元测试 + 手动 APK 冒烟测试。CI 会运行完整工作区套件，PR 前请在本地运行：
 ```bash
-cargo check -p archive_<name>_core
+cargo test --workspace
 ```
 
-后续计划：在每个 crate 中添加自动化单元测试，以及通过 CI/CD 进行交叉编译验证。
+Rust 测试覆盖内容（保持全绿）：
+- **往返 / 真实语料** — 各 `*_core` crate 封包后再解包并逐字节比对。使用真实语料库 `files4testing`（约 423 向量 + 13 条注入故障，覆盖 14 种格式）：合法归档必须解出哈希一致，注入的故障（截断/损坏/错密码/缺卷）必须被干净拒绝。
+- **安全 / 恶意头** — 单元测试断言构造输入在不上崩的前提下被拒绝：解压炸弹（经 `BoundedWriter`/声明大小封顶输出）、超大头部数量（7z num_files/coders、ISO 目录大小）、负数/溢出长度（KSD、PFS 偏移）、路径穿越（`safe_join`）、栈深度限制（ISO 目录）。
+- **签名扫描** — scan-core 内置真实压缩样本向量（gzip/bzip2/xz/zstd/lz4/lzma），防止字节序/位域回归。
+
+Kotlin 改动通过构建 APK 冒烟验证：
+```bash
+bash build.sh   # 或: ./gradlew :app:assembleRelease  (仅 Kotlin 改动)
+```
+
+涉及 UI/ROM 的改动合并前真机要点：
+- 荣耀/EMUI：自定义 ScrollView/TextView/EditText **不得启用原生滚动条**（该 ROM 在 `onDrawScrollBars` 上 NPE）；列表使用可拖快滑把手。
+- 解压中取消到新建文件夹必须整目录删除；取消切割不得把半成品文件交给解压器。
+- 文本预览/编辑器：UTF-16/UTF-8 BOM 自动探测、编码内联切换、乱码时"看起来是 UTF-8"提示。
 
 ## 提交 PR 前
 

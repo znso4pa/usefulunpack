@@ -52,10 +52,11 @@ private val ARCHIVE_LABELS = mapOf(
     "LZMA compressed data" to "lzma",
     "XP3 archive" to "xp3",
     "ISO 9660 disc image" to "iso",
+    "POSIX tar archive" to "tar",
 )
 
 /** Formats whose native readers require the archive at byte 0 (must carve first). */
-private val NEEDS_CARVE = setOf("7z", "gz", "bz2", "xz", "zst", "lzma", "lz4", "xp3")
+private val NEEDS_CARVE = setOf("7z", "gz", "bz2", "xz", "zst", "lzma", "lz4", "xp3", "tar")
 
 /** rars scans only the first 8 MiB for an embedded RAR signature. */
 private const val RAR_SCAN_LIMIT = 8L * 1024 * 1024
@@ -89,6 +90,7 @@ private val ARCHIVE_EXT_FOR_LABEL = mapOf(
     "LZMA compressed data" to "lzma",
     "XP3 archive" to "xp3",
     "ISO 9660 disc image" to "iso",
+    "POSIX tar archive" to "tar",
 )
 
 /** Copies [src] from [offset] for [length] bytes (null = to the end of the
@@ -98,7 +100,13 @@ private val ARCHIVE_EXT_FOR_LABEL = mapOf(
  *  header / zstd / lz4 / iso). */
 fun carveToFile(src: File, offset: Long, length: Long?, dest: File, onProgress: (Long) -> Unit) {
     FileInputStream(src).use { input ->
-        input.skip(offset)
+        // skip() is not guaranteed to advance the full distance — loop it.
+        var toSkip = offset
+        while (toSkip > 0) {
+            val n = input.skip(toSkip)
+            if (n <= 0) break
+            toSkip -= n
+        }
         FileOutputStream(dest).use { out ->
             val buf = ByteArray(1 shl 20)
             var remaining = length
@@ -116,11 +124,11 @@ fun carveToFile(src: File, offset: Long, length: Long?, dest: File, onProgress: 
 }
 
 /** Signature / magic-pattern counts reported by the Rust scan-core (kept in
- *  sync with validators.rs: 21 signatures, 67 magic patterns — bzip2 has 9
+ *  sync with validators.rs: 22 signatures, 68 magic patterns — bzip2 has 9
  *  variants, gif 2, jpeg 3, lzma 36 (4 props × 9 dict prefixes), iso 1,
  *  everything else 1). */
-private const val SCAN_SIG_COUNT = 21
-private const val SCAN_PATTERN_COUNT = 67
+private const val SCAN_SIG_COUNT = 22
+private const val SCAN_PATTERN_COUNT = 68
 
 /** binwalk-style scan dialog (Rust scan-core + byte-level progress bar). */
 internal fun MainActivity.showSignatureScan(f: File) {
@@ -215,6 +223,7 @@ private fun MainActivity.showScanResultDialog(f: File, hits: List<ScanHit>, elap
         this.adapter = adapter
         divider = android.graphics.drawable.ColorDrawable(C["surface_dark"]!!)
         dividerHeight = 1
+        enableFastScroll()
     }
     if (hits.isEmpty()) {
         tvFooter.text = getString(R.string.scan_no_results) + "\n" + tvFooter.text
@@ -262,6 +271,13 @@ internal fun MainActivity.extractHit(f: File, hit: ScanHit) {
     }
     // ISO 9660: the magic sits at offset 32768 but the image starts at 0 —
     // preview/extract the whole file directly.
+    // ISO 9660: a standalone image has its CD001 magic at exactly offset
+    // 32768 (so the file IS the image) → preview the whole file directly.
+    // An embedded image (magic past 32768) must be carved out first.
+    if (fmt == "iso" && hit.offset > 32768L) {
+        showSeparateDestDialog(f, hit, extract = true, message = getString(R.string.msg_separate_needs_carve))
+        return
+    }
     if (fmt == "iso") {
         val json = try { IsoCore.isoListEntries(f.path) } catch (_: Exception) { null }
         if (json != null && json != "[]") {
@@ -343,49 +359,69 @@ private fun MainActivity.showSeparateDestDialog(f: File, hit: ScanHit, extract: 
         .show()
 }
 
-/** Carve start offset for a hit. ISO 9660 is special: the CD001 magic merely
- *  lives at offset 32768 inside the image — the image itself starts at
- *  magic_offset - 32768, so carving from the magic offset would corrupt it. */
+/** Magic internal offset: bytes BEFORE the magic where the container itself
+ *  starts. ISO's CD001 lives at +32768 (system area), tar's "ustar" at +257
+ *  (the first header field). For these, the archive start is at
+ *  hit.offset - adjust, and the region extends hit.size + adjust bytes. */
+private fun magicStartAdjust(label: String): Long = when (label) {
+    "ISO 9660 disc image" -> 32768L
+    "POSIX tar archive" -> 257L
+    else -> 0L
+}
+
+/** Carve start offset for a hit. Formats whose magic sits inside the container
+ *  (ISO/tar) must start carving before the magic offset. */
 private fun carveOffsetOf(hit: ScanHit): Long =
-    if (hit.label == "ISO 9660 disc image") (hit.offset - 32768).coerceAtLeast(0L) else hit.offset
+    (hit.offset - magicStartAdjust(hit.label)).coerceAtLeast(0L)
 
 /** Carve length for a hit: the exact archive size when the validator computed
- *  it (zip/rar/7z/zstd/lz4/iso), else null → carve to the end of the file
- *  (gzip/bz2/xz/lzma/xp3). Clamped to the available file bytes. */
+ *  it (zip/rar/7z/zstd/lz4/iso/tar), else null → carve to the end of the file
+ *  (gzip/bz2/xz/lzma/xp3). hit.size is the extent FROM the magic offset, so
+ *  ISO/tar add their internal offset back. Clamped to the available bytes. */
 private fun carveLengthOf(f: File, hit: ScanHit): Long? {
     val avail = (f.length() - carveOffsetOf(hit)).coerceAtLeast(0L)
     val size = hit.size ?: return null
-    return if (size > 0) size.coerceAtMost(avail) else null
+    val full = if (size > 0) size + magicStartAdjust(hit.label) else 0L
+    return if (full > 0) full.coerceAtMost(avail) else null
 }
 
 /** Carve the archive out of the host file (when needed), then run the normal extract flow. */
 private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File) {
     val fmt = ARCHIVE_LABELS[hit.label] ?: return
-    val needsCarve = fmt in NEEDS_CARVE || (fmt == "rar" && hit.offset > RAR_SCAN_LIMIT) || (fmt == "zip" && hit.offset > 0)
+    val needsCarve = fmt in NEEDS_CARVE || (fmt == "rar" && hit.offset > RAR_SCAN_LIMIT) || (fmt == "zip" && hit.offset > 0) || (fmt == "iso" && hit.offset > 32768L)
     if (!needsCarve) {
         extractAll(destDir, f, fmt)
         return
     }
-    // Clean stale carved temps, then carve [offset..EOF] and extract from the clean file.
+    // Carve to a per-format temp file. The whole carve phase holds the
+    // OperationLock and uses a serialized temp dir so two concurrent carves
+    // can't delete each other's in-progress file.
     val tempDir = File(cacheDir, "separate")
-    tempDir.deleteRecursively()
-    tempDir.mkdirs()
     val temp = File(tempDir, "${f.nameWithoutExtension}.${fmt}")
     val carveOffset = carveOffsetOf(hit)
     val carveLen = carveLengthOf(f, hit)
     val carveTotal = carveLen ?: (f.length() - carveOffset).coerceAtLeast(0L)
     var carved = 0L
+    var carveThread: Thread? = null
     val pd = ProgressDialog(this).apply {
         setTitle(getString(R.string.separate))
         setMessage(getString(R.string.msg_carving))
         setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
         max = 1000
         progress = 0
-        setCancelable(false)
+        setCancelable(true)
+        setOnCancelListener { carveThread?.interrupt() }
         show()
     }
-    thread {
+    carveThread = thread {
+        if (!OperationLock.acquire()) {
+            runOnUiThread { pd.dismiss(); toast(getString(R.string.msg_op_in_progress)) }
+            return@thread
+        }
         try {
+            // Clean stale carved temps, then carve [offset..EOF].
+            tempDir.deleteRecursively()
+            tempDir.mkdirs()
             carveToFile(f, carveOffset, carveLen, temp) { n ->
                 carved += n
                 runOnUiThread {
@@ -395,12 +431,19 @@ private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File
                     pd.setMessage(getString(R.string.msg_carving_bytes, fmt(carved), fmt(carveTotal)))
                 }
             }
+            if (Thread.currentThread().isInterrupted) {
+                runOnUiThread { pd.dismiss(); toast(getString(R.string.msg_cancelled)) }
+                return@thread
+            }
             runOnUiThread {
                 pd.dismiss()
+                // extractAll acquires its own lock (we released ours on carve).
                 extractAll(destDir, temp, fmt)
             }
         } catch (e: Exception) {
             runOnUiThread { pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+        } finally {
+            OperationLock.release()
         }
     }
 }

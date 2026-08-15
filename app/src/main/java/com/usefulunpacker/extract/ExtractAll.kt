@@ -12,6 +12,9 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
         // Acquire the lock BEFORE showing the progress dialog — otherwise a busy
         // lock leaves the dialog spinning forever with the work silently dropped.
         if (!tryStartOperation(this)) return
+        // Remember whether the output folder pre-existed so a cancelled extract
+        // into a fresh folder can be cleaned up entirely.
+        val existedBefore = destFile.exists()
         var cancelled = false
         val accessors = extractAccessors(format)
         val prog = PollingProgressDialog(
@@ -49,13 +52,13 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                 runOnUiThread {
                     prog.dismiss()
                     if (cancelled) {
-                        if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete()
+                        cleanupCancelledOutput(destFile, existedBefore)
                         toast(getString(R.string.msg_cancelled))
                         return@runOnUiThread
                     }
                     if (result.counts.ok) { showExtractSuccess(src.name, destFile.name, result.counts); nav(currentDir) }
                     else if (format in setOf("zip", "7z", "rar")) {
-                        if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete()
+                        cleanupCancelledOutput(destFile, existedBefore)
                         val inp = EditText(this).apply {
                             hint = getString(R.string.prompt_password)
                             setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
@@ -89,7 +92,7 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                                         runOnUiThread {
                                             prog2.dismiss()
                                             if (cancelled2) {
-                                                if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete()
+                                                cleanupCancelledOutput(destFile, existedBefore)
                                                 toast(getString(R.string.msg_cancelled))
                                             } else if (result2.counts.ok) { showExtractSuccess(src.name, destFile.name, result2.counts); nav(currentDir) }
                                             else toast(friendlyExtractError(this, result2.error))
@@ -99,7 +102,7 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                                     }
                                 }
                             }
-                            .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> if (destFile.isDirectory && destFile.listFiles()?.isEmpty() == true) destFile.delete() }
+                            .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> cleanupCancelledOutput(destFile, existedBefore) }
                             .show()
                     } else toast(friendlyExtractError(this, result.error))
                 }

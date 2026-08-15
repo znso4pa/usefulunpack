@@ -26,12 +26,19 @@ fn decompress_lz4_inner(input: &str, output: &str) -> Result<u32, String> {
     let file = std::fs::File::open(input).map_err(|e| format!("lz4: {e}"))?;
     let mut decoder = CancellableReader(FrameDecoder::new(file));
     let out_file = std::fs::File::create(&out_path).map_err(|e| format!("lz4: {e}"))?;
-    let mut writer = ProgressWriter::extract(out_file);
+    // Cap output at the frame's declared content size (when present) so a
+    // crafted ~800K× bomb can't exhaust disk.
+    let declared = lz4_content_size(input)?.unwrap_or(0);
+    let mut writer = ProgressWriter::extract(
+        archive_common::BoundedWriter::new(out_file, if declared > 0 { declared } else { u64::MAX }));
 
-    extract_progress::reset(lz4_content_size(input)?.unwrap_or(0));
+    extract_progress::reset(declared);
     extract_progress::set_name(&name);
     extract_progress::set_file(extract_progress::total_bytes());
-    std::io::copy(&mut decoder, &mut writer).map_err(|e| format!("lz4: {e}"))?;
+    if let Err(e) = std::io::copy(&mut decoder, &mut writer) {
+        let _ = std::fs::remove_file(&out_path);
+        return Err(format!("lz4: {e}"));
+    }
     Ok(0)
 }
 

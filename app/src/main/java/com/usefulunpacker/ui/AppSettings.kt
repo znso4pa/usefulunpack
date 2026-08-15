@@ -7,6 +7,7 @@ import android.net.Uri
 import android.view.View
 import android.widget.*
 import java.io.File
+import kotlin.concurrent.thread
 
 internal fun MainActivity.showCompressionSettings() {
         var zipLevel = prefs.getInt("zip_level", 5).let { if (it !in intArrayOf(0, 3, 5, 7, 9)) 5 else it }
@@ -19,7 +20,7 @@ internal fun MainActivity.showCompressionSettings() {
         val ZIP_VALS = intArrayOf(0, 3, 5, 7, 9)
         val SZ_VALS = intArrayOf(0, 3, 6, 9, 12)
         val SPLIT_PRESET = longArrayOf(0L, 1024L * 1024, 100L * 1024 * 1024, 1024L * 1024 * 1024)
-        val SPLIT_VALS = arrayOf(getString(R.string.split_none), "1MB", "100MB", "1GB", getString(R.string.split_custom))
+        val SPLIT_VALS = arrayOf(getString(R.string.split_none)) + resources.getStringArray(R.array.split_size_labels) + arrayOf(getString(R.string.split_custom))
 
         fun levelLabel(vals: IntArray, labels: Array<String>, v: Int): String =
             labels[vals.indexOfFirst { it == v }.coerceAtLeast(0)]
@@ -66,7 +67,7 @@ internal fun MainActivity.showCompressionSettings() {
 
         fun showCustomSplitDialog() {
             var unitIdx = if (splitSize > 0 && splitSize % (1024L * 1024 * 1024) == 0L) 1 else 0
-            val unitLabels = arrayOf("MB", "GB")
+            val unitLabels = arrayOf(getString(R.string.unit_mb), getString(R.string.unit_gb))
             val inp = EditText(this).apply {
                 setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
                 setBackgroundColor(C["surface_dark"]!!); setPadding(12, 8, 12, 8); textSize = 14f
@@ -171,8 +172,8 @@ internal fun MainActivity.showGeneralSettings() {
         val langTags = arrayOf("zh-CN", "zh-TW", "ja", "en")
         val langLabels = arrayOf(getString(R.string.language_zhcn), getString(R.string.language_zhtw), getString(R.string.language_ja), getString(R.string.language_en))
         val langCurrent = prefs.getString("app_lang", "zh-CN") ?: "zh-CN"
-        val textEncCurrent = prefs.getString("text_encoding", "UTF-8") ?: "UTF-8"
-        val zipEncCurrent = prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"
+        var textEncCurrent = prefs.getString("text_encoding", "UTF-8") ?: "UTF-8"
+        var zipEncCurrent = prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"
         val textEncLabels = arrayOf(getString(R.string.encoding_utf8), getString(R.string.encoding_sjis), getString(R.string.encoding_gbk), getString(R.string.encoding_utf16))
         val zipEncLabels = arrayOf(getString(R.string.encoding_utf8), getString(R.string.encoding_sjis), getString(R.string.encoding_gbk))
         val ZIP_ENC_VALS = arrayOf("UTF-8", "SHIFT-JIS", "GBK")
@@ -222,25 +223,35 @@ internal fun MainActivity.showGeneralSettings() {
                     .show()
             })
             addView(divider())
-            addView(row(
+            lateinit var textEncRow: TextView
+            textEncRow = row(
                 getString(R.string.settings_text_encoding),
                 textEncLabels[TEXT_ENCODINGS.indexOf(textEncCurrent).coerceAtLeast(0)],
             ) {
                 pick(getString(R.string.settings_text_encoding), textEncLabels, TEXT_ENCODINGS, textEncCurrent) { v ->
+                    textEncCurrent = v
                     prefs.edit().putString("text_encoding", v).apply()
+                    textEncRow.text = getString(R.string.settings_text_encoding) + "\n" +
+                        textEncLabels[TEXT_ENCODINGS.indexOf(v).coerceAtLeast(0)]
                     toast(getString(R.string.msg_encoding_applied, v))
                 }
-            })
+            }
+            addView(textEncRow)
             addView(divider())
-            addView(row(
+            lateinit var zipEncRow: TextView
+            zipEncRow = row(
                 getString(R.string.settings_zip_encoding),
                 zipEncLabels[ZIP_ENC_VALS.indexOf(zipEncCurrent).coerceAtLeast(0)],
             ) {
                 pick(getString(R.string.settings_zip_encoding), zipEncLabels, ZIP_ENC_VALS, zipEncCurrent) { v ->
+                    zipEncCurrent = v
                     prefs.edit().putString("zip_encoding", v).apply()
+                    zipEncRow.text = getString(R.string.settings_zip_encoding) + "\n" +
+                        zipEncLabels[ZIP_ENC_VALS.indexOf(v).coerceAtLeast(0)]
                     toast(getString(R.string.msg_encoding_applied, v))
                 }
-            })
+            }
+            addView(zipEncRow)
         }
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.settings_general))
@@ -343,22 +354,42 @@ internal fun MainActivity.showUISettings() {
 
 internal fun MainActivity.applyBackgroundImage(uri: Uri) {
         try {
-            val bmp = BitmapFactory.decodeStream(contentResolver.openInputStream(uri)) ?: return
-            val root = findViewById<View>(R.id.root) ?: return
-            val alpha = prefs.getInt("bg_image_alpha", 20).coerceIn(1, 100)
-            root.post {
-                val rw = root.width; val rh = root.height
-                if (rw <= 0 || rh <= 0) return@post
-                val bmpW = bmp.width; val bmpH = bmp.height
-                val scale = maxOf(rw.toFloat() / bmpW, rh.toFloat() / bmpH)
-                val sw = (bmpW * scale).toInt(); val sh = (bmpH * scale).toInt()
-                val scaled = android.graphics.Bitmap.createScaledBitmap(bmp, sw, sh, true)
-                val x = maxOf((sw - rw) / 2, 0); val y = maxOf((sh - rh) / 2, 0)
-                val cw = minOf(rw, sw); val ch = minOf(rh, sh)
-                val cropped = android.graphics.Bitmap.createBitmap(scaled, x, y, cw, ch)
-                val dr = android.graphics.drawable.BitmapDrawable(resources, cropped)
-                dr.alpha = (alpha * 255 / 100).coerceIn(1, 255)
-                root.background = dr
+            // Decode (and close the stream) off the UI thread; downsample to the
+            // screen so a huge wallpaper image doesn't ANR/OOM the main thread.
+            thread {
+                val bmp = runCatching {
+                    contentResolver.openInputStream(uri)?.use { ins ->
+                        // Sample down to roughly the root size before decoding.
+                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeStream(ins, null, bounds)
+                        if (bounds.outWidth > 0) {
+                            val screenW = resources.displayMetrics.widthPixels
+                            val screenH = resources.displayMetrics.heightPixels
+                            var sample = 1
+                            while (bounds.outWidth / (sample * 2) >= screenW && bounds.outHeight / (sample * 2) >= screenH) sample *= 2
+                            val opt = BitmapFactory.Options().apply { inSampleSize = sample }
+                            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opt) }
+                        } else {
+                            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                        }
+                    }
+                }.getOrNull() ?: return@thread
+                val root = findViewById<View>(R.id.root) ?: return@thread
+                val alpha = prefs.getInt("bg_image_alpha", 20).coerceIn(1, 100)
+                runOnUiThread {
+                    val rw = root.width; val rh = root.height
+                    if (rw <= 0 || rh <= 0) return@runOnUiThread
+                    val bmpW = bmp.width; val bmpH = bmp.height
+                    val scale = maxOf(rw.toFloat() / bmpW, rh.toFloat() / bmpH)
+                    val sw = (bmpW * scale).toInt(); val sh = (bmpH * scale).toInt()
+                    val scaled = android.graphics.Bitmap.createScaledBitmap(bmp, sw, sh, true)
+                    val x = maxOf((sw - rw) / 2, 0); val y = maxOf((sh - rh) / 2, 0)
+                    val cw = minOf(rw, sw); val ch = minOf(rh, sh)
+                    val cropped = android.graphics.Bitmap.createBitmap(scaled, x, y, cw, ch)
+                    val dr = android.graphics.drawable.BitmapDrawable(resources, cropped)
+                    dr.alpha = (alpha * 255 / 100).coerceIn(1, 255)
+                    root.background = dr
+                }
             }
             // Make surfaces transparent so the bg shows through everywhere
             findViewById<View>(R.id.toolbar)?.setBackgroundColor(0xBB000000.toInt())

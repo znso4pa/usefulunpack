@@ -946,7 +946,127 @@ fn validate_iso(f: &mut File, magic_off: u64, file_len: u64) -> Option<HitInfo> 
     if size < 32768 || start + size > file_len {
         return None;
     }
-    Some(HitInfo { size: Some(size), count: None })
+    // Size semantics across the scan pipeline are "extent FROM the magic
+    // offset to the end of the region" (so magic_offset + size == end and the
+    // scan's `magic_offset + size <= file_len` check holds). The PVD sits at
+    // image offset 32768, so the extent from the magic is image_size - 32768.
+    Some(HitInfo { size: Some(size - ISO_MAGIC_OFFSET), count: None })
+}
+
+/// POSIX tar: "ustar" magic at archive offset 257 (GNU "ustar\0" or POSIX
+/// "ustar  "). The header checksum (octal at 148..156, bytes summed as
+/// spaces) must match — this is what kills false "ustar" matches in random
+/// data. Walks the 512-byte entry chain to the two-zero-block end marker for
+/// the exact archive size (binwalk parity).
+fn validate_tar(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
+    const TAR_MAGIC_OFFSET: u64 = 257;
+    if off < TAR_MAGIC_OFFSET {
+        return None;
+    }
+    let start = off - TAR_MAGIC_OFFSET; // archive start (byte 0)
+    let mut h = [0u8; 512];
+    if !read_at(f, start, &mut h) {
+        return None;
+    }
+    if &h[257..262] != b"ustar" {
+        return None;
+    }
+    // Version byte: NUL (GNU) or space (POSIX); other = false positive.
+    if h[262] != 0 && h[262] != b' ' {
+        return None;
+    }
+    if !tar_header_checksum_ok(&h) {
+        return None;
+    }
+    // Skip the first entry's data before walking the rest of the chain.
+    let mut pos = start + 512 + ((tar_octal_size(&h) + 511) / 512) * 512;
+    // Walk entries: each = 512-byte header + ceil(size/512)*512 data. The
+    // archive ends with two 512-byte zero blocks; a header with a bad
+    // checksum (trailing garbage / next file's data) stops the walk.
+    let mut zero_blocks = 0u32;
+    let mut guard = 0u32;
+    while pos + 512 <= file_len {
+        guard += 1;
+        if guard > 10_000_000 {
+            return None;
+        }
+        let mut hb = [0u8; 512];
+        if !read_at(f, pos, &mut hb) {
+            break;
+        }
+        if hb.iter().all(|&b| b == 0) {
+            zero_blocks += 1;
+            pos += 512;
+            if zero_blocks >= 2 {
+                break;
+            }
+            continue;
+        }
+        zero_blocks = 0;
+        if !tar_header_checksum_ok(&hb) {
+            break;
+        }
+        let size = tar_octal_size(&hb);
+        pos += 512 + ((size + 511) / 512) * 512;
+    }
+    if pos > file_len {
+        pos = file_len;
+    }
+    Some(HitInfo { size: Some(pos - off), count: None })
+}
+
+/// Tar header checksum: sum of all 512 bytes with the 8 checksum bytes
+/// (148..156) counted as spaces, compared to the stored octal at 148..156.
+/// Parsing tolerates legacy space-padded octal fields (some Unix tars pad
+/// with spaces instead of zeros).
+fn tar_header_checksum_ok(h: &[u8; 512]) -> bool {
+    let mut sum: u64 = 0;
+    for (i, &b) in h.iter().enumerate() {
+        sum += if (148..156).contains(&i) { 0x20 } else { b as u64 };
+    }
+    let mut stored: u64 = 0;
+    let mut started = false;
+    for &b in &h[148..156] {
+        if b == 0 {
+            break;
+        }
+        let c = b as char;
+        if c == ' ' && !started {
+            continue;
+        }
+        if c.is_ascii_digit() {
+            started = true;
+            stored = stored * 8 + (c as u64 - '0' as u64);
+        } else if c == ' ' {
+            break;
+        } else {
+            return false;
+        }
+    }
+    stored == sum
+}
+
+/// Octal size field (bytes 124..136, 11 digits + NUL/space). Tolerates legacy
+/// leading-space padding.
+fn tar_octal_size(h: &[u8; 512]) -> u64 {
+    let mut v: u64 = 0;
+    let mut started = false;
+    for &b in &h[124..136] {
+        if b == 0 {
+            break;
+        }
+        let c = b as char;
+        if c == ' ' && !started {
+            continue;
+        }
+        if c.is_ascii_digit() {
+            started = true;
+            v = v * 8 + (c as u64 - '0' as u64);
+        } else {
+            break;
+        }
+    }
+    v
 }
 
 fn crc32(data: &[u8], init: u32) -> u32 {
@@ -1115,6 +1235,8 @@ pub const SIGNATURES: &[Sig] = &[
         b"\x6c\x00\x00\x04", b"\x6c\x00\x00\x02", b"\x6c\x00\x00\x01", b"\x6c\x00\x00\x00",
     ], label: "LZMA compressed data", confidence: CONFIDENCE_MEDIUM, validate: validate_lzma },
     Sig { magics: &[b"XP3\r\n \x1a\n"], label: "XP3 archive", confidence: CONFIDENCE_HIGH, validate: validate_xp3 },
+    // POSIX/GNU tar: "ustar" at archive offset 257 + header checksum.
+    Sig { magics: &[b"ustar"], label: "POSIX tar archive", confidence: CONFIDENCE_MEDIUM, validate: validate_tar },
     // PNG: full 16-byte magic incl. IHDR chunk header (binwalk parity).
     Sig { magics: &[b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"], label: "PNG image", confidence: CONFIDENCE_HIGH, validate: validate_png },
     // JPEG: binwalk's three magic variants (JFIF APP0 / EXIF APP1 / DQT).
@@ -1325,7 +1447,8 @@ mod tests {
         let p = tmp("t.iso", &iso);
         let mut f = File::open(&p).unwrap();
         let info = validate_iso(&mut f, 32768, iso.len() as u64).expect("valid iso");
-        assert_eq!(info.size, Some(34816));
+        // Extent from the magic offset to the image end (34816 - 32768).
+        assert_eq!(info.size, Some(2048));
 
         // Wrong magic at 32768 → rejected.
         let mut bad = iso.clone();
@@ -1333,6 +1456,88 @@ mod tests {
         let p2 = tmp("bad.iso", &bad);
         let mut f2 = File::open(&p2).unwrap();
         assert!(validate_iso(&mut f2, 32768, bad.len() as u64).is_none());
+    }
+
+    /// Builds a single 512-byte ustar header. [h] fills the checksum field.
+    fn make_tar_header(name: &[u8], size: usize) -> [u8; 512] {
+        let mut h = [0u8; 512];
+        let n = name.len().min(100);
+        h[..n].copy_from_slice(&name[..n]);
+        let s = format!("{:011o}\0", size);
+        h[124..124 + s.len()].copy_from_slice(s.as_bytes());
+        h[257..262].copy_from_slice(b"ustar");
+        h[262] = 0; // GNU version byte
+        let sum: u64 = h.iter().enumerate()
+            .map(|(i, &b)| if (148..156).contains(&i) { 0x20 } else { b as u64 })
+            .sum();
+        let cs = format!("{:06o}\0 ", sum);
+        h[148..148 + cs.len()].copy_from_slice(cs.as_bytes());
+        h
+    }
+
+    #[test]
+    fn tar_ustar_checksum_and_size() {
+        // One 1000-byte file entry (2 data blocks) + two zero end blocks.
+        let mut tar = Vec::new();
+        let h1 = make_tar_header(b"data.txt", 1000);
+        tar.extend_from_slice(&h1);
+        let mut data = vec![0x41u8; 1000];
+        data.resize(1024, 0); // pad to 2×512
+        tar.extend_from_slice(&data);
+        tar.extend_from_slice(&[0u8; 1024]); // two zero end blocks
+        let p = tmp("t.tar", &tar);
+        let mut f = File::open(&p).unwrap();
+        let info = validate_tar(&mut f, 257, tar.len() as u64).expect("valid tar");
+        // Extent from the magic offset to the archive end.
+        assert_eq!(info.size, Some(tar.len() as u64 - 257));
+
+        // Corrupt the checksum → rejected. (Corrupt the name byte so the sum
+        // changes while the stored octal stays — flipping a checksum digit may
+        // be a no-op due to %06o leading zeros.)
+        let mut bad = h1;
+        bad[0] = b'X';
+        let mut tar2 = Vec::new();
+        tar2.extend_from_slice(&bad);
+        tar2.extend_from_slice(&data);
+        tar2.extend_from_slice(&[0u8; 1024]);
+        let p2 = tmp("t2.tar", &tar2);
+        let mut f2 = File::open(&p2).unwrap();
+        assert!(validate_tar(&mut f2, 257, tar2.len() as u64).is_none());
+
+        // "ustar" at a random offset without a valid header → rejected.
+        let mut rand = vec![0u8; 4096];
+        rand[300..305].copy_from_slice(b"ustar");
+        let p3 = tmp("rand.bin", &rand);
+        let mut f3 = File::open(&p3).unwrap();
+        assert!(validate_tar(&mut f3, 300 + 257, rand.len() as u64).is_none());
+    }
+
+    #[test]
+    fn tar_space_padded_octal_fields() {
+        // Legacy tars pad the size field with SPACES instead of zeros — the
+        // parse must skip the leading spaces, not read the size as 0.
+        let mut h = make_tar_header(b"pad.bin", 3000);
+        // Overwrite size field 124..136 with space-padded octal "       5670".
+        let s = format!("{:>11o}\0", 3000); // right-justified, space-padded
+        assert_eq!(s.len(), 12);
+        h[124..136].copy_from_slice(s.as_bytes());
+        // Recompute checksum AFTER overwriting the size field.
+        let sum: u64 = h.iter().enumerate()
+            .map(|(i, &b)| if (148..156).contains(&i) { 0x20 } else { b as u64 })
+            .sum();
+        let cs = format!("{:06o}\0 ", sum);
+        h[148..148 + cs.len()].copy_from_slice(cs.as_bytes());
+
+        let mut tar = Vec::new();
+        tar.extend_from_slice(&h);
+        let mut data = vec![0x41u8; 3000];
+        data.resize(3072, 0); // pad to 6×512
+        tar.extend_from_slice(&data);
+        tar.extend_from_slice(&[0u8; 1024]);
+        let p = tmp("pad.tar", &tar);
+        let mut f = File::open(&p).unwrap();
+        let info = validate_tar(&mut f, 257, tar.len() as u64).expect("space-padded tar");
+        assert_eq!(info.size, Some(tar.len() as u64 - 257));
     }
 
     #[test]

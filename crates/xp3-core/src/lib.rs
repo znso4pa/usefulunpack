@@ -13,6 +13,55 @@ use std::path::{Path, PathBuf};
 
 // ─── XP3 (Kirikiri) ────────────────────────
 
+/// Only small entries are buffered for the KSD-mode-2 filter probe — the filter
+/// appears only on text/scripts (tiny), while images/audio are streamed.
+const KSD_PROBE_MAX: u64 = 16 * 1024 * 1024;
+
+/// Copies one entry from the xp3 stream to disk. Small entries are buffered so
+/// a Kirikiri KSD mode-2 filter (`FE FE 02 FF FE …`, used on text inside XP3)
+/// can be unwrapped — the xp3 crate only decodes the outer zlib, which would
+/// otherwise leave the scrambled wrapper as the file content. Returns true on
+/// success.
+fn copy_xp3_entry<R: tokio::io::AsyncRead + Unpin>(
+    mut xf: R,
+    size: u64,
+    out_stream: &mut SyncIo<ProgressWriter<BufWriter<File>>>,
+) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    if size <= KSD_PROBE_MAX {
+        // Buffer up to a hard cap so a crafted entry that inflates far beyond
+        // its declared size can't grow the Vec unboundedly (zlib bomb → OOM).
+        let copied: Result<Vec<u8>, std::io::Error> = oneshot_async(async {
+            let x = &mut xf; // borrow, not consume — we may stream the rest below
+            let mut buf2 = Vec::with_capacity(size as usize);
+            let limit = (KSD_PROBE_MAX + 1) as usize;
+            let mut tmp = [0u8; 8192];
+            loop {
+                if buf2.len() >= limit { break; }
+                let want = (limit - buf2.len()).min(tmp.len());
+                let n = x.read(&mut tmp[..want]).await?;
+                if n == 0 { break; }
+                buf2.extend_from_slice(&tmp[..n]);
+            }
+            Ok(buf2)
+        });
+        let buf = match copied {
+            Ok(b) if b.len() as u64 <= KSD_PROBE_MAX => b,
+            _ => {
+                // Too large to buffer (or a read error): stream the remainder.
+                return oneshot_async(tokio::io::copy(&mut xf, out_stream)).is_ok();
+            }
+        };
+        let payload = archive_ksd_core::ksd_mode2_decode(&buf).unwrap_or(buf);
+        // Calibrate the per-file progress to the actual (KSD-unwrapped)
+        // size — the wrapper's declared size was set before we knew.
+        extract_progress::set_file(payload.len() as u64);
+        oneshot_async(async { out_stream.write_all(&payload).await }).is_ok()
+    } else {
+        oneshot_async(tokio::io::copy(&mut xf, out_stream)).is_ok()
+    }
+}
+
 fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
         let msg = panic.downcast_ref::<&str>().copied()
@@ -56,12 +105,14 @@ fn extract_xp3(input: &str, output: &str) -> Result<(u32, u32), String> {
             Ok(f) => f,
             Err(_) => { fail += 1; continue; }
         };
+        let size = archive.entries()[i].size;
         let mut out_stream = SyncIo(ProgressWriter::extract(BufWriter::new(out_file)));
         let mut xf = match oneshot_async(archive.by_index(i)) {
             Some(Ok(f)) => f,
             _ => { fail += 1; continue; }
         };
-        if oneshot_async(tokio::io::copy(&mut xf, &mut out_stream)).is_err() {
+        if !copy_xp3_entry(xf, size, &mut out_stream) {
+            let _ = fs::remove_file(&dest);
             fail += 1;
         }
     }
@@ -144,12 +195,14 @@ fn extract_xp3_selected(input: &str, output: &str, selected: &str) -> Result<(u3
             Ok(f) => f,
             Err(_) => { fail += 1; continue; }
         };
+        let size = archive.entries()[i].size;
         let mut out_stream = SyncIo(ProgressWriter::extract(BufWriter::new(out_file)));
         let mut xf = match oneshot_async(archive.by_index(i)) {
             Some(Ok(f)) => f,
             _ => { fail += 1; continue; }
         };
-        if oneshot_async(tokio::io::copy(&mut xf, &mut out_stream)).is_err() {
+        if !copy_xp3_entry(xf, size, &mut out_stream) {
+            let _ = fs::remove_file(&dest);
             fail += 1;
         }
     }
@@ -301,6 +354,36 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         extract_xp3(xp3.to_str().unwrap(), out.to_str().unwrap()).unwrap();
         assert_eq!(std::fs::read(out.join("one.dat")).unwrap(), vec![9u8; 5000]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ksd_mode2_wrapped_entry_extracts_as_text() {
+        // A real galgame XP3 stores some text entries as
+        //   zlib( KSD mode-2 wrapper `FE FE 02 FF FE` + comp_len/uncomp_len + zlib(text) )
+        // The xp3 crate only unwraps the OUTER zlib, so without the KSD unwrap
+        // the extracted file would be the wrapper binary — "garbled in every
+        // encoding". Build that wrapper, pack, extract, and require the real text.
+        let text: Vec<u8> = "こんにちは\nテスト\n".encode_utf16()
+            .flat_map(|u| u.to_le_bytes()).collect();
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+        std::io::Write::write_all(&mut enc, &text).unwrap();
+        let inner = enc.finish().unwrap();
+        let mut wrapper = vec![0xFE, 0xFE, 0x02, 0xFF, 0xFE];
+        wrapper.extend_from_slice(&(inner.len() as i64).to_le_bytes());
+        wrapper.extend_from_slice(&(text.len() as i64).to_le_bytes());
+        wrapper.extend_from_slice(&inner);
+
+        let dir = tmp("ksd");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("script.txt"), &wrapper).unwrap();
+        let xp3 = dir.join("ksd.xp3");
+        create_xp3(dir.to_str().unwrap(), xp3.to_str().unwrap(), 6).unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        extract_xp3(xp3.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+        let got = std::fs::read(out.join("script.txt")).unwrap();
+        assert_eq!(got, text, "KSD wrapper must be unwrapped to the original text");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

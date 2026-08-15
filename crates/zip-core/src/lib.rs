@@ -171,7 +171,10 @@ fn extract_zip_from<R: Read + Seek>(
         let dest = safe_join(output, &name).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
         let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
-        if std::io::copy(&mut entry, &mut out).is_err() {
+        // Cap the decompressed output at the declared uncompressed size so a
+        // zip bomb can't exhaust disk.
+        let size = entry.size();
+        if std::io::copy(&mut entry.take(size), &mut out).is_err() {
             let _ = std::fs::remove_file(&dest);
             fail += 1;
         }

@@ -10,6 +10,12 @@ use crc::Crc;
 use crate::{archive::*, decoders::add_decoder, error::Error, folder::*, password::Password};
 pub(crate) const CRC32: Crc<u32> = Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
 const MAX_MEM_LIMIT_KB: usize = usize::MAX / 1024;
+/// Upper bounds for attacker-controlled header sizes/quantities, so a crafted
+/// 7z cannot drive unbounded allocations (OOM abort) or panics.
+const MAX_HEADER_BYTES: u64 = 64 * 1024 * 1024; // raw/decoded header buffer
+const MAX_FILES: usize = 1_000_000;             // archive entries
+const MAX_CODERS: usize = 1024;                 // coders per folder
+const MAX_PROPS: usize = 16 * 1024 * 1024;      // coder properties buffer
 
 pub(crate) trait SeedRead: Read + Seek {}
 
@@ -335,6 +341,12 @@ impl Archive {
                 start_header.next_header_size
             )));
         }
+        if start_header.next_header_size > MAX_HEADER_BYTES {
+            return Err(Error::other(format!(
+                "next_header_size {} exceeds {}",
+                start_header.next_header_size, MAX_HEADER_BYTES
+            )));
+        }
 
         let next_header_size_int = start_header.next_header_size as usize;
 
@@ -356,6 +368,12 @@ impl Archive {
         let mut header = if nid == K_ENCODED_HEADER {
             let (mut out_reader, buf_size) =
                 Self::read_encoded_header(&mut buf_reader, reader, &mut archive, password)?;
+            if buf_size as u64 > MAX_HEADER_BYTES {
+                return Err(Error::other(format!(
+                    "decoded header size {} exceeds {}",
+                    buf_size, MAX_HEADER_BYTES
+                )));
+            }
             buf.clear();
             buf.resize(buf_size, 0);
             out_reader
@@ -456,6 +474,9 @@ impl Archive {
 
     fn read_files_info<R: Read + Seek>(header: &mut R, archive: &mut Archive) -> Result<(), Error> {
         let num_files = read_usize(header, "num files")?;
+        if num_files > MAX_FILES {
+            return Err(Error::other(format!("num files {} exceeds {}", num_files, MAX_FILES)));
+        }
         let mut files: Vec<SevenZArchiveEntry> = vec![Default::default(); num_files];
 
         let mut is_empty_stream: Option<BitSet> = None;
@@ -888,6 +909,9 @@ impl Archive {
         let mut folder = Folder::default();
 
         let num_coders = read_usize(header, "num coders")?;
+        if num_coders > MAX_CODERS {
+            return Err(Error::other(format!("num coders {} exceeds {}", num_coders, MAX_CODERS)));
+        }
         let mut coders = Vec::with_capacity(num_coders);
         let mut total_in_streams = 0;
         let mut total_out_streams = 0;
@@ -915,6 +939,12 @@ impl Archive {
             total_out_streams += coder.num_out_streams;
             if has_attributes {
                 let properties_size = read_usize(header, "properties size")?;
+                if properties_size > MAX_PROPS {
+                    return Err(Error::other(format!(
+                        "properties size {} exceeds {}",
+                        properties_size, MAX_PROPS
+                    )));
+                }
                 let mut props = vec![0u8; properties_size];
                 header.read(&mut props).map_err(Error::io)?;
                 coder.properties = props;
@@ -1211,7 +1241,12 @@ impl<R: Read + Seek> SevenZReader<R> {
             )));
         }
 
-        assert!(folder.total_input_streams > folder.total_output_streams);
+        if folder.total_input_streams <= folder.total_output_streams {
+            return Err(Error::other(format!(
+                "invalid folder stream counts in/out {} <= {}",
+                folder.total_input_streams, folder.total_output_streams
+            )));
+        }
         let source = ReaderPtr::new(source);
         let first_pack_stream_index =
             archive.stream_map.folder_first_pack_stream_index[folder_index];

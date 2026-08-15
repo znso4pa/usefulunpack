@@ -129,6 +129,9 @@
                 android:listSelector="#40ffffff"
                 android:cacheColorHint="@color/bg_file_list"
                 android:fastScrollEnabled="true"
+                android:fastScrollAlwaysVisible="true"
+                android:fastScrollThumbDrawable="@drawable/fastscroll_thumb"
+                android:fastScrollTrackDrawable="@drawable/fastscroll_track"
                 android:clipToPadding="false" />
 
             <TextView
@@ -177,7 +180,7 @@
                 android:id="@+id/btnExtract"
                 android:layout_width="wrap_content"
                 android:layout_height="34dp"
-                android:text="解压"
+                android:text="@string/msg_extract_title"
                 android:textSize="11sp"
                 android:backgroundTint="@color/ui_base" />
         </LinearLayout>
@@ -210,7 +213,7 @@
             android:layout_height="48dp"
             android:gravity="center_vertical"
             android:paddingStart="16dp"
-            android:text="快捷路径"
+            android:text="@string/drawer_quick_paths"
             android:textSize="14sp"
             android:textColor="@color/accent"
             android:textStyle="bold"
@@ -222,14 +225,15 @@
             android:layout_height="0dp"
             android:layout_weight="1"
             android:divider="@color/bg_drawer_header"
-            android:dividerHeight="1dp" />
+            android:dividerHeight="1dp"
+            android:scrollbars="none" />
 
         <TextView
             android:id="@+id/btnAddBookmark"
             android:layout_width="match_parent"
             android:layout_height="48dp"
             android:gravity="center"
-            android:text="+ 添加当前路径"
+            android:text="@string/drawer_add_current"
             android:textSize="13sp"
             android:textColor="@color/ui_base"
             android:background="?attr/selectableItemBackground"

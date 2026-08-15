@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Draggable fast-scroll handle: wider than the system default so a finger
+     can grab it to jump through long lists (archive preview / scan results /
+     script lists / the file browser). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <size android:width="10dp" android:height="60dp" />
+    <solid android:color="#E635ACC6" />
+    <corners android:radius="5dp" />
+</shape>

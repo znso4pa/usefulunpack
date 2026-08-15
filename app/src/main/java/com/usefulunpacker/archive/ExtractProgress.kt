@@ -73,7 +73,7 @@ class PollingProgressDialog(
     private val cancelLabel: String? = null,
     private val onCancel: () -> Unit = {}
 ) {
-    private var stopped = false
+    @Volatile private var stopped = false
     private var dialog: Dialog? = null
     private lateinit var msgText: TextView
     private lateinit var overallBar: ProgressBar
@@ -132,19 +132,15 @@ class PollingProgressDialog(
     }
 
     private fun updateFileBar(fc: Long, ft: Long, name: String) {
-        if (ft >= PROGRESS_FILE_BAR_MIN) {
+        if (ft > 0) {
             fileBar.visibility = View.VISIBLE
             fileText.visibility = View.VISIBLE
             fileBar.isIndeterminate = false
             fileBar.max = 100
             fileBar.progress = (fc * 100 / ft).coerceAtMost(100).toInt()
             fileText.text = "${fmt(fc)} / ${fmt(ft)}"
-        } else if (ft > 0) {
-            // small current file — hide the bottom bar to avoid flicker
-            fileBar.visibility = View.GONE
-            fileText.visibility = View.GONE
         } else {
-            // unknown size — show an indeterminate spinner for the current file
+            // current-file size unknown — show an indeterminate spinner
             fileBar.visibility = View.VISIBLE
             fileText.visibility = View.VISIBLE
             fileBar.isIndeterminate = true

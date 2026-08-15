@@ -118,15 +118,16 @@
             android:textColor="#000000" />
     </LinearLayout>
 
-    <!-- Progress bar (indeterminate while searching) -->
+    <!-- Circular indeterminate spinner while searching — a horizontal
+         indeterminate bar renders as a static full bar on some ROMs (Honor). -->
     <ProgressBar
         android:id="@+id/searchProgress"
-        android:layout_width="match_parent"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:indeterminate="true"
+        android:layout_gravity="center_horizontal"
         android:visibility="gone"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp" />
+        android:paddingTop="10dp"
+        android:paddingBottom="4dp" />
 
     <!-- Results -->
     <ListView
@@ -136,7 +137,11 @@
         android:layout_weight="1"
         android:divider="@color/divider"
         android:dividerHeight="1dp"
-        android:listSelector="#40ffffff" />
+        android:listSelector="#40ffffff"
+        android:fastScrollEnabled="true"
+        android:fastScrollAlwaysVisible="true"
+        android:fastScrollThumbDrawable="@drawable/fastscroll_thumb"
+        android:fastScrollTrackDrawable="@drawable/fastscroll_track" />
 
     <!-- Bottom action bar: stats + continue + close (bottom-right) -->
     <LinearLayout

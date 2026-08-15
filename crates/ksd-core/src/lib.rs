@@ -67,8 +67,14 @@ fn descramble_mode1(data: &[u8]) -> Vec<u8> {
 /// header (i.e. at offset 0x05): [compressed_len:i64][uncompressed_len:i64][compressed].
 fn decompress_mode2(data: &[u8]) -> Result<(Vec<u8>, u64), String> {
     if data.len() < 16 { return Err("KSD: truncated mode2 header".to_string()); }
-    let compressed_len = i64::from_le_bytes(data[0..8].try_into().unwrap()) as usize;
-    let uncompressed_len = i64::from_le_bytes(data[8..16].try_into().unwrap()) as usize;
+    let compressed_i = i64::from_le_bytes(data[0..8].try_into().unwrap());
+    let uncompressed_i = i64::from_le_bytes(data[8..16].try_into().unwrap());
+    // Negative lengths would wrap to huge usize on `as` — reject outright.
+    if compressed_i < 0 || uncompressed_i < 0 {
+        return Err(format!("KSD: negative length ({compressed_i}, {uncompressed_i})"));
+    }
+    let compressed_len = compressed_i as usize;
+    let uncompressed_len = uncompressed_i as usize;
     if compressed_len < 2 || 16 + compressed_len > data.len() {
         return Err(format!("KSD: bad compressed_len {compressed_len}"));
     }
@@ -86,6 +92,21 @@ fn decompress_mode2(data: &[u8]) -> Result<(Vec<u8>, u64), String> {
     let mut out = Vec::with_capacity(uncompressed_len.min(1 << 20));
     limited.read_to_end(&mut out).map_err(|e| format!("KSD: inflate {e}"))?;
     Ok((out, uncompressed_len as u64))
+}
+
+/// Detects a KSD mode-2 scrambled blob — used as a Kirikiri filter inside XP3
+/// (and similar) archives: `FE FE 02 FF FE` + [compressed_len:i64]
+/// [uncompressed_len:i64] + deflate. Returns the decoded bytes when the magic
+/// matches, else None so the caller writes the content as-is.
+pub fn ksd_mode2_decode(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() >= 5
+        && data[0] == 0xFE && data[1] == 0xFE && data[2] == 0x02
+        && data[3] == 0xFF && data[4] == 0xFE
+    {
+        decompress_mode2(&data[5..]).ok().map(|(bytes, _)| bytes)
+    } else {
+        None
+    }
 }
 
 fn decode_utf16le(bytes: &[u8]) -> String {
@@ -159,7 +180,10 @@ fn extract_ksd(input: &str, output: &str) -> Result<u32, String> {
     extract_progress::set_name(&name);
     extract_progress::set_file(total);
     let mut writer = ProgressWriter::extract(File::create(&dest).map_err(|e| format!("KSD create {dest:?}: {e}"))?);
-    writer.write_all(text.as_bytes()).map_err(|e| format!("KSD write: {e}"))?;
+    writer.write_all(text.as_bytes()).map_err(|e| {
+        let _ = std::fs::remove_file(&dest);
+        format!("KSD write: {e}")
+    })?;
     Ok(0)
 }
 

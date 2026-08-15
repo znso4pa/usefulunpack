@@ -25,6 +25,7 @@ internal fun MainActivity.nav(dir: File) {
         btnExtract.setOnClickListener { extract() }
         btnFolderNext.visibility = View.GONE
         currentDir = dir
+        restartDirObserver(dir)
         tvPath.text = dir.absolutePath
         val isCompress = prefs.getInt("work_mode", 0) == 1
         findViewById<TextView>(R.id.tvTitle)?.text = "UsefulUnpack" + (if (isCompress) getString(R.string.title_mode_compress) else getString(R.string.title_mode_archive))

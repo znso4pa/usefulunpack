@@ -57,6 +57,37 @@ class MainActivity : AppCompatActivity() {
     internal val df = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     internal var lastTap = 0L
 
+    // Background watcher on the current directory: auto-refresh the file list
+    // when anything in it changes (rename / move / delete / extract / compress
+    // / external changes like adb push or USB), so the user never has to
+    // exit and re-enter a path to see the result.
+    private var dirObserver: android.os.FileObserver? = null
+    private val refreshHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val refreshRunnable = Runnable { nav(currentDir) }
+
+    internal fun restartDirObserver(dir: File) {
+        dirObserver?.stopWatching()
+        dirObserver = null
+        refreshHandler.removeCallbacks(refreshRunnable)
+        if (!dir.isDirectory) return
+        dirObserver = object : android.os.FileObserver(dir.absolutePath) {
+            override fun onEvent(event: Int, path: String?) {
+                // Only content-changing events matter — reading the list
+                // (ACCESS/OPEN/CLOSE_NOWRITE) must never re-trigger a refresh,
+                // or the observer ↔ nav loop would spin forever.
+                val e = event and android.os.FileObserver.ALL_EVENTS
+                val content = android.os.FileObserver.CREATE or android.os.FileObserver.DELETE or
+                    android.os.FileObserver.MOVED_FROM or android.os.FileObserver.MOVED_TO or
+                    android.os.FileObserver.CLOSE_WRITE or android.os.FileObserver.DELETE_SELF or
+                    android.os.FileObserver.MOVE_SELF or android.os.FileObserver.MODIFY
+                if (e and content == 0) return
+                // Debounce: a big extraction emits a burst of events.
+                refreshHandler.removeCallbacks(refreshRunnable)
+                refreshHandler.postDelayed(refreshRunnable, 400)
+            }
+        }.apply { startWatching() }
+    }
+
     internal fun tryTap(): Boolean {
         val now = System.currentTimeMillis()
         if (now - lastTap < 800) return false
@@ -217,7 +248,7 @@ class MainActivity : AppCompatActivity() {
                         0 -> { (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
                             .setPrimaryClip(android.content.ClipData.newPlainText("p", f.path)); toast(getString(R.string.msg_copied)) }
                         1 -> { fileToMove = f; updatePasteButton(); toast(getString(R.string.msg_selected_nav, f.name)) }
-                        2 -> { showRenameDialog(this, f, currentDir, bookmarks) { saveBookmarks() } }
+                        2 -> { showRenameDialog(this, f, currentDir, bookmarks) { saveBookmarks(); nav(currentDir) } }
                         3 -> {
                             AlertDialog.Builder(this@MainActivity)
                                 .setTitle(getString(R.string.title_delete))
@@ -285,6 +316,23 @@ class MainActivity : AppCompatActivity() {
 
         loadBookmarks(); nav(currentDir)
         showDisclaimer()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        dirObserver?.stopWatching()
+        refreshHandler.removeCallbacks(refreshRunnable)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        restartDirObserver(currentDir)
+    }
+
+    override fun onDestroy() {
+        dirObserver?.stopWatching()
+        refreshHandler.removeCallbacks(refreshRunnable)
+        super.onDestroy()
     }
 
     internal fun updatePasteButton() {

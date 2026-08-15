@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Thick rounded vertical scrollbar thumb (bigger than the default so it is
+     easy to see; the crash-fix drawable the Honor/EMUI ROM needs to create a
+     non-null ScrollBarDrawable). Stretched vertically by the framework. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <size android:width="14dp" android:height="48dp" />
+    <solid android:color="#59FFFFFF" />
+    <corners android:radius="7dp" />
+</shape>

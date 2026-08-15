@@ -19,7 +19,7 @@ fun parseEntries(json: String): List<ArchiveEntry> {
         val isDir = obj.optBoolean("d", false)
         val isEnc = obj.optBoolean("e", false)
         val name = path.substringAfterLast('/')
-        val depth = maxOf(0, path.count { it == '/' } - if (isDir) 0 else 0)
+        val depth = maxOf(0, path.count { it == '/' })
         result.add(ArchiveEntry(path, name.ifEmpty { path }, size, isDir, isEnc, depth))
     }
     return result

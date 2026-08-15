@@ -90,6 +90,7 @@ fun showTerminalHelp(activity: AppCompatActivity, inp: EditText, onApply: (Strin
     var selectedCmd = ""
     var lastSelected = -1
     val listView = ListView(activity)
+    listView.enableFastScroll()
     val adapter = object : ArrayAdapter<String>(activity, android.R.layout.simple_list_item_1,
         commands.map { "${it.first}\n  ${it.second}" }) {
         override fun getView(pos: Int, v: View?, p: ViewGroup): View {

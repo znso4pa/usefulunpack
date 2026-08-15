@@ -96,6 +96,31 @@ impl<W: std::io::Write> std::io::Write for ProgressWriter<W> {
     fn flush(&mut self) -> std::io::Result<()> { self.inner.flush() }
 }
 
+/// Caps the number of bytes written to the inner writer — a decompression
+/// bomb (tiny input, huge output) can't exhaust disk when the format's
+/// declared uncompressed size is honored.
+pub struct BoundedWriter<W> {
+    inner: W,
+    remaining: u64,
+}
+
+impl<W> BoundedWriter<W> {
+    pub fn new(inner: W, limit: u64) -> Self { Self { inner, remaining: limit } }
+}
+
+impl<W: std::io::Write> std::io::Write for BoundedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "output exceeds declared size"));
+        }
+        let n = (buf.len() as u64).min(self.remaining) as usize;
+        self.inner.write(&buf[..n])?;
+        self.remaining -= n as u64;
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> { self.inner.flush() }
+}
+
 /// Wraps a `Read` and accumulates read bytes into a progress store. Checks
 /// the format's cancel flag on every read so compression (and any other
 /// read-driven copy) aborts promptly when the user cancels.

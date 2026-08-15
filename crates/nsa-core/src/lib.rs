@@ -94,6 +94,9 @@ fn nsa_spb_decompress(data: &[u8], usize: u32) -> Result<Vec<u8>, String> {
     if data.len() < 4 { return Err("spb: too short".into()); }
     let width  = ((data[0] as u32) << 8) | data[1] as u32;
     let height = ((data[2] as u32) << 8) | data[3] as u32;
+    if height == 0 || width == 0 {
+        return Err("spb: zero dimension".into());
+    }
     let width_pad = (4u32.wrapping_sub(width * 3) & 3) as usize;
     let stride = (width as usize) * 3 + width_pad;
     let total_size = stride * height as usize + 54;

@@ -56,7 +56,12 @@ fun showFormatPicker(
         }
     }
 
-    val scroller = ScrollView(activity).apply { addView(root) }
+    val scroller = ScrollView(activity).apply {
+        addView(root)
+        // Honor/EMUI NPEs drawing scrollbars on custom views — disable.
+        isVerticalScrollBarEnabled = false
+        isHorizontalScrollBarEnabled = false
+    }
 
     val dialog = AlertDialog.Builder(activity)
         .setTitle(title)

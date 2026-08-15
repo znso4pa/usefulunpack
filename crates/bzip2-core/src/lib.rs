@@ -39,7 +39,10 @@ fn extract_bz2(input: &str, output: &str) -> Result<u32, String> {
     extract_progress::reset(0);
     extract_progress::set_name(&name);
     extract_progress::set_file(0);
-    io::copy(&mut dec, &mut writer).map_err(|e| format!("bzip2: {e}"))?;
+    if let Err(e) = io::copy(&mut dec, &mut writer) {
+        let _ = fs::remove_file(&dest);
+        return Err(format!("bzip2: {e}"));
+    }
     Ok(0)
 }
 

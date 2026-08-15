@@ -121,7 +121,10 @@ fn extract_tar(input: &str, output: &str, selected: Option<&HashSet<String>>) ->
                 Ok(f) => ProgressWriter::extract(f),
                 Err(_) => { fail += 1; continue; }
             };
-            if io::copy(&mut e, &mut out).is_err() { fail += 1; }
+            if io::copy(&mut e, &mut out).is_err() {
+                let _ = fs::remove_file(&dest);
+                fail += 1;
+            }
         }
         Ok((total, fail))
     })();

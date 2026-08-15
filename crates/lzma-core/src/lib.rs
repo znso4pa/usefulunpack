@@ -30,11 +30,19 @@ fn extract_lzma(input: &str, output: &str) -> Result<u32, String> {
     let dest = Path::new(output).join(&name);
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
     let mut r = BufReader::new(File::open(input).map_err(|e| format!("lzma: {e}"))?);
-    let mut writer = ProgressWriter::extract(File::create(&dest).map_err(|e| format!("{e}"))?);
-    extract_progress::reset(decompressed_size(input));
+    let declared = decompressed_size(input);
+    // Cap the decompressed output at the header-declared uncompressed size
+    // (0 = unknown → no cap) so a crafted bomb can't exhaust disk.
+    let file = File::create(&dest).map_err(|e| format!("{e}"))?;
+    let bounded = archive_common::BoundedWriter::new(file, if declared > 0 { declared } else { u64::MAX });
+    let mut writer = ProgressWriter::extract(bounded);
+    extract_progress::reset(declared);
     extract_progress::set_name(&name);
     extract_progress::set_file(extract_progress::total_bytes());
-    lzma_rs::lzma_decompress(&mut r, &mut writer).map_err(|e| format!("lzma: {e}"))?;
+    lzma_rs::lzma_decompress(&mut r, &mut writer).map_err(|e| {
+        let _ = fs::remove_file(&dest);
+        format!("lzma: {e}")
+    })?;
     Ok(0)
 }
 

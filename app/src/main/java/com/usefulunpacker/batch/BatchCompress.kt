@@ -43,7 +43,10 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                     val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                     val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
                     val outF = uniqueFile(currentDir, "$name.$ext")
-                    val tmpDir = File(cacheDir, "batch_compress/$name")
+                    // Sanitize the staging subdir name (reject ../ and path
+                    // separators) so a weird name can't escape cacheDir.
+                    val safeName = name.replace(Regex("[/\\\\:*?\"<>|]"), "_")
+                    val tmpDir = File(cacheDir, "batch_compress/$safeName")
                     // Lock first, then the progress dialog (see extractAll);
                     // clean the staging dir when the operation is refused.
                     if (!tryStartOperation(this)) { tmpDir.deleteRecursively(); return@setPositiveButton }
@@ -61,7 +64,9 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                     thread {
                         try {
                             // Copy off the UI thread — large batches would
-                            // ANR the main thread here.
+                            // ANR the main thread here. Clear any stale staging
+                            // dir from a previously crashed run first.
+                            tmpDir.deleteRecursively()
                             tmpDir.mkdirs()
                             for (f in items) {
                                 if (cancelled) break
@@ -83,6 +88,13 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                             }
                             else toast(getString(R.string.title_compress_failed))
                                 exitMultiSelect(); nav(currentDir)
+                            }
+                        } catch (e: Exception) {
+                            // Uncaught I/O here used to crash the app and leave
+                            // the progress dialog + poller thread dangling.
+                            runOnUiThread {
+                                pd.dismiss()
+                                toast(getString(R.string.err_extract_io, e.message ?: ""))
                             }
                         } finally {
                             tmpDir.deleteRecursively()
@@ -148,6 +160,8 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                         else toast(getString(R.string.title_compress_failed))
                         exitMultiSelect(); nav(currentDir)
                     }
+                } catch (e: Exception) {
+                    runOnUiThread { pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                 } finally {
                     OperationLock.release()
                 }

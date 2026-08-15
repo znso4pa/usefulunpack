@@ -30,13 +30,13 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 📊 **Preview Statistics** | Real-time count/size of total and selected files |
 | 🔎 **Global Search** | Filename search + content search (30+ text formats), match highlighting with prev/next navigation, progressive scanning |
 | 📦 **In-Archive Search** | One-click unpack text files from preview and open the full global search interface on extracted content |
-| 🖼️ **File Preview** | Image (JPG/PNG), audio (MP3/OGG), video (MP4), text/code — jump to matching line on search results |
+| 🖼️ **File Preview** | Image (JPG/PNG/**GIF/WebP animated**), audio (MP3/OGG), video (MP4), text/code (md/rtf/yaml/vtt/csv…) — search results jump to the matching line; large text is previewed with a bounded read (no OOM) in a bigger dialog with a **draggable scrollbar** |
 | 🗜️ **Compression** | ZIP/7z + gzip/bzip2/xz/zstd/lzma/lz4 (single file) + tar (folder, 5 variants) + xp3/pfs/ksd, 5 levels, AES-256 (ZIP) |
 | 📚 **Multi-Volume** | Unpack `.7z.001` / `.zip.001` / `.rar` split volumes; pack zip/7z into byte-split volumes (7-Zip compatible) |
 | 🎚️ **Custom Split Size** | Split zip/7z output at a custom size (MB/GB, 1MB–2GB) |
 | 🔐 **Extract with Password** | Prompt-first password dialog for encrypted ZIP/7z/RAR; batch extraction asks once and reuses it |
 | 🔒 **Password Badge** | Archives that need a password show a lock icon in the file browser and in the preview list |
-| 📊 **Dual Progress Bar** | Top bar = overall progress, bottom bar = current file progress (extract + compress) |
+| 📊 **Dual Progress Bar** | Top bar = overall progress, bottom bar = current file progress (extract + compress), both always visible — every extract/compress entry point (preview, batch, search, edit-repack) uses the same dialog; a cancelled extract into a fresh folder is cleaned up entirely |
 | 📋 **Grouped Format Picker** | Scrollable, grouped format selection (generic / single-file / other) for extract, batch and compress |
 | 📄 **Single-File Compress FAB** | In compress mode, tap any file to get a bottom-right compress button |
 | 📦 **Batch Compress Picker** | Merge / separate batch compress both ask for a format; merge excludes single-file formats |
@@ -50,8 +50,11 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | ⚡ **One-Tap Preview** | Tap an archive → FAB → direct archive preview; format auto-detected from the extension (`.tar.gz`/`.tgz`/`.pf6`/`.sar`…), no extra chooser dialogs |
 | 📦 **Extract All** | One-click "Extract all" in the preview extracts to a deduped sibling folder; reuses the password entered during preview |
 | 🧩 **Extensionless Detection** | Magic-byte sniffing recognizes archives that lost their extension or were mislabeled, with a manual format picker as fallback |
-| 🔬 **Signature Scan** | Rust scan-core engine: 21 signatures / 67 magic patterns at any offset, per-format header validation (real size + file counts), Aho-Corasick matching, streaming scan (no whole-file load), one tap to extract or carve (dd) the raw segment |
-| 🔤 **Text Encoding** | Global text-encoding setting (UTF-8 / Shift-JIS / GBK / UTF-16) applied strictly to every text preview and content search — BOM-aware UTF-8/UTF-16; when heavy garble is detected it prompts you to switch the encoding in Settings |
+| 🔬 **Signature Scan** | Rust scan-core engine: **22 signatures / 68 magic patterns** at any offset, per-format header validation (real size + file counts, incl. **tar** `ustar` and **ISO 9660**), Aho-Corasick matching, streaming scan (no whole-file load), one tap to extract or carve (dd) the raw segment — works for archives embedded between other files |
+| 🔤 **Text Encoding** | Global text-encoding setting (UTF-8 / Shift-JIS / GBK / UTF-16) applied strictly to every text preview and content search — BOM-aware UTF-8/UTF-16 with **auto-detection** (a UTF-16 BOM opens as UTF-16 automatically); the preview/editor have an inline encoding switch that re-renders instantly; heavy garble prompts a switch hint, and a strictly-valid-UTF-8 check flags the classic "legal-but-wrong" cross-read |
+| ✏️ **Archive Text Editing** | Edit script/text files inside XP3/PFS archives: extract the archive, pick a script (`.ks`/`.tjs`/`.csv`/…), edit it with an explicit encoding + byte-faithful BOM round-trip, then repack into a new `name-cn.xp3/pfs` — a full in-app edit loop |
+| 🖱️ **Draggable Scroll** | Long lists (archive preview, scan results, script lists, browser, search) get an always-visible draggable fast-scroll handle; text preview/editor get a custom draggable scrollbar (Honor/EMUI-safe) |
+| 🔄 **Auto-Refresh** | A background watcher on the current folder refreshes the file list automatically — rename/move/delete/extract/compress and external changes (adb push, USB) appear without re-entering the path |
 | ✂️ **Exact Carve** | Signature-scan carve/extract cuts the validated archive size (zip/rar/7z/zstd/lz4/iso) exactly — an archive embedded between other files (e.g. `mp4 + zip + mp4`) is carved cleanly without the trailing data and extracts successfully |
 | 📲 **APK Install** | Tap an APK to hand it to the system installer (FileProvider + PackageInstaller fallback); optional backup copy next to the original before install for ROMs that delete the APK afterwards |
 | 📂 **GUI Folder Picker** | Full-screen directory picker (drill-down / parent / select-this-folder) for choosing the search scope |
@@ -66,7 +69,7 @@ Signature scan details (parser + size-skip semantics, following the approach of 
 
 | Design | How it works |
 |--------|--------------|
-| Engine | Aho-Corasick multi-pattern matching over 1 MiB streaming chunks (magics straddling a boundary still match); 21 signatures / 67 magic patterns |
+| Engine | Aho-Corasick multi-pattern matching over 1 MiB streaming chunks (magics straddling a boundary still match); 22 signatures / 68 magic patterns |
 | Validation | Every hit runs a per-format header parser (ZIP EOCD, RAR EOF marker + volume flags, PNG chunk walk, JPEG marker walk, gzip/bzip2/xz/zstd/lz4/lzma header checks, …) — false positives are dropped |
 | Size skip | Validated hits with a known size are skipped past entirely (e.g. a 5.3 GB RAR resolves in ~4 ms from its EOF marker) |
 | Post-pass | Same-offset conflicts resolved by confidence; hits inside an identified region removed; unknown sizes extended to the next hit or EOF |

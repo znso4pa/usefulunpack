@@ -26,7 +26,10 @@ fn extract_xz(input: &str, output: &str) -> Result<u32, String> {
     extract_progress::set_name(&name);
     extract_progress::set_file(0);
     let mut dec = xz2::read::XzDecoder::new(r);
-    io::copy(&mut dec, &mut writer).map_err(|e| format!("xz: {e}"))?;
+    if let Err(e) = io::copy(&mut dec, &mut writer) {
+        let _ = fs::remove_file(&dest);
+        return Err(format!("xz: {e}"));
+    }
     Ok(0)
 }
 

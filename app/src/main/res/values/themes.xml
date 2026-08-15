@@ -6,6 +6,15 @@
         <item name="colorAccent">@color/accent</item>
         <item name="android:colorAccent">@color/accent</item>
         <item name="android:windowBackground">@color/bg_surface</item>
+
+        <!-- Bigger, styled vertical scrollbars everywhere (also gives the
+             Honor/EMUI ROM the drawable it needs to create a non-null
+             ScrollBarDrawable — without it, drawing scrollbars NPEs). -->
+        <item name="android:scrollbarThumbVertical">@drawable/scrollbar_thumb_vertical</item>
+        <item name="android:scrollbarTrackVertical">@drawable/scrollbar_track_vertical</item>
+        <item name="android:scrollbarSize">14dp</item>
+        <item name="android:scrollbarStyle">insideOverlay</item>
+        <item name="android:scrollbarAlwaysDrawVerticalTrack">true</item>
     </style>
 
     <!-- Dialog theme — dark consistent surface -->
@@ -16,6 +25,13 @@
         <item name="android:backgroundDimAmount">0.6</item>
         <item name="colorAccent">@color/accent</item>
         <item name="android:colorAccent">@color/accent</item>
+
+        <!-- Bigger scrollbars inside dialogs too (preview / editor / lists). -->
+        <item name="android:scrollbarThumbVertical">@drawable/scrollbar_thumb_vertical</item>
+        <item name="android:scrollbarTrackVertical">@drawable/scrollbar_track_vertical</item>
+        <item name="android:scrollbarSize">14dp</item>
+        <item name="android:scrollbarStyle">insideOverlay</item>
+        <item name="android:scrollbarAlwaysDrawVerticalTrack">true</item>
 
         <!-- Title -->
         <item name="android:titleTextColor">@color/text_primary</item>
@@ -40,5 +56,11 @@
     </style>
     <style name="Widget.UsefulUnpack.Button.Neutral" parent="Widget.AppCompat.Button.ButtonBar.AlertDialog">
         <item name="android:textColor">@color/accent</item>
+    </style>
+
+    <!-- Draggable fast-scroll handle styling, applied via AbsListView.setFastScrollStyle -->
+    <style name="FastScrollStyle">
+        <item name="android:fastScrollThumbDrawable">@drawable/fastscroll_thumb</item>
+        <item name="android:fastScrollTrackDrawable">@drawable/fastscroll_track</item>
     </style>
 </resources>

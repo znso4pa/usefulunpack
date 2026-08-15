@@ -67,7 +67,10 @@ pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsExtract(
                 Ok(dest) => {
                     if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
                     let mut handler = PfsProgress { base, last: base };
-                    if archive.extract_file_with_progress(entry_path, &dest, &mut handler).is_err() { fail += 1; }
+                    if archive.extract_file_with_progress(entry_path, &dest, &mut handler).is_err() {
+                        let _ = fs::remove_file(&dest);
+                        fail += 1;
+                    }
                     base = handler.last;
                     if extract_progress::cancelled() { return Err("cancelled".to_string()); }
                 }
@@ -90,7 +93,10 @@ fn list_pfs(input: &str) -> Result<String, String> {
     for d in &dirs { all.push((d.clone(), 0, true, false)); }
     for entry in archive.entries() {
         let p = entry.path().to_string_lossy().replace('\\', "/");
-        all.push((p, entry.size() as u64, false, entry.is_encrypted()));
+        // PF8's built-in XOR encryption is derived from the index and decrypted
+        // transparently — it is NOT a user password, so never flag entries as
+        // password-protected (no 🔒 badge / password prompts for PFS).
+        all.push((p, entry.size() as u64, false, false));
     }
     all.sort_by(|a, b| a.0.cmp(&b.0));
     let entries: Vec<String> = all.iter().map(|(n, s, d, e)| {
@@ -152,7 +158,10 @@ fn extract_pfs_selected(input: &str, output: &str, selected: &str) -> Result<(u3
         let dest = safe_join(output, &entry_name).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
         let mut handler = PfsProgress { base, last: base };
-        if archive.extract_file_with_progress(entry_path, &dest, &mut handler).is_err() { fail += 1; }
+        if archive.extract_file_with_progress(entry_path, &dest, &mut handler).is_err() {
+            let _ = fs::remove_file(&dest);
+            fail += 1;
+        }
         base = handler.last;
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
     }
@@ -225,10 +234,13 @@ fn create_pfs(input: &str, output: &str) -> Result<u32, String> {
 
     let mut writer = Pf8Writer::create(Path::new(output)).map_err(|e| format!("PFS create {output}: {e}"))?;
     let mut pf8_entries: Vec<Pf8Entry> = Vec::new();
-    let mut offset = 0u32;
+    let mut offset: u64 = 0;
     for (_, rel, size) in &entries {
-        pf8_entries.push(Pf8Entry::new(rel, offset, *size as u32));
-        offset += *size as u32;
+        if offset + size > u32::MAX as u64 {
+            return Err(format!("PFS archive too large: offset {} + {size} exceeds 4GB ({})", offset, rel.display()));
+        }
+        pf8_entries.push(Pf8Entry::new(rel, offset as u32, *size as u32));
+        offset += *size;
     }
     let refs: Vec<&Pf8Entry> = pf8_entries.iter().collect();
     writer.write_header(&refs).map_err(|e| format!("PFS header: {e}"))?;

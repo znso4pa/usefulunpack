@@ -22,13 +22,13 @@ fun showRenameDialog(activity: AppCompatActivity, f: File, currentDir: File, boo
             val newName = inp.text.toString().trim()
             if (newName.isEmpty() || newName == f.name) return@setPositiveButton
             val dst = File(f.parentFile ?: return@setPositiveButton, newName)
-            if (!dst.exists()) { f.renameTo(dst); Toast.makeText(activity, activity.getString(R.string.action_rename), Toast.LENGTH_SHORT).show(); return@setPositiveButton }
+            if (!dst.exists()) { f.renameTo(dst); Toast.makeText(activity, activity.getString(R.string.action_rename), Toast.LENGTH_SHORT).show(); onSaved(); return@setPositiveButton }
             AlertDialog.Builder(activity)
                 .setTitle(activity.getString(R.string.msg_target_exists))
                 .setItems(arrayOf(activity.getString(R.string.action_replace), activity.getString(R.string.action_keep_both), activity.getString(R.string.action_compare))) { _, which ->
                     when (which) {
-                        0 -> { dst.delete(); f.renameTo(dst); Toast.makeText(activity, activity.getString(R.string.action_replace), Toast.LENGTH_SHORT).show() }
-                        1 -> { val u = uniqueFile(f.parentFile!!, newName); f.renameTo(u); Toast.makeText(activity, activity.getString(R.string.msg_renamed_to, u.name), Toast.LENGTH_SHORT).show() }
+                        0 -> { dst.delete(); f.renameTo(dst); Toast.makeText(activity, activity.getString(R.string.action_replace), Toast.LENGTH_SHORT).show(); onSaved() }
+                        1 -> { val u = uniqueFile(f.parentFile!!, newName); f.renameTo(u); Toast.makeText(activity, activity.getString(R.string.msg_renamed_to, u.name), Toast.LENGTH_SHORT).show(); onSaved() }
                         2 -> { compareFiles(activity, f, dst, bookmarks, currentDir, onSaved) }
                     }
                 }.setNegativeButton(activity.getString(R.string.action_cancel), null).show()
@@ -62,14 +62,19 @@ fun calcDirSize(activity: AppCompatActivity, dir: File) {
         setCancelable(false)
         show()
     }
-    val fileCount = dir.listFiles()?.size ?: 0
     thread {
+        // Count all nodes first so the progress bar has a real denominator
+        // (listFiles() only sees the top level and would overflow 100%).
+        val totalNodes = dir.walkTopDown().count()
         var total = 0L
         var processed = 0
         dir.walkTopDown().forEach { f ->
             if (f.isFile) total += runCatching { f.length() }.getOrDefault(0L)
             processed++
-            if (processed % 50 == 0) activity.runOnUiThread { pd.progress = (processed * 100 / fileCount).coerceAtMost(100) }
+            if (processed % 50 == 0) {
+                val pct = if (totalNodes > 0) (processed * 100 / totalNodes).coerceAtMost(100) else 100
+                activity.runOnUiThread { pd.progress = pct }
+            }
         }
         activity.runOnUiThread {
             pd.dismiss()

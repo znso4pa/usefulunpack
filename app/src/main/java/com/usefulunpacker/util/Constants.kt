@@ -147,18 +147,17 @@ val COMPRESS_LABELS = mapOf(
     "ksd" to "KSD (.ksd)",
 )
 
-// 当前文件小于该字节数时隐藏底部"当前文件"进度条，避免大量小文件时快速跳变闪烁
-val PROGRESS_FILE_BAR_MIN = 1024L * 1024L
-
-val PREVIEW_EXTS = setOf("jpg", "jpeg", "png", "mp3", "ogg", "mp4",
-    "txt", "json", "ini", "ks", "lua", "py", "js", "html", "css", "xml", "cfg", "log")
-
 val TEXT_SEARCH_EXTS = setOf(
     "txt", "json", "ini", "ks", "lua", "py", "js", "html", "css", "xml", "cfg", "log",
     "rtf", "md", "yaml", "yml", "toml", "conf", "properties", "sh", "java", "kt", "rs",
     "c", "cpp", "h", "hpp", "swift", "rb", "php", "pl", "sql", "tsv",
-    "srt", "ass", "lrc", "bat", "cmd", "ps1", "go", "dart", "r", "csv"
+    "srt", "ass", "lrc", "vtt", "bat", "cmd", "ps1", "go", "dart", "r", "csv", "tjs"
 )
+
+val PREVIEW_EXTS = setOf("jpg", "jpeg", "png", "gif", "webp", "mp3", "ogg", "mp4") + TEXT_SEARCH_EXTS
+
+/** Script/plain-text extensions the 编辑 (localization) workflow treats as editable. */
+val EDIT_SCRIPT_EXTS = setOf("ks", "tjs", "csv", "txt", "ini", "cfg", "json", "log")
 
 /** Content search loads whole files into RAM (strict decode), so even the
  *  "extreme" size limit never lets a file above this into content search —

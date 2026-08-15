@@ -6,6 +6,22 @@
     <string name="action_preview">预览</string>
     <string name="action_confirm">确定</string>
     <string name="action_cancel">取消</string>
+    <string name="action_edit">编辑</string>
+    <string name="action_save">保存</string>
+    <string name="title_text_editor">编辑文本</string>
+    <string name="msg_saved">已保存</string>
+    <string name="preview_looks_utf8_hint">该文件看起来是 UTF-8 编码——若文字不对,请在 设置→文本编码 切换到 UTF-8</string>
+    <string name="msg_editor_too_large">文件过大,无法在应用内编辑(&gt;2MB)</string>
+    <string name="msg_tjs_compiled">编译后的 TJS 脚本（TJS2 二进制）,无法按文本预览</string>
+    <string name="edit_archive">编辑</string>
+    <string name="edit_only_pack">仅支持可封包的格式（XP3/PFS）</string>
+    <string name="edit_archive_title">编辑脚本</string>
+    <string name="edit_repack">重新打包</string>
+    <string name="edit_no_scripts">未找到可编辑的脚本</string>
+    <string name="edit_done">已生成 %1$s</string>
+    <string name="msg_repacking">正在封包</string>
+    <string name="title_compress_options">压缩选项</string>
+    <string name="title_level">压缩等级</string>
     <string name="action_close">关闭</string>
     <string name="action_search">搜索</string>
     <string name="action_delete">🗑️ 删除</string>
@@ -333,6 +349,9 @@ zip/7z/rar 加密归档预览时输入一次密码，之后“解压全部/解�
         <item>交互流程
 点归档 → 右下角按钮 → 直接进入归档预览（格式自动识别）；预览内“解压全部”一键解压到同名文件夹，“解压所选”可选择目标位置</item>
             <item>格式扫描（binwalk）\n长按文件 → 扫描：检测文件内嵌的压缩包/图片等签名（如视频内嵌 ZIP），列出偏移与格式，ZIP 附文件数。每条命中两个按钮：「解压」直接预览/解压归档，「切割」保存原始片段为独立文件；失败会提示具体原因</item>
+        <item>归档内编辑脚本\n打开 XP3/PFS 预览，点「编辑」：自动解包 → 弹出脚本列表（.ks/.tjs/.csv/…）→ 点一个用显式编码编辑（保存保留原字节序）→ 「重新打包」在同目录生成「原名-cn.xp3/pfs」</item>
+        <item>编码与乱码\n每个预览/编辑器都有编码行：点它切换 UTF-8/SHIFT-JIS/GBK/UTF-16，文本立即重渲染；带 BOM 的 UTF-16/UTF-8 文件自动按正确编码打开；用错的非 UTF-8 编码读文件时会提示「看起来是 UTF-8」</item>
+        <item>滚动与自动刷新\n长列表右侧有常显可拖把手（抓住拖动即可跳转）；文本预览/编辑器也有可拖滚动条。当前目录内容变化（重命名/移动/删除/解压/压缩或 USB 等外部改动）时文件列表自动刷新</item>
 </string-array>
 
 
@@ -381,4 +400,20 @@ zip/7z/rar 加密归档预览时输入一次密码，之后“解压全部/解�
     <string name="scan_carve">切割 (dd)</string>
     <string name="scan_extract_not_archive">该命中不是归档，请用「切割」保存原始片段</string>
     <string name="scan_zip_info">，文件数：%1$d</string>
+    <string name="drawer_quick_paths">快捷路径</string>
+    <string name="drawer_add_current">+ 添加当前路径</string>
+    <string-array name="search_size_limits">
+        <item>100 KB</item>
+        <item>500 KB</item>
+        <item>1 MB</item>
+        <item>5 MB</item>
+        <item>10 MB</item>
+    </string-array>
+    <string name="unit_mb">MB</string>
+    <string name="unit_gb">GB</string>
+    <string-array name="split_size_labels">
+        <item>1MB</item>
+        <item>100MB</item>
+        <item>1GB</item>
+    </string-array>
 </resources>

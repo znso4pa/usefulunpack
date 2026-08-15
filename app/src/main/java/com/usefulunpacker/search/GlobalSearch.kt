@@ -126,7 +126,9 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         listResults.onItemClickListener = OnItemClickListener { _, _, pos, _ ->
             val r = resultAdapter.getItem(pos) as SearchResult
             if (r.file.path.isEmpty()) return@OnItemClickListener
-            searchDialog.dismiss()
+            // Keep the search dialog open: the file preview closes back into
+            // the search, so the user can keep clicking results without
+            // re-typing the query.
             val fmt = searchSourceFormat
             val cacheBase = searchSourceCacheBase
             if (r.file.length() == 0L && fmt != null && cacheBase != null) {
@@ -137,16 +139,26 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                 val src = searchSourceResolver?.get(relPath)
                     ?: searchSourceArchive?.let { SearchExtractSource(it, relPath, cacheBase, searchSourcePassword ?: "") }
                     ?: return@OnItemClickListener
-                // Lock first, then the spinner dialog (consistent with extractAll).
+                // Lock first, then the dual progress dialog (consistent with extractAll).
                 if (!tryStartOperation(this)) return@OnItemClickListener
-                val pd = ProgressDialog(this).apply {
-                    setTitle(getString(R.string.msg_extracting)); setMessage(r.file.name)
-                    setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show()
-                }
+                var cancelled = false
+                val accessors = extractAccessors(fmt)
+                val pd = PollingProgressDialog(
+                    this,
+                    getString(R.string.msg_extracting),
+                    accessors,
+                    { n, b, t -> extractProgressMessage(this, n, b, t) },
+                    getString(R.string.action_cancel),
+                    { cancelled = true; accessors.cancel() }
+                )
+                pd.start()
                 thread {
                     try {
                         extractByFormat(fmt, src.archive.path, src.outDir.path, src.internalPath, prefs, src.password)
-                        runOnUiThread { pd.dismiss(); previewClickedFile(r, queryText) }
+                        runOnUiThread {
+                            pd.dismiss()
+                            if (cancelled) toast(getString(R.string.msg_cancelled)) else previewClickedFile(r, queryText)
+                        }
                     } finally {
                         OperationLock.release()
                     }
@@ -224,7 +236,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
             queryText = etQuery.text.toString().trim()
             if (queryText.isEmpty()) { toast(getString(R.string.msg_enter_keyword)); return }
             if (searchMode == 1) {
-                val labels = arrayOf("100 KB", "500 KB", "1 MB", "5 MB", "10 MB", getString(R.string.level_extreme))
+                val labels = resources.getStringArray(R.array.search_size_limits) + getString(R.string.level_extreme)
                 val limits = longArrayOf(100_000L, 500_000L, 1_000_000L, 5_000_000L, 10_000_000L, Long.MAX_VALUE)
                 val body = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
@@ -342,10 +354,13 @@ internal fun MainActivity.walkSearch(
                                 var firstLine = 0
                                 var lineNum = 0
                                 try {
-                                    // Strict decode with the global text
-                                    // encoding (same as text preview).
-                                    val enc = prefs.getString("text_encoding", "UTF-8") ?: "UTF-8"
-                                    val text = decodeTextStrict(child.readBytes(), enc)
+                                    // Auto-detect the encoding per file (BOM →
+                                    // strict UTF-8 → SJIS/GBK heuristic), falling
+                                    // back to the global setting when unsure.
+                                    val bytes = child.readBytes()
+                                    val enc = detectBestEncoding(bytes)
+                                        ?: prefs.getString("text_encoding", "UTF-8") ?: "UTF-8"
+                                    val text = decodeTextStrict(bytes, enc)
                                     text.lines().forEach { line ->
                                             if (Thread.currentThread().isInterrupted) return@forEach
                                             lineNum++

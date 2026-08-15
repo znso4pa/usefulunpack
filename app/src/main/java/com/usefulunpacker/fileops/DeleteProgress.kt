@@ -48,6 +48,7 @@ fun deleteWithProgress(
                 var failed = 0
                 var processed = 0
                 for (t in targets) {
+                    if (!t.exists()) { failed++; continue }
                     runCatching {
                         t.walkBottomUp().forEach { f ->
                             if (f.delete()) deleted++ else failed++

@@ -1,0 +1,28 @@
+[package]
+name = "isomage"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Jack Danger <github@jackdanger.com>"]
+description = "Browse and extract files from ISO images without mounting them"
+repository = "https://github.com/JackDanger/isomage"
+homepage = "https://github.com/JackDanger/isomage"
+keywords = ["iso", "iso9660", "udf", "bluray", "filesystem"]
+categories = ["command-line-utilities", "filesystem"]
+readme = "README.md"
+
+[[bin]]
+name = "isomage"
+path = "src/main.rs"
+
+[lib]
+name = "isomage"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1

@@ -38,7 +38,10 @@ fn extract_gz(input: &str, output: &str) -> Result<u32, String> {
     extract_progress::reset(decompressed_size(input));
     extract_progress::set_name(&name);
     extract_progress::set_file(extract_progress::total_bytes());
-    io::copy(&mut dec, &mut writer).map_err(|e| format!("gzip: {e}"))?;
+    if let Err(e) = io::copy(&mut dec, &mut writer) {
+        let _ = fs::remove_file(&dest);
+        return Err(format!("gzip: {e}"));
+    }
     Ok(0)
 }
 

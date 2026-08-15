@@ -3,6 +3,7 @@ package com.usefulunpacker
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.widget.ListView
 import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
@@ -10,6 +11,15 @@ import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
 import java.nio.charset.CodingErrorAction
 import java.security.MessageDigest
+
+/** Draggable fast-scroll handle for long lists (archive preview / scan
+ *  results / script lists / batch preview). Always visible so a finger can
+ *  grab it and jump through thousands of entries. */
+fun ListView.enableFastScroll() {
+    isFastScrollEnabled = true
+    isFastScrollAlwaysVisible = true
+    setFastScrollStyle(R.style.FastScrollStyle)
+}
 
 /** Global text-encoding pref values (general settings). UTF-16 auto-detects
  *  the BOM and defaults to little-endian without one (galgame convention). */
@@ -50,6 +60,97 @@ private fun decodeReplace(bytes: ByteArray, cs: Charset): String {
     }
 }
 
+/** On a cancelled extract: a FRESH output folder is removed entirely (done
+ *  files + the in-progress partial), a pre-existing folder keeps its prior
+ *  content (the Rust side cleans the in-progress file). */
+fun cleanupCancelledOutput(out: File, existedBefore: Boolean) {
+    if (!out.exists()) return
+    if (!existedBefore) out.deleteRecursively()
+}
+
+/** Encodes [text] back to [encoding], symmetric with [decodeTextStrict]:
+ *  UTF-8/UTF-16 write a BOM matching the decode-side stripping, SHIFT-JIS/GBK
+ *  via the platform charset. Unmappable characters are REPLACEd (never a
+ *  hard error). Pass [bom] = whether the ORIGINAL file carried a BOM, so a
+ *  faithful round-trip doesn't add/remove one. */
+fun encodeText(text: String, encoding: String, bom: Boolean): ByteArray {
+    return when (encoding) {
+        "UTF-16" -> {
+            val body = text.toByteArray(Charsets.UTF_16LE)
+            if (bom) byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + body else body
+        }
+        "UTF-8" -> {
+            val body = text.toByteArray(Charsets.UTF_8)
+            if (bom) byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) + body else body
+        }
+        else -> {
+            val cs = Charset.forName(encoding)
+            val encoder = cs.newEncoder()
+                .onMalformedInput(CodingErrorAction.REPLACE)
+                .onUnmappableCharacter(CodingErrorAction.REPLACE)
+            try {
+                val bb = encoder.encode(java.nio.CharBuffer.wrap(text))
+                bb.array().copyOf(bb.limit())
+            } catch (_: CharacterCodingException) {
+                text.toByteArray(cs)
+            }
+        }
+    }
+}
+
+/** Detects whether [data] starts with a UTF-8/UTF-16 BOM (same rules as
+ *  [decodeTextStrict]); used by the editor to preserve byte fidelity. */
+fun hasBom(data: ByteArray): Boolean =
+    data.size >= 3 && data[0] == 0xEF.toByte() && data[1] == 0xBB.toByte() && data[2] == 0xBF.toByte() ||
+    data.size >= 2 && data[0] == 0xFF.toByte() && data[1] == 0xFE.toByte() ||
+    data.size >= 2 && data[0] == 0xFE.toByte() && data[1] == 0xFF.toByte()
+
+/** Returns the encoding implied by a leading BOM: UTF-16 for FF FE / FE FF,
+ *  UTF-8 for EF BB BF, else null. Lets previews/editors auto-open UTF-16
+ *  galgame scripts correctly regardless of the global encoding pref. */
+fun detectBomEncoding(data: ByteArray): String? = when {
+    data.size >= 3 && data[0] == 0xEF.toByte() && data[1] == 0xBB.toByte() && data[2] == 0xBF.toByte() -> "UTF-8"
+    data.size >= 2 && data[0] == 0xFF.toByte() && data[1] == 0xFE.toByte() -> "UTF-16"
+    data.size >= 2 && data[0] == 0xFE.toByte() && data[1] == 0xFF.toByte() -> "UTF-16"
+    else -> null
+}
+
+/** True when [data] starts with the TJS2 compiled-script magic ("TJS2" +
+ *  version bytes). These are binary bytecode, not text — previewing them as
+ *  text only produces garble. */
+fun isTjsBytecode(data: ByteArray): Boolean =
+    data.size >= 4 && data[0] == 'T'.code.toByte() && data[1] == 'J'.code.toByte() &&
+    data[2] == 'S'.code.toByte() && data[3] == '2'.code.toByte()
+
+/** Picks the most likely text encoding for BOM-less data: strict UTF-8 wins,
+ *  otherwise Shift-JIS vs GBK are both decoded and the one with fewer
+ *  replacement characters is chosen (galgame scripts are typically UTF-16,
+ *  SJIS or GBK). Returns null when even the best candidate is mostly garble,
+ *  so the caller falls back to the user's setting. */
+fun detectBestEncoding(data: ByteArray): String? {
+    detectBomEncoding(data)?.let { return it }
+    if (data.isEmpty()) return null
+    if (looksLikeUtf8(data)) return "UTF-8"
+    fun bad(s: String) = s.count { it == '\uFFFD' }
+    val sjis = decodeTextStrict(data, "SHIFT-JIS")
+    val gbk = decodeTextStrict(data, "GBK")
+    val bS = bad(sjis); val bG = bad(gbk)
+    val best = minOf(bS, bG)
+    if (best > 0 && best * 20 >= data.size) return null // both candidates garble-heavy
+    return if (bS <= bG) "SHIFT-JIS" else "GBK"
+}
+
+/** Reads at most [maxBytes] from [file] — for preview/search of potentially
+ *  huge files (a .log/.csv can be hundreds of MB) without loading it whole. */
+fun readPrefix(file: File, maxBytes: Long): ByteArray {
+    if (file.length() <= maxBytes) return file.readBytes()
+    return FileInputStream(file).use { ins ->
+        val buf = ByteArray(maxBytes.toInt())
+        val n = ins.read(buf)
+        if (n < buf.size) buf.copyOf(n) else buf
+    }
+}
+
 /** True when the decoded text carries an unusual number of replacement
  *  characters (U+FFFD) — the file was likely decoded with the wrong
  *  encoding. Threshold: >= 2% of the text, with a floor of 8 to avoid
@@ -59,6 +160,48 @@ fun textLooksGarbled(text: String): Boolean {
     var bad = 0
     for (c in text) if (c == '\uFFFD') { bad++; if (bad >= 8 && bad * 50 >= text.length) return true }
     return bad >= 8 && bad * 50 >= text.length
+}
+
+/** True when [data] is strictly valid UTF-8 (no malformed sequences). A UTF-8
+ *  file read with a non-UTF-8 encoding often decodes into legal-but-wrong
+ *  characters with no U+FFFD, so the garbled test can't catch it — this strict
+ *  check flags that classic case. */
+fun looksLikeUtf8(data: ByteArray): Boolean {
+    var i = 0
+    val n = data.size
+    while (i < n) {
+        val b = data[i].toInt() and 0xFF
+        val len = when {
+            b < 0x80 -> { i++; continue }
+            b in 0xC2..0xDF -> 2
+            b in 0xE0..0xEF -> 3
+            b in 0xF0..0xF4 -> 4
+            else -> return false
+        }
+        if (i + len > n) return false
+        for (k in 1 until len) {
+            val c = data[i + k].toInt() and 0xFF
+            if (c !in 0x80..0xBF) return false
+        }
+        // Reject overlong/surrogate/out-of-range encodings.
+        when (len) {
+            2 -> if (data[i].toInt() and 0x1E == 0) return false
+            3 -> {
+                val b1 = data[i].toInt() and 0xFF
+                val b2 = data[i + 1].toInt() and 0xFF
+                if (b1 == 0xE0 && b2 < 0xA0) return false
+                if (b1 == 0xED && b2 > 0x9F) return false
+            }
+            4 -> {
+                val b1 = data[i].toInt() and 0xFF
+                val b2 = data[i + 1].toInt() and 0xFF
+                if (b1 == 0xF0 && b2 < 0x90) return false
+                if (b1 == 0xF4 && b2 > 0x8F) return false
+            }
+        }
+        i += len
+    }
+    return true
 }
 
 fun fileSize(f: File): Long = try {
@@ -247,10 +390,10 @@ fun resolveZipVolumes(f: File): List<File> {
         val base = pkMatch.groupValues[1]
         val zParts = siblings.mapNotNull { f2 ->
             val m = PKW_Z_RE.find(f2.name) ?: return@mapNotNull null
-            if (m.groupValues[1] != base) return@mapNotNull null
+            if (!m.groupValues[1].equals(base, ignoreCase = true)) return@mapNotNull null
             m.groupValues[2].toIntOrNull()?.let { it to f2 }
         }.sortedBy { it.first }.map { it.second }
-        val final = siblings.firstOrNull { it.name == "$base.zip" }
+        val final = siblings.firstOrNull { it.name.equals("$base.zip", ignoreCase = true) }
         val all = if (final != null) zParts + final else zParts
         if (all.size >= 2 && startsWithZipMagic(all.first())) return all
         return listOf(f)
@@ -262,7 +405,7 @@ fun resolveZipVolumes(f: File): List<File> {
         val base = f.name.dropLast(4)
         val zParts = siblings.mapNotNull { f2 ->
             val m = PKW_Z_RE.find(f2.name) ?: return@mapNotNull null
-            if (m.groupValues[1] != base) return@mapNotNull null
+            if (!m.groupValues[1].equals(base, ignoreCase = true)) return@mapNotNull null
             m.groupValues[2].toIntOrNull()?.let { it to f2 }
         }.sortedBy { it.first }.map { it.second }
         val all = zParts + f

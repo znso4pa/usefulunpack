@@ -6,6 +6,22 @@
     <string name="action_preview">Preview</string>
     <string name="action_confirm">OK</string>
     <string name="action_cancel">Cancel</string>
+    <string name="action_edit">Edit</string>
+    <string name="action_save">Save</string>
+    <string name="title_text_editor">Edit text</string>
+    <string name="msg_saved">Saved</string>
+    <string name="preview_looks_utf8_hint">This file looks like UTF-8 — switch Text encoding to UTF-8 if the text is wrong</string>
+    <string name="msg_editor_too_large">File too large to edit in-app (>2MB)</string>
+    <string name="msg_tjs_compiled">Compiled TJS script (binary TJS2), can\'t preview as text</string>
+    <string name="edit_archive">Edit</string>
+    <string name="edit_only_pack">Only packable formats support this (XP3/PFS)</string>
+    <string name="edit_archive_title">Edit scripts</string>
+    <string name="edit_repack">Repack</string>
+    <string name="edit_no_scripts">No editable scripts found</string>
+    <string name="edit_done">Created %1$s</string>
+    <string name="msg_repacking">Repacking</string>
+    <string name="title_compress_options">Compress options</string>
+    <string name="title_level">Compression level</string>
     <string name="action_close">Close</string>
     <string name="action_search">Search</string>
     <string name="action_delete">🗑️ Delete</string>
@@ -333,6 +349,9 @@ Long-press a file → Info: shows size/date/MD5/SHA-256 with one-tap copy</item>
         <item>Interaction flow
 Tap an archive → bottom-right button → direct archive preview (format auto-detected); "Extract all" unpacks to a sibling folder, "Extract selected" lets you choose the destination</item>
             <item>Signature scan (binwalk)\nLong-press a file → Scan: detects embedded archive/image signatures (e.g. a ZIP embedded inside a video), listing offsets and formats with ZIP file counts. Each hit has two buttons: "Extract" opens archives directly for preview/extraction, "Carve (dd)" saves the raw segment as a standalone file; failures show the specific reason</item>
+        <item>Edit scripts inside an archive\nOpen an XP3/PFS preview and tap "Edit": the archive is unpacked, a script list (.ks/.tjs/.csv/…) appears, tap one to edit with an explicit encoding (the original byte order is kept on save), then "Repack" creates a new "name-cn.xp3/pfs" in the same folder</item>
+        <item>Encoding &amp; garbled text\nEvery preview/editor shows an encoding row — tap it to switch UTF-8/Shift-JIS/GBK/UTF-16 and the text re-renders instantly. UTF-16/UTF-8 files with a byte-order mark open with the right encoding automatically; a "looks like UTF-8" hint appears when a file was read with a wrong non-UTF-8 encoding</item>
+        <item>Scrolling &amp; refresh\nLong lists have an always-visible draggable handle on the right (grab and drag to jump); the text preview/editor have a draggable scrollbar too. The file list refreshes automatically when the current folder changes (rename/move/delete/extract/compress or external changes such as USB)</item>
 </string-array>
 
 
@@ -381,4 +400,20 @@ Tap an archive → bottom-right button → direct archive preview (format auto-d
     <string name="scan_carve">Carve (dd)</string>
     <string name="scan_extract_not_archive">This hit is not an archive; use Carve to save the raw segment</string>
     <string name="scan_zip_info">, file count: %1$d</string>
+    <string name="drawer_quick_paths">Quick paths</string>
+    <string name="drawer_add_current">+ Add current path</string>
+    <string-array name="search_size_limits">
+        <item>100 KB</item>
+        <item>500 KB</item>
+        <item>1 MB</item>
+        <item>5 MB</item>
+        <item>10 MB</item>
+    </string-array>
+    <string name="unit_mb">MB</string>
+    <string name="unit_gb">GB</string>
+    <string-array name="split_size_labels">
+        <item>1MB</item>
+        <item>100MB</item>
+        <item>1GB</item>
+    </string-array>
 </resources>

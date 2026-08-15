@@ -81,6 +81,8 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
                             else toast(friendlyExtractError(this, err))
                             exitMultiSelect(); nav(currentDir)
                         }
+                    } catch (e: Exception) {
+                        runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                     } finally {
                         OperationLock.release()
                     }
@@ -176,14 +178,32 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
             if (entry.isDirectory) return
             val (arc, origPath) = resolveBatchPath(entry.path) ?: return
             val cacheDir = File(cacheDir, "batch_preview/${arc.nameWithoutExtension}")
-            val pd3 = ProgressDialog(this).apply { setTitle(getString(R.string.msg_extracting)); setMessage(entry.name); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
+            // Lock first, then the dual progress dialog (see extractAll).
+            if (!tryStartOperation(this)) return
+            var cancelled = false
+            val accessors = extractAccessors(fmt)
+            val prog = PollingProgressDialog(
+                this,
+                getString(R.string.msg_extracting),
+                accessors,
+                { n, b, t -> extractProgressMessage(this, n, b, t) },
+                getString(R.string.action_cancel),
+                { cancelled = true; accessors.cancel() }
+            )
+            prog.start()
             thread {
-                if (!OperationLock.acquire()) { runOnUiThread { pd3.dismiss() }; return@thread }
                 try {
                     val p = resolveBatchPwd(arc)
-                    if (p == null) { runOnUiThread { pd3.dismiss() }; return@thread }
+                    if (p == null) { runOnUiThread { prog.dismiss() }; return@thread }
                     val o = extractByFormat(fmt, arc.path, cacheDir.path, origPath, prefs, p)
-                    runOnUiThread { pd3.dismiss(); if (o.counts.ok) previewLocalFile(this, File(cacheDir, origPath)) else toast(friendlyExtractError(this, o.error)) }
+                    runOnUiThread {
+                        prog.dismiss()
+                        if (cancelled) toast(getString(R.string.msg_cancelled))
+                        else if (o.counts.ok) previewLocalFile(this, File(cacheDir, origPath))
+                        else toast(friendlyExtractError(this, o.error))
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                 } finally {
                     OperationLock.release()
                 }
@@ -194,6 +214,7 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
         val listView = ListView(this).apply {
             this.adapter = adapter; setBackgroundColor(C["surface"]!!)
             divider = ColorDrawable(C["surface_dark"]!!); dividerHeight = 1
+            enableFastScroll()
         }
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; addView(tvStats); addView(listView, LinearLayout.LayoutParams(MATCH, 0, 1f))
@@ -211,11 +232,24 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
             scaleType = ImageView.ScaleType.FIT_XY; layoutParams = LinearLayout.LayoutParams(52, 40)
             setOnClickListener {
                 val cacheDir = File(cacheDir, "archive_search/batch_${all.map{it.first.nameWithoutExtension}.joinToString("_").take(50)}")
-                cacheDir.deleteRecursively(); cacheDir.mkdirs()
-                val pd2 = ProgressDialog(act).apply { setTitle(getString(R.string.preparing_search)); setMessage(getString(R.string.extracting_texts)); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
+                // Lock first, then the dual progress dialog (the text-extraction
+                // phase reports byte progress); the work dir is cleared INSIDE
+                // the lock so a refused second search can't nuke a running one.
+                if (!tryStartOperation(act)) return@setOnClickListener
+                var cancelled = false
+                val accessors = extractAccessors(fmt)
+                val prog = PollingProgressDialog(
+                    act,
+                    getString(R.string.preparing_search),
+                    accessors,
+                    { n, b, t -> extractProgressMessage(act, n, b, t) },
+                    getString(R.string.action_cancel),
+                    { cancelled = true; accessors.cancel() }
+                )
+                prog.start()
                 thread {
-                    if (!OperationLock.acquire()) { runOnUiThread { pd2.dismiss(); dlg.dismiss() }; return@thread }
                     try {
+                        cacheDir.deleteRecursively(); cacheDir.mkdirs()
                         searchSourceArchive = null; searchSourceFormat = fmt; searchSourceCacheBase = cacheDir
                         searchSourcePassword = null
                         // Each archive gets its own subdir so same-named entries
@@ -224,7 +258,8 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                         val resolver = mutableMapOf<String, SearchExtractSource>()
                         val textExts = TEXT_SEARCH_EXTS
                         for ((src, _) in all) {
-                            val pwd = resolveBatchPwd(src) ?: run { runOnUiThread { pd2.dismiss(); dlg.dismiss() }; return@thread }
+                            if (cancelled) break
+                            val pwd = resolveBatchPwd(src) ?: run { runOnUiThread { prog.dismiss(); toast(getString(R.string.msg_cancelled)) }; return@thread }
                             val sub = File(cacheDir, src.name)
                             sub.mkdirs()
                             for (e in merged.filter { !it.isDirectory && it.path.startsWith("📦 ${src.name}/") }) {
@@ -239,7 +274,8 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                 val keyRel = "${src.name}/$rel"
                                 resolver[keyRel] = SearchExtractSource(src, archiveRel, sub, pwd)
                                 // Phase 1: touch placeholder files for ALL entries (filename search).
-                                ph.parentFile?.mkdirs(); ph.createNewFile()
+                                ph.parentFile?.mkdirs()
+                                try { ph.createNewFile() } catch (_: Exception) {}
                                 // Phase 2: extract only text files (overwrites placeholder).
                                 if (e.name.substringAfterLast('.').lowercase() in textExts) {
                                     extractByFormat(fmt, src.path, sub.path, archiveRel, prefs, pwd)
@@ -247,7 +283,14 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                             }
                         }
                         searchSourceResolver = resolver
-                        runOnUiThread { pd2.dismiss(); dlg.dismiss(); globalSearch(cacheDir, tempDir = cacheDir) }
+                        runOnUiThread {
+                            prog.dismiss()
+                            if (cancelled) { toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
+                            dlg.dismiss()
+                            globalSearch(cacheDir, tempDir = cacheDir)
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                     } finally {
                         OperationLock.release()
                     }
@@ -267,16 +310,27 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                     val r = resolveBatchPath(p) ?: continue
                     byArchive.getOrPut(r.first) { mutableListOf() }.add(r.second)
                 }
-                val pd2 = ProgressDialog(this).apply { setTitle(getString(R.string.title_batch_extract)); setMessage(getString(R.string.selected_count, sel.size)); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
+                var cancelled = false
+                val accessors2 = extractAccessors(fmt)
+                val pd2 = PollingProgressDialog(
+                    this,
+                    getString(R.string.title_batch_extract),
+                    accessors2,
+                    { n, b, t -> extractProgressMessage(this, n, b, t) },
+                    getString(R.string.action_cancel),
+                    { cancelled = true; accessors2.cancel() }
+                )
+                pd2.start()
                 thread {
                     try {
                         var ok2 = true
                         var err: String? = null
                         var pwdCancelled2 = false
                         for ((src, paths) in byArchive) {
+                            if (cancelled) { pwdCancelled2 = true; break }
                             val pwd = resolveBatchPwd(src)
                             if (pwd == null) { pwdCancelled2 = true; break }
-                            val o = extractByFormat(fmt, src.path, uniqueFile(src.parentFile!!, src.nameWithoutExtension).path, paths.joinToString("\n"), prefs, pwd)
+                            val o = extractByFormat(fmt, src.path, uniqueFile(src.parentFile ?: currentDir, src.nameWithoutExtension).path, paths.joinToString("\n"), prefs, pwd)
                             if (!o.counts.ok) { ok2 = false; err = o.error; break }
                         }
                         runOnUiThread {
@@ -288,6 +342,8 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                             }
                             exitMultiSelect(); nav(currentDir)
                         }
+                    } catch (e: Exception) {
+                        runOnUiThread { pd2.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                     } finally {
                         OperationLock.release()
                     }

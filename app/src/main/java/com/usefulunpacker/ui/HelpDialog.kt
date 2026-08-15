@@ -74,7 +74,12 @@ internal fun MainActivity.showHelpDialog() {
         if (i < tutorials.size - 1) root.addView(divider())
     }
 
-    val scroller = ScrollView(this).apply { addView(root) }
+    val scroller = ScrollView(this).apply {
+        addView(root)
+        // Honor/EMUI NPEs drawing scrollbars on custom views — disable.
+        isVerticalScrollBarEnabled = false
+        isHorizontalScrollBarEnabled = false
+    }
 
     val dlg = AlertDialog.Builder(this)
         .setTitle(getString(R.string.settings_help))

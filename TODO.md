@@ -1,5 +1,87 @@
 # TODO
 
+## v5.10.0 (编辑闭环 + 预览扩展 + 扫描增强 + 自动刷新)
+
+### 预览扩展（A）
+
+- [x] **文本格式全进预览** — `PREVIEW_EXTS` 重构 = 图片/音频/视频 + 全部 `TEXT_SEARCH_EXTS`（md/rtf/yaml/toml/sh/srt/ass/lrc/vtt/csv…）；`vtt` 补入搜索列表；调整声明顺序避免顶层 val 初始化顺序问题
+- [x] **GIF/WebP 动图预览** — `previewLocalFile` 路由加 gif/webp → 图片；`showImagePreview` 改 `ImageDecoder`（API 28+ 返回 `AnimatedImageDrawable` 自动播放）+ API 26-27 静态帧回退
+- [x] **文本预览框放大 + 防 OOM** — 对话框 92%×85%；新增 `readPrefix(file, 1MB)` 有界读取，大 .log/.csv 秒开不整读
+
+### 归档文本编辑闭环（XP3/PFS 取出→看→编辑→封回）
+
+- [x] **文本编辑器** — `showTextEditor`：大 EditText + 顶部编码行（UTF-8/SJIS/GBK/UTF-16 单选）+ 保存；预览对话框加「编辑」Neutral 按钮进入
+- [x] **编码保真写出** — `encodeText(text, enc, bom)`（UTF-8/UTF-16 按原 BOM 状态写回、SJIS/GBK REPLACE）+ `hasBom`；编码不变时字节级往返一致（已知限制：UTF-16 BE→LE）
+- [x] **归档编辑流程** — 预览标题栏「编辑」→ 全量解包到 cache/edit → 脚本列表（.ks/.tjs/.csv/.txt/.ini/.cfg/.json/.log，`EDIT_SCRIPT_EXTS`）→ 就地编辑 → 「重新打包」→ `xp3CreateArchive`/`pfsCreateArchive` 全量重封为 `原名-cn.xp3/pfs`；OperationLock 隔离
+- [x] **归档条目预览隐藏「编辑」** — `showTextPreview` 加 `showEdit` 参数，`previewFileEntry` 传 false（cache 临时文件保存不会封回归档，避免误导）
+- [x] **启动先 dismiss 预览对话框** — 封回 + nav 后不留过期预览窗口
+
+### B 扫描增强（Rust scan-core）
+
+- [x] **tar 签名** — `validate_tar`：`ustar` 魔数 @257（GNU `\0`/POSIX 空格版本字节）+ 头 checksum（148..156 八进制按空格求和）+ 512 块链遍历到双零块算精确 size；**容忍前导空格八进制**（legacy tar）；注册第 22 签名/68 魔数；3 条回归测试（精确 size/损坏 checksum 拒绝/随机偏移拒绝/空格填充 size）
+- [x] **ISO 命中修复（潜在 bug）** — 独立 ISO 命中被 scan 的 `magic_offset + size ≤ file_len` sanity 拒绝（size 语义从整图改为 **extent-from-magic**，ISO 减 32768）；post-pass `size > remaining` 同理；ISO 现在能真扫出
+- [x] **切割偏移调整表** — `magicStartAdjust`（ISO +32768 / tar +257）：`carveOffsetOf` 起点回退、`carveLengthOf` 长度补回 → ISO/tar 精确切割
+- [x] **嵌入 ISO 解压走 carve** — `extractHit`：`hit.offset > 32768` 时不再直览宿主文件，`separateAndExtract` 的 needsCarve 补该条件
+
+### C 系列
+
+- [x] **C1 `.z01` 真分卷加固** — zip 3.x 原生支持多盘 EOCD；`resolveZipVolumes` 真分卷 base/末卷匹配改大小写不敏感（`FOO.Z01`+`foo.zip` 可拼全套）
+- [x] **C2 深递归（审计关闭）** — `iso_walk`/zip·sevenz `add_dir`/tar·pfs·xp3 `collect_files`/rar·sevenz `walk_files`/Kotlin `walkTopDown/BottomUp`/`deleteWithProgress` 全为显式栈或无递归
+- [x] **C3 压缩流程内联** — 单文件压缩选格式后弹「压缩选项」（等级 + 分卷大小）；`compressDispatch` 加 `splitOverride` 参数；**debug 修：自定义分卷不再被 indexOf 静默降级**（`chosenSplit` 透传 + `fmt` 格式化显示，未改动时保留设置值）
+
+### 文件列表自动刷新
+
+- [x] **重命名立即刷新** — `showRenameDialog` 成功分支（无冲突/替换/保留两者）调用 `onSaved()`；调用点改 `{ saveBookmarks(); nav(currentDir) }`（此前重命名后必须退出重进）
+- [x] **FileObserver 后台监听** — 监听 `currentDir`，内容变更事件（CREATE/DELETE/MOVED/CLOSE_WRITE/MODIFY，排除读取事件防 observer↔nav 循环）+ 400ms 防抖 → 主线程 `nav(currentDir)`；`nav()` 换目录重启、onPause 停/onResume 重启/onDestroy 清理；覆盖压缩/解压/外部改动（adb push/USB/其他 App）
+
+### 验证与提交
+
+- [x] scan-core 22 测试全绿（新增 tar×2 + 空格填充回归）；workspace 全绿
+- [x] `.so` 三架构重编（scan-core）+ `assembleRelease` + APK 更新
+- [x] 提交：全部 v5.10.0 改动已合并为**单个提交**（自 v5.9.0 `76b88ea` 之上）
+
+### 真机回归修复（v5.10.0）
+
+- [x] **荣耀 onDrawScrollBars 崩溃（根因实证）** — `mScrollBar.mutate() on null` NPE 是 Honor/EMUI ROM bug：`onDrawScrollBars` 无 null 守卫，且其 `ScrollabilityCache` 不创建 ScrollBarDrawable 对象。**主题 drawable 无效**（对象非 null 缺失），正解 = 禁用自定义视图滚动条绘制。7 处禁用：预览 TextView+2×ScrollView、编辑器 EditText、格式选择器、帮助、压缩设置 XML（`scrollbars="none"`）；滚动功能保留（movementMethod / 原生 / 触摸）
+- [x] **设置编码选择器陈旧** — `textEncCurrent`/`zipEncCurrent` 改 `var`，选完即刷新行值 + 再开高亮正确
+- [x] **预览加编码切换行** — 切编码立即按原 bytes 重解码重渲染（写 prefs 全局生效），不再"改了没反应"
+- [x] **UTF-16/UTF-8 BOM 自动探测** — `detectBomEncoding`：预览/编辑器初始解码按 BOM 走（FF FE/FE FF→UTF-16，EF BB BF→UTF-8），galgame UTF-16LE 脚本开箱即显
+- [x] **DragScrollBar 自定义可拖滚动条** — 基于 `layout.height`/`scrollY` 公开 API 算拇指（不走荣耀崩溃的 onDrawScrollBars 路径），预览+编辑器右侧可拖跳转；列表沿用 fastScroll 常显把手
+- [x] **GIF/WebP 显式 `AnimatedImageDrawable.start()`** — 荣耀不自动播的修复
+- [x] **编辑器 2MB 上限防 ANR** — 大文件 toast 拒绝，不再整读
+- [x] **looksLikeUtf8 乱码提示** — 严格 UTF-8 校验；非 UTF-8 编码下文件是合法 UTF-8 → 提示切换（覆盖"合法但错"的交叉误读）
+- [x] **XP3 内 KSD-mode-2 加扰文本解包（重大）** — `启动游戏.xp3` 61 个 txt 中 48 个为 `zlib(KSD 包装(FE FE 02 FF FE + 长度 + zlib(UTF-16LE 文本)))`；xp3-0.4.2 crate 只解外层 zlib → 内容写成 KSD 二进制 → 全编码乱码。修复：`ksd-core` 暴露 `pub ksd_mode2_decode`（+rlib crate-type），`xp3-core` 小条目缓冲探测前缀并解包写盘（大条目流式，非 KSD 原样）；回归测试 `ksd_mode2_wrapped_entry_extracts_as_text`；重编 xp3_core 三架构
+- [x] **归档预览标题栏按钮放大** — 查找按钮 52×40→64×48、编辑按钮统一尺寸
+- [x] 验证：workspace 全绿（xp3-core 3 测试含 KSD 回归）；`assembleRelease` + APK 更新
+
+### P2 批改 + 交互优化（v5.10.0）
+
+- [x] **双进度条去阈值** — 删除 `PROGRESS_FILE_BAR_MIN`(1MB)隐藏逻辑：底部"当前文件"条恒显（有 size 走确定进度、未知走不定圈），消除 iso/nsa/xp3 小文件时"丧失双条"的感知
+- [x] **七个入口迁移双条** — 重打包、编辑脚本启动、归档内搜索 prep、批量解压所选、批量预览单文件、批量搜索 prep、搜索结果按需解压，全部从 spinner 迁到 `PollingProgressDialog`（锁先于框 + 取消透传）
+- [x] **xp3 KSD 进度校准** — 解包后按实际大小 `set_file`，底部条不再瞬间顶满
+- [x] **pfs 不再报加密** — PF8 内置 XOR 为索引派生、非用户密码；`list_pfs` 报 `e:false`，pfs 条目不再显示 🔒
+- [x] **编码自动检测 `detectBestEncoding`** — BOM(UTF-16/UTF-8) → 严格 UTF-8 → SJIS/GBK 启发（不自信回退设置值），接入预览/编辑器/全局搜索内容解码
+- [x] **搜索结果保留搜索框** — 点结果打开文件关闭后回到原搜索，免重复输入
+- [x] **搜索高亮丢失修复** — 匹配超出 5 万字符显示截断时取匹配 ±2 万窗口重显
+- [x] **全局搜索进度条改圆环 spinner** — 水平 indeterminate 在荣耀等 ROM 渲染成满条蓝条
+- [x] **取消半成品清理** — Kotlin 新建输出文件夹取消时 `deleteRecursively` 整删（`cleanupCancelledOutput` 捕获 existedBefore）；Rust 各 crate（xp3/pfs/tar/lz4/gz/bz2/xz/zst/lzma/ksd，加原有 zip/7z）解压 copy 失败时 `remove_file` 半成品；重编 10 个 .so 三架构
+- [x] **术语去歧义** — 全库统一为编辑闭环/编辑流程/EDIT_SCRIPT_EXTS，无本地化歧义措辞
+- [x] **Kotlin 代码审计修复（top-10 + 低危）** — worker 级 catch 防崩溃/进度框泄漏（批量压缩/搜索占位/批量/编辑启动/搜索结果）；deleteRecursively 移入锁内；carve 持锁+可取消；stopped @Volatile；Phase-2 用 sanitize 路径；isPasswordProtected 移 worker；位图 worker 解码+降采样+关流；drawer 硬编码迁 strings×4；listBookmarks scrollbars=none；skip 循环/死绑定/死代码/标签本地化/parentFile 兜底
+- [x] **Rust 安全审计修复（5 高 + 5 中）** — sevenz-rust 头数量/缓冲区全部封顶 + assert→Err；isomage vendor 并加 data_length 封顶 + 目录递归深度≤128；xp3 缓冲解压有界读取（zlib 炸弹）；ksd 负数长度拒绝；zip/lzma/lz4 输出封顶（新增 common `BoundedWriter`）；pfs offset u64 累加 + >4GB 报错；nsa SPB 零维度拒绝；workspace 24 套件全绿
+- [x] 验证：workspace 全绿；`assembleRelease` + APK 更新
+
+### Rust 安全审计（v5.10.0，恶意头/炸弹/溢出，5 高 + 5 中）
+
+- [x] **7z 受控无界分配（高）** — sevenz-rust `num_files`/`num_coders`/`next_header_size`/解码后 `buf_size`/`properties_size` 全部封顶（1M/1024/64MB/64MB/16MB），构造头不再 OOM abort
+- [x] **ISO 目录 OOM + 栈溢出（高）** — isomage 已 vendor（`[patch.crates-io]`），`data_length` 封顶 64MB、`parse_directory` 深度 ≤128（防环/递归 SIGSEGV）
+- [x] **xp3 解压炸弹（高）** — 小条目缓冲改手动有界读取（≤16MB），超限转流式
+- [x] **ksd 负数长度回绕（高）** — `compressed_len/uncompressed_len` 负值显式拒绝，不再 `as usize` 回绕切片 panic
+- [x] **zip/lzma/lz4 输出封顶（中）** — 新增 common `BoundedWriter`，按声明解压大小封顶（lzma-alone 头 / lz4 content size / zip entry.size）；gz/bz2/xz/zst 无可靠 in-header 声明大小，记接受风险
+- [x] **sevenz assert → Err（中）** — `total_input_streams <= total_output_streams` 不再 panic
+- [x] **pfs offset u32 回绕（中）** — u64 累加 + 总大小 >4GB 报错
+- [x] **nsa SPB 零维度下溢（中）** — `height/width == 0` 显式拒绝，防 `height-1` 下溢
+- [x] 验证：workspace 24 套件全绿；8 个受影响 crate 三架构重编
+
 ## v5.9.0 (密码锁 + UI重构：交互流程 / 国际化 / 视觉)
 
 ### 已完成
@@ -167,17 +249,16 @@
 - [x] **D7 TODO 过期条目** — 旧审计段 `oneshot_async 忙等` 改标已修（引用 v5.9.0 R7 的 1M 轮询上限）
 - [x] **D8 预览重试锁忙静默** — `OperationLock.acquire()` 失败静默丢弃点击 → 补 `runOnUiThread { toast(msg_op_in_progress) }`
 - [x] **D 系列验证** — workspace 23 套件全绿（scan-core 20 条含 5 条新回归）；files4testing 601 文件语料回归 0 FAIL；scan-core `.so` 三架构重编 + `assembleRelease` + APK 包内 .so hash 核对一致
-- [x] **N1 内容搜索整读 OOM 隐患** — `decodeTextStrict(readBytes())` 整文件载入（原流式 forEachLine）；新增 `CONTENT_SEARCH_MAX = 50MB` 硬上限，即便「极端」极限(Long.MAX_VALUE)也跳过 >50MB 文本，杜绝大文件内容搜索 OOM
+- [x] **N1 内容搜索整读 OOM 隐患** — `decodeTextStrict(readBytes())` 整文件载入（原流式 forEachLine）；新增 50MB 硬上限，即便「极端」极限(Long.MAX_VALUE)也跳过 >50MB 文本，杜绝大文件内容搜索 OOM
 - [x] **E1 切割按 hit.size 定终点** — `carveToFile` 加 `length: Long?` 参数（null=EOF 回退给无 size 的 gzip/bz2/xz/lzma/xp3）；zip/rar/7z/zstd/lz4/iso 有精确 size → 切 `[offset, offset+size)`；主机端到端：`mp4+zip+mp4` 拼接 → scan 报 zip(offset/size/count)，新切割与原始 zip 逐字节一致；尾部 200KB(>64KB EOCD 窗口)时旧 EOF 切割必 "cannot find EOCD"，E1 修复成功提取
 
 ### 待处理
 
-- [ ] **预览格式增加** — 预览支持更多文件格式（如 GIF/WebP、Markdown 渲染、字幕/歌词等）
 - [ ] **进度静态量每操作局部上下文** — 若要真正并发再做
 - [ ] **gzip/xz/lzma 解压验证** — scan-core 为保持零依赖只做头部校验；加密/高熵数据中 gzip 仍有 ~1/1000 概率误报（binwalk 用解压 dry-run 根治）。若引入 flate2/xz2/lzma-rs 可对齐到接近 0，但 `.so` 会增大
 - [ ] **-hp 头加密 RAR 不报** — 无明文结构可验证；binwalk 报（靠魔数）但伴随加密流内部大量误报。若未来需要可加"仅魔数 + 全文件区间"兜底
 - [ ] **深嵌大 zip（wontfix）** — EOCD 前向 256MiB 封顶 + 文件尾 64KB 回退覆盖「归档在文件尾」与「压缩体 ≤256MB」两类；深嵌宿主文件中间且压缩体 >256MB 的 zip 仍漏（binwalk 同病，代价不值的取舍）
-- [ ] **tar 签名** — 语料中 binwalk 报 "POSIX tar archive"（ustar 魔数 + checksum 验证）；本库无 tar 魔数。可加 `ustar` 魔数 @257 + 头部 checksum 验证，但 GNU 格式 tar 仍漏（binwalk 同样漏）
+- [ ] **Markdown/RTF 富文本渲染** — md 现纯文本直显（`#`/`**` 原样），rtf 露控制字；可选加轻量渲染器
 
 ---
 
@@ -234,7 +315,7 @@
 - [x] **`lastExtractResult`/`lastExtractError` 全局跨线程（已修）** — 彻底移除两个进程级 `@Volatile` 全局，新增 `ExtractOutcome(counts, error)` 按操作显式传参：`extractByFormat` 返回 `ExtractOutcome`，`tryExtractWithPassword`/`showPasswordDialog` 回调改传 `ExtractOutcome`，`friendlyExtractError` 改收显式 error 参数；消除 worker→UI 间的共享可变状态
 - [x] **进度静态量跨线程竞争（已修）** — 审计发现 5 处后台提取未持 `OperationLock`（批量预览点击、批量/单归档内容搜索提取、搜索结果按需解压、`extractSelected` zip/7z 分支）会与前台操作并发写同一格式 progress 静态量 → 全部补 `OperationLock`；每个 cdylib 独立静态副本（无跨格式污染），每次操作开头 `reset()`（含清 CANCEL）。若未来要真正并发，需把 progress 静态量改每操作局部上下文（涉及全部 crate，暂不做）
 - [x] **RAR 加密大量小文件慢（已评估：不可优化）** — RAR5 每个文件自带独立 salt+kdf_count（fork 自带 writer 实测 6 文件 = 6 个不同 salt，且 rars 与真实 WinRAR 归档互操作验证），PBKDF2(2^15 HMAC-SHA256) 每文件必跑一次，是格式特性非实现问题；`sha2` 已用 SIMD；换官方 unrar 同样逐文件 KDF，无法改善
-- [ ] **`.z01` 真分卷 best-effort** — 拼接依赖 zip crate 接受多盘 EOCD（`disk_number` 检查通常能过，但 `number_of_files_on_this_disk` 字段可能少计）；无 WinRAR 样本难以完全验证，已按 best-effort 实现
+- [x] **`.z01` 真分卷 best-effort（已审 v5.10.0）** — 拼接依赖 zip crate 接受多盘 EOCD（zip 3.x 原生支持）；`resolveZipVolumes` 补大小写不敏感 base 匹配（K12 同类）；无 WinRAR 样本，真机验证待做
 
 ---
 
@@ -359,7 +440,7 @@
 - [ ] **`lastExtractResult`/`lastExtractError` 全局跨线程** — 同上,worker 线程写、UI 线程读;单操作串行下安全,多操作并发有竞态
 - [x] **RAR 加密大量小文件慢（已评估：不可优化）** — 见 v5.8.0（RAR5 每文件独立 salt，KDF 每文件必跑，格式特性）
 - [x] **`oneshot_async` 忙等（已修）** — 原 `spin_loop()`/`yield_now()` 永久轮询 Pending；已加 100 万次轮询上限，超限 panic 由 JNI `guarded` 转错误（见 v5.9.0 R7）
-- [ ] **深递归** — `iso_walk`/压缩 `add_dir`/`deleteWithProgress` 对极深目录可能栈溢出;实际目录深度有限,低风险
+- [x] **深递归（已审 v5.10.0，全部已迭代化）** — `iso_walk`/zip·sevenz `add_dir`/tar·pfs·xp3 `collect_files`/rar·sevenz `walk_files`/Kotlin `walkTopDown/BottomUp`（stdlib 非递归）/`deleteWithProgress` 全为显式栈或无递归；无栈溢出风险，待办关闭
 
 ---
 

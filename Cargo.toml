@@ -36,3 +36,4 @@ lto = true
 [patch.crates-io]
 rars = { path = "crates/vendor/rars" }
 sevenz-rust = { path = "crates/vendor/sevenz-rust" }
+isomage = { path = "crates/vendor/isomage" }

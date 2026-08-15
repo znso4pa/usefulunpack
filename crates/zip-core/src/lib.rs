@@ -1040,8 +1040,8 @@ mod tests {
         std::fs::create_dir_all(&outdir).unwrap();
         let r = extract_zip_all_inner(out.to_str().unwrap(), outdir.to_str().unwrap());
         assert!(r.is_ok(), "extract after nested replace: {r:?}");
-        assert_eq!(std::fs::read(outdir.join("SUB/A.TXT")).unwrap(), b"new a");
-        assert_eq!(std::fs::read(outdir.join("SUB/B.TXT")).unwrap(), b"keep b");
+        assert_eq!(std::fs::read(outdir.join("sub/a.txt")).unwrap(), b"new a");
+        assert_eq!(std::fs::read(outdir.join("sub/b.txt")).unwrap(), b"keep b");
         std::fs::remove_dir_all(&dir).ok();
     }
 

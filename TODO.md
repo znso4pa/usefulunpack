@@ -1,5 +1,80 @@
 # TODO
 
+## v5.11.0 (Rust 加固 + 封包/转换/编辑扩展 + PKWARE 多盘 + 深度 debug + 真机回归)
+
+### A 组 — 单文件解压输出封顶（防解压炸弹）
+
+- [x] **gzip/bzip2/xz/zstd 输出封顶** — `BoundedWriter` 包输出侧：gzip 用 footer ISIZE（单成员），bzip2/xz/zstd 无声明 → 16GB 硬上限（`common::DEFAULT_EXTRACT_CAP`）；超限删半成品；gzip 多成员检测（`1F 8B 08` 计数）回退硬上限
+- [x] **BoundedWriter 回归测试** — common 单测（恰好限额/超限截断/零预算拒绝）+ gzip ISIZE 撒谎炸弹测试
+
+### B 组 — scan-core gzip 解压验证
+
+- [x] **gzip 解压 dry-run** — 头部校验后流式解码单成员（flate2，前 1MB 有界），随机/垃圾数据伪装 gzip 降误报 ~1/1000 → 近 0；测试改真实 flate2 样本 + 垃圾 deflate 拒绝
+
+### C 组 — 封包扩展
+
+- [x] **NSA/SAR 封包** — `lzss_encode` 提为正式 encoder（测试版删除），`nsaCreateArchive`（stored + LZSS，进度/取消），JNI + compress 进度 getter，Kotlin 压缩路由/选择器/进度接入；往返 + store 回归测试
+- [x] **ISO 9660 Level 1 封包** — 新 `isoCreateArchive`（writer：PVD/终止符/目录记录/8.3 大写文件名/扇区对齐，两遍 layout，递归目录树），isomage 读取往返回归测试；Kotlin 压缩路由 + 格式选择器 + 进度接入
+- [x] **CSO↔ISO 双向转换** — 新 `crates/cso-core`（CISO 魔数/2KB 块/zlib 逐块，压缩后不缩小则 stored，进度/取消），`csoToIso`/`isoToCso` JNI，Kotlin 转换路由（cso 文件 FAB 转 ISO + ISO 预览选项转 CSO）；往返 + 随机数据 + 坏魔数回归
+
+### D 组 — ZIP 包内处理
+
+- [x] **ZIP 条目增删改** — `zipModify`（replace/delete/add，换行分隔 op 串）：无密码归档 `raw_copy_file` 只改目标保留其它条目字节；密码归档解密重写保加密（raw_copy 对 AES 丢加密标志的已知局限）；回归测试（增删改往返 + 密码归档）
+- [x] **ZIP 包内编辑闭环** — zip 条目预览加「编辑」按钮，保存后 `zipModify` 只替换该条目（原子换文件）；`showTextEditor`/`showTextPreview` 加 `onSaved`/`onEdited` 回调
+
+### E 组 — 预览扩充
+
+- [x] **galgame 脚本** — `xhtml`/`vsq`/`ksc` 进文本预览 + 内容搜索（`.se`/`.ast` 经核实是 NScripter 音频非文本，已排除）
+- [x] **图片** — `bmp` 进图片预览（BitmapFactory 原生支持）
+- [x] **previewFileEntry 改用全局 `PREVIEW_EXTS`** — 此前本地集合与全局不一致（漏 md/rtf/csv 等），统一修复
+
+### F 组 — PKWARE 多盘 zip（`.z01/.z02/.zip`）
+
+- [x] **fork zip crate**（MIT，`[patch.crates-io]` 指 `crates/vendor/zip`，仿 rars/sevenz-rust 先例）
+- [x] **多盘读取** — `ZipFileData` 加 `disk_number_start`（中央目录条目盘号）；`find_central_directory` 按 `disk_with_central_directory` 校正 cd 偏移（原 zip crate 用盘相对偏移当绝对位定位 cd 失败）；`ZipArchive::with_disk_offsets`；移除 zip32 多盘硬拒绝
+- [x] **zip-core ConcatReader** — 加 `disk_offsets()`（每卷绝对起点）+ `is_pkware_split()`（`.zNN` 真分卷检测）；`list_zip_volumes`/`extract_zip_volumes` 对真分卷走 `with_disk_offsets`，字节分卷走原路径
+- [x] **跨盘条目检测** — 条目数据越盘边界 → 明确报错（单盘条目完全支持；跨盘暂不支持）
+- [x] **回归** — 合成 `.z01/.z02/.zip`（每文件单盘）list/extract 全通；跨盘拒绝；现有 10 测试不回归（14 全绿）
+
+### G 组 — ISO/NSA 编辑条目
+
+- [x] **ISO/NSA 编辑闭环** — 复用 xp3/pfs 编辑流程：预览标题栏「编辑」→ 全量解包（`extractByFormat` 已支持 iso/nsa）→ 脚本列表（EDIT_SCRIPT_EXTS）→ 显式编码编辑 → 「重新打包」→ `nsaCreateArchive`/`isoCreateArchive` 重封为 `原名-cn.iso/nsa`；`repackEditedArchive` when 加 iso/nsa 分支；编辑按钮条件与 `edit_only_pack` 文案（4 语言）扩展
+- [x] 说明：ISO 重封沿用 Level 1（8.3 大写文件名 + 1GiB 上限），NSA 重封 LZSS(stored 回退)
+
+### 深度 debug 轮次
+
+- [x] **第一轮（逐 commit）** — A1 gzip_member_count 跨块魔数漏检（`1F 8B|08` 布局漏计 → 双成员 gzip 误判单成员、末成员 ISIZE 截断合法多成员）；B 截断 gzip 拒绝回归；C NSA 封包 3 处（body 全量进 RAM OOM / count u16 溢出 / offset u64 写 8 字节 header 错位）；D zipModify 2 处（replace/delete 未命中路径报错 / 目录级联删除）；E zipReplaceEntry 原子替换（原 delete+renameTo 丢数据）；F `.se`/`.ast` 误判文本移除；G CSO 3 处（输出封顶 / offset 递减下溢 / 2GiB 上限）；H ISO 4 处（layout 不递归 / 8.3 名冲突 / >4GiB 溢出 / 1GiB 防 OOM）
+- [x] **第二轮** — NSA 压缩进度翻倍（LZSS 探测读不计数）；ISO 无扩展名去重名非法（`FOO;1~1`）；CSO 压缩块单次 read 截断；zipModify 嵌套路径替换回归
+- [x] **第三轮（既有代码 + 接口 + 真实语料）** — xp3 KSD 探测缓冲超限丢段；分卷 zip 编辑误暴露；JNI 接口一致性核对；294MB xp3 scan_cli 3.7s 零崩溃；537MB 真实加密分卷 zip 解析正常；common/ksd/pfs/ypf 复查
+- [x] 验证：workspace 26 套件全绿（新增回归覆盖上述全部）
+
+### 真机测试（荣耀/华为，`/sdcard/1` 素材）
+
+- [x] **素材准备** — 主机生成小素材（单文件 gz/bz2/xz/zst/lz4/多成员gz、zip/7z 无密码+密码、tar 5 变体、zip/7z 字节分卷、PKWARE `.z01/.z02/.zip`、bmp/xhtml/vsq/ksc 预览样本、70MB big.bin）→ adb push `/sdcard/1/`
+- [x] **z01 多盘解压** — 合成 `.z01/.z02/.zip`（每文件单盘）list/extract 内容精确匹配（主机 vendored zip 验证）
+- [x] **NSA/ISO 封包往返** — 压缩模式打包→解压内容一致，进度正常
+- [x] **ZIP 编辑条目** — 预览内编辑保存只改该条目
+- [x] **gzip 多成员解压** — 完整解出
+
+### 真机回归修复
+
+- [x] **① crash：`.z01` 被误判为老式 RAR 分卷** — `OLD_RAR_RE`（`(.+)\.([r-z])\d{2}$`）匹配 `.z01`（z∈[r-z]），`isVolumeFile` rar 分支无条件返回 "rar" → `resolveRarVolumes` 里 `groupValues[2]` 单字母 "z" 的 `drop(1).toInt()` 空串崩溃。修：rar 分支加 `!startsWithZipMagic(f)`（`.zNN` 开头 PK 排除）+ `toIntOrNull() ?: continue` 兜底
+- [x] **② 多盘 zip 增删改覆盖原有条目** — `zip_modify` 用 `ZipArchive::new`（单盘）解析多盘 `.z01/.z02/.zip` → 0 条目 → 重写后原有全丢（设备上 test.zip 被覆盖成 2 文件实锤）。修：双层防护 — Rust `is_multi_disk_zip`（EOCD `disk_number != disk_with_cd` 检测）拒绝；Kotlin `isMultiDiskZipArchive` 排除编辑/增删按钮与函数入口；回归测试 `pkware_split_modify_rejected`
+- [x] **③ tmp 残留（`.del.zip.tmp{pid}`）** — Rust `zip_modify` 错误路径从不删 tmp；Kotlin 失败只删自身 `.del.zip`。修：Rust `TmpGuard` Drop 守卫（错误自动删 + rename 后 disarm）；Kotlin `cleanupZipModifyArtifacts` 删 `.mod/.del/.add.zip` 及 `.tmp*`
+- [x] **④ FAB 残留旧 zip** — `select()` 预览/信息分支不隐藏 FAB 也不清 `selectedFile`（点完 zip 再点普通文件，FAB 仍作用于旧 zip）。修：两分支加 `selectedFile=null` + `fabExtract.visibility=GONE`
+- [x] **⑤ 批量栏无预览入口** — 批量栏只有解压/压缩/移动/删除/取消。修：加「预览」按钮 → `startBatchPreviewOnly`（同格式才可预览，混合格式 toast `batch_preview_mixed`）
+- [x] **⑥ 使用文档渲染** — help 条目标题全加粗刺眼 → 标题 accent 色 + 正文 primary 行距；全量更新 4 语言使用文档（补 CSO、各格式限制、z01、编辑条目、批量预览等教程）；修 AGP 对 `<item>` 内裸撇号 `'` 的合并 NPE（改 `does not`/`cannot`）
+- [x] **⑦ sample.bmp 纯黑** — 1x1 红点在黑背景不可见（素材问题）。重新生成 100x100 纯红 BMP
+- [x] **hello.zip 密码误报（素材）** — 旧素材 `zip -r ../single` 致条目带 `../` 路径，`safe_join` 拒绝 → 兜底"可能需密码"。重新生成无 `../` 干净 zip
+
+### 验证与提交
+
+- [x] workspace 26 套件全绿（新增 cso×3 / iso writer / zip modify×2 / gzip 炸弹 / BoundedWriter / 多盘拒改等回归）
+- [x] 三架构 `.so` 重编（含 cso-core）+ `assembleRelease` + APK 更新（5.11.0 / code 22）
+- [x] 提交：`92f03f4` A1 / `12a60de` B / `2044ce3` NSA / `b287c8c` zipModify / `0e8efdc` zip 编辑 / `5184067` 预览 / `6f99078` CSO / `2c03287` ISO / z01 多盘 / debug 三轮 / 真机回归 5+2 项 / ISO-NSA 编辑 / 文档更新
+
+
+
 ## v5.10.0 (编辑闭环 + 预览扩展 + 扫描增强 + 自动刷新)
 
 ### 预览扩展（A）

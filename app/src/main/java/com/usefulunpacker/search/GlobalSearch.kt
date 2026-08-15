@@ -88,7 +88,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         selectMode(0)
 
         btnChangeDir.setOnClickListener {
-            showFolderPicker(this, searchDir) { d ->
+            showFolderPicker(this, searchDir, false) { d ->
                 searchDir = d
                 tvDir.text = getString(R.string.search_scope, d.path)
             }

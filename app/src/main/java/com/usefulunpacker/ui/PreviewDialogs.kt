@@ -15,7 +15,7 @@ import kotlin.concurrent.thread
 fun previewLocalFile(activity: AppCompatActivity, f: File) {
     val ext = f.name.lowercase().substringAfterLast('.')
     when (ext) {
-        "jpg", "jpeg", "png", "gif", "webp" -> showImagePreview(activity, f)
+        "jpg", "jpeg", "png", "gif", "webp", "bmp" -> showImagePreview(activity, f)
         "mp3", "ogg" -> playAudio(activity, f)
         "mp4" -> playVideo(activity, f)
         else -> showTextPreview(activity, f)
@@ -82,7 +82,7 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
     }
 }
 
-fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int = 0, highlightQuery: String = "", showEdit: Boolean = true) {
+fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int = 0, highlightQuery: String = "", showEdit: Boolean = true, onEdited: (() -> Unit)? = null) {
     // Strict decode with the user-chosen global text encoding (BOM-aware
     // UTF-8/UTF-16, REPLACE for invalid bytes — see decodeTextStrict).
     val prefs = (activity as? MainActivity)?.prefs
@@ -285,7 +285,7 @@ fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int 
         .setPositiveButton(activity.getString(R.string.action_close), null)
     // 编辑 only makes sense for real files — an archive-entry preview shows a
     // cache temp copy that a save wouldn't repack (the 编辑 flow handles that).
-    if (showEdit) builder.setNeutralButton(activity.getString(R.string.action_edit)) { _, _ -> showTextEditor(activity, file) }
+    if (showEdit) builder.setNeutralButton(activity.getString(R.string.action_edit)) { _, _ -> showTextEditor(activity, file, onSaved = onEdited) }
     val dlg = builder.create()
     val metrics = activity.resources.displayMetrics
     dlg.window?.setLayout((metrics.widthPixels * 0.92).toInt(), (metrics.heightPixels * 0.85).toInt())
@@ -295,7 +295,7 @@ fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int 
 /** In-app text editor: edit the whole file with an explicit encoding (reusing
  *  the global text encoding + the 编辑/localization workflow). Preserves the
  *  original BOM state so a round-trip is byte-faithful when encoding unchanged. */
-fun showTextEditor(activity: AppCompatActivity, file: File) {
+fun showTextEditor(activity: AppCompatActivity, file: File, onSaved: (() -> Unit)? = null) {
     // Bounded read (2 MiB) — reading a huge file whole on the main thread is
     // an ANR; scripts are tiny, so anything larger is rejected up front.
     if (file.length() > 2L shl 20) {
@@ -383,6 +383,7 @@ fun showTextEditor(activity: AppCompatActivity, file: File) {
             try {
                 file.writeBytes(bytes)
                 Toast.makeText(activity, activity.getString(R.string.msg_saved), Toast.LENGTH_SHORT).show()
+                onSaved?.invoke()
             } catch (e: Exception) {
                 Toast.makeText(activity, activity.getString(R.string.err_extract_io, e.message ?: ""), Toast.LENGTH_LONG).show()
             }

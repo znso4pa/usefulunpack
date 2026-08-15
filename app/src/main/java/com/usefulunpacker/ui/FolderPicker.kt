@@ -11,12 +11,12 @@ import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 
 /**
- * Full-screen folder picker dialog. Displays only subdirectories of the
- * current path; tap a row to descend, the top "parent" row (or the path-bar
- * up button) to ascend. Confirm returns the currently displayed directory.
- * Reusable for any "pick a destination folder" flow.
+ * Full-screen file/folder picker dialog. Displays subdirectories (and, when
+ * [allowFiles] is set, files) of the current path; tap a row to descend,
+ * the top "parent" row (or the path-bar up button) to ascend. Confirm returns
+ * the currently displayed directory — or, in file mode, the selected file.
  */
-fun showFolderPicker(activity: AppCompatActivity, startDir: File, onPick: (File) -> Unit) {
+fun showFolderPicker(activity: AppCompatActivity, startDir: File, allowFiles: Boolean = false, onPick: (File) -> Unit) {
     val view = LayoutInflater.from(activity).inflate(R.layout.dialog_folder_picker, null)
     val tvPath = view.findViewById<TextView>(R.id.folderPath)
     val list = view.findViewById<ListView>(R.id.folderList)
@@ -24,10 +24,16 @@ fun showFolderPicker(activity: AppCompatActivity, startDir: File, onPick: (File)
 
     var current = startDir
     var dirs: List<File> = emptyList()
+    var selectedFile: File? = null
 
     fun render() {
         tvPath.text = current.absolutePath
-        dirs = current.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name.lowercase() } ?: emptyList()
+        dirs = current.listFiles()?.let { fs ->
+            fs.filter { it.isDirectory || allowFiles }
+                .sortedBy { !it.isDirectory } // dirs first, then files
+                .sortedBy { it.name.lowercase() }
+        } ?: emptyList()
+        selectedFile = null
         list.adapter = object : BaseAdapter() {
             override fun getCount() = dirs.size + 1
             override fun getItem(pos: Int): Any = if (pos == 0) current.parentFile ?: File("/") else dirs[pos - 1]
@@ -45,7 +51,9 @@ fun showFolderPicker(activity: AppCompatActivity, startDir: File, onPick: (File)
                     return r
                 }
                 val r = v ?: LayoutInflater.from(activity).inflate(R.layout.item_folder_row, p, false)
-                r.findViewById<TextView>(R.id.folder_row_name).text = dirs[pos - 1].name
+                val f = dirs[pos - 1]
+                r.findViewById<TextView>(R.id.folder_row_name).text =
+                    if (f.isDirectory) f.name else "📄 ${f.name}"
                 return r
             }
         }
@@ -54,14 +62,26 @@ fun showFolderPicker(activity: AppCompatActivity, startDir: File, onPick: (File)
 
     list.setOnItemClickListener { _, _, pos, _ ->
         if (pos == 0) current.parentFile?.let { current = it; render() }
-        else { current = dirs[pos - 1]; render() }
+        else {
+            val f = dirs[pos - 1]
+            if (f.isDirectory) { current = f; render() }
+            else selectedFile = f
+        }
     }
     btnUp.setOnClickListener { current.parentFile?.let { current = it; render() } }
 
     val dlg = AlertDialog.Builder(activity)
         .setTitle(activity.getString(R.string.title_search_dir))
         .setView(view)
-        .setPositiveButton(activity.getString(R.string.pick_this_dir)) { _, _ -> onPick(current) }
+        .setPositiveButton(activity.getString(R.string.pick_this_dir)) { _, _ ->
+            val picked = selectedFile ?: if (allowFiles) null else current
+            if (allowFiles && picked == null) {
+                android.widget.Toast.makeText(activity,
+                    activity.getString(R.string.zip_add_pick), android.widget.Toast.LENGTH_SHORT).show()
+            } else if (picked != null) {
+                onPick(picked)
+            }
+        }
         .setNegativeButton(activity.getString(R.string.action_cancel), null)
         .create()
     // Size the window BEFORE show so the first layout is already the final

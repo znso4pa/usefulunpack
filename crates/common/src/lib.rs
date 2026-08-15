@@ -6,6 +6,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
+/// Hard cap for formats with no declared uncompressed size (bzip2/xz/zstd).
+/// 16 GiB is far above any legitimate single-file output while bounding a
+/// decompression bomb — a few KB of crafted input can't exhaust disk.
+pub const DEFAULT_EXTRACT_CAP: u64 = 16 * 1024 * 1024 * 1024;
+
 /// Byte-based progress stores. Each cdylib statically links this crate, so the
 /// statics below are independent per format library.
 macro_rules! progress_store {
@@ -319,6 +324,7 @@ pub fn split_volumes(path: &str, part_size: u64) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
 
     #[test]
     fn split_volumes_edge_cases() {
@@ -368,5 +374,31 @@ mod tests {
         assert_eq!(joined, vec![0xCD; 2500]);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bounded_writer_caps_at_limit() {
+        // Exact fit is allowed.
+        let exact: Vec<u8> = vec![1; 5];
+        let mut w = BoundedWriter::new(Vec::new(), 5);
+        assert_eq!(w.write(&exact).unwrap(), 5);
+        assert!(w.flush().is_ok());
+
+        // Overshoot is cut to the remaining budget on the current write, then
+        // the next write errors — io::copy surfaces the error after the cap.
+        let mut w = BoundedWriter::new(Vec::new(), 5);
+        assert_eq!(w.write(&[1, 2, 3]).unwrap(), 3);
+        assert_eq!(w.write(&[4, 5, 6, 7]).unwrap(), 2); // only 2 of the 4 fit
+        let err = w.write(&[1]).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+
+        // A write exactly at zero budget errors immediately.
+        let mut w = BoundedWriter::new(Vec::new(), 2);
+        w.write_all(&[9, 9]).unwrap();
+        assert!(w.write_all(&[1]).is_err());
+
+        // Zero limit rejects any write.
+        let mut w = BoundedWriter::new(Vec::new(), 0);
+        assert!(w.write(&[1]).is_err());
     }
 }

@@ -47,8 +47,21 @@ fn copy_xp3_entry<R: tokio::io::AsyncRead + Unpin>(
         });
         let buf = match copied {
             Ok(b) if b.len() as u64 <= KSD_PROBE_MAX => b,
+            Ok(b) => {
+                // The stream is bigger than the probe window — write what we
+                // already buffered verbatim (no KSD guess), then stream the
+                // rest. Skipping straight to `io::copy` would drop the buffered
+                // bytes (the reader has already consumed them).
+                let written = oneshot_async(async {
+                    out_stream.write_all(&b).await
+                });
+                if written.is_err() {
+                    return false;
+                }
+                return oneshot_async(tokio::io::copy(&mut xf, out_stream)).is_ok();
+            }
             _ => {
-                // Too large to buffer (or a read error): stream the remainder.
+                // Read error: stream the remainder (best-effort).
                 return oneshot_async(tokio::io::copy(&mut xf, out_stream)).is_ok();
             }
         };

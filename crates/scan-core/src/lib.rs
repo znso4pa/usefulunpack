@@ -316,6 +316,17 @@ mod tests {
         p.to_str().unwrap().to_string()
     }
 
+    /// Builds a real gzip stream (flate2) so the scan validator's dry-run can
+    /// actually decode it.
+    fn gz_bytes(data: &[u8]) -> Vec<u8> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write as _;
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
     #[test]
     fn zip_scan_reports_once_with_skip() {
         let _g = scan_lock();
@@ -330,9 +341,9 @@ mod tests {
     #[test]
     fn gzip_embedded_in_host() {
         let _g = scan_lock();
-        // A gzip stream inside a larger host file at offset 10.
+        // A real gzip stream inside a larger host file at offset 10.
         let mut host = vec![0x41u8; 10];
-        host.extend_from_slice(b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03\xff\xff");
+        host.extend_from_slice(&gz_bytes(b"hello gzip inside a host file"));
         let p = tmp("host.bin", &host);
         let hits = scan_file(&p).unwrap();
         assert!(hits.iter().any(|h| h.label == "gzip compressed data" && h.offset == 10));
@@ -399,13 +410,13 @@ mod tests {
 
     #[test]
     fn magic_straddling_chunk_boundary_is_found() {
-        // Place a valid gzip stream so its magic spans the 1 MiB chunk
-        // boundary: file[1MiB-2..1MiB+8] = full gzip header
-        // (1F 8B 08 FLG=0 MTIME=0 XFL=0 OS=3).
+        // Place a real gzip stream so its magic spans the 1 MiB chunk boundary:
+        // the stream starts at file[1MiB-2], so 1F 8B straddles the chunk edge,
+        // and the whole stream (header + deflate + footer) fits after it.
         let _g = scan_lock();
         let chunk = 1usize << 20;
-        let mut data = vec![0x41u8; chunk + 16];
-        let gz = [0x1fu8, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03];
+        let gz = gz_bytes(b"straddling magic across the chunk boundary and past it");
+        let mut data = vec![0x41u8; chunk + 512];
         data[chunk - 2..chunk - 2 + gz.len()].copy_from_slice(&gz);
         let p = tmp("straddle.bin", &data);
         let hits = scan_file(&p).unwrap();

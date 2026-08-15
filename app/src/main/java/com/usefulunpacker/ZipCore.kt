@@ -27,4 +27,5 @@ object ZipCore {
     external fun zipExtractSelectedVolumesWithPassword(tool: String, volumes: String, output: String, selected: String, password: String): String?
     external fun zipExtractVolumesWithPassword(tool: String, volumes: String, output: String, password: String): String?
     external fun zipVolumesNeedsPassword(volumes: String): Boolean
+    external fun zipModify(tool: String, input: String, output: String, ops: String, password: String): Boolean
 }

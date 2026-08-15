@@ -14,10 +14,11 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 |---------|-------------|
 | 📁 **XP3** | Pack & unpack Kirikiri `.xp3` archives |
 | 📦 **PFS** | Pack & unpack Artemis `.pfs` / `.pf6` / `.pf8` archives |
-| 📜 **NSA/SAR** | Unpack NScripter `.nsa` / `.sar` archives (LZSS + SPB) |
+| 📜 **NSA/SAR** | Unpack NScripter `.nsa` / `.sar` archives (LZSS + SPB), **pack** (stored / LZSS) |
+| 🗜️ **ZIP** | Browse/extract/pack ZIP (AES-256, split volumes); **PKWARE multi-disk** (`.z01/.z02/.zip`); **in-place edit** — replace / delete / add entries without repacking the whole archive |
 | 📦 **YPF** | Unpack YU-RIS `.ypf` archives with adaptive boundary detection |
 | 💾 **KSD** | Pack/unpack `.ksd` files — mode 0/1/2 scrambling + UTF-16 ↔ UTF-8 |
-| 💿 **ISO 9660** | Browse and extract ISO disc images (CD/DVD/BD) via isomage |
+| 💿 **ISO 9660** | Browse and extract ISO disc images (CD/DVD/BD) via isomage; **pack** (Level 1); **CSO↔ISO conversion** (PSP CISO) |
 | 🗜️ **RAR** | Unpack RAR archives (RAR4/5) with password support |
 | 🗜️ **TAR** | Pack/unpack `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.zst` |
 | 🗜️ **GZIP** | Pack/unpack `.gz` |
@@ -30,8 +31,8 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 📊 **Preview Statistics** | Real-time count/size of total and selected files |
 | 🔎 **Global Search** | Filename search + content search (30+ text formats), match highlighting with prev/next navigation, progressive scanning |
 | 📦 **In-Archive Search** | One-click unpack text files from preview and open the full global search interface on extracted content |
-| 🖼️ **File Preview** | Image (JPG/PNG/**GIF/WebP animated**), audio (MP3/OGG), video (MP4), text/code (md/rtf/yaml/vtt/csv…) — search results jump to the matching line; large text is previewed with a bounded read (no OOM) in a bigger dialog with a **draggable scrollbar** |
-| 🗜️ **Compression** | ZIP/7z + gzip/bzip2/xz/zstd/lzma/lz4 (single file) + tar (folder, 5 variants) + xp3/pfs/ksd, 5 levels, AES-256 (ZIP) |
+| 🖼️ **File Preview** | Image (JPG/PNG/**GIF/WebP animated**/BMP), audio (MP3/OGG), video (MP4), text/code (md/rtf/yaml/vtt/csv/xhtml/vsq/ksc…) — search results jump to the matching line; large text is previewed with a bounded read (no OOM) in a bigger dialog with a **draggable scrollbar** |
+| 🗜️ **Compression** | ZIP/7z + gzip/bzip2/xz/zstd/lzma/lz4 (single file) + tar (folder, 5 variants) + xp3/pfs/nsa/iso/ksd, 5 levels, AES-256 (ZIP) |
 | 📚 **Multi-Volume** | Unpack `.7z.001` / `.zip.001` / `.rar` split volumes; pack zip/7z into byte-split volumes (7-Zip compatible) |
 | 🎚️ **Custom Split Size** | Split zip/7z output at a custom size (MB/GB, 1MB–2GB) |
 | 🔐 **Extract with Password** | Prompt-first password dialog for encrypted ZIP/7z/RAR; batch extraction asks once and reuses it |

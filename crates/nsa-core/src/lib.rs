@@ -1,11 +1,12 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
-use jni::sys::{jstring, jlong};
-use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json, ProgressWriter};
-use archive_common::extract_progress;
+use jni::sys::{jstring, jlong, jboolean, JNI_TRUE, JNI_FALSE};
+use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json, ProgressWriter, ProgressReader};
+use archive_common::{extract_progress, compress_progress};
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
 fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
@@ -88,6 +89,52 @@ fn nsa_lzss_decompress_to<W: Write>(data: &[u8], out_len: u32, writer: &mut W) -
         writer.write_all(&buf).map_err(|e| format!("lzss write: {e}"))?;
     }
     Ok(())
+}
+
+/// Greedy LZSS encoder that mirrors the decoder's ring-buffer layout — used to
+/// build NSA archives (compression method 2). Ratios are modest (a few % on
+/// real scripts) but it round-trips exactly with `nsa_lzss_decompress_to`.
+fn lzss_encode<W: Write>(data: &[u8], mut writer: W) -> Result<(), String> {
+    const N: usize = LZSS_N;
+    const F: usize = LZSS_F;
+    let mut ring = vec![0u8; N * 2];
+    let mut r = N - F;
+    let mut out = Vec::new();
+    let mut cur: u8 = 0;
+    let mut nbits: u8 = 0;
+    let mut pos = 0usize;
+    let put_bit = |out: &mut Vec<u8>, cur: &mut u8, nbits: &mut u8, bit: bool| {
+        *cur = (*cur << 1) | bit as u8;
+        *nbits += 1;
+        if *nbits == 8 { out.push(*cur); *cur = 0; *nbits = 0; }
+    };
+    let put_bits = |out: &mut Vec<u8>, cur: &mut u8, nbits: &mut u8, mut v: u32, n: u8| {
+        for _ in 0..n { let bit = v & (1 << (n - 1)) != 0; *cur = (*cur << 1) | bit as u8; *nbits += 1; if *nbits == 8 { out.push(*cur); *cur = 0; *nbits = 0; } v <<= 1; }
+    };
+    while pos < data.len() {
+        let max_match = (data.len() - pos).min(F);
+        let mut best_len = 0usize;
+        let mut best_i = 0usize;
+        for i in 0..N {
+            let mut l = 0usize;
+            while l < max_match && ring[(i + l) & (N - 1)] == data[pos + l] { l += 1; }
+            if l > best_len { best_len = l; best_i = i; }
+        }
+        if best_len >= 2 {
+            put_bit(&mut out, &mut cur, &mut nbits, false);
+            put_bits(&mut out, &mut cur, &mut nbits, best_i as u32, 8);
+            put_bits(&mut out, &mut cur, &mut nbits, (best_len - 2) as u32, 4);
+        } else {
+            best_len = 1;
+            put_bit(&mut out, &mut cur, &mut nbits, true);
+            put_bits(&mut out, &mut cur, &mut nbits, data[pos] as u32, 8);
+        }
+        for _ in 0..best_len {
+            ring[r] = data[pos]; r = (r + 1) & (N - 1); pos += 1;
+        }
+    }
+    if nbits > 0 { out.push(cur << (8 - nbits)); }
+    writer.write_all(&out).map_err(|e| format!("lzss encode write: {e}"))
 }
 
 fn nsa_spb_decompress(data: &[u8], usize: u32) -> Result<Vec<u8>, String> {
@@ -244,6 +291,139 @@ fn list_nsa(input: &str) -> Result<String, String> {
     Ok(format!("[{}]", items.join(",")))
 }
 
+/// Collects files under `base` into (path, rel_name) pairs, sorted by name.
+/// A single file packs as that file under its own name (compression flows
+/// wrap single files in a temp dir anyway, but keep the behavior uniform).
+fn collect_files_nsa(base: &Path) -> Result<Vec<(PathBuf, String)>, String> {
+    let mut out = Vec::new();
+    if base.is_file() {
+        let name = base.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        if name.is_empty() { return Err("NSA: empty filename".to_string()); }
+        out.push((base.to_path_buf(), name));
+        return Ok(out);
+    }
+    let mut stack = vec![(base.to_path_buf(), String::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        let mut entries: Vec<_> = fs::read_dir(&dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))?
+            .collect::<Result<_, _>>().map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let meta = entry.metadata().map_err(|e| format!("metadata {}: {e}", path.display()))?;
+            if meta.is_dir() {
+                stack.push((path, child_rel));
+            } else if meta.is_file() {
+                out.push((path, child_rel));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(out)
+}
+
+/// Packs a directory (or single file) into an NSA archive. Level 0 stores
+/// entries raw (comp=0); level ≥1 LZSS-compresses them (comp=2) — the same
+/// methods the extractor understands. Byte progress via compress_progress.
+fn create_nsa(input: &str, output: &str, level: i32) -> Result<u32, String> {
+    let files = collect_files_nsa(Path::new(input))?;
+    if files.is_empty() { return Err("NSA: no files to archive".to_string()); }
+    if files.len() > 65535 { return Err("NSA: too many files (max 65535)".to_string()); }
+    let total: u64 = files.iter().map(|(p, _)| p.metadata().map(|m| m.len()).unwrap_or(0)).sum();
+    compress_progress::reset(total);
+
+    // Header layout: u16 count + 4 reserved bytes, then per entry
+    // name\0 + comp(u8) + offset(u32 BE) + csize(u32 BE) + usize(u32 BE).
+    // Body follows; offsets are relative to the body start. The header size is
+    // known up front (names are fixed), so it's written once, then the body is
+    // STREAMED to disk (no whole-archive RAM buffering) and the header fields
+    // are back-filled at the end.
+    let mut header_len: u64 = 6;
+    for (_, name) in &files {
+        header_len += name.len() as u64 + 1 + 13;
+    }
+    if header_len > u32::MAX as u64 {
+        return Err("NSA: header too large".to_string());
+    }
+    let mut out = BufWriter::new(File::create(output).map_err(|e| format!("NSA create {output}: {e}"))?);
+    out.write_all(&(files.len() as u16).to_be_bytes()).map_err(|e| format!("NSA header: {e}"))?;
+    out.write_all(&[0u8; 4]).map_err(|e| format!("NSA header: {e}"))?;
+    // Placeholder for every entry (name\0 + 13 metadata bytes) — filled later.
+    for (_, name) in &files {
+        out.write_all(name.as_bytes()).map_err(|e| format!("NSA header: {e}"))?;
+        out.write_all(&[0u8; 14]).map_err(|e| format!("NSA header: {e}"))?; // NUL + comp+off+csize+usize
+    }
+
+    let mut metas: Vec<(u32, u32, u32, u32)> = Vec::with_capacity(files.len()); // (offset, csize, usize, name_len)
+    let mut offset: u64 = 0;
+    for (src, name) in &files {
+        if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+        let size = src.metadata().map(|m| m.len()).unwrap_or(0);
+        compress_progress::set_name(name);
+        compress_progress::set_file(size);
+        let mut src_file = File::open(src).map_err(|e| format!("NSA open {}: {e}", src.display()))?;
+
+        // Stream each file: read in bounded chunks (compression can't fit a
+        // huge file in RAM), write the compressed-or-raw payload to disk.
+        let csize;
+        if level >= 1 && size > 0 && size <= 64 * 1024 * 1024 {
+            // LZSS is non-streaming (whole-file ring buffer), so it's only
+            // attempted for files ≤ 64 MiB; bigger files are stored raw
+            // (streamed straight from disk) to avoid buffering GBs in RAM.
+            // The probe read does NOT count progress — the file may be re-read
+            // for the raw fallback, and double-counting would push the bar
+            // past 100%.
+            let mut enc = Vec::new();
+            {
+                let mut buf = Vec::new();
+                std::io::copy(&mut src_file, &mut buf)
+                    .map_err(|e| format!("NSA read {}: {e}", src.display()))?;
+                lzss_encode(&buf, &mut enc).map_err(|e| format!("NSA encode {name}: {e}"))?;
+            }
+            if enc.len() < size as usize {
+                out.write_all(&enc).map_err(|e| format!("NSA body: {e}"))?;
+                compress_progress::add_bytes(size);
+                csize = enc.len() as u32;
+            } else {
+                // store raw: stream from disk, counting progress once.
+                let mut src2 = File::open(src).map_err(|e| format!("NSA open {}: {e}", src.display()))?;
+                let mut limited = ProgressReader::compress(&mut src2).take(size);
+                std::io::copy(&mut limited, &mut out).map_err(|e| format!("NSA body: {e}"))?;
+                csize = size as u32;
+            }
+        } else {
+            let mut limited = ProgressReader::compress(&mut src_file).take(size);
+            std::io::copy(&mut limited, &mut out).map_err(|e| format!("NSA body: {e}"))?;
+            csize = size as u32;
+        }
+        if offset > u32::MAX as u64 {
+            return Err(format!("NSA: archive too large (>4GiB) at {name}"));
+        }
+        metas.push((offset as u32, csize, size as u32, name.len() as u32));
+        offset += csize as u64;
+    }
+
+    // Back-fill the header entries. Entry layout per file:
+    // name\0 + comp(1) + offset(4) + csize(4) + usize(4) → name_len + 14 bytes.
+    let mut cursor: u64 = 6;
+    for (off, csize, usize_v, name_len) in &metas {
+        let entry_start = cursor + *name_len as u64 + 1; // skip name + NUL
+        out.flush().map_err(|e| format!("NSA flush: {e}"))?;
+        let f = out.get_mut();
+        f.seek(SeekFrom::Start(entry_start)).map_err(|e| format!("NSA seek: {e}"))?;
+        f.write_all(&[if *csize < *usize_v && *usize_v > 0 { 2 } else { 0 }])
+            .map_err(|e| format!("NSA meta: {e}"))?;
+        f.write_all(&off.to_be_bytes()).map_err(|e| format!("NSA meta: {e}"))?;
+        f.write_all(&csize.to_be_bytes()).map_err(|e| format!("NSA meta: {e}"))?;
+        f.write_all(&usize_v.to_be_bytes()).map_err(|e| format!("NSA meta: {e}"))?;
+        cursor += *name_len as u64 + 14;
+    }
+    out.flush().map_err(|e| format!("NSA flush: {e}"))?;
+    Ok(files.len() as u32)
+}
+
+
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
     extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = fs::create_dir_all(&out);
@@ -300,54 +480,27 @@ fn list_nsa(input: &str) -> Result<String, String> {
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtractCancel(_: JNIEnv, _: JClass) { extract_progress::cancel(); }
 
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaCreateArchive(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, lv: JString) -> jboolean {
+    compress_progress::clear_cancel();
+    let inp = s(&mut e, &i); let out = s(&mut e, &o); let lvl: i32 = s(&mut e, &lv).parse().unwrap_or(0);
+    match guarded(move || create_nsa(&inp, &out, lvl)) {
+        Ok(_) => JNI_TRUE,
+        Err(er) => { let _ = e.throw_new("java/io/IOException", format!("nsa: {er}")); JNI_FALSE }
+    }
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaCompressProgressCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaCompressProgressTotal(_: JNIEnv, _: JClass) -> jlong { compress_progress::total_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaCompressProgressFileCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::file_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaCompressProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { compress_progress::file_total() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaCompressProgressName(e: JNIEnv, _: JClass) -> jstring {
+    e.new_string(&compress_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaCompressCancel(_: JNIEnv, _: JClass) { compress_progress::cancel(); }
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Greedy LZSS encoder that mirrors the decoder's ring-buffer logic,
-    /// used to build valid test archives.
-    fn lzss_encode(data: &[u8]) -> Vec<u8> {
-        const N: usize = LZSS_N;
-        const F: usize = LZSS_F;
-        let mut ring = vec![0u8; N * 2];
-        let mut r = N - F;
-        let mut out = Vec::new();
-        let mut cur: u8 = 0;
-        let mut nbits: u8 = 0;
-        fn put_bit(out: &mut Vec<u8>, cur: &mut u8, nbits: &mut u8, bit: bool) {
-            *cur = (*cur << 1) | bit as u8;
-            *nbits += 1;
-            if *nbits == 8 { out.push(*cur); *cur = 0; *nbits = 0; }
-        }
-        fn put_bits(out: &mut Vec<u8>, cur: &mut u8, nbits: &mut u8, mut v: u32, n: u8) {
-            for _ in 0..n { put_bit(out, cur, nbits, v & (1 << (n - 1)) != 0); v <<= 1; }
-        }
-        let mut pos = 0usize;
-        while pos < data.len() {
-            let max_match = (data.len() - pos).min(F);
-            let mut best_len = 0usize;
-            let mut best_i = 0usize;
-            for i in 0..N {
-                let mut l = 0usize;
-                while l < max_match && ring[(i + l) & (N - 1)] == data[pos + l] { l += 1; }
-                if l > best_len { best_len = l; best_i = i; }
-            }
-            if best_len >= 2 {
-                put_bit(&mut out, &mut cur, &mut nbits, false);
-                put_bits(&mut out, &mut cur, &mut nbits, best_i as u32, 8);
-                put_bits(&mut out, &mut cur, &mut nbits, (best_len - 2) as u32, 4);
-            } else {
-                best_len = 1;
-                put_bit(&mut out, &mut cur, &mut nbits, true);
-                put_bits(&mut out, &mut cur, &mut nbits, data[pos] as u32, 8);
-            }
-            for _ in 0..best_len {
-                ring[r] = data[pos]; r = (r + 1) & (N - 1); pos += 1;
-            }
-        }
-        if nbits > 0 { out.push(cur << (8 - nbits)); }
-        out
-    }
 
     fn make_nsa(path: &std::path::Path, entries: &[(&str, u8, &[u8])]) {
         let mut body = Vec::new();
@@ -355,7 +508,7 @@ mod tests {
         for (name, comp, data) in entries {
             let stored = match comp {
                 0 => data.to_vec(),
-                2 => lzss_encode(data),
+                2 => { let mut enc = Vec::new(); lzss_encode(data, &mut enc).unwrap(); enc }
                 _ => panic!("unsupported test comp"),
             };
             metas.push((name.to_string(), *comp, body.len() as u32, stored.len() as u32, data.len() as u32));
@@ -458,7 +611,8 @@ mod tests {
             let pat = b"the quick brown fox jumps over the lazy dog 0123456789 ";
             (0..(2 * 1024 * 1024)).map(|i| pat[i % pat.len()]).collect()
         };
-        let enc = lzss_encode(&data);
+        let mut enc = Vec::new();
+        lzss_encode(&data, &mut enc).unwrap();
         let mut writer = std::io::sink();
         nsa_lzss_decompress_to(&enc, data.len() as u32, &mut writer).unwrap();
         // round-trip through a memory buffer to assert byte-exact output
@@ -499,6 +653,96 @@ mod security_tests {
             extract_nsa_entry(&ents, &mut f, 0, outdir.to_str().unwrap(), ds)
         })();
         assert!(res.is_err(), "huge csize must be rejected, got {:?}", res);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// create_nsa (stored + LZSS) → extract round-trips byte-identically.
+    #[test]
+    fn create_then_extract_round_trip() {
+        let dir = std::env::temp_dir().join(format!("uu_nsa_create_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src/sub")).unwrap();
+        let a = dir.join("src/hello.txt");
+        let b = dir.join("src/sub/data.bin");
+        let data_a: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let data_b: Vec<u8> = (0..4096u32).map(|i| (i % 13) as u8).collect();
+        std::fs::write(&a, &data_a).unwrap();
+        std::fs::write(&b, &data_b).unwrap();
+        let nsa = dir.join("out.nsa");
+        create_nsa(dir.join("src").to_str().unwrap(), nsa.to_str().unwrap(), 2).unwrap();
+
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let (ents, ds, mut f) = open_nsa(nsa.to_str().unwrap()).unwrap();
+        assert_eq!(ents.len(), 2);
+        for i in 0..ents.len() {
+            extract_nsa_entry(&ents, &mut f, i, out.to_str().unwrap(), ds).unwrap();
+        }
+        assert_eq!(std::fs::read(out.join("hello.txt")).unwrap(), data_a);
+        assert_eq!(std::fs::read(out.join("sub/data.bin")).unwrap(), data_b);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// create_nsa with a large file (>64 MiB store threshold) must stream it
+    /// raw (no whole-file RAM buffering) and still round-trip.
+    #[test]
+    fn create_nsa_streams_large_file() {
+        let dir = std::env::temp_dir().join(format!("uu_nsa_big_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 70 MiB of zeros — far above the 64 MiB LZSS threshold → stored raw.
+        let big = dir.join("big.bin");
+        let mut w = std::fs::File::create(&big).unwrap();
+        let chunk = vec![0u8; 1 << 20];
+        for _ in 0..70 { w.write_all(&chunk).unwrap(); }
+        drop(w);
+        let nsa = dir.join("big.nsa");
+        create_nsa(dir.to_str().unwrap(), nsa.to_str().unwrap(), 2).expect("create_nsa big");
+
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let (ents, ds, mut f) = open_nsa(nsa.to_str().unwrap()).unwrap();
+        assert_eq!(ents.len(), 1);
+        extract_nsa_entry(&ents, &mut f, 0, out.to_str().unwrap(), ds).unwrap();
+        let got = std::fs::metadata(out.join("big.bin")).unwrap().len();
+        assert_eq!(got, 70u64 * (1 << 20), "large file round-trips by size");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Level 0 stores raw; verify offset math by re-parsing the header.
+    #[test]
+    fn level0_stores_raw_bytes() {
+        let dir = std::env::temp_dir().join(format!("uu_nsa_store_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.bin");
+        std::fs::write(&a, b"abcdefghij").unwrap();
+        let nsa = dir.join("s.nsa");
+        create_nsa(a.to_str().unwrap(), nsa.to_str().unwrap(), 0).unwrap();
+        let blob = std::fs::read(&nsa).unwrap();
+        assert!(blob.windows(10).any(|w| w == b"abcdefghij"), "stored payload present verbatim");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// LZSS-fallback-to-store must count progress exactly once per file (the
+    /// probe read doesn't count) so the bar never exceeds 100%.
+    #[test]
+    fn compress_progress_not_double_counted() {
+        let dir = std::env::temp_dir().join(format!("uu_nsa_prog_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Random-ish data: LZSS won't shrink it → falls back to raw store.
+        use std::collections::hash_map::RandomState;
+        use std::hash::{BuildHasher, Hasher};
+        let mut data = vec![0u8; 8192];
+        let s = RandomState::new();
+        for chunk in data.chunks_mut(8) {
+            let mut h = s.build_hasher();
+            h.write_u64(chunk.len() as u64);
+            chunk.copy_from_slice(&h.finish().to_le_bytes());
+        }
+        std::fs::write(dir.join("r.bin"), &data).unwrap();
+        compress_progress::reset(0);
+        let nsa = dir.join("r.nsa");
+        create_nsa(dir.to_str().unwrap(), nsa.to_str().unwrap(), 1).expect("create with LZSS fallback");
+        let bytes = compress_progress::bytes();
+        assert!(bytes <= 8192, "progress must not exceed file size, got {bytes}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

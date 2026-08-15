@@ -9,3 +9,4 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 jni = "0.21"
 aho-corasick = "1"
+flate2 = "1"

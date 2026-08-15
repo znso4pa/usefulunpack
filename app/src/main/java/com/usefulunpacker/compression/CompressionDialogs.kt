@@ -163,6 +163,8 @@ fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password
         when (fmt) {
             "xp3" -> Xp3Core.xp3CreateArchive("", src.path, outFile.path, level.toString()) != null
             "pfs" -> PfsCore.pfsCreateArchive("", src.path, outFile.path) != null
+            "nsa" -> NsaCore.nsaCreateArchive("", src.path, outFile.path, if (level > 0) "2" else "0") != null
+            "iso" -> IsoCore.isoCreateArchive("", src.path, outFile.path) != null
             "ksd" -> KsdCore.ksdCompress("", src.path, outFile.path, level.toString()) != null
             "zip" -> ZipCore.zipCompress("", src.path, outFile.path, level.toString(), password, splitStr)
             "7z" -> SevenZCore.szCompress("", src.path, outFile.path, level.toString(), password, splitStr)

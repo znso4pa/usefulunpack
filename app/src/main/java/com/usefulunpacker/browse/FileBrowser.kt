@@ -137,6 +137,18 @@ internal fun MainActivity.select(f: File) {
             return
         }
 
+        // CSO (PSP compressed ISO) → convert back to ISO.
+        if (ext == "cso" || ext == "ciso") {
+            selectedFile = f
+            tvSelected.text = "${f.name}  |  ${fmt(fileSize(f))}"
+            fabExtract.visibility = View.VISIBLE
+            fabExtract.setOnClickListener {
+                val src = selectedFile ?: return@setOnClickListener
+                convertIso(src, toCso = false)
+            }
+            return
+        }
+
         // Compress mode: any non-archive single file → show compress FAB at bottom-right
         if (prefs.getInt("work_mode", 0) == 1) {
             selectedFile = f
@@ -150,6 +162,10 @@ internal fun MainActivity.select(f: File) {
 
         // Previewable non-archive files → show preview dialog
         if (ext in PREVIEW_EXTS) {
+            // A previously selected archive's FAB would otherwise stay visible
+            // and act on the old file — reset the selection state.
+            selectedFile = null
+            fabExtract.visibility = View.GONE
             AlertDialog.Builder(this)
                 .setTitle(f.name)
                 .setItems(arrayOf(getString(R.string.preview), getString(R.string.action_file_info))) { _, w ->
@@ -162,6 +178,8 @@ internal fun MainActivity.select(f: File) {
         }
 
         // Neither archive nor previewable — just show info
+        selectedFile = null
+        fabExtract.visibility = View.GONE
                 showFileInfoDialog(f)
     }
 
@@ -169,12 +187,15 @@ internal fun MainActivity.showExtractOptions(src: File, format: String) {
         val parent = src.parentFile ?: return
         val outDir = uniqueFile(parent, src.nameWithoutExtension)
 
+        val items = mutableListOf(getString(R.string.action_preview), getString(R.string.action_extract))
+        if (format == "iso") items.add(getString(R.string.action_convert_cso))
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.title_preview_archive, src.name, format.uppercase()))
-            .setItems(arrayOf(getString(R.string.action_preview), getString(R.string.action_extract))) { _, w ->
+            .setItems(items.toTypedArray()) { _, w ->
                 when (w) {
                     0 -> previewArchive(src, format)
                     1 -> showDirectExtractDialog(src, format, parent, outDir)
+                    2 -> convertIso(src, toCso = true)
                 }
             }.setNegativeButton(getString(R.string.action_cancel), null).show()
     }

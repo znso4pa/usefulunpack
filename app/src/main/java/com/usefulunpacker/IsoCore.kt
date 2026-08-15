@@ -10,4 +10,11 @@ object IsoCore {
     external fun isoExtractProgressFileTotal(): Long
     external fun isoExtractProgressName(): String?
     external fun isoExtractCancel()
+    external fun isoCreateArchive(tool: String, input: String, output: String): Boolean
+    external fun isoCompressProgressCount(): Long
+    external fun isoCompressProgressTotal(): Long
+    external fun isoCompressProgressFileCount(): Long
+    external fun isoCompressProgressFileTotal(): Long
+    external fun isoCompressProgressName(): String?
+    external fun isoCompressCancel()
 }

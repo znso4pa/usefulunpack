@@ -58,6 +58,31 @@ impl ConcatReader {
         self.pos = pos;
         self.cur = self.bounds.partition_point(|&b| b <= pos);
     }
+
+    /// Absolute start offset of each disk within the concatenated stream.
+    /// Disk 0 starts at 0; disk N starts after the previous N disks.
+    fn disk_offsets(&self) -> Vec<u64> {
+        let mut v = Vec::with_capacity(self.bounds.len());
+        let mut acc = 0u64;
+        v.push(0);
+        for &b in &self.bounds {
+            acc = b;
+            v.push(acc);
+        }
+        v.pop(); // last entry is total length = end of final disk, not a start
+        v
+    }
+
+    /// True when this is a PKWARE true-split set (`name.z01/.z02/.../.zip`),
+    /// where each part is a separate disk with its own local headers and the
+    /// central directory lives in the final `.zip`. Byte-splits
+    /// (`name.zip.001/.002`) are a single logical stream and return false.
+    fn is_pkware_split(&self, paths: &[&str]) -> bool {
+        paths.iter().any(|p| {
+            let lower = p.to_lowercase();
+            lower.ends_with(".z01") || lower.ends_with(".z02") || lower.ends_with(".z03")
+        })
+    }
 }
 
 impl Read for ConcatReader {
@@ -130,7 +155,13 @@ fn list_zip_inner(input: &str) -> Result<String, String> {
 
 fn list_zip_volumes(paths: &[&str]) -> Result<String, String> {
     let reader = ConcatReader::open(paths)?;
-    let archive = zip::ZipArchive::new(reader).map_err(|e| format!("ZIP split: {e}"))?;
+    let archive = if reader.is_pkware_split(paths) {
+        let offsets = reader.disk_offsets();
+        zip::ZipArchive::with_disk_offsets(zip::read::Config::default(), reader, &offsets)
+            .map_err(|e| format!("ZIP split: {e}"))?
+    } else {
+        zip::ZipArchive::new(reader).map_err(|e| format!("ZIP split: {e}"))?
+    };
     list_zip_from(archive)
 }
 
@@ -198,7 +229,79 @@ fn extract_zip_selected_inner(input: &str, output: &str, selected: &str) -> Resu
 
 fn extract_zip_volumes(paths: &[&str], output: &str, password: &str, selected: Option<&HashSet<String>>) -> Result<(u32, u32), String> {
     let reader = ConcatReader::open(paths)?;
-    extract_zip_from(reader, output, password, selected)
+    if reader.is_pkware_split(paths) {
+        let offsets = reader.disk_offsets();
+        let mut archive = zip::ZipArchive::with_disk_offsets(zip::read::Config::default(), reader, &offsets)
+            .map_err(|e| format!("ZIP split: {e}"))?;
+        // Cross-disk entries (a file whose data spans two disks) aren't
+        // supported yet — detect and report them instead of producing corrupt
+        // output. Entries wholly inside one disk are fine.
+        let ends = offsets.iter().skip(1).copied().chain(std::iter::once(u64::MAX));
+        use zip::read::HasZipMetadata as _;
+        for i in 0..archive.len() {
+            let e = archive.by_index_raw(i).map_err(|e| format!("{e}"))?;
+            let meta = e.get_metadata();
+            let disk = meta.disk_number_start as usize;
+            let disk_end = ends.clone().nth(disk).unwrap_or(u64::MAX);
+            let entry_end = meta.header_start.checked_add(meta.compressed_size).ok_or("overflow")?;
+            if entry_end > disk_end {
+                return Err(format!(
+                    "ZIP: entry '{}' spans disk boundaries (cross-disk entries not supported)",
+                    meta.file_name
+                ));
+            }
+        }
+        extract_zip_from_multi(archive, output, password, selected)
+    } else {
+        extract_zip_from(reader, output, password, selected)
+    }
+}
+
+/// Extract from an already-opened archive with per-disk awareness (multi-disk
+/// volumes). Same semantics as [extract_zip_from].
+fn extract_zip_from_multi<R: Read + Seek>(
+    mut archive: zip::ZipArchive<R>, output: &str, password: &str, selected: Option<&HashSet<String>>,
+) -> Result<(u32, u32), String> {
+    let enc = get_enc();
+    let total = archive.len() as u32;
+    let mut fail = 0u32;
+    let pw = if password.is_empty() { None } else { Some(password.as_bytes()) };
+    let mut prog_total = 0u64;
+    for i in 0..archive.len() {
+        if extract_progress::cancelled() { return Err("cancelled".to_string()); }
+        if let Ok(entry) = archive.by_index_raw(i) {
+            let name = decode_entry_name(&entry, &enc).replace('\\', "/").trim_matches('/').to_string();
+            if name.is_empty() || entry.is_dir() { continue; }
+            let keep = match selected {
+                None => true,
+                Some(ss) => ss.contains(&name) || ss.iter().any(|s| name.starts_with(&format!("{s}/"))),
+            };
+            if keep { prog_total += entry.size(); }
+        }
+    }
+    extract_progress::reset(prog_total);
+    let mut selected_count = 0u32;
+    for i in 0..archive.len() {
+        if extract_progress::cancelled() { return Err("cancelled".to_string()); }
+        let mut entry = if let Some(p) = pw { archive.by_index_decrypt(i, p).map_err(|e| format!("{e}"))? } else { archive.by_index(i).map_err(|e| format!("{e}"))? };
+        let name = decode_entry_name(&entry, &enc).replace('\\', "/").trim_matches('/').to_string();
+        if name.is_empty() || entry.is_dir() { continue; }
+        if let Some(ss) = selected {
+            if !ss.contains(&name) && !ss.iter().any(|s| name.starts_with(&format!("{s}/"))) { continue; }
+        }
+        selected_count += 1;
+        extract_progress::set_name(&name);
+        extract_progress::set_file(entry.size());
+        let dest = safe_join(output, &name).map_err(|e| format!("{e}"))?;
+        if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
+        let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
+        let size = entry.size();
+        if std::io::copy(&mut entry.take(size), &mut out).is_err() {
+            let _ = std::fs::remove_file(&dest);
+            fail += 1;
+        }
+    }
+    if selected.is_some() { Ok((selected_count, fail)) } else { Ok((total, fail)) }
 }
 
 fn total_bytes(base: &str, rel: &str) -> u64 {
@@ -333,6 +436,199 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
         Ok(f)
     }) { Ok(0) => JNI_TRUE, Ok(f) => { let _ = e.throw_new("java/io/IOException", format!("ZIP compress: {f} failed")); JNI_FALSE }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("ZIP compress: {er}")); JNI_FALSE } }
 }
+
+/// Rewrites a zip archive applying in-place edits: each op is a line
+/// `replace|path|srcPath`, `delete|path`, or `add|path|srcPath` (new line
+/// separated). Untouched entries are byte-copied via `raw_copy_file` (their
+/// encryption bytes and compression survive verbatim); replaced/added entries
+/// are written fresh (re-encrypted when a password is supplied). The result is
+/// written to `output` — callers swap it over the original afterwards.
+/// Returns true when `f` is a PKWARE multi-disk zip archive: the EOCD record
+/// (searched backwards from the file end) declares a disk number different
+/// from the disk that holds the central directory. Such archives can't be
+/// modified by zip_modify (which needs a single seekable stream).
+fn is_multi_disk_zip(f: &mut std::fs::File) -> bool {
+    let Ok(len) = f.metadata().map(|m| m.len()) else { return false };
+    // Search the last 64 KiB + EOCD size for the EOCD signature.
+    let win = len.saturating_sub(65536 + 22);
+    let mut buf = vec![0u8; (len - win) as usize];
+    if f.seek(SeekFrom::Start(win)).is_err() { return false; }
+    if f.read_exact(&mut buf).is_err() { return false; }
+    // Backwards for the last EOCD magic PK\x05\x06.
+    let mut found: Option<usize> = None;
+    let mut i = buf.len();
+    while i >= 4 {
+        i -= 1;
+        if buf[i] == 0x06 && i >= 3 && buf[i - 1] == 0x05 && buf[i - 2] == 0x4b && buf[i - 3] == 0x50 {
+            found = Some(i - 3);
+            break;
+        }
+    }
+    let Some(eocd) = found else { return false };
+    if eocd + 8 > buf.len() { return false; }
+    let disk_number = u16::from_le_bytes([buf[eocd + 4], buf[eocd + 5]]);
+    let disk_with_cd = u16::from_le_bytes([buf[eocd + 6], buf[eocd + 7]]);
+    disk_number != disk_with_cd
+}
+
+fn zip_modify(input: &str, output: &str, ops: &str, password: &str) -> Result<u32, String> {
+    struct Op { kind: String, path: String, src: String }
+    let mut op_list: Vec<Op> = Vec::new();
+    for line in ops.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        let mut parts = line.split('|');
+        let kind = parts.next().unwrap_or("").trim().to_string();
+        let path = parts.next().unwrap_or("").trim().to_string();
+        let src = parts.next().unwrap_or("").trim().to_string();
+        if path.is_empty() { return Err("ZIP modify: empty entry path".to_string()); }
+        if !matches!(kind.as_str(), "replace" | "delete" | "add") {
+            return Err(format!("ZIP modify: unknown op {}", kind));
+        }
+        if kind != "delete" && src.is_empty() {
+            return Err(format!("ZIP modify: missing src for {kind} {path}"));
+        }
+        op_list.push(Op { kind, path, src });
+    }
+    if op_list.is_empty() { return Err("ZIP modify: no operations".to_string()); }
+
+    let mut src_file = std::fs::File::open(input).map_err(|e| format!("ZIP modify open {input}: {e}"))?;
+    // Reject PKWARE multi-disk archives: ZipArchive::new treats a multi-disk
+    // stream as a single file and parses 0 entries, so a modify would rewrite
+    // the archive with everything except the new entry lost. Detect via the
+    // EOCD's disk-number fields (offsets 4 and 6 within the 22-byte record).
+    if is_multi_disk_zip(&mut src_file) {
+        return Err("ZIP modify: PKWARE multi-disk archives are not editable".to_string());
+    }
+    let mut arc = zip::ZipArchive::new(src_file).map_err(|e| format!("ZIP modify parse: {e}"))?;
+
+    let tmp = format!("{output}.tmp{}", std::process::id());
+    // Drop-guard: remove the temp file on ANY early return (error) so a failed
+    // modify never leaves a `.tmp{pid}` behind. `arm()` disarms it once the
+    // rename succeeds (the guard would otherwise delete the new archive).
+    struct TmpGuard { path: String, armed: bool }
+    impl TmpGuard {
+        fn new(path: String) -> Self { Self { path, armed: true } }
+        fn disarm(&mut self) { self.armed = false; }
+    }
+    impl Drop for TmpGuard {
+        fn drop(&mut self) { if self.armed { let _ = std::fs::remove_file(&self.path); } }
+    }
+    let mut guard = TmpGuard::new(tmp.clone());
+    let out_file = std::fs::File::create(&tmp).map_err(|e| format!("ZIP modify create {tmp}: {e}"))?;
+    let mut zw = zip::write::ZipWriter::new(out_file);
+    let pw = if password.is_empty() { None } else { Some(password.to_string()) };
+
+    let mut added = 0u32;
+    let has_pw = !password.is_empty();
+    let mut applied = vec![false; op_list.len()]; // tracks which ops touched an entry
+    for idx in 0..arc.len() {
+        // Name comes from the raw entry (metadata only, no decryption needed).
+        let name = {
+            let raw = arc.by_index_raw(idx).map_err(|e| format!("ZIP modify read entry: {e}"))?;
+            raw.name().to_string()
+        };
+        // Directory ops match the exact entry, its `dir/` form, or any entry
+        // underneath `dir/` (cascading delete/replace).
+        let op = op_list.iter().position(|o| {
+            o.path == name || o.path == format!("{name}/") || name.starts_with(&format!("{}/", o.path))
+        });
+        match op {
+            Some(i) => {
+                applied[i] = true;
+                let o = &op_list[i];
+                if o.kind == "delete" { /* skip */ }
+                else {
+                    // Replace: write fresh bytes under the same name.
+                    let raw_comp = {
+                        let raw = arc.by_index_raw(idx).map_err(|e| format!("ZIP modify read entry: {e}"))?;
+                        raw.compression()
+                    };
+                    let mut opts = zip::write::FileOptions::<'_, ()>::default()
+                        .compression_method(if raw_comp == zip::CompressionMethod::Stored {
+                            zip::CompressionMethod::Stored
+                        } else {
+                            zip::CompressionMethod::Deflated
+                        })
+                        .compression_level(if raw_comp == zip::CompressionMethod::Stored { None } else { Some(6) });
+                    if let Some(p) = &pw {
+                        opts = opts.with_aes_encryption(zip::AesMode::Aes256, p);
+                    }
+                    zw.start_file(&name, opts).map_err(|e| format!("ZIP modify start {name}: {e}"))?;
+                    let mut src = std::fs::File::open(&o.src).map_err(|e| format!("ZIP modify open src {}: {e}", o.src))?;
+                    std::io::copy(&mut src, &mut zw).map_err(|e| format!("ZIP modify write {name}: {e}"))?;
+                    added += 1;
+                }
+            }
+            None => {
+                if has_pw {
+                    // raw_copy_file would copy the AES bytes but lose the
+                    // encryption flag in the rewritten local header, so a
+                    // passworded archive re-writes untouched members by
+                    // decrypt+re-encrypt (correct, just not byte-copy).
+                    let raw_comp = {
+                        let raw = arc.by_index_raw(idx).map_err(|e| format!("ZIP modify read entry: {e}"))?;
+                        raw.compression()
+                    };
+                    let mut opts = zip::write::FileOptions::<'_, ()>::default()
+                        .compression_method(if raw_comp == zip::CompressionMethod::Stored {
+                            zip::CompressionMethod::Stored
+                        } else {
+                            zip::CompressionMethod::Deflated
+                        })
+                        .compression_level(if raw_comp == zip::CompressionMethod::Stored { None } else { Some(6) });
+                    if let Some(p) = &pw {
+                        opts = opts.with_aes_encryption(zip::AesMode::Aes256, p);
+                    }
+                    zw.start_file(&name, opts).map_err(|e| format!("ZIP modify start {name}: {e}"))?;
+                    let mut entry = arc.by_index_decrypt(idx, password.as_bytes())
+                        .map_err(|e| format!("ZIP modify decrypt {name}: {e}"))?;
+                    std::io::copy(&mut entry, &mut zw).map_err(|e| format!("ZIP modify write {name}: {e}"))?;
+                } else {
+                    // Untouched plain member: byte-copy, preserves method/bytes.
+                    let mut raw_entry = arc.by_index_raw(idx).map_err(|e| format!("ZIP modify copy {name}: {e}"))?;
+                    zw.raw_copy_file(raw_entry).map_err(|e| format!("ZIP modify copy {name}: {e}"))?;
+                }
+            }
+        }
+    }
+    // Any replace/delete that matched nothing is an error — the caller asked
+    // to change a path that isn't in the archive.
+    for (i, o) in op_list.iter().enumerate() {
+        if o.kind != "add" && !applied[i] {
+            return Err(format!("ZIP modify: path not found in archive: {}", o.path));
+        }
+    }
+    // Appends ("add" ops whose path isn't in the archive).
+    for o in &op_list {
+        if o.kind != "add" { continue; }
+        let exists = (0..arc.len()).any(|idx| arc.by_index(idx).map(|e| e.name().to_string() == o.path).unwrap_or(false));
+        if exists { continue; }
+        let mut opts = zip::write::FileOptions::<'_, ()>::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .compression_level(Some(6));
+        if let Some(p) = &pw {
+            opts = opts.with_aes_encryption(zip::AesMode::Aes256, p);
+        }
+        zw.start_file(&o.path, opts).map_err(|e| format!("ZIP modify start {}: {e}", o.path))?;
+        let mut src = std::fs::File::open(&o.src).map_err(|e| format!("ZIP modify open src {}: {e}", o.src))?;
+        std::io::copy(&mut src, &mut zw).map_err(|e| format!("ZIP modify write {}: {e}", o.path))?;
+        added += 1;
+    }
+    zw.finish().map_err(|e| format!("ZIP modify finish: {e}"))?;
+    std::fs::rename(&tmp, output).map_err(|e| format!("ZIP modify rename: {e}"))?;
+    guard.disarm(); // renamed over output — don't let the guard delete it
+    Ok(added)
+}
+
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipModify(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, ops: JString, pw: JString) -> jboolean {
+    let inp = s(&mut e, &i); let out = s(&mut e, &o); let op_str = s(&mut e, &ops); let pwd = s(&mut e, &pw);
+    match guarded(move || zip_modify(&inp, &out, &op_str, &pwd)) {
+        Ok(_) => JNI_TRUE,
+        Err(er) => { let _ = e.throw_new("java/io/IOException", format!("ZIP modify: {er}")); JNI_FALSE }
+    }
+}
+
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
     let inp = s(&mut e, &i);
     match guarded(move || list_zip_inner(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
@@ -617,5 +913,333 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_file(&z).ok();
         std::fs::remove_dir_all(&out).ok();
+    }
+
+    /// zip_modify: replace an entry, delete another, add a third, verify the
+    /// untouched entry is byte-identical and the archive still extracts.
+    #[test]
+    fn modify_replace_delete_add_round_trip() {
+        let dir = tmp("mod");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"original a").unwrap();
+        std::fs::write(dir.join("b.bin"), b"keep me verbatim").unwrap();
+        std::fs::write(dir.join("c.txt"), b"delete me").unwrap();
+        let arc = dir.join("in.zip");
+        compress_zip_inner(dir.to_str().unwrap(), arc.to_str().unwrap(), 5, "").expect("compress");
+
+        let new_a = dir.join("new_a.txt");
+        std::fs::write(&new_a, b"REPLACED a content").unwrap();
+        let new_d = dir.join("new_d.txt");
+        std::fs::write(&new_d, b"added d content").unwrap();
+
+        let out = dir.join("out.zip");
+        let ops = format!(
+            "replace|a.txt|{}\ndelete|c.txt\nadd|d.txt|{}",
+            new_a.display(), new_d.display()
+        );
+        zip_modify(arc.to_str().unwrap(), out.to_str().unwrap(), &ops, "").expect("modify");
+
+        // Extract and verify.
+        let outdir = dir.join("x");
+        std::fs::create_dir_all(&outdir).unwrap();
+        let r = extract_zip_all_inner(out.to_str().unwrap(), outdir.to_str().unwrap());
+        assert!(r.is_ok(), "extract after modify: {r:?}");
+        assert_eq!(std::fs::read(outdir.join("a.txt")).unwrap(), b"REPLACED a content");
+        assert_eq!(std::fs::read(outdir.join("b.bin")).unwrap(), b"keep me verbatim");
+        assert_eq!(std::fs::read(outdir.join("d.txt")).unwrap(), b"added d content");
+        assert!(!outdir.join("c.txt").exists(), "c.txt must be deleted");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// zip_modify on a password-protected archive: untouched encrypted entries
+    /// survive (raw-copy keeps their bytes); a replaced entry re-encrypts.
+    #[test]
+    fn modify_password_archive_preserves_others() {
+        let dir = tmp("modpw");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"secret a").unwrap();
+        std::fs::write(dir.join("b.txt"), b"also secret").unwrap();
+        let arc = dir.join("in.zip");
+        compress_zip_inner(dir.to_str().unwrap(), arc.to_str().unwrap(), 5, "pw").expect("compress");
+
+        let new_b = dir.join("nb.txt");
+        std::fs::write(&new_b, b"new b").unwrap();
+        let out = dir.join("out.zip");
+        let ops = format!("replace|b.txt|{}", new_b.display());
+        zip_modify(arc.to_str().unwrap(), out.to_str().unwrap(), &ops, "pw").expect("modify pw");
+
+        let outdir = dir.join("x");
+        std::fs::create_dir_all(&outdir).unwrap();
+        let r = extract_zip_with_password(out.to_str().unwrap(), outdir.to_str().unwrap(), "pw");
+        assert!(r.is_ok(), "extract pw after modify: {r:?}");
+        assert_eq!(std::fs::read(outdir.join("a.txt")).unwrap(), b"secret a");
+        assert_eq!(std::fs::read(outdir.join("b.txt")).unwrap(), b"new b");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A replace/delete targeting a path that isn't in the archive must error,
+    /// not silently succeed while changing nothing.
+    #[test]
+    fn modify_missing_path_errors() {
+        let dir = tmp("missing");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"present").unwrap();
+        let arc = dir.join("in.zip");
+        compress_zip_inner(dir.to_str().unwrap(), arc.to_str().unwrap(), 5, "").expect("compress");
+
+        let src = dir.join("s.txt");
+        std::fs::write(&src, b"replacement").unwrap();
+        let out = dir.join("out.zip");
+        let ops = format!("replace|ghost.txt|{}", src.display());
+        let r = zip_modify(arc.to_str().unwrap(), out.to_str().unwrap(), &ops, "");
+        assert!(r.is_err(), "replace of a missing path must fail, got {r:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Deleting a directory prefix cascades to every entry underneath it.
+    #[test]
+    fn modify_delete_directory_cascades() {
+        let dir = tmp("deldir");
+        std::fs::create_dir_all(dir.join("src/sub")).unwrap();
+        std::fs::write(dir.join("src/root.txt"), b"keep root").unwrap();
+        std::fs::write(dir.join("src/sub/a.txt"), b"delete a").unwrap();
+        std::fs::write(dir.join("src/sub/b.txt"), b"delete b").unwrap();
+        let arc = dir.join("in.zip");
+        compress_zip_inner(dir.join("src").to_str().unwrap(), arc.to_str().unwrap(), 5, "").expect("compress");
+
+        let out = dir.join("out.zip");
+        zip_modify(arc.to_str().unwrap(), out.to_str().unwrap(), "delete|sub", "").expect("delete dir");
+
+        let outdir = dir.join("x");
+        std::fs::create_dir_all(&outdir).unwrap();
+        let r = extract_zip_all_inner(out.to_str().unwrap(), outdir.to_str().unwrap());
+        assert!(r.is_ok(), "extract after dir delete: {r:?}");
+        assert_eq!(std::fs::read(outdir.join("root.txt")).unwrap(), b"keep root");
+        assert!(!outdir.join("sub").exists(), "sub dir must be deleted");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A replace targeting a nested path (`sub/a.txt`) replaces only that
+    /// entry — the directory prefix match must not swallow siblings.
+    #[test]
+    fn modify_replace_nested_entry_exact() {
+        let dir = tmp("replnested");
+        std::fs::create_dir_all(dir.join("src/sub")).unwrap();
+        std::fs::write(dir.join("src/sub/a.txt"), b"old a").unwrap();
+        std::fs::write(dir.join("src/sub/b.txt"), b"keep b").unwrap();
+        let arc = dir.join("in.zip");
+        compress_zip_inner(dir.join("src").to_str().unwrap(), arc.to_str().unwrap(), 5, "").expect("compress");
+
+        let new_a = dir.join("new_a.txt");
+        std::fs::write(&new_a, b"new a").unwrap();
+        let out = dir.join("out.zip");
+        let ops = format!("replace|sub/a.txt|{}", new_a.display());
+        zip_modify(arc.to_str().unwrap(), out.to_str().unwrap(), &ops, "").expect("replace nested");
+
+        let outdir = dir.join("x");
+        std::fs::create_dir_all(&outdir).unwrap();
+        let r = extract_zip_all_inner(out.to_str().unwrap(), outdir.to_str().unwrap());
+        assert!(r.is_ok(), "extract after nested replace: {r:?}");
+        assert_eq!(std::fs::read(outdir.join("SUB/A.TXT")).unwrap(), b"new a");
+        assert_eq!(std::fs::read(outdir.join("SUB/B.TXT")).unwrap(), b"keep b");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── PKWARE true-split (.z01/.z02/.zip) ──
+
+    fn local_hdr(name: &str, data: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&0x04034b50u32.to_le_bytes());
+        v.extend_from_slice(&20u16.to_le_bytes()); // version
+        v.extend_from_slice(&0u16.to_le_bytes()); // flags
+        v.extend_from_slice(&0u16.to_le_bytes()); // method (store)
+        v.extend_from_slice(&0u16.to_le_bytes()); // time
+        v.extend_from_slice(&0u16.to_le_bytes()); // date
+        v.extend_from_slice(&0u32.to_le_bytes()); // crc
+        v.extend_from_slice(&(data.len() as u32).to_le_bytes()); // csize
+        v.extend_from_slice(&(data.len() as u32).to_le_bytes()); // usize
+        v.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        v.extend_from_slice(&0u16.to_le_bytes());
+        v.extend_from_slice(name.as_bytes());
+        v.extend_from_slice(data);
+        v
+    }
+
+    fn central_hdr(name: &str, offset: u32, size: u32, disk: u16) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&0x02014b50u32.to_le_bytes());
+        v.extend_from_slice(&20u16.to_le_bytes()); // version made by
+        v.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        v.extend_from_slice(&0u16.to_le_bytes()); // flags
+        v.extend_from_slice(&0u16.to_le_bytes()); // method
+        v.extend_from_slice(&0u16.to_le_bytes()); // time
+        v.extend_from_slice(&0u16.to_le_bytes()); // date
+        v.extend_from_slice(&0u32.to_le_bytes()); // crc
+        v.extend_from_slice(&size.to_le_bytes()); // csize
+        v.extend_from_slice(&size.to_le_bytes()); // usize
+        v.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        v.extend_from_slice(&0u16.to_le_bytes()); // extra len
+        v.extend_from_slice(&0u16.to_le_bytes()); // comment len
+        v.extend_from_slice(&disk.to_le_bytes()); // disk number start
+        v.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
+        v.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+        v.extend_from_slice(&offset.to_le_bytes()); // local header offset
+        v.extend_from_slice(name.as_bytes());
+        v
+    }
+
+    /// Builds a PKWARE true-split set:
+    ///   test.z01  disk 0: file "a.txt" (local header + data + fake EOCD)
+    ///   test.z02  disk 1: file "b.txt" (local header + data)
+    ///   test.zip  disk 2 (final): file "c.txt" + central dir + real EOCD
+    /// Each file lives wholly on one disk.
+    fn make_pkware_split_zip(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let a = b"hello from disk zero";
+        let b = b"data on disk one";
+        let c = b"final disk content";
+        let lh_a = local_hdr("a.txt", a);
+        let lh_b = local_hdr("b.txt", b);
+        let lh_c = local_hdr("c.txt", c);
+
+        // z01: a.txt local header + data + fake EOCD (0 entries, disk 0)
+        let mut z01 = lh_a.clone();
+        z01.extend_from_slice(&0x06054b50u32.to_le_bytes());
+        z01.extend_from_slice(&[0u8; 18]); // disk=0, 0 entries, empty
+
+        // z02: b.txt local header + data (no EOCD)
+        let z02 = lh_b.clone();
+
+        // zip: c.txt local header + data + central dir (3 entries) + real EOCD
+        let mut cd = Vec::new();
+        // offsets are relative to each entry's own disk
+        cd.extend(central_hdr("a.txt", 0, a.len() as u32, 0));
+        cd.extend(central_hdr("b.txt", 0, b.len() as u32, 1));
+        cd.extend(central_hdr("c.txt", 0, c.len() as u32, 2));
+        let mut zip_part = lh_c.clone();
+        let cd_offset = zip_part.len() as u32;
+        zip_part.extend_from_slice(&cd);
+        zip_part.extend_from_slice(&0x06054b50u32.to_le_bytes());
+        zip_part.extend_from_slice(&0u16.to_le_bytes()); // disk number = 0
+        zip_part.extend_from_slice(&2u16.to_le_bytes()); // disk with central dir = 2
+        zip_part.extend_from_slice(&3u16.to_le_bytes()); // entries on this disk
+        zip_part.extend_from_slice(&3u16.to_le_bytes()); // total entries
+        zip_part.extend_from_slice(&(cd.len() as u32).to_le_bytes());
+        zip_part.extend_from_slice(&cd_offset.to_le_bytes());
+        zip_part.extend_from_slice(&0u16.to_le_bytes()); // comment len
+
+        let p1 = dir.join("test.z01");
+        let p2 = dir.join("test.z02");
+        let p3 = dir.join("test.zip");
+        std::fs::write(&p1, &z01).unwrap();
+        std::fs::write(&p2, &z02).unwrap();
+        std::fs::write(&p3, &zip_part).unwrap();
+        vec![p1, p2, p3]
+    }
+
+    #[test]
+    fn pkware_split_list_entries() {
+        let dir = tmp("pkw");
+        std::fs::create_dir_all(&dir).unwrap();
+        let vols = make_pkware_split_zip(&dir);
+        let refs: Vec<&str> = vols.iter().map(|p| p.to_str().unwrap()).collect();
+        let list = list_zip_volumes(&refs).expect("list pkware split");
+        assert!(list.contains("a.txt"), "list: {list}");
+        assert!(list.contains("b.txt"), "list: {list}");
+        assert!(list.contains("c.txt"), "list: {list}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pkware_split_extract_round_trip() {
+        let dir = tmp("pkwext");
+        std::fs::create_dir_all(&dir).unwrap();
+        let vols = make_pkware_split_zip(&dir);
+        let refs: Vec<&str> = vols.iter().map(|p| p.to_str().unwrap()).collect();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let (total, fail) = extract_zip_volumes(&refs, out.to_str().unwrap(), "", None).expect("extract pkware split");
+        assert_eq!(fail, 0);
+        assert_eq!(total, 3);
+        assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"hello from disk zero");
+        assert_eq!(std::fs::read(out.join("b.txt")).unwrap(), b"data on disk one");
+        assert_eq!(std::fs::read(out.join("c.txt")).unwrap(), b"final disk content");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A PKWARE archive whose entry DATA straddles a disk boundary must be
+    /// rejected with a clear error rather than producing corrupt output.
+    #[test]
+    fn pkware_split_cross_disk_entry_rejected() {
+        let dir = tmp("pkx");
+        std::fs::create_dir_all(&dir).unwrap();
+        // a.txt lives on disk 0 and declares 1000 bytes, but disk 0 only holds
+        // the local header + a few bytes — the data runs into disk 1.
+        let a = vec![0x41u8; 1000];
+        let lh_a = local_hdr("a.txt", &a);
+        let mut z01 = lh_a.clone();
+        z01.truncate(lh_a.len() - 900); // disk 0 cuts off 900 bytes of a's data
+        z01.extend_from_slice(&0x06054b50u32.to_le_bytes());
+        z01.extend_from_slice(&[0u8; 18]);
+
+        // disk 1: the rest of a.txt + b.txt
+        let b = b"b data";
+        let mut z02 = Vec::new();
+        z02.extend_from_slice(&a[900..]); // remainder of a.txt
+        z02.extend(local_hdr("b.txt", b));
+
+        // final disk: c.txt + central dir + EOCD
+        let c = b"c data";
+        let mut cd = Vec::new();
+        cd.extend(central_hdr("a.txt", 0, a.len() as u32, 0));
+        cd.extend(central_hdr("b.txt", 0, b.len() as u32, 1));
+        cd.extend(central_hdr("c.txt", 0, c.len() as u32, 2));
+        let mut zip_part = local_hdr("c.txt", c);
+        let cd_offset = zip_part.len() as u32;
+        zip_part.extend_from_slice(&cd);
+        zip_part.extend_from_slice(&0x06054b50u32.to_le_bytes());
+        zip_part.extend_from_slice(&0u16.to_le_bytes());
+        zip_part.extend_from_slice(&2u16.to_le_bytes());
+        zip_part.extend_from_slice(&3u16.to_le_bytes());
+        zip_part.extend_from_slice(&3u16.to_le_bytes());
+        zip_part.extend_from_slice(&(cd.len() as u32).to_le_bytes());
+        zip_part.extend_from_slice(&cd_offset.to_le_bytes());
+        zip_part.extend_from_slice(&0u16.to_le_bytes());
+
+        let p1 = dir.join("test.z01");
+        let p2 = dir.join("test.z02");
+        let p3 = dir.join("test.zip");
+        std::fs::write(&p1, &z01).unwrap();
+        std::fs::write(&p2, &z02).unwrap();
+        std::fs::write(&p3, &zip_part).unwrap();
+
+        let paths = vec![p1, p2, p3];
+        let refs: Vec<&str> = paths.iter().map(|p| p.to_str().unwrap()).collect();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let r = extract_zip_volumes(&refs, out.to_str().unwrap(), "", None);
+        assert!(r.is_err(), "cross-disk entry must be rejected, got {r:?}");
+        let msg = r.unwrap_err();
+        assert!(msg.contains("spans disk boundaries"), "msg: {msg}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// zip_modify must reject PKWARE multi-disk archives up front — otherwise
+    /// ZipArchive::new would parse 0 entries and a modify would drop every
+    /// existing entry.
+    #[test]
+    fn pkware_split_modify_rejected() {
+        let dir = tmp("pkwmod");
+        std::fs::create_dir_all(&dir).unwrap();
+        let vols = make_pkware_split_zip(&dir);
+        // The final .zip part is the multi-disk archive's last disk.
+        let final_zip = vols.iter().find(|p| p.extension().map(|e| e == "zip").unwrap_or(false)).unwrap();
+        let src = dir.join("s.txt");
+        std::fs::write(&src, b"x").unwrap();
+        let out = dir.join("out.zip");
+        let ops = format!("add|new.txt|{}", src.display());
+        let r = zip_modify(final_zip.to_str().unwrap(), out.to_str().unwrap(), &ops, "");
+        assert!(r.is_err(), "multi-disk zip must not be modifiable, got {r:?}");
+        assert!(r.unwrap_err().contains("multi-disk"), "msg must mention multi-disk");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

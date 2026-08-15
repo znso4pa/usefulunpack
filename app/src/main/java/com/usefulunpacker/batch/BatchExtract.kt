@@ -35,6 +35,22 @@ internal fun MainActivity.startBatchExtract() {
         }
     }
 
+/**
+ * Batch-preview entry from the multi-select bar: only allowed when every
+ * selected archive shares the same format (a mixed selection has no single
+ * way to list all of them at once). Falls back to the per-format flow.
+ */
+internal fun MainActivity.startBatchPreviewOnly() {
+        val archives = batchArchives(); if (archives.isEmpty()) { toast(getString(R.string.no_archives)); return }
+        val fmts = archives.map { it -> detectFormat(it) ?: isVolumeFile(it) }
+        val distinct = fmts.distinct()
+        if (distinct.size != 1 || distinct[0] == null) {
+            toast(getString(R.string.batch_preview_mixed))
+            return
+        }
+        batchPreview(archives, distinct[0]!!)
+    }
+
 internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) {
         val parent = archives[0].parentFile ?: currentDir
         // Pre-compute unique output dirs

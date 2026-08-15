@@ -18,6 +18,7 @@ members = [
     "crates/tar-core",
     "crates/ksd-core",
     "crates/scan-core",
+    "crates/cso-core",
 ]
 resolver = "2"
 
@@ -33,7 +34,9 @@ lto = true
 # Local fork of rars with streaming RAR5 filter support
 # (upstream refuses to stream filtered members over the buffered-decode limit)
 # Local fork of sevenz-rust with liblzma LZMA/LZMA2 decoding (decompression speed)
+# Local fork of zip with PKWARE multi-disk (.z01/.z02/.zip) read support
 [patch.crates-io]
 rars = { path = "crates/vendor/rars" }
 sevenz-rust = { path = "crates/vendor/sevenz-rust" }
+zip = { path = "crates/vendor/zip" }
 isomage = { path = "crates/vendor/isomage" }

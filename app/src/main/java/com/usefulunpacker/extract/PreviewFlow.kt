@@ -194,7 +194,7 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
             setPadding(12, 8, 12, 8)
             layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
             setOnClickListener {
-                if (format !in setOf("xp3", "pfs")) {
+                if (format !in setOf("xp3", "pfs", "iso", "nsa")) {
                     toast(getString(R.string.edit_only_pack))
                 } else {
                     dlg.dismiss()
@@ -203,6 +203,89 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
             }
         }
         titleBar.addView(btnEditArchive)
+
+        // ZIP entry management: delete selected / add a new entry (in-place via
+        // zipModify). Split-volume zips can't be modified, so hide the button.
+        if (format == "zip" && !(isVolumeFile(src) == "zip" || isZipVolumeName(src.name))) {
+            val btnZipManage = Button(this).apply {
+                text = getString(R.string.zip_manage)
+                textSize = 14f
+                isAllCaps = false
+                setTextColor(C["accent"]!!)
+                background = null
+                setPadding(12, 8, 12, 8)
+                layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
+                setOnClickListener {
+                    AlertDialog.Builder(this@showPreviewDialog)
+                        .setTitle(getString(R.string.zip_manage))
+                        .setItems(arrayOf(
+                            getString(R.string.zip_manage_delete),
+                            getString(R.string.zip_manage_add))) { _, w ->
+                            when (w) {
+                                0 -> {
+                                    val sel = selectedPaths.filter { p -> selectedPaths.none { o -> o != p && o.startsWith(p + "/") } }
+                                        .filter { p -> entries.find { e -> e.path == p }?.isDirectory == false }
+                                    if (sel.isEmpty()) { toast(getString(R.string.msg_select_one)); return@setItems }
+                                    AlertDialog.Builder(this@showPreviewDialog)
+                                        .setMessage(getString(R.string.zip_confirm_delete))
+                                        .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
+                                            dlg.dismiss()
+                                            zipDeleteEntries(src, sel, pwd)
+                                        }
+                                        .setNegativeButton(getString(R.string.action_cancel), null)
+                                        .show()
+                                }
+                                1 -> {
+                                    // Pick a local file, then name the entry.
+                                    showFolderPicker(this@showPreviewDialog, currentDir, true) { picked ->
+                                        val baseName = picked.name
+                                        val inp = EditText(this@showPreviewDialog).apply {
+                                            setText(baseName)
+                                            hint = getString(R.string.zip_add_name)
+                                            setTextColor(C["primary"]!!)
+                                            setHintTextColor(C["hint"]!!)
+                                            setBackgroundColor(C["surface"]!!)
+                                            setPadding(12, 8, 12, 8)
+                                        }
+                                        AlertDialog.Builder(this@showPreviewDialog)
+                                            .setTitle(getString(R.string.zip_add_title))
+                                            .setView(inp)
+                                            .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
+                                                val name = inp.text.toString().trim().ifEmpty { baseName }
+                                                dlg.dismiss()
+                                                zipAddEntry(src, name, picked, pwd)
+                                            }
+                                            .setNegativeButton(getString(R.string.action_cancel), null)
+                                            .show()
+                                    }
+                                }
+                            }
+                        }
+                        .setNegativeButton(getString(R.string.action_cancel), null)
+                        .show()
+                }
+            }
+            titleBar.addView(btnZipManage)
+        }
+
+        // ISO previews can be converted straight to PSP CISO without leaving
+        // the dialog (CSO files themselves reach the converter via their FAB).
+        if (format == "iso") {
+            val btnConvertIso = Button(this).apply {
+                text = getString(R.string.action_convert_cso)
+                textSize = 14f
+                isAllCaps = false
+                setTextColor(C["accent"]!!)
+                background = null
+                setPadding(12, 8, 12, 8)
+                layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
+                setOnClickListener {
+                    dlg.dismiss()
+                    convertIso(src, toCso = true)
+                }
+            }
+            titleBar.addView(btnConvertIso)
+        }
 
         dlg = AlertDialog.Builder(this)
             .setCustomTitle(titleBar)
@@ -348,6 +431,8 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
         try {
             val ok = when (format) {
                 "xp3" -> Xp3Core.xp3CreateArchive("", editDir.path, outF.path, prefs.getInt("generic_level", 6).toString()) != null
+                "nsa" -> NsaCore.nsaCreateArchive("", editDir.path, outF.path, "2") != null
+                "iso" -> IsoCore.isoCreateArchive("", editDir.path, outF.path) != null
                 else -> PfsCore.pfsCreateArchive("", editDir.path, outF.path) != null
             }
             runOnUiThread {
@@ -462,8 +547,7 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
 
 internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, format: String, pwd: String = "") {
         val ext = entry.path.substringAfterLast('.').lowercase()
-        val TEXT_EXTS = setOf("txt", "json", "ini", "ks", "tjs", "lua", "py", "js", "html", "css", "xml", "cfg", "log")
-        if (ext !in setOf("jpg", "jpeg", "png", "mp3", "ogg", "mp4") && ext !in TEXT_EXTS) {
+        if (ext !in PREVIEW_EXTS) {
                         toast(getString(R.string.err_preview_unsupported, ".$ext"))
             return
         }
@@ -473,12 +557,19 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
             val extracted = File(cacheDir, entry.path)
             runOnUiThread {
                 when (ext) {
-                    "jpg", "jpeg", "png" -> showImagePreview(this, extracted)
+                    "jpg", "jpeg", "png", "gif", "webp", "bmp" -> showImagePreview(this, extracted)
                     "mp3", "ogg" -> playAudio(this, extracted)
                     "mp4" -> playVideo(this, extracted)
-                    // Archive-entry previews are cache temp files — no 编辑
-                    // (saving wouldn't repack the archive; the 编辑 flow does).
-                    else -> showTextPreview(this, extracted, showEdit = false)
+                    // ZIP entries can be edited in place (zipModify replaces just
+                    // that entry); split-volume zips can't (zipModify needs a
+                    // single seekable archive and can't re-split), so no 编辑.
+                    else -> {
+                        val isSplitZip = format == "zip" &&
+                            (isVolumeFile(archive) == "zip" || isZipVolumeName(archive.name))
+                        val canEditZip = format == "zip" && entry.path.isNotEmpty() && !isSplitZip
+                        showTextPreview(this, extracted, showEdit = canEditZip,
+                            onEdited = if (canEditZip) { { zipReplaceEntry(archive, entry, extracted, pwd) } } else { null })
+                    }
                 }
             }
         }
@@ -506,3 +597,166 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
             }
         }
     }
+
+/**
+ * True when the archive is a PKWARE multi-disk zip set (`.z01/.z02/.zip`).
+ * Such archives can't be modified in place (zip_modify needs a single
+ * seekable stream and would silently drop entries), so editing is refused.
+ */
+internal fun MainActivity.isMultiDiskZipArchive(archive: File): Boolean =
+    isVolumeFile(archive) == "zip" && resolveZipVolumes(archive).size > 1
+
+/**
+ * Deletes the temp copies a zip-modify operation may leave behind:
+ * `name.mod.zip` / `name.del.zip` / `name.add.zip` and the Rust-side
+ * `.tmp{pid}` files next to them. Called on failure so a broken edit never
+ * litters the archive's directory.
+ */
+internal fun MainActivity.cleanupZipModifyArtifacts(archive: File) {
+    val dir = archive.parentFile ?: cacheDir
+    val base = archive.nameWithoutExtension
+    dir.listFiles()?.forEach { f ->
+        val n = f.name
+        if (n.startsWith("$base.") && (n == "$base.mod.zip" || n == "$base.del.zip" || n == "$base.add.zip"
+                || n.startsWith("$base.mod.zip.tmp") || n.startsWith("$base.del.zip.tmp") || n.startsWith("$base.add.zip.tmp"))) {
+            f.delete()
+        }
+    }
+}
+
+/**
+ * Replaces one entry inside a ZIP archive with the edited cache copy, via the
+ * Rust zipModify path (untouched entries stay byte-identical). A temp copy is
+ * written then atomically swapped over the original, so a failed edit never
+ * corrupts the archive.
+ */
+internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, newContent: File, pwd: String = "") {
+    if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
+    if (!tryStartOperation(this)) return
+    val tmp = File(archive.parentFile ?: cacheDir, "${archive.nameWithoutExtension}.mod.zip")
+    thread {
+        try {
+            val ok = ZipCore.zipModify("", archive.path, tmp.path,
+                "replace|${entry.path}|${newContent.path}", pwd)
+            runOnUiThread {
+                if (ok) {
+                    // Atomic replace: Files.move with REPLACE_EXISTING overwrites
+                    // the original on a clean write. (The old delete+renameTo
+                    // pair could lose the archive if renameTo failed after the
+                    // original was already deleted.)
+                    try {
+                        java.nio.file.Files.move(
+                            tmp.toPath(), archive.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        )
+                        toast(getString(R.string.edit_done, archive.name))
+                        nav(currentDir)
+                    } catch (me: java.nio.file.AtomicMoveNotSupportedException) {
+                        // Some filesystems lack ATOMIC_MOVE; fall back to a
+                        // plain (still single-step) replace.
+                        java.nio.file.Files.move(tmp.toPath(), archive.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                        toast(getString(R.string.edit_done, archive.name))
+                        nav(currentDir)
+                    }
+                } else {
+                    cleanupZipModifyArtifacts(archive)
+                    toast(getString(R.string.title_compress_failed))
+                }
+            }
+        } catch (e: Exception) {
+            cleanupZipModifyArtifacts(archive)
+            runOnUiThread { toast(getString(R.string.err_extract_io, e.message ?: "")) }
+        } finally {
+            OperationLock.release()
+        }
+    }
+}
+
+/**
+ * Deletes selected entries from a ZIP archive via the Rust zipModify path
+ * (`delete|path` per line), then atomically swaps the result over the
+ * original. Split-volume zips are excluded by the caller.
+ */
+internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, pwd: String = "") {
+    if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
+    if (paths.isEmpty()) { toast(getString(R.string.msg_select_one)); return }
+    if (!tryStartOperation(this)) return
+    val tmp = File(archive.parentFile ?: cacheDir, "${archive.nameWithoutExtension}.del.zip")
+    val ops = paths.joinToString("\n") { "delete|$it" }
+    thread {
+        try {
+            val ok = ZipCore.zipModify("", archive.path, tmp.path, ops, pwd)
+            runOnUiThread {
+                if (ok) {
+                    try {
+                        java.nio.file.Files.move(
+                            tmp.toPath(), archive.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        )
+                        toast(getString(R.string.edit_done, archive.name))
+                        nav(currentDir)
+                    } catch (me: java.nio.file.AtomicMoveNotSupportedException) {
+                        java.nio.file.Files.move(tmp.toPath(), archive.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                        toast(getString(R.string.edit_done, archive.name))
+                        nav(currentDir)
+                    }
+                } else {
+                    cleanupZipModifyArtifacts(archive)
+                    toast(getString(R.string.title_compress_failed))
+                }
+            }
+        } catch (e: Exception) {
+            cleanupZipModifyArtifacts(archive)
+            runOnUiThread { toast(getString(R.string.err_extract_io, e.message ?: "")) }
+        } finally {
+            OperationLock.release()
+        }
+    }
+}
+
+/**
+ * Adds one entry to a ZIP archive from a local file, via the Rust zipModify
+ * `add|name|srcPath` path, then atomically swaps the result over the original.
+ */
+internal fun MainActivity.zipAddEntry(archive: File, entryName: String, srcFile: File, pwd: String = "") {
+    if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
+    if (!tryStartOperation(this)) return
+    val tmp = File(archive.parentFile ?: cacheDir, "${archive.nameWithoutExtension}.add.zip")
+    val safeName = entryName.replace('\\', '/').trim('/')
+    thread {
+        try {
+            val ok = ZipCore.zipModify("", archive.path, tmp.path,
+                "add|$safeName|${srcFile.path}", pwd)
+            runOnUiThread {
+                if (ok) {
+                    try {
+                        java.nio.file.Files.move(
+                            tmp.toPath(), archive.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        )
+                        toast(getString(R.string.edit_done, archive.name))
+                        nav(currentDir)
+                    } catch (me: java.nio.file.AtomicMoveNotSupportedException) {
+                        java.nio.file.Files.move(tmp.toPath(), archive.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                        toast(getString(R.string.edit_done, archive.name))
+                        nav(currentDir)
+                    }
+                } else {
+                    cleanupZipModifyArtifacts(archive)
+                    toast(getString(R.string.title_compress_failed))
+                }
+            }
+        } catch (e: Exception) {
+            cleanupZipModifyArtifacts(archive)
+            runOnUiThread { toast(getString(R.string.err_extract_io, e.message ?: "")) }
+        } finally {
+            OperationLock.release()
+        }
+    }
+}

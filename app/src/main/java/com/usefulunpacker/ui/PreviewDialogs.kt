@@ -105,6 +105,12 @@ fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int 
     fun decode(): String = runCatching { decodeTextStrict(data, curEncoding) }
         .getOrElse { activity.getString(R.string.cannot_read_file, it.message ?: "") }
 
+    // Markdown/RTF rich rendering toggle (md/markdown/rtf only). Default on:
+    // md is turned into styled text, rtf is stripped of control words. A plain
+    // view is always one tap away.
+    val isRich = isRichTextExt(file.name.lowercase().substringAfterLast('.'))
+    var richEnabled = isRich
+
     // Assigned below (after buildContent is defined); the encoding row calls it
     // to re-render the content with the new encoding without leaving the dialog.
     lateinit var refreshContent: () -> Unit
@@ -139,6 +145,19 @@ fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int 
 
     fun buildContent(): android.view.View {
         val raw = decode()
+        // Rich rendering happens on the FULL decoded text, before the 50K
+        // display cap (a heading at the end must still be styled). Search
+        // highlight still matches on the raw text — offsets are preserved by
+        // the renderer.
+        val rendered: CharSequence? = when {
+            richEnabled && isRich && file.name.lowercase().endsWith(".rtf") ->
+                stripRtf(raw.take(50000))
+            richEnabled && isRich ->
+                renderMarkdown(raw.take(50000))
+            else -> null
+        }
+        // displayText is what search matches against and the base for the
+        // TextView; rendered (when rich) carries the style spans.
         var displayText = raw.take(50000)
         // A search highlight must never be silently lost: if the match is past
         // the 50K display cap, show a window around the first match instead.
@@ -174,8 +193,16 @@ fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int 
         }
         if (spannable != null && matchPos.isNotEmpty()) applyHighlights(0) else spannable = null
 
+        // Prefer the rich-rendered text; only when a highlight is active do we
+        // fall back to the plain-highlight spannable (rendering and highlight
+        // on the same CharSequence are hard to compose portably).
+        val tvText: CharSequence = when {
+            spannable != null -> spannable
+            rendered != null -> rendered
+            else -> displayText
+        }
         val tv = TextView(activity).apply {
-            this.text = spannable ?: displayText
+            this.text = tvText
             setTextColor(C["primary"]!!)
             textSize = 12f
             setBackgroundColor(C["surface_dark"]!!)
@@ -272,9 +299,31 @@ fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int 
         contentRoot.addView(buildContent(), LinearLayout.LayoutParams(MATCH, 0, 1f))
     }
 
+    // Render toggle row (md/markdown/rtf only): tap to flip between styled and
+    // plain text without leaving the dialog.
+    val richRow = TextView(activity)
+    if (isRich) {
+        richRow.apply {
+            text = activity.getString(R.string.preview_rich) + ": " +
+                if (richEnabled) activity.getString(R.string.preview_rich_on) else activity.getString(R.string.preview_rich_off)
+            setTextColor(C["accent"]!!)
+            textSize = 13f
+            setPadding(16, 10, 16, 10)
+            setBackgroundColor(C["surface"]!!)
+            isClickable = true
+            setOnClickListener {
+                richEnabled = !richEnabled
+                text = activity.getString(R.string.preview_rich) + ": " +
+                    if (richEnabled) activity.getString(R.string.preview_rich_on) else activity.getString(R.string.preview_rich_off)
+                refreshContent()
+            }
+        }
+    }
+
     val root = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
         addView(encRow, LinearLayout.LayoutParams(MATCH, WRAP))
+        if (isRich) addView(richRow, LinearLayout.LayoutParams(MATCH, WRAP))
         addView(contentRoot, LinearLayout.LayoutParams(MATCH, 0, 1f))
     }
 

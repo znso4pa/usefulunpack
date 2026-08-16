@@ -172,6 +172,9 @@
     <string name="settings_zip_encoding">ZIP 文件名编码（仅解压）</string>
     <string name="msg_encoding_applied">已切换为 %1$s</string>
     <string name="preview_encoding_hint">检测到大量乱码：当前按 %1$s 解码。可在 设置 → 文本编码 中切换</string>
+    <string name="preview_rich">渲染</string>
+    <string name="preview_rich_on">Markdown/RTF</string>
+    <string name="preview_rich_off">纯文本</string>
     <string name="msg_encoding_error">编码报错，请在设置中更换编码格式, try a different encoding in settings</string>
     <string name="err_not_archive">不是支持的压缩包格式</string>
     <string name="err_pwd_wrong">密码错误，解压失败</string>
@@ -283,17 +286,7 @@
     <string name="cmd_desc_pwd">显示当前路径</string>
     <string name="cmd_desc_up">切换到上级目录</string>
     <string name="cmd_desc_help">查看帮助</string>
-    <string name="disclaimer_body">UsefulUnpack 是通用的文件归档管理工具。
-
-本软件：
-· 不包含、不提供、不绕过任何 DRM 或复制保护
-· 所有格式解析基于公开规范或开源实现
-· 不托管任何版权内容或素材
-
-用户应遵守当地法律法规，仅对您合法拥有的文件使用本工具。
-开发者不对任何非法或不当使用承担责任。
-
-继续使用即表示您同意以上条款。</string>
+    <string name="disclaimer_body">UsefulUnpack 是通用的文件归档管理工具。\n\n本软件：\n· 不包含、不提供、不绕过任何 DRM 或复制保护\n· 所有格式解析基于公开规范或开源实现\n· 不托管任何版权内容或素材\n\n用户应遵守当地法律法规，仅对您合法拥有的文件使用本工具。\n开发者不对任何非法或不当使用承担责任。\n\n继续使用即表示您同意以上条款。</string>
 
 
     <!-- ═══ settings/search UI refactor ═══ -->
@@ -310,76 +303,39 @@
     <string name="help_section_formats">支持的格式</string>
     <string name="help_section_tutorials">功能教程</string>
         <string-array name="help_formats">
-        <item>XP3 (.xp3) — 解压 + 压缩
-Kirikiri 封包；zlib 压缩级别 0-9；可编辑脚本（编辑 → 解包 → 改脚本 → 重新打包为 name-cn.xp3）</item>
-        <item>PFS / PF6 / PF8 — 解压 + 压缩
-Artemis 封包；压缩输出 PF8（XOR 加密）；可编辑脚本（重新打包为 name-cn.pfs）</item>
-        <item>NSA / SAR (.nsa/.sar) — 解压 + 压缩
-NScripter 封包（LZSS + SPB）；封包用 LZSS（不缩小则存原始）；可编辑脚本（重新打包为 name-cn.nsa）
-限制：SPB 位图条目有 2GB 上限；超过 4GiB 的归档无法封包</item>
-        <item>ISO 9660 (.iso) — 解压 + 压缩
-光盘镜像（CD/DVD/BD）；可封包（Level 1）并转为 PSP CISO（CSO）
-限制：封包用 8.3 大写文件名 + 1GiB 总上限；超过 4GiB 的单个文件被拒绝</item>
-        <item>CSO (.cso) — 转换
-PSP 压缩镜像；点 .cso 转回 ISO；ISO 预览提供「转 CSO」
-限制：格式数据区上限 2GiB（31 位偏移）</item>
-        <item>YPF (.ypf) — 仅解压
-YU-RIS 封包；文件名 XOR + Shift-JIS 混淆，密钥自动检测</item>
-        <item>ZIP (.zip) — 解压 + 压缩
-AES-256 加密、5 级（0=仅存储）、编码可切 UTF-8/SHIFT-JIS/GBK
-支持就地条目管理：编辑 / 删除 / 新增条目（仅非分卷归档）
-限制：.zip.001 字节分卷与 PKWARE 多盘 .z01/.z02/.zip 可解压（条目需在单盘内；跨盘不支持）；多盘归档不可编辑</item>
-        <item>7z (.7z) — 解压 + 压缩
-0/3/6/9/12 级；设密码即头加密（列目录需密码）；.7z.001 分卷支持</item>
-        <item>RAR (.rar) — 仅解压
-RAR4/5，密码 + 分卷支持；不支持压缩（RARLAB 版权限制）
-注意：头加密 RAR 列目录受限，可走解压密码重试；加密多小文件解压较慢（每文件独立密钥派生）</item>
-        <item>LZ4 (.lz4) — 解压 + 压缩
-LZ4 帧格式；输出有封顶防止解压炸弹</item>
-        <item>GZIP (.gz) — 解压 + 压缩
-支持多成员拼接文件；输出按声明大小封顶</item>
-        <item>BZIP2 (.bz2) — 解压 + 压缩
-头无大小信息，输出有封顶防炸弹</item>
-        <item>XZ (.xz) — 解压 + 压缩
-liblzma，压缩级别 0-9；输出有封顶</item>
-        <item>ZSTD (.zst) — 解压 + 压缩
-头无大小信息，输出有封顶防炸弹</item>
-        <item>LZMA (.lzma) — 解压 + 压缩
-注意：列表预览不显示解压大小（alone 头未记录大小）</item>
-        <item>TAR — 解压 + 压缩
-.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
-        <item>KSD (.ksd) — 解压 + 压缩
-Kirikiri2 存档；压缩仅接受 .txt 文本</item>
+        <item>XP3 (.xp3) — 解压 + 压缩\nKirikiri 封包；zlib 压缩级别 0-9；可编辑脚本（编辑 → 解包 → 改脚本 → 重新打包为 name-cn.xp3）</item>
+        <item>PFS / PF6 / PF8 — 解压 + 压缩\nArtemis 封包；压缩输出 PF8（XOR 加密）；可编辑脚本（重新打包为 name-cn.pfs）</item>
+        <item>NSA / SAR (.nsa/.sar) — 解压 + 压缩\nNScripter 封包（LZSS + SPB）；封包用 LZSS（不缩小则存原始）；可编辑脚本（重新打包为 name-cn.nsa）\n限制：SPB 位图条目有 2GB 上限；超过 4GiB 的归档无法封包</item>
+        <item>ISO 9660 (.iso) — 解压 + 压缩\n光盘镜像（CD/DVD/BD）；可封包（Level 1）并转为 PSP CISO（CSO）\n限制：封包用 8.3 大写文件名 + 1GiB 总上限；超过 4GiB 的单个文件被拒绝</item>
+        <item>CSO (.cso) — 转换\nPSP 压缩镜像；点 .cso 转回 ISO；ISO 预览提供「转 CSO」\n限制：格式数据区上限 2GiB（31 位偏移）</item>
+        <item>YPF (.ypf) — 仅解压\nYU-RIS 封包；文件名 XOR + Shift-JIS 混淆，密钥自动检测</item>
+        <item>ZIP (.zip) — 解压 + 压缩\nAES-256 加密、5 级（0=仅存储）、编码可切 UTF-8/SHIFT-JIS/GBK\n支持就地条目管理：编辑 / 删除 / 新增条目（仅非分卷归档）\n限制：.zip.001 字节分卷与 PKWARE 多盘 .z01/.z02/.zip 可解压（含跨盘条目）；多盘归档不可编辑</item>
+        <item>7z (.7z) — 解压 + 压缩\n0/3/6/9/12 级；设密码即头加密（列目录需密码）；.7z.001 分卷支持</item>
+        <item>RAR (.rar) — 仅解压\nRAR4/5，密码 + 分卷支持；不支持压缩（RARLAB 版权限制）\n注意：头加密 RAR 列目录受限，可走解压密码重试；加密多小文件解压较慢（每文件独立密钥派生）</item>
+        <item>LZ4 (.lz4) — 解压 + 压缩\nLZ4 帧格式；输出有封顶防止解压炸弹</item>
+        <item>GZIP (.gz) — 解压 + 压缩\n支持多成员拼接文件；输出按声明大小封顶</item>
+        <item>BZIP2 (.bz2) — 解压 + 压缩\n头无大小信息，输出有封顶防炸弹</item>
+        <item>XZ (.xz) — 解压 + 压缩\nliblzma，压缩级别 0-9；输出有封顶</item>
+        <item>ZSTD (.zst) — 解压 + 压缩\n头无大小信息，输出有封顶防炸弹</item>
+        <item>LZMA (.lzma) — 解压 + 压缩\n注意：列表预览不显示解压大小（alone 头未记录大小）</item>
+        <item>TAR — 解压 + 压缩\n.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
+        <item>KSD (.ksd) — 解压 + 压缩\nKirikiri2 存档；压缩仅接受 .txt 文本</item>
     </string-array>
         <string-array name="help_tutorials">
-        <item>压缩设置
-设置 → 压缩：压缩等级（zip/7z/通用）、分卷大小（zip/7z）、ZIP 编码、压缩密码；点“确定”一次性保存；工作模式（归档/压缩）切换后标题栏会更新</item>
-        <item>全局搜索
-顶部菜单 → 全局搜索：文件名 / 内容两种模式；内容搜索会先询问单文件大小上限；点结果可预览，匹配处高亮并可前后跳转；结果多时点“继续扫描”</item>
-        <item>归档内搜索
-打开归档预览后，点右上角搜索图标：先解出全部文本文件，再进入全局搜索全文检索；点结果按需解出原文件预览</item>
-        <item>批量操作
-长按文件进入多选，底部出现批量栏：批量预览/解压/压缩/删除/移动；跨目录导航会自动退出多选。批量预览仅限同格式归档，可一次查看多个归档并跨归档选文件</item>
-        <item>分卷
-解压：直接点 .7z.001 / .zip.001 / .z01 / .part01.rar 任意一卷即可，自动合并；PKWARE 多盘（.z01/.z02/.zip）按独立盘读取（条目须在单盘内）。压缩：zip/7z 在压缩设置选分卷大小（不分卷/1MB/100MB/1GB/自定义），输出为 .001/.002…（7-Zip 兼容）</item>
-        <item>密码
-zip/7z/rar 加密归档预览时输入一次密码，之后“解压全部/解压选中”复用不再重复输入；批量操作只需输一次密码；需要密码的归档会显示 🔒</item>
-        <item>书签
-文件夹行末星标或抽屉“+ 添加当前路径”收藏；删除文件夹时其书签自动清理；长按书签删除</item>
-        <item>文件信息
-长按文件 → 信息：显示大小/时间/MD5/SHA-256，哈希可一键复制</item>
-        <item>交互流程
-点归档 → 右下角按钮 → 直接进入归档预览（格式自动识别）；预览内“解压全部”一键解压到同名文件夹，“解压所选”可选择目标位置</item>
-        <item>格式扫描（binwalk）
-长按文件 → 扫描：检测文件内嵌的压缩包/图片等签名（如视频内嵌 ZIP），列出偏移与格式，ZIP 附文件数。每条命中两个按钮：「解压」直接预览/解压归档，「切割」保存原始片段为独立文件；失败会提示具体原因</item>
-        <item>归档内编辑脚本
-打开 XP3/PFS/ISO/NSA 预览，点「编辑」：自动解包 → 弹出脚本列表（.ks/.tjs/.csv/…）→ 点一个用显式编码编辑（保存保留原字节序）→ 「重新打包」在同目录生成「原名-cn.xp3/pfs/iso/nsa」。ISO 重封用 Level-1 8.3 名 + 1GiB 上限</item>
-        <item>就地编辑 ZIP 条目
-ZIP 预览里点「条目」：删除选中条目（有确认框）或从本地文件新增条目（选文件 → 命名 → deflate 写入）。未动条目字节级保留。多盘 ZIP 不可编辑</item>
-        <item>编码与乱码
-每个预览/编辑器都有编码行：点它切换 UTF-8/SHIFT-JIS/GBK/UTF-16，文本立即重渲染；带 BOM 的 UTF-16/UTF-8 文件自动按正确编码打开；用错的非 UTF-8 编码读文件时会提示「看起来是 UTF-8」</item>
-        <item>滚动与自动刷新
-长列表右侧有常显可拖把手（抓住拖动即可跳转）；文本预览/编辑器也有可拖滚动条。当前目录内容变化（重命名/移动/删除/解压/压缩或 USB 等外部改动）时文件列表自动刷新</item>
+        <item>压缩设置\n设置 → 压缩：压缩等级（zip/7z/通用）、分卷大小（zip/7z）、ZIP 编码、压缩密码；点“确定”一次性保存；工作模式（归档/压缩）切换后标题栏会更新</item>
+        <item>全局搜索\n顶部菜单 → 全局搜索：文件名 / 内容两种模式；内容搜索会先询问单文件大小上限；点结果可预览，匹配处高亮并可前后跳转；结果多时点“继续扫描”</item>
+        <item>归档内搜索\n打开归档预览后，点右上角搜索图标：先解出全部文本文件，再进入全局搜索全文检索；点结果按需解出原文件预览</item>
+        <item>批量操作\n长按文件进入多选，底部出现批量栏：批量预览/解压/压缩/删除/移动；跨目录导航会自动退出多选。批量预览仅限同格式归档，可一次查看多个归档并跨归档选文件</item>
+        <item>分卷\n解压：直接点 .7z.001 / .zip.001 / .z01 / .part01.rar 任意一卷即可，自动合并；PKWARE 多盘（.z01/.z02/.zip）按独立盘读取（条目可跨盘边界）。压缩：zip/7z 在压缩设置选分卷大小（不分卷/1MB/100MB/1GB/自定义），输出为 .001/.002…（7-Zip 兼容）</item>
+        <item>密码\nzip/7z/rar 加密归档预览时输入一次密码，之后“解压全部/解压选中”复用不再重复输入；批量操作只需输一次密码；需要密码的归档会显示 🔒</item>
+        <item>书签\n文件夹行末星标或抽屉“+ 添加当前路径”收藏；删除文件夹时其书签自动清理；长按书签删除</item>
+        <item>文件信息\n长按文件 → 信息：显示大小/时间/MD5/SHA-256，哈希可一键复制</item>
+        <item>交互流程\n点归档 → 右下角按钮 → 直接进入归档预览（格式自动识别）；预览内“解压全部”一键解压到同名文件夹，“解压所选”可选择目标位置</item>
+        <item>格式扫描（binwalk）\n长按文件 → 扫描：检测文件内嵌的压缩包/图片等签名（如视频内嵌 ZIP），列出偏移与格式，ZIP 附文件数。每条命中两个按钮：「解压」直接预览/解压归档，「切割」保存原始片段为独立文件；失败会提示具体原因</item>
+        <item>归档内编辑脚本\n打开 XP3/PFS/ISO/NSA 预览，点「编辑」：自动解包 → 弹出脚本列表（.ks/.tjs/.csv/…）→ 点一个用显式编码编辑（保存保留原字节序）→ 「重新打包」在同目录生成「原名-cn.xp3/pfs/iso/nsa」。ISO 重封用 Level-1 8.3 名 + 1GiB 上限</item>
+        <item>就地编辑 ZIP 条目\nZIP 预览里点「条目」：删除选中条目（有确认框）或从本地文件新增条目（选文件 → 命名 → deflate 写入）。未动条目字节级保留。多盘 ZIP 不可编辑</item>
+        <item>编码与乱码\n每个预览/编辑器都有编码行：点它切换 UTF-8/SHIFT-JIS/GBK/UTF-16，文本立即重渲染；带 BOM 的 UTF-16/UTF-8 文件自动按正确编码打开；用错的非 UTF-8 编码读文件时会提示「看起来是 UTF-8」</item>
+        <item>滚动与自动刷新\n长列表右侧有常显可拖把手（抓住拖动即可跳转）；文本预览/编辑器也有可拖滚动条。当前目录内容变化（重命名/移动/删除/解压/压缩或 USB 等外部改动）时文件列表自动刷新</item>
     </string-array>
 
 

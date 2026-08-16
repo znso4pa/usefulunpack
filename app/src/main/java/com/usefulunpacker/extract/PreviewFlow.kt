@@ -35,7 +35,7 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
                 "ypf" -> YpfCore.ypfListEntries(src.absolutePath)
                 "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); val vols = resolveZipVolumes(src); if (vols.size > 1) ZipCore.zipListEntriesVolumes(volumeJoin(vols)) else ZipCore.zipListEntries(src.absolutePath) }
                 "7z" -> { val vols = resolveSevenZVolumes(src); if (vols.size > 1) (if (pwd.isNotEmpty()) SevenZCore.szListEntriesVolumesWithPassword(volumeJoin(vols), pwd) else SevenZCore.szListEntriesVolumes(volumeJoin(vols))) else if (pwd.isNotEmpty()) SevenZCore.szListEntriesWithPassword(src.absolutePath, pwd) else SevenZCore.szListEntries(src.absolutePath) }
-                "rar" -> { val vols = resolveRarVolumes(src); if (vols.size > 1) RarCore.rarListEntriesVolumes(volumeJoin(vols)) else RarCore.rarListEntries(src.absolutePath) }
+                "rar" -> { val vols = resolveRarVolumes(src); if (vols.size > 1) (if (pwd.isNotEmpty()) RarCore.rarListEntriesVolumesWithPassword(volumeJoin(vols), pwd) else RarCore.rarListEntriesVolumes(volumeJoin(vols))) else if (pwd.isNotEmpty()) RarCore.rarListEntriesWithPassword(src.absolutePath, pwd) else RarCore.rarListEntries(src.absolutePath) }
                 "lz4" -> Lz4Core.lz4ListEntries(src.absolutePath)
                 "gz" -> GzipCore.gzListEntries(src.absolutePath)
                 "bz2" -> Bzip2Core.bz2ListEntries(src.absolutePath)
@@ -113,6 +113,10 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
         titleBar.addView(TextView(this).apply {
             text = getString(R.string.preview_title, src.name)
             setTextColor(C["primary"]!!); textSize = 17f
+            // Ellipsize so a long filename can't push the search / edit /
+            // manage buttons off a narrow screen.
+            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            maxLines = 1
             layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
         })
 
@@ -160,14 +164,22 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                             f.parentFile?.mkdirs()
                             try { f.createNewFile() } catch (_: Exception) {}
                         }
-                        // Phase 2: extract only text files (overwrites placeholders, for content search)
+                        // Phase 2: extract only text files (overwrites placeholders, for content search).
+                        // RAR indexes entries by re-parsing the whole archive header, so extracting
+                        // every text entry individually re-parses it N times (a 1GB+ rar = minutes of
+                        // CPU + a long-held lock). Extract the archive ONCE and let the text filter
+                        // pick from the cache — identical output, far faster.
                         val textExts = TEXT_SEARCH_EXTS
-                        for (e in entries) {
-                            if (e.isDirectory) continue
-                            val rel = sanitizeEntryPath(e.path) ?: continue
-                            val ext = e.path.substringAfterLast('.').lowercase()
-                            if (ext !in textExts) continue
-                            extractByFormat(format, src.path, cacheDir.path, rel, prefs, pwd)
+                        if (format == "rar") {
+                            extractByFormat(format, src.path, cacheDir.path, "", prefs, pwd)
+                        } else {
+                            for (e in entries) {
+                                if (e.isDirectory) continue
+                                val rel = sanitizeEntryPath(e.path) ?: continue
+                                val ext = e.path.substringAfterLast('.').lowercase()
+                                if (ext !in textExts) continue
+                                extractByFormat(format, src.path, cacheDir.path, rel, prefs, pwd)
+                            }
                         }
                         runOnUiThread {
                             prog.dismiss()
@@ -194,7 +206,7 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
             setPadding(12, 8, 12, 8)
             layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
             setOnClickListener {
-                if (format !in setOf("xp3", "pfs", "iso", "nsa")) {
+                if (format !in setOf("xp3", "pfs", "iso", "nsa", "7z", "ypf")) {
                     toast(getString(R.string.edit_only_pack))
                 } else {
                     dlg.dismiss()
@@ -433,6 +445,12 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
                 "xp3" -> Xp3Core.xp3CreateArchive("", editDir.path, outF.path, prefs.getInt("generic_level", 6).toString()) != null
                 "nsa" -> NsaCore.nsaCreateArchive("", editDir.path, outF.path, "2") != null
                 "iso" -> IsoCore.isoCreateArchive("", editDir.path, outF.path) != null
+                "ypf" -> YpfCore.ypfCreateArchive("", editDir.path, outF.path, prefs.getInt("generic_level", 6).toString()) != null
+                "7z" -> {
+                    val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
+                    val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
+                    compressDispatch(editDir, outF, "7z", prefs.getInt("sz_level", 6), password, prefs)
+                }
                 else -> PfsCore.pfsCreateArchive("", editDir.path, outF.path) != null
             }
             runOnUiThread {
@@ -626,40 +644,27 @@ internal fun MainActivity.cleanupZipModifyArtifacts(archive: File) {
 
 /**
  * Replaces one entry inside a ZIP archive with the edited cache copy, via the
- * Rust zipModify path (untouched entries stay byte-identical). A temp copy is
- * written then atomically swapped over the original, so a failed edit never
- * corrupts the archive.
+ * Rust zipModify path (untouched entries stay byte-identical). The result is
+ * written as a `name-cn.zip` copy (uniqueFile dedupes to `name-cn (1).zip`),
+ * never overwriting the original archive — a failed edit can't corrupt it.
  */
 internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, newContent: File, pwd: String = "") {
     if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
     if (!tryStartOperation(this)) return
-    val tmp = File(archive.parentFile ?: cacheDir, "${archive.nameWithoutExtension}.mod.zip")
+    val parent = archive.parentFile ?: cacheDir
+    val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
+    val tmp = File(parent, "${archive.nameWithoutExtension}.mod.zip")
     thread {
         try {
             val ok = ZipCore.zipModify("", archive.path, tmp.path,
                 "replace|${entry.path}|${newContent.path}", pwd)
             runOnUiThread {
                 if (ok) {
-                    // Atomic replace: Files.move with REPLACE_EXISTING overwrites
-                    // the original on a clean write. (The old delete+renameTo
-                    // pair could lose the archive if renameTo failed after the
-                    // original was already deleted.)
-                    try {
-                        java.nio.file.Files.move(
-                            tmp.toPath(), archive.toPath(),
-                            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-                        )
-                        toast(getString(R.string.edit_done, archive.name))
-                        nav(currentDir)
-                    } catch (me: java.nio.file.AtomicMoveNotSupportedException) {
-                        // Some filesystems lack ATOMIC_MOVE; fall back to a
-                        // plain (still single-step) replace.
-                        java.nio.file.Files.move(tmp.toPath(), archive.toPath(),
-                            java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                        toast(getString(R.string.edit_done, archive.name))
-                        nav(currentDir)
-                    }
+                    // Move the temp to the -cn output; the original stays put.
+                    java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    toast(getString(R.string.edit_done, outF.name))
+                    nav(currentDir)
                 } else {
                     cleanupZipModifyArtifacts(archive)
                     toast(getString(R.string.title_compress_failed))
@@ -676,34 +681,26 @@ internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, ne
 
 /**
  * Deletes selected entries from a ZIP archive via the Rust zipModify path
- * (`delete|path` per line), then atomically swaps the result over the
- * original. Split-volume zips are excluded by the caller.
+ * (`delete|path` per line), writing a `name-cn.zip` copy (original untouched).
+ * Split-volume zips are excluded by the caller.
  */
 internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, pwd: String = "") {
     if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
     if (paths.isEmpty()) { toast(getString(R.string.msg_select_one)); return }
     if (!tryStartOperation(this)) return
-    val tmp = File(archive.parentFile ?: cacheDir, "${archive.nameWithoutExtension}.del.zip")
+    val parent = archive.parentFile ?: cacheDir
+    val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
+    val tmp = File(parent, "${archive.nameWithoutExtension}.del.zip")
     val ops = paths.joinToString("\n") { "delete|$it" }
     thread {
         try {
             val ok = ZipCore.zipModify("", archive.path, tmp.path, ops, pwd)
             runOnUiThread {
                 if (ok) {
-                    try {
-                        java.nio.file.Files.move(
-                            tmp.toPath(), archive.toPath(),
-                            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-                        )
-                        toast(getString(R.string.edit_done, archive.name))
-                        nav(currentDir)
-                    } catch (me: java.nio.file.AtomicMoveNotSupportedException) {
-                        java.nio.file.Files.move(tmp.toPath(), archive.toPath(),
-                            java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                        toast(getString(R.string.edit_done, archive.name))
-                        nav(currentDir)
-                    }
+                    java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    toast(getString(R.string.edit_done, outF.name))
+                    nav(currentDir)
                 } else {
                     cleanupZipModifyArtifacts(archive)
                     toast(getString(R.string.title_compress_failed))
@@ -720,12 +717,14 @@ internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, p
 
 /**
  * Adds one entry to a ZIP archive from a local file, via the Rust zipModify
- * `add|name|srcPath` path, then atomically swaps the result over the original.
+ * `add|name|srcPath` path, writing a `name-cn.zip` copy (original untouched).
  */
 internal fun MainActivity.zipAddEntry(archive: File, entryName: String, srcFile: File, pwd: String = "") {
     if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
     if (!tryStartOperation(this)) return
-    val tmp = File(archive.parentFile ?: cacheDir, "${archive.nameWithoutExtension}.add.zip")
+    val parent = archive.parentFile ?: cacheDir
+    val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
+    val tmp = File(parent, "${archive.nameWithoutExtension}.add.zip")
     val safeName = entryName.replace('\\', '/').trim('/')
     thread {
         try {
@@ -733,20 +732,10 @@ internal fun MainActivity.zipAddEntry(archive: File, entryName: String, srcFile:
                 "add|$safeName|${srcFile.path}", pwd)
             runOnUiThread {
                 if (ok) {
-                    try {
-                        java.nio.file.Files.move(
-                            tmp.toPath(), archive.toPath(),
-                            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-                        )
-                        toast(getString(R.string.edit_done, archive.name))
-                        nav(currentDir)
-                    } catch (me: java.nio.file.AtomicMoveNotSupportedException) {
-                        java.nio.file.Files.move(tmp.toPath(), archive.toPath(),
-                            java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                        toast(getString(R.string.edit_done, archive.name))
-                        nav(currentDir)
-                    }
+                    java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    toast(getString(R.string.edit_done, outF.name))
+                    nav(currentDir)
                 } else {
                     cleanupZipModifyArtifacts(archive)
                     toast(getString(R.string.title_compress_failed))

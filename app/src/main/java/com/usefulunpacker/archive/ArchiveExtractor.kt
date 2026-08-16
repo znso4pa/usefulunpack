@@ -325,8 +325,13 @@ fun tryExtractWithPassword(
         }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
     }
     thread {
+        // The lock is released on EVERY exit below — including the password
+        // retry dialog, which is shown AFTER release so the retry can acquire
+        // the lock cleanly (an acquire inside the retry while this thread still
+        // held the lock was the "already in progress" deadlock).
+        var result: ExtractOutcome? = null
         try {
-            val result = if (fmt in setOf("zip", "7z", "rar") && sel.isNotEmpty()) {
+            result = if (fmt in setOf("zip", "7z", "rar") && sel.isNotEmpty()) {
                 runCatching {
                     when (fmt) {
                         "zip" -> ExtractOutcome(ExtractCounts.fromJson(zipExtractDispatch(src, out, sel, initialPassword)), null)
@@ -336,62 +341,64 @@ fun tryExtractWithPassword(
                     }
                 }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
             } else doExtract(initialPassword)
-            val ok = result.counts.ok
-            activity.runOnUiThread {
-                prog?.dismiss()
-                if (cancelled) { onCancel(); return@runOnUiThread }
-                if (ok) { onResult(result) }
-                else if (fmt in setOf("zip", "7z", "rar")) {
-                    val inp = EditText(activity).apply {
-                        hint = activity.getString(R.string.prompt_password)
-                        setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                        setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
-                        inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-                    }
-                    AlertDialog.Builder(activity)
-                        .setTitle(activity.getString(R.string.title_password))
-                        .setView(inp)
-                        .setPositiveButton(activity.getString(R.string.retry)) { _, _ ->
-                            // Lock first, then the progress dialog (see above).
-                            if (!tryStartOperation(activity)) return@setPositiveButton
-                            val pwd = inp.text.toString()
-                            var cancelled2 = false
-                            val accessors2 = extractAccessors(fmt)
-                            val prog2 = if (showProgress) PollingProgressDialog(
-                                activity,
-                                activity.getString(R.string.extracting_please),
-                                accessors2,
-                                { n, b, t -> extractProgressMessage(activity, n, b, t) },
-                                activity.getString(R.string.action_cancel),
-                                { cancelled2 = true; accessors2.cancel() }
-                            ) else null
-                            prog2?.start()
-                            thread {
-                                try {
-                                    val outcome2 = runCatching {
-                                        when (fmt) {
-                                            "zip" -> ExtractOutcome(ExtractCounts.fromJson(zipExtractDispatch(src, out, sel, pwd)), null)
-                                            "7z" -> ExtractOutcome(ExtractCounts.fromJson(szExtractDispatch(src, out, sel, pwd)), null)
-                                            "rar" -> ExtractOutcome(ExtractCounts.fromJson(rarExtractDispatch(src, out, sel, pwd)), null)
-                                            else -> ExtractOutcome(ExtractCounts(0, 0, 0), null)
-                                        }
-                                    }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
-                                    activity.runOnUiThread {
-                                        prog2?.dismiss()
-                                        if (cancelled2) onCancel()
-                                        else onResult(outcome2)
-                                    }
-                                } finally {
-                                    OperationLock.release()
-                                }
-                            }
-                        }
-                        .setNegativeButton(activity.getString(R.string.action_cancel), null)
-                        .show()
-                } else { onResult(result) }
-            }
         } finally {
             OperationLock.release()
+        }
+        val finalResult = result
+        activity.runOnUiThread {
+            prog?.dismiss()
+            if (cancelled) { onCancel(); return@runOnUiThread }
+            val ok = finalResult?.counts?.ok ?: false
+            if (ok) { onResult(finalResult!!) }
+            else if (fmt in setOf("zip", "7z", "rar")) {
+                // The lock is free now — the retry acquires it like any fresh
+                // operation, so it can never report "operation in progress".
+                val inp = EditText(activity).apply {
+                    hint = activity.getString(R.string.prompt_password)
+                    setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+                    setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
+                    inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                }
+                AlertDialog.Builder(activity)
+                    .setTitle(activity.getString(R.string.title_password))
+                    .setView(inp)
+                    .setPositiveButton(activity.getString(R.string.retry)) { _, _ ->
+                        if (!tryStartOperation(activity)) return@setPositiveButton
+                        val pwd = inp.text.toString()
+                        var cancelled2 = false
+                        val accessors2 = extractAccessors(fmt)
+                        val prog2 = if (showProgress) PollingProgressDialog(
+                            activity,
+                            activity.getString(R.string.extracting_please),
+                            accessors2,
+                            { n, b, t -> extractProgressMessage(activity, n, b, t) },
+                            activity.getString(R.string.action_cancel),
+                            { cancelled2 = true; accessors2.cancel() }
+                        ) else null
+                        prog2?.start()
+                        thread {
+                            try {
+                                val outcome2 = runCatching {
+                                    when (fmt) {
+                                        "zip" -> ExtractOutcome(ExtractCounts.fromJson(zipExtractDispatch(src, out, sel, pwd)), null)
+                                        "7z" -> ExtractOutcome(ExtractCounts.fromJson(szExtractDispatch(src, out, sel, pwd)), null)
+                                        "rar" -> ExtractOutcome(ExtractCounts.fromJson(rarExtractDispatch(src, out, sel, pwd)), null)
+                                        else -> ExtractOutcome(ExtractCounts(0, 0, 0), null)
+                                    }
+                                }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
+                                activity.runOnUiThread {
+                                    prog2?.dismiss()
+                                    if (cancelled2) onCancel()
+                                    else onResult(outcome2)
+                                }
+                            } finally {
+                                OperationLock.release()
+                            }
+                        }
+                    }
+                    .setNegativeButton(activity.getString(R.string.action_cancel), null)
+                    .show()
+            } else { onResult(finalResult!!) }
         }
     }
 }

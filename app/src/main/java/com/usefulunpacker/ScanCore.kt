@@ -6,4 +6,5 @@ object ScanCore {
     external fun scanProgressBytes(): Long
     external fun scanProgressTotal(): Long
     external fun scanCancel()
+    external fun scanCancelled(): Boolean
 }

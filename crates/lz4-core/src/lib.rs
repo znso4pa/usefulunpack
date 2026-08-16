@@ -12,7 +12,10 @@ fn list_lz4_inner(input: &str) -> Result<String, String> {
     let name = std::path::Path::new(input)
         .file_stem().map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "decompressed".to_string());
-    let size = lz4_content_size(input)?.unwrap_or(0);
+    // -1 = unknown decompressed size (no Content Size flag in the frame
+    // header). The UI shows "unknown" instead of a misleading "0 B".
+    let size = lz4_content_size(input)?.unwrap_or(u64::MAX);
+    let size = if size == u64::MAX { -1i64 } else { size as i64 };
     Ok(format!(r#"[{{"n":"{}","s":{},"d":false,"e":false}}]"#, json_escape(&name), size))
 }
 

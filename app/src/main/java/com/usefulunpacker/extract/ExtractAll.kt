@@ -38,8 +38,13 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
             }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
         }
         thread {
+            // The lock is released on EVERY exit below — including the password
+            // retry dialog, which is shown AFTER release so the retry acquires
+            // the lock cleanly (an acquire inside the retry while this thread
+            // still held the lock was the "already in progress" deadlock).
+            var result: ExtractOutcome? = null
             try {
-                val result = if (format in setOf("zip", "7z", "rar") && isPasswordProtected(src)) {
+                result = if (format in setOf("zip", "7z", "rar") && isPasswordProtected(src)) {
                     val pwd = if (initialPwd.isNotEmpty()) initialPwd else (promptPasswordSync(this) ?: "")
                     if (pwd.isEmpty()) {
                         runOnUiThread { prog.dismiss(); toast(getString(R.string.msg_cancelled)) }
@@ -49,65 +54,65 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                 } else {
                     doExtract()
                 }
-                runOnUiThread {
-                    prog.dismiss()
-                    if (cancelled) {
-                        cleanupCancelledOutput(destFile, existedBefore)
-                        toast(getString(R.string.msg_cancelled))
-                        return@runOnUiThread
-                    }
-                    if (result.counts.ok) { showExtractSuccess(src.name, destFile.name, result.counts); nav(currentDir) }
-                    else if (format in setOf("zip", "7z", "rar")) {
-                        cleanupCancelledOutput(destFile, existedBefore)
-                        val inp = EditText(this).apply {
-                            hint = getString(R.string.prompt_password)
-                            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                            setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
-                            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-                        }
-                        AlertDialog.Builder(this)
-                            .setTitle(getString(R.string.title_password))
-                            .setMessage(getString(R.string.retry))
-                            .setView(inp)
-                            .setPositiveButton(getString(R.string.retry)) { _, _ ->
-                                val pwd = inp.text.toString()
-                                // Lock first, then the progress dialog (the
-                                // same order used everywhere else); when the
-                                // lock is busy just dismiss this dialog.
-                                if (!tryStartOperation(this)) return@setPositiveButton
-                                var cancelled2 = false
-                                val accessors2 = extractAccessors(format)
-                                val prog2 = PollingProgressDialog(
-                                    this,
-                                    "${src.name} → ${destFile.name}",
-                                    accessors2,
-                                    { n, b, t -> extractProgressMessage(this, n, b, t) },
-                                    getString(R.string.action_cancel),
-                                    { cancelled2 = true; accessors2.cancel() }
-                                )
-                                prog2.start()
-                                thread {
-                                    try {
-                                        val result2 = doExtract(pwd)
-                                        runOnUiThread {
-                                            prog2.dismiss()
-                                            if (cancelled2) {
-                                                cleanupCancelledOutput(destFile, existedBefore)
-                                                toast(getString(R.string.msg_cancelled))
-                                            } else if (result2.counts.ok) { showExtractSuccess(src.name, destFile.name, result2.counts); nav(currentDir) }
-                                            else toast(friendlyExtractError(this, result2.error))
-                                        }
-                                    } finally {
-                                        OperationLock.release()
-                                    }
-                                }
-                            }
-                            .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> cleanupCancelledOutput(destFile, existedBefore) }
-                            .show()
-                    } else toast(friendlyExtractError(this, result.error))
-                }
             } finally {
                 OperationLock.release()
+            }
+            val finalResult = result
+            runOnUiThread {
+                prog.dismiss()
+                if (cancelled) {
+                    cleanupCancelledOutput(destFile, existedBefore)
+                    toast(getString(R.string.msg_cancelled))
+                    return@runOnUiThread
+                }
+                if (finalResult != null && finalResult.counts.ok) { showExtractSuccess(src.name, destFile.name, finalResult.counts); nav(currentDir) }
+                else if (format in setOf("zip", "7z", "rar")) {
+                    cleanupCancelledOutput(destFile, existedBefore)
+                    // The lock is free now — the retry acquires it like any
+                    // fresh operation.
+                    val inp = EditText(this).apply {
+                        hint = getString(R.string.prompt_password)
+                        setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+                        setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
+                        inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                    }
+                    AlertDialog.Builder(this)
+                        .setTitle(getString(R.string.title_password))
+                        .setMessage(getString(R.string.retry))
+                        .setView(inp)
+                        .setPositiveButton(getString(R.string.retry)) { _, _ ->
+                            val pwd = inp.text.toString()
+                            if (!tryStartOperation(this)) return@setPositiveButton
+                            var cancelled2 = false
+                            val accessors2 = extractAccessors(format)
+                            val prog2 = PollingProgressDialog(
+                                this,
+                                "${src.name} → ${destFile.name}",
+                                accessors2,
+                                { n, b, t -> extractProgressMessage(this, n, b, t) },
+                                getString(R.string.action_cancel),
+                                { cancelled2 = true; accessors2.cancel() }
+                            )
+                            prog2.start()
+                            thread {
+                                try {
+                                    val result2 = doExtract(pwd)
+                                    runOnUiThread {
+                                        prog2.dismiss()
+                                        if (cancelled2) {
+                                            cleanupCancelledOutput(destFile, existedBefore)
+                                            toast(getString(R.string.msg_cancelled))
+                                        } else if (result2.counts.ok) { showExtractSuccess(src.name, destFile.name, result2.counts); nav(currentDir) }
+                                        else toast(friendlyExtractError(this, result2.error))
+                                    }
+                                } finally {
+                                    OperationLock.release()
+                                }
+                            }
+                        }
+                        .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> cleanupCancelledOutput(destFile, existedBefore) }
+                        .show()
+                } else toast(friendlyExtractError(this, finalResult?.error ?: ""))
             }
         }
     }

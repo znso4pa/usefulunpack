@@ -52,6 +52,7 @@ fun compressAccessors(fmt: String): ProgressAccessors = when (fmt) {
     "lzma" -> ProgressAccessors({ LzmaCore.lzmaCompressProgressCount() }, { LzmaCore.lzmaCompressProgressTotal() }, { LzmaCore.lzmaCompressProgressFileCount() }, { LzmaCore.lzmaCompressProgressFileTotal() }, { LzmaCore.lzmaCompressProgressName() }, { LzmaCore.lzmaCompressCancel() })
     "lz4" -> ProgressAccessors({ Lz4Core.lz4CompressProgressCount() }, { Lz4Core.lz4CompressProgressTotal() }, { Lz4Core.lz4CompressProgressFileCount() }, { Lz4Core.lz4CompressProgressFileTotal() }, { Lz4Core.lz4CompressProgressName() }, { Lz4Core.lz4CompressCancel() })
     "ksd" -> ProgressAccessors({ KsdCore.ksdCompressProgressCount() }, { KsdCore.ksdCompressProgressTotal() }, { KsdCore.ksdCompressProgressFileCount() }, { KsdCore.ksdCompressProgressFileTotal() }, { KsdCore.ksdCompressProgressName() }, { KsdCore.ksdCompressCancel() })
+    "ypf" -> ProgressAccessors({ YpfCore.ypfCompressProgressCount() }, { YpfCore.ypfCompressProgressTotal() }, { YpfCore.ypfCompressProgressFileCount() }, { YpfCore.ypfCompressProgressFileTotal() }, { YpfCore.ypfCompressProgressName() }, { YpfCore.ypfCompressCancel() })
     "tar", "tgz", "tbz2", "txz", "tzst" -> ProgressAccessors({ TarCore.tarCompressProgressCount() }, { TarCore.tarCompressProgressTotal() }, { TarCore.tarCompressProgressFileCount() }, { TarCore.tarCompressProgressFileTotal() }, { TarCore.tarCompressProgressName() }, { TarCore.tarCompressCancel() })
     else -> throw IllegalArgumentException("unsupported compress format: $fmt")
 }
@@ -96,12 +97,24 @@ class PollingProgressDialog(
         val d = Dialog(activity, R.style.Theme_UsefulUnpack_Dialog)
         d.setContentView(view)
         d.setCancelable(true)
-        d.setOnCancelListener { stopped = true; onCancel() }
+        // On cancel: signal the worker AND dismiss immediately so the dialog
+        // never appears stuck while the (now-cancelled) operation winds down in
+        // the background and releases the operation lock. dismiss() is a no-op
+        // if the worker already dismissed.
+        d.setOnCancelListener {
+            stopped = true
+            onCancel()
+            dismiss()
+        }
         if (cancelLabel != null) {
             val cancelBtn = view.findViewById<Button>(R.id.progress_cancel)
             cancelBtn.visibility = View.VISIBLE
             cancelBtn.text = cancelLabel
-            cancelBtn.setOnClickListener { stopped = true; onCancel() }
+            cancelBtn.setOnClickListener {
+                stopped = true
+                onCancel()
+                dismiss()
+            }
         }
         dialog = d
         d.show()

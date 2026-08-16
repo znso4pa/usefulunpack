@@ -3,7 +3,7 @@
 #[cfg(feature = "aes-crypto")]
 use crate::aes::AesWriter;
 use crate::compression::CompressionMethod;
-use crate::read::{parse_single_extra_field, Config, ZipArchive, ZipFile};
+use crate::read::{parse_single_extra_field, Config, HasZipMetadata, ZipArchive, ZipFile};
 use crate::result::{invalid, ZipError, ZipResult};
 use crate::spec::{self, FixedSizeBlock, Zip32CDEBlock};
 #[cfg(feature = "aes-crypto")]
@@ -233,6 +233,17 @@ pub(crate) enum EncryptWith<'k> {
     Aes {
         mode: AesMode,
         password: &'k str,
+    },
+    /// Marks a raw-copied entry as AES-encrypted (header flag + AES extra
+    /// field) WITHOUT wrapping the writer in an AesWriter — the raw bytes
+    /// copied by `raw_copy_file` are already encrypted, so they must pass
+    /// through untouched. The source's AES mode / vendor version / real
+    /// compression method are carried verbatim.
+    #[cfg(feature = "aes-crypto")]
+    AesPassthrough {
+        mode: AesMode,
+        vendor_version: AesVendorVersion,
+        real_method: CompressionMethod,
     },
     ZipCrypto(ZipCryptoKeys, PhantomData<&'k ()>),
 }
@@ -497,6 +508,23 @@ impl<T: FileOptionExtension> FileOptions<'_, T> {
     pub fn with_aes_encryption(self, mode: AesMode, password: &str) -> FileOptions<'_, T> {
         FileOptions {
             encrypt_with: Some(EncryptWith::Aes { mode, password }),
+            ..self
+        }
+    }
+
+    /// Mark the entry as AES-encrypted in its headers but copy the bytes
+    /// through untouched (no AesWriter). Used by `raw_copy_file` on an
+    /// already-encrypted source so the output keeps its encryption flag and
+    /// AES extra field with the original mode / vendor version / method.
+    #[cfg(feature = "aes-crypto")]
+    pub(crate) fn with_aes_passthrough<'a>(
+        self,
+        mode: AesMode,
+        vendor_version: AesVendorVersion,
+        real_method: CompressionMethod,
+    ) -> FileOptions<'a, T> {
+        FileOptions {
+            encrypt_with: Some(EncryptWith::AesPassthrough { mode, vendor_version, real_method }),
             ..self
         }
     }
@@ -927,12 +955,34 @@ impl<W: Write + Seek> ZipWriter<W> {
                 aes_dummy_extra_data,
             )?;
         }
+        // AesPassthrough: write the real AES extra field up front (mode +
+        // vendor version + real compression method) instead of the dummy
+        // placeholder — the raw-copy path skips finish_file's patch step.
+        #[cfg(feature = "aes-crypto")]
+        if let Some(EncryptWith::AesPassthrough { mode, vendor_version, real_method }) = options.encrypt_with {
+            let mut aes_extra = Vec::with_capacity(7);
+            aes_extra.write_u16_le(vendor_version as u16)?;
+            aes_extra.extend_from_slice(b"AE");
+            aes_extra.push(mode as u8);
+            aes_extra.write_u16_le(real_method.serialize_to_u16())?;
+            aes_extra_data_start = extra_data.len() as u64;
+            ExtendedFileOptions::add_extra_data_unchecked(
+                &mut extra_data,
+                0x9901,
+                aes_extra.into_boxed_slice(),
+            )?;
+        }
 
         let (compression_method, aes_mode) = match options.encrypt_with {
             #[cfg(feature = "aes-crypto")]
             Some(EncryptWith::Aes { mode, .. }) => (
                 CompressionMethod::Aes,
                 Some((mode, AesVendorVersion::Ae2, options.compression_method)),
+            ),
+            #[cfg(feature = "aes-crypto")]
+            Some(EncryptWith::AesPassthrough { mode, vendor_version, real_method }) => (
+                CompressionMethod::Aes,
+                Some((mode, vendor_version, real_method)),
             ),
             _ => (options.compression_method, None),
         };
@@ -1011,6 +1061,10 @@ impl<W: Write + Seek> ZipWriter<W> {
                 )?;
                 self.inner = Storer(MaybeEncrypted::Aes(aeswriter));
             }
+            // AesPassthrough: bytes are already encrypted — keep the plain
+            // writer so the raw copy flows through untouched.
+            #[cfg(feature = "aes-crypto")]
+            Some(EncryptWith::AesPassthrough { .. }) => {}
             Some(EncryptWith::ZipCrypto(keys, ..)) => {
                 let mut zipwriter = crate::zipcrypto::ZipCryptoWriter {
                     writer: mem::replace(&mut self.inner, Closed).unwrap(),
@@ -1345,6 +1399,33 @@ impl<W: Write + Seek> ZipWriter<W> {
     pub fn raw_copy_file<R: Read>(&mut self, file: ZipFile<R>) -> ZipResult<()> {
         let name = file.name().to_owned();
         self.raw_copy_file_rename(file, name)
+    }
+
+    /// Raw-copy `file` preserving its AES encryption: the already-encrypted
+    /// bytes are copied verbatim while the rewritten local/central headers keep
+    /// the encrypted flag + AES extra field (mode / vendor version / real
+    /// compression method). A plain `raw_copy_file` would drop those and
+    /// produce an entry whose bytes are still AES-ciphertext but whose header
+    /// claims plaintext — corrupt when re-extracted. Plain entries fall back to
+    /// the normal raw copy. Traditional ZipCrypto-encrypted entries (encrypted
+    /// flag without an AES extra field) cannot be preserved here — refuse them
+    /// rather than silently writing a corrupt entry.
+    #[cfg(feature = "aes-crypto")]
+    pub fn raw_copy_file_preserve_encryption<R: Read>(&mut self, file: ZipFile<R>) -> ZipResult<()> {
+        let name = file.name().to_owned();
+        let mut options = file.options();
+        let meta = file.get_metadata();
+        if meta.encrypted {
+            if let Some((mode, vendor_version, real_method)) = meta.aes_mode {
+                options = options.with_aes_passthrough(mode, vendor_version, real_method);
+            } else {
+                return Err(invalid!(
+                    "entry '{}' uses legacy ZipCrypto encryption; encrypted entries can only be copied when AES-encrypted",
+                    name
+                ));
+            }
+        }
+        self.raw_copy_file_rename_internal(file, name, options)
     }
 
     /// Add a new file using the already compressed data from a ZIP file being read and set the last

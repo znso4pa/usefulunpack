@@ -288,7 +288,9 @@ class MainActivity : AppCompatActivity() {
             bookmarks.removeAt(pos); saveBookmarks(); true
         }
 
-        // Batch action bar for multi-select
+        // Batch action bar for multi-select. The count stays fixed on the left;
+        // the buttons live in a horizontal ScrollView so a narrow screen can
+        // reach every action instead of the row overflowing.
         val batchBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(C["surface_dim"]!!); visibility = View.GONE
@@ -307,13 +309,24 @@ class MainActivity : AppCompatActivity() {
         val btnBatchMove = b(getString(R.string.action_move), C["accent"]!!).apply { setOnClickListener { startBatchMove() } }
         val btnBatchDelete = b(getString(R.string.action_delete), C["error"]!!).apply { setOnClickListener { confirmBatchDelete() } }
         val btnBatchCancel = b("✕ " + getString(R.string.action_cancel), C["tertiary"]!!).apply { setOnClickListener { exitMultiSelect() } }
-        batchBar.addView(tvBatchCount, LinearLayout.LayoutParams(0, WRAP, 1f))
-        batchBar.addView(btnBatchPreview)
-        batchBar.addView(btnBatchExtract)
-        batchBar.addView(btnBatchCompress)
-        batchBar.addView(btnBatchMove)
-        batchBar.addView(btnBatchDelete)
-        batchBar.addView(btnBatchCancel)
+        val batchScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            isVerticalScrollBarEnabled = false
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                addView(btnBatchPreview)
+                addView(btnBatchExtract)
+                addView(btnBatchCompress)
+                addView(btnBatchMove)
+                addView(btnBatchDelete)
+                addView(btnBatchCancel)
+            }, LinearLayout.LayoutParams(WRAP, WRAP))
+        }
+        // Count is a fixed-width label (never stretched); the scrollable button
+        // row takes the remaining width so a narrow screen keeps the count
+        // readable and lets the buttons scroll instead of overflowing.
+        batchBar.addView(tvBatchCount, LinearLayout.LayoutParams(WRAP, WRAP))
+        batchBar.addView(batchScroll, LinearLayout.LayoutParams(0, WRAP, 1f))
         findViewById<androidx.constraintlayout.widget.ConstraintLayout>(R.id.root)?.addView(batchBar)
 
         loadBookmarks(); nav(currentDir)

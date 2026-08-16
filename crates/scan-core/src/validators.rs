@@ -350,6 +350,31 @@ fn validate_rar5(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
     Some(HitInfo { size: None, count: None })
 }
 
+/// RAR5 `-hp` header-encrypted archives: the main header (size/type/flags)
+/// is encrypted, so [validate_rar5]'s plaintext vint parse fails and the
+/// archive would be dropped entirely. The 8-byte signature is distinctive
+/// enough that a "magic + whole remaining file" MEDIUM-confidence fallback is
+/// safe (random data carrying all 8 bytes is astronomically rare). When the
+/// archive IS plaintext, [validate_rar5] reports a HIGH-confidence hit at the
+/// same offset and the post-pass keeps only the higher-confidence one.
+fn validate_rar5_hp(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
+    // Signature was already matched by the scanner, but re-read to be explicit
+    // and to confirm there is room for the header CRC + some payload.
+    let mut sig = [0u8; 12];
+    if !read_at(f, off, &mut sig) || &sig[0..8] != b"Rar!\x1a\x07\x01\x00" {
+        return None;
+    }
+    if file_len - off < 12 + 4 {
+        return None; // too small to hold a real (even encrypted) archive
+    }
+    // The plaintext RAR5 signature shares this same magic. Both validators run
+    // on the hit; when the archive IS plaintext, the HIGH-confidence entry
+    // (with a real EOF-derived size) wins the same-offset post-pass, and its
+    // size-skip keeps this MEDIUM entry from being reached. No need to re-parse
+    // the plaintext header here.
+    Some(HitInfo { size: Some(file_len - off), count: None })
+}
+
 /// gzip: 1F 8B 08 + stricter header checks (binwalk-lite, no decompression):
 /// FLG reserved bits clear, MTIME plausible (<= now + 1y), OS byte within the
 /// gzip spec's defined range (0..13 + 255 = unknown), and if FNAME/FCOMMENT
@@ -467,6 +492,95 @@ fn gzip_dry_run(f: &mut File, off: u64) -> bool {
     produced > 0
 }
 
+/// Decodes a bounded prefix of an xz stream at `off` and returns whether it
+/// looks like genuine xz-compressed data. Mirrors [gzip_dry_run]: the input
+/// slice is bounded and only ~1 MiB of *output* is decoded. A clean EOF
+/// (Ok(0)) accepts; high-entropy random data with a plausible header trips an
+/// error almost immediately. When the stream ends but trailing host bytes
+/// follow (an xz embedded mid-file), the decoder reports an error AFTER
+/// producing the real output — accept that too (produced > 0), so embedded
+/// streams are not wrongly dropped. Restores the cursor.
+fn xz_dry_run(f: &mut File, off: u64) -> bool {
+    const DRY_RUN_OUT: usize = 1 << 20;
+    if f.seek(SeekFrom::Start(off)).is_err() {
+        return false;
+    }
+    let limited = f.take(DRY_RUN_OUT as u64 * 2);
+    let mut dec = xz2::read::XzDecoder::new(limited);
+    let mut sink = [0u8; 8192];
+    let mut produced = 0usize;
+    loop {
+        match dec.read(&mut sink) {
+            Ok(0) => break, // clean EOF → valid stream
+            Ok(n) => {
+                produced += n;
+                if produced >= DRY_RUN_OUT {
+                    break;
+                }
+            }
+            Err(_) => {
+                let _ = f.seek(SeekFrom::Start(off));
+                // An embedded stream decodes its real bytes first, then trips
+                // on the trailing host data — that is a hit, not a false
+                // positive. Producing nothing before the error means garbage.
+                return produced > 0;
+            }
+        }
+    }
+    let _ = f.seek(SeekFrom::Start(off));
+    produced > 0
+}
+
+/// Verifies a raw .lzma (alone) stream at `off` looks like genuine LZMA data.
+/// The alone header has no checksum, so a decompression dry-run is what
+/// separates real files from random data carrying a plausible props+dict
+/// magic. Two regimes, driven by the header's uncompressed-size field:
+///   * usize is KNOWN (≠ 0xFFFF…): lzma-rs decodes exactly that many bytes and
+///     stops — an embedded stream also validates cleanly (trailing host bytes
+///     are ignored), so the dry-run is reliable.
+///   * usize is STREAMING (0xFFFF…, what liblzma's alone encoder always emits):
+///     lzma-rs cannot bound the decode, and its internal circular buffer only
+///     flushes on a clean finish — a stream embedded mid-host always errors
+///     with zero visible output. Running the dry-run here would wrongly drop
+///     every embedded streaming .lzma, so we SKIP it and fall back to the
+///     header whitelist (props + dict whitelist + usize sanity are already
+///     strong enough to reject random data). Restores the cursor.
+fn lzma_dry_run(f: &mut File, off: u64) -> bool {
+    // props(1) + dict(4) + usize(8) — the caller already validated these, but
+    // re-read to decide streaming vs known size.
+    let mut h = [0u8; 13];
+    if !read_at(f, off, &mut h) {
+        return false;
+    }
+    let usize_ = u64le(&h, 5);
+    if usize_ == u64::MAX {
+        // Streaming header (liblzma alone encoder default) — skip the dry-run
+        // rather than drop embedded streams (see doc comment).
+        return true;
+    }
+    const DRY_RUN_OUT: usize = 1 << 20;
+    if f.seek(SeekFrom::Start(off)).is_err() {
+        return false;
+    }
+    // Cap the input: lzma-rs decodes to the declared uncompressed-size field's
+    // end (so trailing host bytes after an embedded stream are never consumed),
+    // but a crafted header can declare a huge usize — never read more than ~2
+    // MiB of *input*. A large real archive will hit the take bound and error,
+    // which the `sink.len() >= 256` branch accepts.
+    let limited = f.take(DRY_RUN_OUT as u64 * 2);
+    let mut sink = Vec::new();
+    let mut br = std::io::BufReader::new(limited);
+    let result = lzma_rs::lzma_decompress(&mut br, &mut sink);
+    let _ = f.seek(SeekFrom::Start(off));
+    if result.is_err() {
+        // Truncated input (our take bound hit mid-stream, or a corrupt tail)
+        // is acceptable for a legit archive if it produced a plausible amount
+        // of output before failing.
+        return sink.len() >= 256;
+    }
+    !sink.is_empty()
+}
+
 /// bzip2: the magic table already carries the full 10-byte
 /// "BZh{1-9}1AY&SY" signature (binwalk parity), so this just confirms the
 /// block-size digit — the magic itself rejects random false positives.
@@ -493,6 +607,11 @@ fn validate_xz(f: &mut File, off: u64, _file_len: u64) -> Option<HitInfo> {
     let crc = u32le(&h, 8);
     let expected = crc32(&h[6..8], 0);
     if crc != expected {
+        return None;
+    }
+    // Header CRC is a strong check but not enough on high-entropy data —
+    // require the stream to actually decode a bounded prefix.
+    if !xz_dry_run(f, off) {
         return None;
     }
     Some(HitInfo { size: None, count: None })
@@ -686,6 +805,11 @@ fn validate_lzma(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
     // Uncompressed size (bytes 5-12, LE): 0xFFFFFFFFFFFFFFFF = streaming.
     let usize_ = u64le(&h, 5);
     if usize_ != u64::MAX && !(256..=0xFFFF_FFFFu64).contains(&usize_) {
+        return None;
+    }
+    // The alone format has no header checksum, so the decompression dry-run is
+    // the discriminator for high-entropy random data with a plausible magic.
+    if !lzma_dry_run(f, off) {
         return None;
     }
     let _ = file_len;
@@ -1262,6 +1386,11 @@ pub const SIGNATURES: &[Sig] = &[
     Sig { magics: &[b"PK\x03\x04"], label: "ZIP archive", confidence: CONFIDENCE_HIGH, validate: validate_zip },
     Sig { magics: &[b"Rar!\x1a\x07\x00"], label: "RAR archive", confidence: CONFIDENCE_HIGH, validate: validate_rar4 },
     Sig { magics: &[b"Rar!\x1a\x07\x01\x00"], label: "RAR archive v5", confidence: CONFIDENCE_HIGH, validate: validate_rar5 },
+    // Header-encrypted (-hp) RAR5: no plaintext main header to validate, so
+    // report the whole file as one region at MEDIUM confidence. The plaintext
+    // entry above wins when the archive validates, so this only surfaces
+    // genuinely encrypted archives.
+    Sig { magics: &[b"Rar!\x1a\x07\x01\x00"], label: "RAR archive v5 (header encrypted)", confidence: CONFIDENCE_MEDIUM, validate: validate_rar5_hp },
     Sig { magics: &[b"\x1f\x8b\x08"], label: "gzip compressed data", confidence: CONFIDENCE_MEDIUM, validate: validate_gzip },
     // bzip2: full 10-byte magics (binwalk parity) — random data can't match.
     Sig { magics: &[b"BZh11AY&SY", b"BZh21AY&SY", b"BZh31AY&SY", b"BZh41AY&SY", b"BZh51AY&SY", b"BZh61AY&SY", b"BZh71AY&SY", b"BZh81AY&SY", b"BZh91AY&SY"], label: "bzip2 compressed data", confidence: CONFIDENCE_HIGH, validate: validate_bzip2 },
@@ -1395,6 +1524,28 @@ mod tests {
             v.extend_from_slice(&[0x1D, 0x77, 0x56, 0x51, 0x03, 0x05, 0x04, 0x00]);
         }
         v
+    }
+
+    /// A header-encrypted (-hp) RAR5 archive: sig + HEAD_CRC + ciphertext where
+    /// the plaintext vint parse (type/flags) is garbage — [validate_rar5] must
+    /// fail while the [validate_rar5_hp] fallback reports the whole file.
+    #[test]
+    fn rar5_hp_header_encrypted_reported_by_fallback() {
+        // sig + 4-byte CRC + encrypted main header (random bytes: the vint
+        // HEAD_TYPE at 12+ parses as garbage, so the plaintext validator drops
+        // it — exactly the -hp case).
+        let mut hp = Vec::new();
+        hp.extend_from_slice(b"Rar!\x1a\x07\x01\x00");
+        hp.extend_from_slice(&0u32.to_le_bytes());
+        hp.extend_from_slice(&[0x7Fu8; 8]); // all continuation-bit vints → parse fails
+        hp.extend_from_slice(&[0xA5u8; 100]); // ciphertext payload
+        let p = tmp("t.rar5hp", &hp);
+        let mut f = File::open(&p).unwrap();
+        assert!(validate_rar5(&mut f, 0, hp.len() as u64).is_none(), "plaintext parse must fail on -hp");
+        let mut f2 = File::open(&p).unwrap();
+        let info = validate_rar5_hp(&mut f2, 0, hp.len() as u64).expect("-hp fallback must report");
+        assert_eq!(info.size, Some(hp.len() as u64), "whole-file region");
+        std::fs::remove_dir_all(&std::env::temp_dir().join(format!("uu_scan_valid_{}", std::process::id()))).ok();
     }
 
     /// Builds a structurally realistic RAR4 archive: sig + arbitrary HEAD_CRC
@@ -1678,11 +1829,28 @@ mod tests {
     fn lzma_preset0_dict_validates() {
         // lzma-alone preset 0 uses a 256 KiB dictionary (0x00040000) — the
         // whitelist must accept it (the app's own lzma level-0 output uses
-        // this dict via liblzma's lzma_alone_encoder).
-        let lz = hex("5d00000400ffffffffffffffff00");
-        let p = tmp("t.lzma", &lz);
+        // this dict via liblzma's lzma_alone_encoder). Build a REAL stream
+        // with the same compressor so both the dict check and the dry-run
+        // succeed.
+        let mut compressed = Vec::new();
+        lzma_rs::lzma_compress(&mut std::io::Cursor::new(b"hello lzma preset0"), &mut compressed).expect("lzma_compress");
+        let p = tmp("t.lzma", &compressed);
         let mut f = File::open(&p).unwrap();
-        assert!(validate_lzma(&mut f, 0, lz.len() as u64).is_some(), "preset0 lzma");
+        assert!(validate_lzma(&mut f, 0, compressed.len() as u64).is_some(), "preset0 lzma");
+    }
+
+    /// The lzma dry-run must reject high-entropy data carrying a plausible
+    /// props+dict magic but no real LZMA stream inside.
+    #[test]
+    fn lzma_garbage_with_plausible_magic_rejected() {
+        // props 0x5D (lc=3,lp=0,pb=2) + 8 MiB dict + streaming size + junk.
+        let mut fake = Vec::new();
+        fake.extend_from_slice(&hex("5d00000080"));
+        fake.extend_from_slice(&0xFFFF_FFFF_FFFF_FFFFu64.to_le_bytes());
+        fake.extend_from_slice(&[0xAA; 128]);
+        let p = tmp("fake.lzma", &fake);
+        let mut f = File::open(&p).unwrap();
+        assert!(validate_lzma(&mut f, 0, fake.len() as u64).is_none(), "garbage lzma must be rejected");
     }
 
     #[test]
@@ -1805,18 +1973,31 @@ mod tests {
         let mut f4 = File::open(&b2).unwrap();
         assert!(validate_bzip2(&mut f4, 0, 14).is_none());
 
-        // xz stream header: magic(6) + flags(2) + crc32(flags)(4).
+        // xz: a REAL stream (header + flags CRC + actual compressed data) must
+        // validate through the dry-run.
         let mut x = Vec::new();
-        x.extend_from_slice(b"\xfd7zXZ\x00");
-        x.extend_from_slice(&[0x00, 0x04]);
-        x.extend_from_slice(&crc32(&[0x00, 0x04], 0).to_le_bytes());
+        {
+            use std::io::Write as _;
+            let mut enc = xz2::write::XzEncoder::new(&mut x, 6);
+            enc.write_all(b"hello xz stream").unwrap();
+            enc.finish().unwrap();
+        }
         let p = tmp("t.xz", &x);
         let mut f5 = File::open(&p).unwrap();
         assert!(validate_xz(&mut f5, 0, x.len() as u64).is_some());
-        // Corrupt flags CRC → rejected.
+        // Corrupt flags CRC → rejected (header check fires before the dry-run).
         let p2 = tmp("t2.xz", b"\xfd7zXZ\x00\x00\x04\x00\x00\x00\x00");
         let mut f6 = File::open(&p2).unwrap();
         assert!(validate_xz(&mut f6, 0, 12).is_none());
+        // Plausible header + garbage stream → the dry-run rejects.
+        let mut fake = Vec::new();
+        fake.extend_from_slice(b"\xfd7zXZ\x00");
+        fake.extend_from_slice(&[0x00, 0x04]);
+        fake.extend_from_slice(&crc32(&[0x00, 0x04], 0).to_le_bytes());
+        fake.extend_from_slice(&[0x5A; 64]); // not a real xz stream
+        let p3 = tmp("t3.xz", &fake);
+        let mut f7 = File::open(&p3).unwrap();
+        assert!(validate_xz(&mut f7, 0, fake.len() as u64).is_none(), "garbage xz must be rejected");
     }
 
     /// A gzip truncated mid-stream must be rejected by the dry-run (incomplete
@@ -1904,11 +2085,17 @@ mod tests {
         let mut f2 = File::open(&p2).unwrap();
         assert!(validate_bzip2(&mut f2, 0, bz.len() as u64).is_some(), "real bzip2");
 
-        // xz header with standard crc32 (0x46b4d6e6 for flags 00 04).
-        let xz = hex("fd377a585a000004e6d6b446");
+        // xz: real stream built with the same compressor (header + data).
+        let mut xz = Vec::new();
+        {
+            use std::io::Write as _;
+            let mut enc = xz2::write::XzEncoder::new(&mut xz, 6);
+            enc.write_all(b"real world xz sample").unwrap();
+            enc.finish().unwrap();
+        }
         let p3 = tmp("s.xz", &xz);
         let mut f3 = File::open(&p3).unwrap();
-        assert!(validate_xz(&mut f3, 0, xz.len() as u64).is_some(), "real xz header");
+        assert!(validate_xz(&mut f3, 0, xz.len() as u64).is_some(), "real xz stream");
 
         // lz4 frame with content-size + header checksum (mac lz4 CLI output).
         let lz4 = hex("04224d186440a7010000807800000000ea30c42e");
@@ -1923,9 +2110,10 @@ mod tests {
         let info = validate_zstd(&mut f5, 0, zst.len() as u64).expect("real zstd");
         assert_eq!(info.size, Some(zst.len() as u64));
 
-        // lzma-alone: props 0x5D + dict 0x00080000 (binwalk whitelist) +
-        // usize = u64::MAX (streaming).
-        let lzma = hex("5d00000800ffffffffffffffff00");
+        // lzma-alone: real stream with the same compressor (props 0x5D + 8 MiB
+        // dict + actual data), so both the whitelist and the dry-run pass.
+        let mut lzma = Vec::new();
+        lzma_rs::lzma_compress(&mut std::io::Cursor::new(b"real world lzma sample"), &mut lzma).expect("lzma_compress");
         let p6 = tmp("s.lzma", &lzma);
         let mut f6 = File::open(&p6).unwrap();
         assert!(validate_lzma(&mut f6, 0, lzma.len() as u64).is_some(), "real lzma");

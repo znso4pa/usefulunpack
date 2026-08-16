@@ -97,7 +97,7 @@ This cross-compiles all Rust workspace crates for `arm64-v8a`, `armeabi-v7a`, `x
    - `EXT_FORMAT_MAP` — add file extension mapping (if any)
    - `tryExtractWithPassword()` / `showPasswordDialog()` — add password branches if encryption is supported
 5. Add the crate to `Cargo.toml` workspace members and `build.sh` `CRATES` array
-6. Report byte-level progress: call `extract_progress::reset/set_file/add_bytes` (and `compress_progress::*` for packing) so the shared dual-bar dialog works, and register the format in Kotlin `extractAccessors()`/`compressAccessors()`
+6. Report byte-level progress: call `extract_progress::reset/set_file/add_bytes` (and `compress_progress::*` for packing) so the shared dual-bar dialog works, and register the format in Kotlin `extractAccessors()`/`compressAccessors()`. For formats with a whole-member buffered decode (rar's ≤64MB path), keep the top bar fed by the **write** (`ProgressWriter::extract`, or `extract_top` + `add_top_bytes` when the bottom bar is driven separately by a decode watcher) so the total stays exact — never feed the top bar from a polled decode counter (it under-counts members decoded between polls).
 7. Add string resources for error messages in `res/values/strings.xml`
 
 ## Code Conventions
@@ -122,6 +122,7 @@ What the Rust tests cover (so you know what to keep green):
 - **Round-trips / real corpus** — each `*_core` crate packs then extracts, and checks byte equality. A real-world corpus (`files4testing` ~423 vectors + 13 injected faults across 14 formats) is used for compatibility: valid archives must extract with matching hashes, and the injected faults (truncated / corrupted / wrong password / missing volume) must be cleanly rejected.
 - **Security / malicious headers** — unit tests assert that crafted inputs are rejected without abort: decompression bombs (output capped via `BoundedWriter`/declared sizes), huge header quantities (7z num_files/coders, ISO directory sizes), negative/overflowing lengths (KSD, PFS offsets), path traversal (`safe_join`), and stack-depth limits (ISO directories).
 - **Signature scan** — scan-core ships real-compressed-sample vectors (gzip/bzip2/xz/zstd/lz4/lzma) so byte-order / bitfield regressions are caught.
+- **Real-archive rar probes** — `rar-core` ships two env-gated tests for on-disk archives: `probe_real_archive_progress` (`UU_RAR_PROBE`) extracts a whole rar while asserting the top bar reaches the exact total (no under/over-count), and `probe_selected_fast` (`UU_RAR_SEL_PROBE`) verifies the non-solid random-access path extracts a late member without decoding the preceding ones. Run them with e.g. `UU_RAR_PROBE=/path/to/big.rar cargo test -p archive_rar_core probe_real_archive_progress -- --nocapture`.
 
 Kotlin changes are smoke-tested by building the APK:
 ```bash

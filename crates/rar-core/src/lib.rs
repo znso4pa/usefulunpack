@@ -14,7 +14,15 @@ use std::sync::Mutex;
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn list_rar_inner(input: &str) -> Result<String, String> {
-    let archive = rars::ArchiveReader::read_path(Path::new(input)).map_err(|e| format!("rar: {e}"))?;
+    list_rar_inner_with_pw(input, "")
+}
+
+/// Lists a single RAR. A header-encrypted (-hp) archive cannot be parsed
+/// without the password, so [password] is passed through to the reader.
+fn list_rar_inner_with_pw(input: &str, password: &str) -> Result<String, String> {
+    let pw = if password.is_empty() { None } else { Some(password.as_bytes()) };
+    let archive = rars::ArchiveReader::read_path_with_options(Path::new(input), rar_opts(pw))
+        .map_err(|e| format!("rar: {e}"))?;
     let mut all: Vec<(String, u64, bool, bool)> = Vec::new();
     for member in archive.members() {
         let name = member.meta.name_lossy().replace('\\', "/").trim_matches('/').to_string();
@@ -40,6 +48,7 @@ fn list_rar_inner(input: &str) -> Result<String, String> {
 fn rar_writer<'a>(
     sel_set: &'a Option<HashSet<String>>,
     sizes: &'a HashMap<String, u64>,
+    stored: &'a HashSet<String>,
     out_base: &'a str,
     fail: &'a AtomicU32,
 ) -> impl FnMut(&rars::ExtractedEntryMeta) -> Result<Box<dyn Write>, rars::Error> + 'a {
@@ -71,18 +80,125 @@ fn rar_writer<'a>(
             Ok(f) => f,
             Err(_) => { fail.fetch_add(1, Ordering::SeqCst); return Ok(Box::new(std::io::sink()) as Box<dyn Write>); }
         };
-        Ok(Box::new(ProgressWriter::extract(out_file)) as Box<dyn Write>)
+        // Buffered members (compressed and ≤ the decode limit) decode whole
+        // into RAM before writing; the progress watcher feeds the CURRENT-FILE
+        // bar from rars decode_progress during that window, so the write must
+        // count only the OVERALL bar (exact, no double-count of the file bar).
+        // Stored members always stream (write_stored_to) and large members
+        // stream — ProgressWriter counts both bars from the write.
+        let buffered = !stored.contains(&name) && sizes.get(&name).copied().unwrap_or(0) <= RAR50_BUFFERED_LIMIT;
+        if buffered {
+            Ok(Box::new(ProgressWriter::extract_top(out_file)) as Box<dyn Write>)
+        } else {
+            Ok(Box::new(ProgressWriter::extract(out_file)) as Box<dyn Write>)
+        }
     }
 }
 
+/// Members at or below this size use the whole-member buffered decode path
+/// (decode into RAM, then write once); larger members stream (decode+write
+/// interleaved) so a 300MB+ member shows byte-level progress. Must match the
+/// value passed into [rar_opts] — the extraction path needs the SAME options
+/// object (see `extract_rar_inner`), otherwise rars falls back to its 512MB
+/// default and mid-size members get buffered, freezing the top progress bar.
+const RAR50_BUFFERED_LIMIT: u64 = 64 * 1024 * 1024;
+
 fn rar_opts(pw: Option<&[u8]>) -> rars::ArchiveReadOptions<'_> {
-    // Members larger than 64MB are stream-decoded. The vendored rars fork
-    // streams RAR5 filtered members too (filters are applied per filter block,
-    // which is typically tens of KB), so large members never buffer fully into
-    // RAM and cannot OOM the device. Only small members use the buffered path.
     let mut options = rars::ArchiveReadOptions::with_optional_password(pw);
-    options.rar50_buffered_decode_limit = Some(64 * 1024 * 1024);
+    options.rar50_buffered_decode_limit = Some(RAR50_BUFFERED_LIMIT);
     options
+}
+
+/// Writes one selected member through the same guards as `rar_writer`
+/// (path safety, fail counting, cancel, per-file progress). Buffered members
+/// count only the OVERALL bar on write; streamed ones count both bars.
+fn fast_write_member<F>(name: &str, size: u64, out_base: &str, fail: &AtomicU32, write: F) -> rars::Result<()>
+where
+    F: FnOnce(&mut Box<dyn Write>) -> rars::Result<()>,
+{
+    if extract_progress::cancelled() {
+        return Err(rars::Error::Cancelled);
+    }
+    extract_progress::set_name(name);
+    extract_progress::set_file(size);
+    let dest = match safe_join(out_base, name) {
+        Ok(d) => d,
+        Err(_) => {
+            fail.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
+        }
+    };
+    if let Some(p) = Path::new(&dest).parent() {
+        std::fs::create_dir_all(p).ok();
+    }
+    let out_file = match std::fs::File::create(&dest) {
+        Ok(f) => f,
+        Err(_) => {
+            fail.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
+        }
+    };
+    let buffered = size <= RAR50_BUFFERED_LIMIT;
+    let mut out: Box<dyn Write> = if buffered {
+        Box::new(ProgressWriter::extract_top(out_file))
+    } else {
+        Box::new(ProgressWriter::extract(out_file))
+    };
+    write(&mut out)
+}
+
+/// Selected-extraction fast path for NON-solid archives. RAR has no central
+/// directory: the sequential extractor decodes every member in order (output of
+/// unselected members is discarded), so previewing a late txt costs decoding
+/// all preceding members. Non-solid members decode independently from their own
+/// data range, so this seeks straight to each selected member and skips the
+/// rest with zero decode — like zip's random access. Returns Ok(false) when the
+/// archive can't be fast-pathed (solid / rar13 / split members / redirections /
+/// volumes), and the caller falls back to the sequential extractor.
+fn extract_selected_fast(
+    archive: &rars::Archive,
+    pw: Option<&[u8]>,
+    sel_set: &HashSet<String>,
+    sizes: &HashMap<String, u64>,
+    out_base: &str,
+    fail: &AtomicU32,
+) -> rars::Result<bool> {
+    fn selected(name: &str, sel: &HashSet<String>) -> bool {
+        sel.contains(name) || sel.iter().any(|s| name.starts_with(&format!("{s}/")))
+    }
+    match archive {
+        rars::Archive::Rar50Plus(a) if !a.main.is_solid() => {
+            for f in a.files() {
+                if f.is_split_before() || f.is_split_after() || f.redirection.is_some() {
+                    return Ok(false);
+                }
+            }
+            for f in a.files() {
+                let name = f.name_lossy().replace('\\', "/").trim_matches('/').to_string();
+                if f.is_directory() || name.is_empty() || name.ends_with('/') { continue; }
+                if !selected(&name, sel_set) { continue; }
+                let size = sizes.get(&name).copied().unwrap_or(0);
+                fast_write_member(&name, size, out_base, fail, |out| {
+                    f.write_to_with_options(a, rar_opts(pw), out)
+                })?;
+            }
+            Ok(true)
+        }
+        rars::Archive::Rar15To40(a) if !a.main.is_solid() => {
+            for f in a.files() {
+                if f.is_split_before() || f.is_split_after() { return Ok(false); }
+            }
+            for f in a.files() {
+                let name = f.name_lossy().replace('\\', "/").trim_matches('/').to_string();
+                if f.is_directory() || name.is_empty() || name.ends_with('/') { continue; }
+                if !selected(&name, sel_set) { continue; }
+                let size = sizes.get(&name).copied().unwrap_or(0);
+                fast_write_member(&name, size, out_base, fail, |out| f.write_to(a, pw, out))?;
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 fn read_volumes(paths: &[&str], pw: Option<&[u8]>) -> Result<Vec<rars::Archive>, String> {
@@ -102,10 +218,12 @@ fn extract_rar_inner(input: &str, output: &str, selected: Option<&HashSet<String
     let mut total = 0u32;
     let mut prog_total = 0u64;
     let mut sizes: HashMap<String, u64> = HashMap::new();
+    let mut stored: HashSet<String> = HashSet::new();
     for member in archive.members() {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
         let name = member.meta.name_lossy().replace('\\', "/").trim_matches('/').to_string();
         if member.meta.is_directory || name.is_empty() || name.ends_with('/') { continue; }
+        if member.meta.is_stored { stored.insert(name.clone()); }
         let matches = match &sel_set {
             None => true,
             Some(sel) => sel.contains(&name) || sel.iter().any(|s| name.starts_with(&format!("{s}/"))),
@@ -118,8 +236,60 @@ fn extract_rar_inner(input: &str, output: &str, selected: Option<&HashSet<String
     }
     extract_progress::reset(prog_total);
     let fail = AtomicU32::new(0);
-    archive.extract_to(pw, rar_writer(&sel_set, &sizes, &out_base, &fail)).map_err(|e| format!("rar: {e}"))?;
+    let result = run_with_cancel_monitor(|| {
+        // NOTE: must pass rar_opts(pw) here — `extract_to` builds its own
+        // default options (rars' 512MB buffered limit) and would silently drop
+        // RAR50_BUFFERED_LIMIT, buffering 100-500MB members and freezing the
+        // top progress bar for the whole member.
+        if let Some(sel) = &sel_set {
+            if extract_selected_fast(&archive, pw, sel, &sizes, &out_base, &fail)? {
+                return Ok(());
+            }
+        }
+        archive.extract_to_with_options(rar_opts(pw), rar_writer(&sel_set, &sizes, &stored, &out_base, &fail))
+    });
+    result.map_err(|e| format!("rar: {e}"))?;
     Ok((total, fail.load(Ordering::SeqCst)))
+}
+
+/// Runs [f] while a background thread mirrors the rar-core cancel flag into the
+/// vendored rars whole-member decode flag, so a cancel lands promptly inside a
+/// large buffered (≤ limit) member instead of waiting for it to finish.
+fn run_with_cancel_monitor<T>(f: impl FnOnce() -> rars::Result<T>) -> rars::Result<T> {
+    rars::codec::rar50::set_decode_cancel(false);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done2 = done.clone();
+    let watcher = std::thread::spawn(move || {
+        // Bridge two things from rar-core's cancel/progress state into the
+        // vendored rars whole-member decode path:
+        //  1. cancel flag → rars DECODE_CANCEL (prompt abort of a buffered member)
+        //  2. rars DECODE_PROGRESS → extract_progress::set_file_bytes (the
+        //     CURRENT-FILE bar moves while a ≤limit member decodes into RAM).
+        //     Only mirrored while a buffered decode is actually running — for
+        //     large (>limit) members that stream, decode_progress holds a stale
+        //     value and must NOT clobber the write-driven file bar. The OVERALL
+        //     bar is fed only by ProgressWriter on write (exact; a decode-poll
+        //     would under-count members decoded inside one poll window), so the
+        //     two never double-count or lose bytes.
+        loop {
+            if done2.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            if extract_progress::cancelled() {
+                rars::codec::rar50::set_decode_cancel(true);
+            }
+            if rars::codec::rar50::decode_buffered_active() {
+                extract_progress::set_file_bytes(rars::codec::rar50::decode_progress());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        rars::codec::rar50::set_decode_cancel(true);
+    });
+    let result = f();
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = watcher.join();
+    rars::codec::rar50::set_decode_cancel(false);
+    result
 }
 
 fn extract_rar_volumes_inner(paths: &[&str], output: &str, selected: Option<&HashSet<String>>, password: &str) -> Result<(u32, u32), String> {
@@ -132,12 +302,14 @@ fn extract_rar_volumes_inner(paths: &[&str], output: &str, selected: Option<&Has
     let mut prog_total = 0u64;
     let mut seen: HashSet<String> = HashSet::new();
     let mut sizes: HashMap<String, u64> = HashMap::new();
+    let mut stored: HashSet<String> = HashSet::new();
     for archive in &archives {
         for member in archive.members() {
             if extract_progress::cancelled() { return Err("cancelled".to_string()); }
             let name = member.meta.name_lossy().replace('\\', "/").trim_matches('/').to_string();
             if member.meta.is_directory || name.is_empty() || name.ends_with('/') { continue; }
             if !seen.insert(name.clone()) { continue; }
+            if member.meta.is_stored { stored.insert(name.clone()); }
             let matches = match &sel_set {
                 None => true,
                 Some(sel) => sel.contains(&name) || sel.iter().any(|s| name.starts_with(&format!("{s}/"))),
@@ -151,30 +323,38 @@ fn extract_rar_volumes_inner(paths: &[&str], output: &str, selected: Option<&Has
     }
     extract_progress::reset(prog_total);
     let fail = AtomicU32::new(0);
-    rars::extract_volumes_to_with_options(&archives, rar_opts(pw), rar_writer(&sel_set, &sizes, &out_base, &fail)).map_err(|e| format!("rar: {e}"))?;
+    let result = run_with_cancel_monitor(|| {
+        rars::extract_volumes_to_with_options(&archives, rar_opts(pw), rar_writer(&sel_set, &sizes, &stored, &out_base, &fail))
+    });
+    result.map_err(|e| format!("rar: {e}"))?;
     Ok((total, fail.load(Ordering::SeqCst)))
 }
 
 fn rar_needs_password_inner(input: &str) -> Result<bool, String> {
-    let archive = rars::ArchiveReader::read_path(Path::new(input)).map_err(|e| format!("rar: {e}"))?;
-    for member in archive.members() {
-        if member.meta.is_encrypted { return Ok(true); }
+    match rars::ArchiveReader::read_path(Path::new(input)) {
+        Ok(archive) => Ok(archive.members().any(|m| m.meta.is_encrypted)),
+        // Header-encrypted (-hp) archives cannot be parsed without a password —
+        // the read failure IS the "needs password" signal.
+        Err(_) => Ok(true),
     }
-    Ok(false)
 }
 
 fn rar_volumes_needs_password_inner(paths: &[&str]) -> Result<bool, String> {
-    let archives = read_volumes(paths, None)?;
-    for archive in &archives {
-        for member in archive.members() {
-            if member.meta.is_encrypted { return Ok(true); }
-        }
+    match read_volumes(paths, None) {
+        Ok(archives) => Ok(archives.iter().any(|a| a.members().any(|m| m.meta.is_encrypted))),
+        Err(_) => Ok(true),
     }
-    Ok(false)
 }
 
 fn list_rar_volumes_inner(paths: &[&str]) -> Result<String, String> {
-    let archives = read_volumes(paths, None)?;
+    list_rar_volumes_inner_with_pw(paths, "")
+}
+
+/// Lists a multi-volume RAR. Header-encrypted (-hp) sets need the password to
+/// parse the header of each volume.
+fn list_rar_volumes_inner_with_pw(paths: &[&str], password: &str) -> Result<String, String> {
+    let pw = if password.is_empty() { None } else { Some(password.as_bytes()) };
+    let archives = read_volumes(paths, pw)?;
     let mut all: Vec<(String, u64, bool, bool)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for archive in &archives {
@@ -212,6 +392,10 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
     let inp = s(&mut e, &i); match guarded(move || list_rar_inner(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarListEntriesWithPassword(mut e: JNIEnv, _: JClass, i: JString, pw: JString) -> jstring {
+    let inp = s(&mut e, &i); let pwd = s(&mut e, &pw);
+    match guarded(move || list_rar_inner_with_pw(&inp, &pwd)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
     extract_progress::clear_cancel();
@@ -253,6 +437,11 @@ fn volume_refs(vols: &[String]) -> Vec<&str> { vols.iter().map(|s| s.as_str()).c
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarListEntriesVolumes(mut e: JNIEnv, _: JClass, v: JString) -> jstring {
     let vs = s(&mut e, &v); let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(move || list_rar_volumes_inner(&volume_refs(&vols))) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarListEntriesVolumesWithPassword(mut e: JNIEnv, _: JClass, v: JString, pw: JString) -> jstring {
+    let vs = s(&mut e, &v); let pwd = s(&mut e, &pw);
+    let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
+    match guarded(move || list_rar_volumes_inner_with_pw(&volume_refs(&vols), &pwd)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractVolumes(mut e: JNIEnv, _: JClass, _t: JString, v: JString, o: JString) -> jstring {
     extract_progress::clear_cancel();
@@ -336,6 +525,78 @@ mod tests {
         std::fs::remove_dir_all(&out).ok();
         for p in &vols { std::fs::remove_file(p).ok(); }
         if let Some(dir) = vols[0].parent() { std::fs::remove_dir_all(dir).ok(); }
+    }
+
+    /// rar_needs_password_inner: a readable archive with no encrypted members
+    /// → false; an unparseable RAR header (the -hp header-encrypted case, where
+    /// the reader cannot even open the archive without a password) → true, so
+    /// the app prompts for a password instead of silently failing.
+    #[test]
+    fn needs_password_true_on_unparseable_header() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("uu_rar_np_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A normal stored RAR: no password needed. (Rar14 volume writer needs
+        // >= 2 volumes, so the payload must exceed the 1024B split size.)
+        let data: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        let entry = StoredEntry {
+            name: b"plain.bin",
+            data: &data,
+            file_time: 0,
+            file_attr: 0,
+            password: None,
+            file_comment: None,
+        };
+        let opts = WriterOptions::new(ArchiveVersion::Rar14, FeatureSet::store_only());
+        let vols = write_stored_volumes(entry, opts, 1024).expect("write");
+        let plain = dir.join("plain.rar");
+        std::fs::write(&plain, &vols[0]).unwrap();
+        assert!(!rar_needs_password_inner(plain.to_str().unwrap()).expect("plain needs_pw"),
+            "unencrypted rar must report false");
+
+        // Garbage / a header the reader cannot parse (mirrors -hp) → true.
+        let junk = dir.join("junk.rar");
+        std::fs::write(&junk, b"\x52\x61\x72\x21\x1a\x07\x01\x00\xDE\xAD\xBE\xEF garbage").unwrap();
+        assert!(rar_needs_password_inner(junk.to_str().unwrap()).expect("junk needs_pw"),
+            "unparseable header must be treated as needing a password");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Cancelling before/during a buffered (whole-member) decode must surface a
+    /// Cancelled error promptly instead of running the member to completion —
+    /// the cancel monitor mirrors the extract-progress flag into the vendored
+    /// rars whole-member decode flag.
+    #[test]
+    fn cancel_aborts_buffered_decode() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("uu_rar_cancel_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let data: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        let entry = StoredEntry {
+            name: b"a.bin",
+            data: &data,
+            file_time: 0,
+            file_attr: 0,
+            password: None,
+            file_comment: None,
+        };
+        let opts = WriterOptions::new(ArchiveVersion::Rar14, FeatureSet::store_only());
+        let vols = write_stored_volumes(entry, opts, 1024).expect("write");
+        let arc = dir.join("c.rar");
+        std::fs::write(&arc, &vols[0]).unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+
+        // Pre-set the cancel flag; the monitor must bridge it and the extract
+        // must error (not complete) — stored entries stream, so the cancel is
+        // caught by the member-boundary check in rar_writer.
+        extract_progress::cancel();
+        let r = extract_rar_inner(arc.to_str().unwrap(), out.to_str().unwrap(), None, "");
+        extract_progress::clear_cancel();
+        assert!(r.is_err(), "cancelled extract must error: {r:?}");
+        assert_eq!(r.unwrap_err(), "cancelled", "must report cancelled");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -589,5 +850,114 @@ mod manual_volumes {
             monitor.join().ok();
             std::fs::remove_dir_all(&out).ok();
         }
+    }
+
+    /// Probe: `UU_RAR_PROBE` = path to a real rar. Lists members (name/size/
+    /// stored/solid) then extracts the whole archive while logging progress
+    /// every 200ms — used to reproduce the "progress bar frozen on a large
+    /// member" report with a real 1.1GB galgame archive.
+    #[test]
+    fn probe_real_archive_progress() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let Ok(probe) = std::env::var("UU_RAR_PROBE") else {
+            eprintln!("[probe] skipped: UU_RAR_PROBE not set");
+            return;
+        };
+        let archive = rars::ArchiveReader::read_path_with_options(Path::new(&probe), rar_opts(None))
+            .expect("open archive");
+        let solid = match &archive {
+            rars::Archive::Rar50Plus(a) => a.main.is_solid(),
+            rars::Archive::Rar15To40(a) => a.main.is_solid(),
+            rars::Archive::Rar13(_) => false,
+            _ => false,
+        };
+        eprintln!("[probe] family={:?} solid={solid}", archive.family());
+        for m in archive.members() {
+            let n = m.meta.name_lossy().replace('\\', "/").trim_matches('/').to_string();
+            if n.is_empty() || m.meta.is_directory { continue; }
+            eprintln!(
+                "[probe] {} size={} stored={} enc={}",
+                n, m.meta.unpacked_size, m.meta.is_stored, m.meta.is_encrypted
+            );
+        }
+
+        let out = std::env::temp_dir().join(format!("uu_probe_out_{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        let out_s = out.to_string_lossy().to_string();
+        let monitor = std::thread::spawn(move || {
+            let mut last_b = 0u64;
+            let mut last_f = 0u64;
+            let mut last_n = String::new();
+            let mut max_b = 0u64;
+            for _ in 0..2000 {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let b = extract_progress::bytes();
+                let t = extract_progress::total_bytes();
+                let fb = extract_progress::file_bytes();
+                let ft = extract_progress::file_total();
+                let n = extract_progress::name();
+                if b > max_b { max_b = b; }
+                if b > t { eprintln!("[probe] !! TOP OVER TOTAL: {b} > {t}"); }
+                if fb > ft && ft > 0 { eprintln!("[probe] !! FILE OVER TOTAL: {fb} > {ft} name={n}"); }
+                if b != last_b || fb != last_f || n != last_n {
+                    last_b = b; last_f = fb; last_n = n.clone();
+                    eprintln!("[probe] top={b}/~{t}  file={fb}/{ft}  name={n}");
+                }
+            }
+            eprintln!("[probe] monitor max_top={max_b}");
+        });
+        let t0 = std::time::Instant::now();
+        let r = extract_rar_inner(&probe, &out_s, None, "");
+        eprintln!("[probe] extract result={r:?} in {:.2}s", t0.elapsed().as_secs_f64());
+        eprintln!(
+            "[probe] final top={} total={} (match={})  file={}/{}",
+            extract_progress::bytes(),
+            extract_progress::total_bytes(),
+            extract_progress::bytes() == extract_progress::total_bytes(),
+            extract_progress::file_bytes(),
+            extract_progress::file_total()
+        );
+        monitor.join().ok();
+        std::fs::remove_dir_all(&out).ok();
+    }
+
+    /// Probe the non-solid fast path: `UU_RAR_SEL_PROBE` = path to a real rar.
+    /// Selects the LAST text member (or the member named in
+    /// `UU_RAR_SEL_NAME`) and extracts it, timing how long it takes — the fast
+    /// path must skip the preceding members, so a late txt comes out near
+    /// instantly instead of decoding the whole archive.
+    #[test]
+    fn probe_selected_fast() {
+        let _g = crate::TEST_LOCK.lock().unwrap();
+        let Ok(probe) = std::env::var("UU_RAR_SEL_PROBE") else {
+            eprintln!("[sel] skipped: UU_RAR_SEL_PROBE not set");
+            return;
+        };
+        let archive = rars::ArchiveReader::read_path_with_options(Path::new(&probe), rar_opts(None))
+            .expect("open archive");
+        let mut names: Vec<String> = Vec::new();
+        for m in archive.members() {
+            let n = m.meta.name_lossy().replace('\\', "/").trim_matches('/').to_string();
+            if !m.meta.is_directory && !n.is_empty() {
+                names.push(n);
+            }
+        }
+        let wanted = std::env::var("UU_RAR_SEL_NAME").ok();
+        let pick = wanted.unwrap_or_else(|| {
+            names.iter().rev().find(|n| n.to_lowercase().ends_with(".txt"))
+                .cloned().unwrap_or_else(|| names.last().cloned().unwrap())
+        });
+        eprintln!("[sel] selecting: {pick}  (member #{} of {})", names.iter().position(|n| n == &pick).unwrap_or(usize::MAX), names.len());
+        let mut set = HashSet::new();
+        set.insert(pick.clone());
+        let out = std::env::temp_dir().join(format!("uu_sel_out_{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        let out_s = out.to_string_lossy().to_string();
+        let t0 = std::time::Instant::now();
+        let r = extract_rar_inner(&probe, &out_s, Some(&set), "");
+        eprintln!("[sel] selected extract = {r:?} in {:.3}s", t0.elapsed().as_secs_f64());
+        let f = std::path::Path::new(&out_s).join(&pick);
+        eprintln!("[sel] file exists={} size={}", f.exists(), f.metadata().map(|m| m.len()).unwrap_or(0));
+        std::fs::remove_dir_all(&out).ok();
     }
 }

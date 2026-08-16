@@ -132,7 +132,7 @@ internal fun MainActivity.batchPreview(archives: List<File>, fmt: String) {
                     "ypf"->YpfCore.ypfListEntries(src.path)
                     "zip"->{ val vols = resolveZipVolumes(src); if (vols.size>1) ZipCore.zipListEntriesVolumes(volumeJoin(vols)) else ZipCore.zipListEntries(src.path) }
                     "7z"->{ val vols = resolveSevenZVolumes(src); if (vols.size>1) { val p = resolvePwd(src); if (p == null) null else if (p.isEmpty()) SevenZCore.szListEntriesVolumes(volumeJoin(vols)) else SevenZCore.szListEntriesVolumesWithPassword(volumeJoin(vols), p) } else { val p = resolvePwd(src); if (p == null) null else if (p.isEmpty()) SevenZCore.szListEntries(src.path) else SevenZCore.szListEntriesWithPassword(src.path, p) } }
-                    "rar"->{ val vols = resolveRarVolumes(src); if (vols.size>1) RarCore.rarListEntriesVolumes(volumeJoin(vols)) else RarCore.rarListEntries(src.path) }
+                    "rar"->{ val vols = resolveRarVolumes(src); val p = resolvePwd(src); if (p == null) null else if (vols.size>1) (if (p.isEmpty()) RarCore.rarListEntriesVolumes(volumeJoin(vols)) else RarCore.rarListEntriesVolumesWithPassword(volumeJoin(vols), p)) else (if (p.isEmpty()) RarCore.rarListEntries(src.path) else RarCore.rarListEntriesWithPassword(src.path, p)) }
                     "lz4"->Lz4Core.lz4ListEntries(src.path); "gz"->GzipCore.gzListEntries(src.path); "bz2"->Bzip2Core.bz2ListEntries(src.path); "xz"->XzCore.xzListEntries(src.path); "zst"->ZstdCore.zstListEntries(src.path); "lzma"->LzmaCore.lzmaListEntries(src.path); "tar"->TarCore.tarListEntries(src.path)
                     else->null
                 } } catch(_:Exception){null}

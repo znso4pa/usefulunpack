@@ -10,4 +10,11 @@ object YpfCore {
     external fun ypfExtractProgressFileTotal(): Long
     external fun ypfExtractProgressName(): String?
     external fun ypfExtractCancel()
+    external fun ypfCreateArchive(tool: String, input: String, output: String, level: String): Boolean
+    external fun ypfCompressProgressCount(): Long
+    external fun ypfCompressProgressTotal(): Long
+    external fun ypfCompressProgressFileCount(): Long
+    external fun ypfCompressProgressFileTotal(): Long
+    external fun ypfCompressProgressName(): String?
+    external fun ypfCompressCancel()
 }

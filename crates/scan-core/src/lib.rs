@@ -327,6 +327,22 @@ mod tests {
         enc.finish().unwrap()
     }
 
+    /// Builds a real xz stream (xz2/libzma).
+    fn xz_bytes(data: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut enc = xz2::write::XzEncoder::new(Vec::new(), 6);
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    /// Builds a real .lzma (alone) stream with lzma-rs (its default header
+    /// writes a streaming 0xFFFF… uncompressed size, like liblzma).
+    fn lzma_bytes(data: &[u8]) -> Vec<u8> {
+        let mut lz = Vec::new();
+        lzma_rs::lzma_compress(&mut std::io::Cursor::new(data), &mut lz).expect("lzma_compress");
+        lz
+    }
+
     #[test]
     fn zip_scan_reports_once_with_skip() {
         let _g = scan_lock();
@@ -347,6 +363,79 @@ mod tests {
         let p = tmp("host.bin", &host);
         let hits = scan_file(&p).unwrap();
         assert!(hits.iter().any(|h| h.label == "gzip compressed data" && h.offset == 10));
+    }
+
+    /// A -hp header-encrypted RAR5 must be reported once (whole-file region,
+    /// MEDIUM confidence), and a plaintext RAR5 exactly once — the HIGH-
+    /// confidence plaintext entry wins the same-offset post-pass, so no
+    /// duplicate "header encrypted" hit appears.
+    #[test]
+    fn rar5_hp_scan_reports_encrypted_and_dedups_plaintext() {
+        let _g = scan_lock();
+        // -hp: sig + CRC + ciphertext whose vint parse fails.
+        let mut hp = Vec::new();
+        hp.extend_from_slice(b"Rar!\x1a\x07\x01\x00");
+        hp.extend_from_slice(&0u32.to_le_bytes());
+        hp.extend_from_slice(&[0x7Fu8; 8]);
+        hp.extend_from_slice(&[0xA5u8; 100]);
+        let php = tmp("scan.rar5hp", &hp);
+        let hits = scan_file(&php).unwrap();
+        let hp_hits: Vec<_> = hits.iter().filter(|h| h.label.contains("header encrypted")).collect();
+        assert_eq!(hp_hits.len(), 1, "exactly one -hp hit: {hits:?}");
+        assert_eq!(hp_hits[0].offset, 0);
+        assert_eq!(hp_hits[0].size, hp.len() as u64);
+        // Plaintext: HIGH wins, no duplicate -hp hit.
+        let mut r5 = Vec::new();
+        r5.extend_from_slice(b"Rar!\x1a\x07\x01\x00");
+        r5.extend_from_slice(&0u32.to_le_bytes());
+        r5.push(0x02); // HEAD_SIZE vint
+        r5.push(0x01); // HEAD_TYPE = main
+        r5.push(0x00); // HEAD_FLAGS
+        r5.extend_from_slice(&[0xAAu8; 50]);
+        r5.extend_from_slice(&[0x1D, 0x77, 0x56, 0x51, 0x03, 0x05, 0x04, 0x00]); // EOF
+        let p2 = tmp("scan.rar5plain", &r5);
+        let hits2 = scan_file(&p2).unwrap();
+        let plain: Vec<_> = hits2.iter().filter(|h| h.label == "RAR archive v5").collect();
+        let enc: Vec<_> = hits2.iter().filter(|h| h.label.contains("header encrypted")).collect();
+        assert_eq!(plain.len(), 1, "plaintext RAR5 must be reported once: {hits2:?}");
+        assert!(enc.is_empty(), "no duplicate -hp hit for plaintext: {hits2:?}");
+    }
+
+    /// An xz stream embedded mid-host must still be reported — the dry-run
+    /// decodes the real bytes first, then trips on the trailing host data.
+    /// Rejecting it (Err → false) was a v5.12.0 regression.
+    #[test]
+    fn xz_embedded_in_host() {
+        let _g = scan_lock();
+        let xz = xz_bytes(b"hello embedded xz stream");
+        let mut host = vec![0x41u8; 10];
+        host.extend_from_slice(&xz);
+        host.extend_from_slice(&vec![0x42u8; 300]);
+        let p = tmp("host_xz.bin", &host);
+        let hits = scan_file(&p).unwrap();
+        assert!(
+            hits.iter().any(|h| h.label == "XZ compressed data" && h.offset == 10),
+            "embedded xz must be reported: {hits:?}"
+        );
+    }
+
+    /// A streaming-header .lzma (0xFFFF…, the liblzma/alone default) embedded
+    /// mid-host must still be reported. The dry-run skips streaming headers, so
+    /// the header whitelist alone decides — no embedded-stream drop.
+    #[test]
+    fn lzma_embedded_in_host() {
+        let _g = scan_lock();
+        let lz = lzma_bytes(b"hello embedded lzma stream");
+        assert_eq!(&lz[5..13], &[0xFF; 8], "test relies on streaming header");
+        let mut host = vec![0x41u8; 10];
+        host.extend_from_slice(&lz);
+        host.extend_from_slice(&vec![0x42u8; 300]);
+        let p = tmp("host_lzma.bin", &host);
+        let hits = scan_file(&p).unwrap();
+        assert!(
+            hits.iter().any(|h| h.label == "LZMA compressed data" && h.offset == 10),
+            "embedded lzma must be reported: {hits:?}"
+        );
     }
 
     #[test]

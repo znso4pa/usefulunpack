@@ -56,6 +56,23 @@ macro_rules! progress_store {
                 FILE_BYTES.fetch_add(n, Ordering::SeqCst);
             }
 
+            /// Accumulates into the OVERALL counter only (the current-file
+            /// counter is fed separately by the format's decode progress).
+            /// Used for rar's buffered members: their write must count toward
+            /// the total bar without double-counting the current-file bar,
+            /// which the decode watcher already drives.
+            pub fn add_top_bytes(n: u64) {
+                BYTES.fetch_add(n, Ordering::SeqCst);
+            }
+
+            /// Sets the current-file byte counter directly (no overall change).
+            /// Used to report decode progress of a member that is buffered into
+            /// RAM before anything is written — the overall counter is fed by
+            /// the writer later, so this must NOT double-count.
+            pub fn set_file_bytes(n: u64) {
+                FILE_BYTES.store(n, Ordering::SeqCst);
+            }
+
             pub fn set_name(name: &str) { *FNAME.lock().unwrap_or_else(|e| e.into_inner()) = name.to_string(); }
 
             pub fn cancel() { CANCEL.store(true, Ordering::SeqCst); }
@@ -87,6 +104,11 @@ pub struct ProgressWriter<W> {
 impl<W> ProgressWriter<W> {
     pub fn extract(inner: W) -> Self { Self { inner, sink: extract_progress::add_bytes, check: extract_progress::cancelled } }
     pub fn compress(inner: W) -> Self { Self { inner, sink: compress_progress::add_bytes, check: compress_progress::cancelled } }
+    /// Counts the write toward the OVERALL bar only. rar's buffered members
+    /// use this: their current-file bar is fed from the decode progress by the
+    /// watcher, so the write must not double-count it — but the overall bar
+    /// must still be exact (fed by the write), not by the lossy decode poll.
+    pub fn extract_top(inner: W) -> Self { Self { inner, sink: extract_progress::add_top_bytes, check: extract_progress::cancelled } }
 }
 
 impl<W: std::io::Write> std::io::Write for ProgressWriter<W> {

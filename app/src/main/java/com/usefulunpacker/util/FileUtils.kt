@@ -124,9 +124,12 @@ fun isTjsBytecode(data: ByteArray): Boolean =
 
 /** Picks the most likely text encoding for BOM-less data: strict UTF-8 wins,
  *  otherwise Shift-JIS vs GBK are both decoded and the one with fewer
- *  replacement characters is chosen (galgame scripts are typically UTF-16,
- *  SJIS or GBK). Returns null when even the best candidate is mostly garble,
- *  so the caller falls back to the user's setting. */
+ *  replacement characters is chosen. Galgame scripts are predominantly
+ *  Shift-JIS, so SJIS is the default and GBK wins only when it is clearly
+ *  cleaner (markedly fewer replacements) — the common SJIS↔GBK cross-read
+ *  where a SJIS file "accidentally" decodes under GBK now stays SJIS.
+ *  Returns null when even the best candidate is mostly garble, so the caller
+ *  falls back to the user's setting. */
 fun detectBestEncoding(data: ByteArray): String? {
     detectBomEncoding(data)?.let { return it }
     if (data.isEmpty()) return null
@@ -137,7 +140,11 @@ fun detectBestEncoding(data: ByteArray): String? {
     val bS = bad(sjis); val bG = bad(gbk)
     val best = minOf(bS, bG)
     if (best > 0 && best * 20 >= data.size) return null // both candidates garble-heavy
-    return if (bS <= bG) "SHIFT-JIS" else "GBK"
+    // SJIS is the galgame default; GBK wins only when it is clearly cleaner
+    // (markedly fewer replacement chars). `bG * 2 < bS` = GBK has under half
+    // the bad chars of SJIS — the common SJIS↔GBK cross-read where a SJIS file
+    // "accidentally" decodes under GBK now stays SJIS.
+    return if (bG * 2 < bS) "GBK" else "SHIFT-JIS"
 }
 
 /** Reads at most [maxBytes] from [file] — for preview/search of potentially
@@ -214,6 +221,7 @@ fun fileSize(f: File): Long = try {
 }
 
 fun fmt(b: Long): String = when {
+    b < 0 -> "?" // unknown size (e.g. LZ4 without a Content Size header)
     b >= 1_073_741_824 -> "${"%.2f".format(b / 1_073_741_824.0)} GB"
     b >= 1_048_576 -> "${"%.1f".format(b / 1_048_576.0)} MB"
     b >= 1024 -> "${"%.1f".format(b / 1024.0)} KB"
@@ -290,10 +298,16 @@ fun startsWithZipMagic(f: File): Boolean = try {
  */
 fun isVolumeFile(f: File): String? {
     // `.z01/.z02` matches the legacy RAR volume regex, but a PKWARE zip
-    // multi-disk part starts with the zip local-header magic — sniff before
-    // calling it a RAR volume so `.zNN` zip sets resolve correctly.
-    if (isRarVolumeName(f.name) && !startsWithZipMagic(f)) return "rar"
+    // multi-disk part resolves as a zip SET — only the first disk (.z01)
+    // carries the PK magic, so the set (not the tapped file alone) must be
+    // sniffed. A `.z02` mid-part would otherwise be mislabelled RAR (red).
     if (isZipVolumeName(f.name) && resolveZipVolumes(f).size > 1) return "zip"
+    if (isRarVolumeName(f.name)) {
+        // A PKWARE zip set whose first disk starts with PK must win over the
+        // legacy RAR regex; only standalone old-style RAR parts fall through.
+        if (isZipVolumeName(f.name) && resolveZipVolumes(f).size > 1) return "zip"
+        if (!startsWithZipMagic(f)) return "rar"
+    }
     if (isSevenZVolumeName(f.name) && resolveSevenZVolumes(f).size > 1) return "7z"
     return null
 }

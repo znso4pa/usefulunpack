@@ -172,6 +172,9 @@
     <string name="settings_zip_encoding">ZIP filename encoding (extract only)</string>
     <string name="msg_encoding_applied">Switched to %1$s</string>
     <string name="preview_encoding_hint">Detected many garbled characters: decoded as %1$s. Change it in Settings → Text encoding</string>
+    <string name="preview_rich">Render</string>
+    <string name="preview_rich_on">Markdown/RTF</string>
+    <string name="preview_rich_off">Plain text</string>
     <string name="msg_encoding_error">Encoding error, try a different encoding in settings</string>
     <string name="err_not_archive">Not a supported archive format</string>
     <string name="err_pwd_wrong">Wrong password, extraction failed</string>
@@ -283,17 +286,7 @@
     <string name="cmd_desc_pwd">Show current path</string>
     <string name="cmd_desc_up">Go to parent directory</string>
     <string name="cmd_desc_help">Show help</string>
-    <string name="disclaimer_body">UsefulUnpack is a general-purpose file archive management tool.
-
-This software:
-· Does not include, provide, or bypass any DRM or copy protection
-· All format parsers are based on public specifications or open-source implementations
-· Does not host any copyrighted content or assets
-
-Users must comply with local laws and use this tool only on files you legally own.
-The developer assumes no responsibility for any illegal or improper use.
-
-By continuing you agree to the above terms.</string>
+    <string name="disclaimer_body">UsefulUnpack is a general-purpose file archive management tool.\n\nThis software:\n· Does not include, provide, or bypass any DRM or copy protection\n· All format parsers are based on public specifications or open-source implementations\n· Does not host any copyrighted content or assets\n\nUsers must comply with local laws and use this tool only on files you legally own.\nThe developer assumes no responsibility for any illegal or improper use.\n\nBy continuing you agree to the above terms.</string>
 
 
     <!-- ═══ settings/search UI refactor ═══ -->
@@ -310,76 +303,39 @@ By continuing you agree to the above terms.</string>
     <string name="help_section_formats">Supported Formats</string>
     <string name="help_section_tutorials">Tutorials</string>
         <string-array name="help_formats">
-        <item>XP3 (.xp3) — Extract &amp; Pack
-Kirikiri archive; zlib levels 0-9; edit scripts in-place (Edit → unpack → edit → Repack as name-cn.xp3)</item>
-        <item>PFS / PF6 / PF8 — Extract &amp; Pack
-Artemis archive; pack outputs PF8 (XOR-encrypted); edit scripts in-place (Repack as name-cn.pfs)</item>
-        <item>NSA / SAR (.nsa/.sar) — Extract &amp; Pack
-NScripter archive (LZSS + SPB); pack with LZSS (raw fallback when it does not shrink); edit scripts in-place (Repack as name-cn.nsa)
-Limits: SPB bitmap entries have a 2GB cap; archives over 4GiB cannot be packed</item>
-        <item>ISO 9660 (.iso) — Extract &amp; Pack
-Disc images (CD/DVD/BD); pack (Level 1) and convert to PSP CISO (CSO)
-Limits: pack uses 8.3 uppercase filenames and a 1GiB total cap; files over 4GiB are rejected</item>
-        <item>CSO (.cso) — Convert
-PSP compressed ISO; tap a .cso to convert back to ISO; ISO previews offer Convert to CSO
-Limit: data area is capped at 2GiB by the format (31-bit offsets)</item>
-        <item>YPF (.ypf) — Extract only
-YU-RIS archive; filenames are XOR + Shift-JIS obfuscated, key auto-detected</item>
-        <item>ZIP (.zip) — Extract &amp; Pack
-AES-256 encryption, 5 levels (0 = store), encoding switchable UTF-8/SHIFT-JIS/GBK
-In-place entry management: edit / delete / add entries (non-split archives only)
-Limits: byte-split .zip.001 and PKWARE multi-disk .z01/.z02/.zip extract (single-disk entries; cross-disk unsupported); multi-disk archives cannot be edited</item>
-        <item>7z (.7z) — Extract &amp; Pack
-Levels 0/3/6/9/12; setting a password also encrypts headers (listing needs the password); .7z.001 volumes supported</item>
-        <item>RAR (.rar) — Extract only
-RAR4/5, password + volumes supported; no compression (RARLAB license)
-Note: header-encrypted RAR listing is limited — use the password retry on extract; encrypted many-small-file archives extract slowly (per-file key derivation)</item>
-        <item>LZ4 (.lz4) — Extract &amp; Pack
-LZ4 frame format; output is capped to prevent decompression bombs</item>
-        <item>GZIP (.gz) — Extract &amp; Pack
-Supports concatenated multi-member files; output capped at the declared size</item>
-        <item>BZIP2 (.bz2) — Extract &amp; Pack
-Output capped (no size in header) to prevent bombs</item>
-        <item>XZ (.xz) — Extract &amp; Pack
-liblzma, compression levels 0-9; output capped</item>
-        <item>ZSTD (.zst) — Extract &amp; Pack
-Output capped (no size in header) to prevent bombs</item>
-        <item>LZMA (.lzma) — Extract &amp; Pack
-Note: preview list does not show decompressed size (alone header has no size)</item>
-        <item>TAR — Extract &amp; Pack
-.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
-        <item>KSD (.ksd) — Extract &amp; Pack
-Kirikiri2 save; packing accepts .txt only</item>
+        <item>XP3 (.xp3) — Extract &amp; Pack\nKirikiri archive; zlib levels 0-9; edit scripts in-place (Edit → unpack → edit → Repack as name-cn.xp3)</item>
+        <item>PFS / PF6 / PF8 — Extract &amp; Pack\nArtemis archive; pack outputs PF8 (XOR-encrypted); edit scripts in-place (Repack as name-cn.pfs)</item>
+        <item>NSA / SAR (.nsa/.sar) — Extract &amp; Pack\nNScripter archive (LZSS + SPB); pack with LZSS (raw fallback when it does not shrink); edit scripts in-place (Repack as name-cn.nsa)\nLimits: SPB bitmap entries have a 2GB cap; archives over 4GiB cannot be packed</item>
+        <item>ISO 9660 (.iso) — Extract &amp; Pack\nDisc images (CD/DVD/BD); pack (Level 1) and convert to PSP CISO (CSO)\nLimits: pack uses 8.3 uppercase filenames and a 1GiB total cap; files over 4GiB are rejected</item>
+        <item>CSO (.cso) — Convert\nPSP compressed ISO; tap a .cso to convert back to ISO; ISO previews offer Convert to CSO\nLimit: data area is capped at 2GiB by the format (31-bit offsets)</item>
+        <item>YPF (.ypf) — Extract only\nYU-RIS archive; filenames are XOR + Shift-JIS obfuscated, key auto-detected</item>
+        <item>ZIP (.zip) — Extract &amp; Pack\nAES-256 encryption, 5 levels (0 = store), encoding switchable UTF-8/SHIFT-JIS/GBK\nIn-place entry management: edit / delete / add entries (non-split archives only)\nLimits: byte-split .zip.001 and PKWARE multi-disk .z01/.z02/.zip extract (incl. cross-disk entries); multi-disk archives cannot be edited</item>
+        <item>7z (.7z) — Extract &amp; Pack\nLevels 0/3/6/9/12; setting a password also encrypts headers (listing needs the password); .7z.001 volumes supported</item>
+        <item>RAR (.rar) — Extract only\nRAR4/5, password + volumes supported; no compression (RARLAB license)\nNote: header-encrypted RAR listing is limited — use the password retry on extract; encrypted many-small-file archives extract slowly (per-file key derivation)</item>
+        <item>LZ4 (.lz4) — Extract &amp; Pack\nLZ4 frame format; output is capped to prevent decompression bombs</item>
+        <item>GZIP (.gz) — Extract &amp; Pack\nSupports concatenated multi-member files; output capped at the declared size</item>
+        <item>BZIP2 (.bz2) — Extract &amp; Pack\nOutput capped (no size in header) to prevent bombs</item>
+        <item>XZ (.xz) — Extract &amp; Pack\nliblzma, compression levels 0-9; output capped</item>
+        <item>ZSTD (.zst) — Extract &amp; Pack\nOutput capped (no size in header) to prevent bombs</item>
+        <item>LZMA (.lzma) — Extract &amp; Pack\nNote: preview list does not show decompressed size (alone header has no size)</item>
+        <item>TAR — Extract &amp; Pack\n.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
+        <item>KSD (.ksd) — Extract &amp; Pack\nKirikiri2 save; packing accepts .txt only</item>
     </string-array>
         <string-array name="help_tutorials">
-        <item>Compression settings
-Settings → Compression: levels (zip/7z/generic), split size (zip/7z), ZIP encoding, password; "OK" saves everything at once; the work mode (archive/compress) updates the title bar</item>
-        <item>Global search
-Top menu → Global search: filename / content modes; content search first asks for a per-file size cap; tap a result to preview with match highlighting and prev/next jump; tap "Continue scan" when results are truncated</item>
-        <item>Search inside an archive
-Open an archive preview, tap the search icon: text files are unpacked first, then the global search runs over them; tapping a result extracts the real file on demand</item>
-        <item>Batch operations
-Long-press to multi-select; the batch bar offers preview / extract / compress / delete / move; navigating to another folder auto-exits multi-select. Batch preview (same format only) shows several archives at once and lets you pick files across all of them</item>
-        <item>Volumes
-Extract: tap any part of .7z.001 / .zip.001 / .z01 / .part01.rar and it is joined automatically; PKWARE multi-disk (.z01/.z02/.zip) is read as separate disks (entries must stay on one disk). Pack: pick a split size for zip/7z (none/1MB/100MB/1GB/custom), output is .001/.002… (7-Zip compatible)</item>
-        <item>Passwords
-Enter the password once when previewing an encrypted zip/7z/rar; "Extract all / selected" then reuse it without re-prompting; batch operations ask once; password-protected archives show a 🔒 badge</item>
-        <item>Bookmarks
-Star a folder (row star or drawer "+ add current path"); deleting a folder cleans up its bookmark automatically; long-press a bookmark to remove it</item>
-        <item>File info
-Long-press a file → Info: shows size/date/MD5/SHA-256 with one-tap copy</item>
-        <item>Interaction flow
-Tap an archive → bottom-right button → direct archive preview (format auto-detected); "Extract all" unpacks to a sibling folder, "Extract selected" lets you choose the destination</item>
-        <item>Signature scan (binwalk)
-Long-press a file → Scan: detects embedded archive/image signatures (e.g. a ZIP embedded inside a video), listing offsets and formats with ZIP file counts. Each hit has two buttons: "Extract" opens archives directly for preview/extraction, "Carve (dd)" saves the raw segment as a standalone file; failures show the specific reason</item>
-        <item>Edit scripts inside an archive
-Open an XP3/PFS/ISO/NSA preview and tap "Edit": the archive is unpacked, a script list (.ks/.tjs/.csv/…) appears, tap one to edit with an explicit encoding (the original byte order is kept on save), then "Repack" creates a new "name-cn.xp3/pfs/iso/nsa" in the same folder. ISO repack uses Level-1 8.3 names with a 1GiB cap</item>
-        <item>Edit ZIP entries in place
-In a ZIP preview, tap "Entries": delete selected entries (with confirmation) or add a new entry from a local file (pick a file, name it, added as deflate). Untouched entries keep their exact bytes. Split-volume ZIPs cannot be edited</item>
-        <item>Encoding &amp; garbled text
-Every preview/editor shows an encoding row — tap it to switch UTF-8/Shift-JIS/GBK/UTF-16 and the text re-renders instantly. UTF-16/UTF-8 files with a byte-order mark open with the right encoding automatically; a "looks like UTF-8" hint appears when a file was read with a wrong non-UTF-8 encoding</item>
-        <item>Scrolling &amp; refresh
-Long lists have an always-visible draggable handle on the right (grab and drag to jump); the text preview/editor have a draggable scrollbar too. The file list refreshes automatically when the current folder changes (rename/move/delete/extract/compress or external changes such as USB)</item>
+        <item>Compression settings\nSettings → Compression: levels (zip/7z/generic), split size (zip/7z), ZIP encoding, password; "OK" saves everything at once; the work mode (archive/compress) updates the title bar</item>
+        <item>Global search\nTop menu → Global search: filename / content modes; content search first asks for a per-file size cap; tap a result to preview with match highlighting and prev/next jump; tap "Continue scan" when results are truncated</item>
+        <item>Search inside an archive\nOpen an archive preview, tap the search icon: text files are unpacked first, then the global search runs over them; tapping a result extracts the real file on demand</item>
+        <item>Batch operations\nLong-press to multi-select; the batch bar offers preview / extract / compress / delete / move; navigating to another folder auto-exits multi-select. Batch preview (same format only) shows several archives at once and lets you pick files across all of them</item>
+        <item>Volumes\nExtract: tap any part of .7z.001 / .zip.001 / .z01 / .part01.rar and it is joined automatically; PKWARE multi-disk (.z01/.z02/.zip) is read as separate disks (entries may cross disk boundaries). Pack: pick a split size for zip/7z (none/1MB/100MB/1GB/custom), output is .001/.002… (7-Zip compatible)</item>
+        <item>Passwords\nEnter the password once when previewing an encrypted zip/7z/rar; "Extract all / selected" then reuse it without re-prompting; batch operations ask once; password-protected archives show a 🔒 badge</item>
+        <item>Bookmarks\nStar a folder (row star or drawer "+ add current path"); deleting a folder cleans up its bookmark automatically; long-press a bookmark to remove it</item>
+        <item>File info\nLong-press a file → Info: shows size/date/MD5/SHA-256 with one-tap copy</item>
+        <item>Interaction flow\nTap an archive → bottom-right button → direct archive preview (format auto-detected); "Extract all" unpacks to a sibling folder, "Extract selected" lets you choose the destination</item>
+        <item>Signature scan (binwalk)\nLong-press a file → Scan: detects embedded archive/image signatures (e.g. a ZIP embedded inside a video), listing offsets and formats with ZIP file counts. Each hit has two buttons: "Extract" opens archives directly for preview/extraction, "Carve (dd)" saves the raw segment as a standalone file; failures show the specific reason</item>
+        <item>Edit scripts inside an archive\nOpen an XP3/PFS/ISO/NSA preview and tap "Edit": the archive is unpacked, a script list (.ks/.tjs/.csv/…) appears, tap one to edit with an explicit encoding (the original byte order is kept on save), then "Repack" creates a new "name-cn.xp3/pfs/iso/nsa" in the same folder. ISO repack uses Level-1 8.3 names with a 1GiB cap</item>
+        <item>Edit ZIP entries in place\nIn a ZIP preview, tap "Entries": delete selected entries (with confirmation) or add a new entry from a local file (pick a file, name it, added as deflate). Untouched entries keep their exact bytes. Split-volume ZIPs cannot be edited</item>
+        <item>Encoding &amp; garbled text\nEvery preview/editor shows an encoding row — tap it to switch UTF-8/Shift-JIS/GBK/UTF-16 and the text re-renders instantly. UTF-16/UTF-8 files with a byte-order mark open with the right encoding automatically; a "looks like UTF-8" hint appears when a file was read with a wrong non-UTF-8 encoding</item>
+        <item>Scrolling &amp; refresh\nLong lists have an always-visible draggable handle on the right (grab and drag to jump); the text preview/editor have a draggable scrollbar too. The file list refreshes automatically when the current folder changes (rename/move/delete/extract/compress or external changes such as USB)</item>
     </string-array>
 
 

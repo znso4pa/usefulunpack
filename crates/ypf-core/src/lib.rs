@@ -1,12 +1,14 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
-use jni::sys::{jstring, jlong};
-use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json, ProgressWriter};
+use jni::sys::{jstring, jlong, jboolean, JNI_TRUE, JNI_FALSE};
+use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json, ProgressWriter, ProgressReader, compress_progress};
 use archive_common::extract_progress;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
 
 // --- Marker → length lookup tables ---
 
@@ -210,6 +212,165 @@ fn extract_ypf_selected(i: &str, o: &str, s: &str) -> Result<(u32, u32), String>
     Ok((selected, fail))
 }
 
+// ─── Packing (YPF writer) ───
+
+/// Reverse of the unpack-side marker resolution: len → a marker the reader
+/// resolves back to that length. First tries the direct `ypf_fname_len` table
+/// (9..=55), then the GARbro SwapTable pairs (the paired value IS the length,
+/// so a len that appears as a SWAP element maps to the partner marker).
+fn marker_for_len(len: usize) -> Option<u8> {
+    for (m, l) in [
+        (0xf4,9),(0xfc,10),(0xf6,11),(0xef,12),(0xec,13),(0xf1,14),
+        (0xf0,15),(0xf3,16),(0xe7,17),(0xed,18),(0xf2,19),(0xd1,20),
+        (0xe4,21),(0xe9,22),(0xe8,23),(0xee,24),(0xe6,25),(0xe5,26),
+        (0xea,27),(0xe1,28),(0xe2,29),(0xe3,30),(0xe0,31),(0xdc,32),
+        (0xde,33),(0xdd,34),(0xdf,35),(0xdb,36),(0xda,37),(0xd6,38),
+        (0xd8,39),(0xd7,40),(0xd9,41),(0xd5,42),(0xd4,43),(0xd0,44),
+        (0xd2,45),(0xeb,46),(0xd3,47),(0xcf,48),(0xce,49),(0xcd,50),
+        (0xcc,51),(0xcb,52),(0xf9,53),(0xc9,54),(0xc8,55),
+    ] {
+        if l == len { return Some(m); }
+    }
+    // SwapTable pairs: (a,b) — the reader does `v=marker^0xFF`, finds v in the
+    // table, returns the partner. So len==b → marker = a^0xFF and vice versa.
+    for &(a, b) in SWAP_PAIRS {
+        if len == b as usize { return Some(a ^ 0xFF); }
+        if len == a as usize { return Some(b ^ 0xFF); }
+    }
+    None
+}
+
+/// GARbro SwapTable00 as (a,b) pairs (the flat SWAP array is these interleaved).
+static SWAP_PAIRS: &[(u8, u8)] = &[
+    (0x03,0x48),(0x06,0x35),(0x0C,0x10),(0x11,0x19),(0x1C,0x1E),
+    (0x09,0x0B),(0x0D,0x13),(0x15,0x1B),(0x20,0x23),(0x26,0x29),(0x2C,0x2F),(0x2E,0x32),
+];
+
+/// Encodes a file name to the YPF on-disk form: Shift-JIS bytes XORed with the
+/// archive key (0xFF or 0xC9, matching the unpack side's auto-detect default).
+fn encode_name(name: &str, key: u8) -> Option<Vec<u8>> {
+    let sjis = encoding_rs::SHIFT_JIS.encode(name).0.into_owned();
+    if sjis.is_empty() || sjis.len() > 55 {
+        return None; // name too long / empty — cannot pick a marker
+    }
+    Some(sjis.iter().map(|b| b ^ key).collect())
+}
+
+/// Compresses [data] when it shrinks (or level>0), returning (compressed, was_compressed).
+fn maybe_compress(data: &[u8], level: i32) -> (Vec<u8>, bool) {
+    if level <= 0 || data.len() < 32 {
+        return (data.to_vec(), false);
+    }
+    let mut enc = ZlibEncoder::new(Vec::new(), Compression::new(level as u32));
+    if enc.write_all(data).is_err() { return (data.to_vec(), false); }
+    match enc.finish() {
+        Ok(c) if c.len() < data.len() => (c, true),
+        _ => (data.to_vec(), false),
+    }
+}
+
+/// Packs [input] (a directory) into a YPF archive at [output].
+/// Layout mirrors the unpacker: 0x20-byte header, per-entry records
+/// (marker + XOR/SJIS name + 22-byte tail), then the data blobs at absolute
+/// file offsets. Returns the number of entries written.
+fn ypf_create_archive(input: &str, output: &str, level: i32) -> Result<u32, String> {
+    // Collect files recursively (iterative — deep trees can't overflow).
+    let mut files: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let mut stack = vec![input.to_string()];
+    while let Some(dir) = stack.pop() {
+        if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+        let rd = std::fs::read_dir(&dir).map_err(|e| format!("ypf pack: {e}"))?;
+        for entry in rd.flatten() {
+            let ft = entry.file_type().map_err(|e| format!("{e}"))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if ft.is_dir() {
+                stack.push(format!("{}/{}", dir, name));
+            } else if ft.is_file() {
+                let rel = format!("{}/{}", dir.trim_start_matches(input).trim_start_matches('/'), name)
+                    .trim_start_matches('/').to_string();
+                files.push((rel, entry.path()));
+            }
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    if files.is_empty() { return Err("ypf pack: empty input".to_string()); }
+
+    let key: u8 = 0xFF; // unpack auto-detect prefers 0xFF ties; keep it simple
+    compress_progress::reset(files.len() as u64);
+
+    // Build in-memory record + payload list first (offsets need the total size
+    // of the records before the data area starts).
+    struct Rec { marker: u8, name_xor: Vec<u8>, ft: u8, compressed: bool, usize_: u32, asize: u32, offset: u32, data: Vec<u8> }
+    let mut recs: Vec<Rec> = Vec::new();
+    for (rel, path) in &files {
+        if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+        let enc = encode_name(rel, key).ok_or_else(|| format!("ypf pack: name too long or bad: {rel}"))?;
+        let marker = marker_for_len(enc.len()).ok_or_else(|| format!("ypf pack: no marker for len {}", enc.len()))?;
+        let data = std::fs::read(path).map_err(|e| format!("ypf pack read {rel}: {e}"))?;
+        let (payload, compressed) = maybe_compress(&data, level);
+        recs.push(Rec {
+            marker,
+            name_xor: enc,
+            ft: 0,
+            compressed,
+            usize_: data.len() as u32,
+            asize: payload.len() as u32,
+            offset: 0, // filled after record area is sized
+            data: payload,
+        });
+    }
+
+    // Record area size: sum of (5-byte header + name_len + 22 tail).
+    let mut rec_area = 0u64;
+    for r in &recs { rec_area += 5 + r.name_xor.len() as u64 + 22; }
+    // Header (0x20) + record area → data blobs start here.
+    let mut data_off = 0x20u64 + rec_area;
+    for r in &mut recs {
+        r.offset = data_off as u32;
+        data_off += r.data.len() as u64;
+    }
+
+    let mut out = File::create(output).map_err(|e| format!("ypf pack create: {e}"))?;
+    let hdr_len = (0x20u32 + rec_area as u32);
+    out.write_all(b"YPF\0").map_err(|e| format!("{e}"))?;
+    out.write_all(&1u32.to_le_bytes()).map_err(|e| format!("{e}"))?; // version
+    out.write_all(&(recs.len() as u32).to_le_bytes()).map_err(|e| format!("{e}"))?; // count
+    out.write_all(&hdr_len.to_le_bytes()).map_err(|e| format!("{e}"))?; // hdr_len
+    // Pad header to 0x20.
+    out.write_all(&[0u8; 0x10]).map_err(|e| format!("{e}"))?;
+
+    // Entries. Layout per record: 5-byte header (4 unknown bytes then the
+    // marker at offset 4 — the unpacker reads ehdr[0..5] and takes marker from
+    // byte 4), then XOR/SJIS name, then 22-byte tail. The unpacker advances by
+    // 5 + name_len + 22, so we must match that stride.
+    for (i, r) in recs.iter().enumerate() {
+        if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+        compress_progress::set_name(&files[i].0);
+        out.write_all(&[0u8, 0, 0, 0, r.marker]).map_err(|e| format!("{e}"))?;
+        out.write_all(&r.name_xor).map_err(|e| format!("{e}"))?;
+        // tail (22 bytes): ft(1) compressed(1) usize(4) asize(4) offset(4) + 8 pad
+        let mut tail = Vec::new();
+        tail.push(r.ft);
+        tail.push(if r.compressed { 1 } else { 0 });
+        tail.extend_from_slice(&r.usize_.to_le_bytes());
+        tail.extend_from_slice(&r.asize.to_le_bytes());
+        tail.extend_from_slice(&r.offset.to_le_bytes());
+        tail.extend_from_slice(&[0u8; 8]);
+        out.write_all(&tail).map_err(|e| format!("{e}"))?;
+    }
+
+    // Data blobs.
+    let mut written = 0u64;
+    for (i, r) in recs.iter().enumerate() {
+        if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+        out.write_all(&r.data).map_err(|e| format!("{e}"))?;
+        written += r.data.len() as u64;
+        compress_progress::add_bytes(r.data.len() as u64);
+    }
+    compress_progress::set_file(0);
+    Ok(recs.len() as u32)
+}
+
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractProgressCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::bytes() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractProgressTotal(_: JNIEnv, _: JClass) -> jlong { extract_progress::total_bytes() as jlong }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractProgressFileCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::file_bytes() as jlong }
@@ -237,6 +398,24 @@ fn extract_ypf_selected(i: &str, o: &str, s: &str) -> Result<(u32, u32), String>
     let inp = s(&mut e, &i);
     match guard_panic(move || list_ypf(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }
 }
+
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfCreateArchive(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, level: JString) -> jboolean {
+    compress_progress::clear_cancel();
+    let inp = s(&mut e, &i); let out = s(&mut e, &o); let lv = s(&mut e, &level).parse::<i32>().unwrap_or(6);
+    match guard_panic(move || ypf_create_archive(&inp, &out, lv)) {
+        Ok(_) => JNI_TRUE,
+        Err(er) => { let _ = e.throw_new("java/io/IOException", format!("ypfCreateArchive: {er}")); JNI_FALSE }
+    }
+}
+
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfCompressProgressCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfCompressProgressTotal(_: JNIEnv, _: JClass) -> jlong { compress_progress::total_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfCompressProgressFileCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::file_bytes() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfCompressProgressFileTotal(_: JNIEnv, _: JClass) -> jlong { compress_progress::file_total() as jlong }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfCompressProgressName(e: JNIEnv, _: JClass) -> jstring {
+    e.new_string(&compress_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfCompressCancel(_: JNIEnv, _: JClass) { compress_progress::cancel(); }
 
 #[cfg(test)]
 mod tests {
@@ -321,6 +500,40 @@ mod tests {
         ypf_extract_one(&mut f, &entry, out.to_str().unwrap(), compressed.len() as u64).unwrap();
         let got = std::fs::read(out.join("clamped.bin")).unwrap();
         assert_eq!(got.len(), 1024, "output must be clamped to the declared size");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Pack a directory → unpack it back: names and bytes must round-trip, and
+    /// our own reader must parse the archive it wrote (the writer follows the
+    /// same marker/XOR/tail layout as the reader).
+    #[test]
+    fn create_then_extract_round_trip() {
+        let dir = std::env::temp_dir().join(format!("uu_ypf_w_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src/sub")).unwrap();
+        // Names whose SJIS length maps to a marker in the 9..=55 table.
+        std::fs::write(dir.join("src/rootfile.txt"), b"hello ypf root").unwrap();
+        let big: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(dir.join("src/sub/datafile.bin"), &big).unwrap();
+        // SJIS 多字节名也在表范围。
+        std::fs::write(dir.join("src/日本語名.txt"), "日本語内容".as_bytes()).unwrap();
+
+        let arc = dir.join("out.ypf");
+        let n = ypf_create_archive(dir.join("src").to_str().unwrap(), arc.to_str().unwrap(), 6).expect("pack");
+        assert_eq!(n, 3, "expected 3 entries");
+
+        let list = list_ypf(arc.to_str().unwrap()).expect("list");
+        assert!(list.contains("rootfile.txt"), "list: {list}");
+        assert!(list.contains("sub/datafile.bin"), "list: {list}");
+        assert!(list.contains("日本語名.txt"), "SJIS name must round-trip: {list}");
+
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let (total, fail) = extract_ypf_all(arc.to_str().unwrap(), out.to_str().unwrap()).expect("extract");
+        assert_eq!(fail, 0, "no failures");
+        assert_eq!(total, 3);
+        assert_eq!(std::fs::read(out.join("rootfile.txt")).unwrap(), b"hello ypf root");
+        assert_eq!(std::fs::read(out.join("sub/datafile.bin")).unwrap(), big);
+        assert_eq!(std::fs::read(out.join("日本語名.txt")).unwrap(), "日本語内容".as_bytes());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

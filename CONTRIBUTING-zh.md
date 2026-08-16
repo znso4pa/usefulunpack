@@ -97,7 +97,8 @@ bash build.sh
    - `EXT_FORMAT_MAP` — 添加文件扩展名映射（如有）
    - `tryExtractWithPassword()` / `showPasswordDialog()` — 如果支持加密，添加密码处理分支
 5. 将 crate 添加到 `Cargo.toml` 工作区成员列表和 `build.sh` 的 `CRATES` 数组中
-6. 在 `res/values/strings.xml` 中添加错误消息字符串资源
+6. 上报字节级进度：调用 `extract_progress::reset/set_file/add_bytes`（封包用 `compress_progress::*`）使共享双层进度条生效，并在 Kotlin `extractAccessors()`/`compressAccessors()` 注册格式。对"整块缓冲解码"的格式（rar 的 ≤64MB 路径），顶条必须由**写盘**驱动（`ProgressWriter::extract`，或底条由解码 watcher 单独驱动时用 `extract_top` + `add_top_bytes`）以保持总量精确——**绝不要**用轮询的解码计数喂顶条（会漏掉轮询间隙内解完的成员）。
+7. 在 `res/values/strings.xml` 中添加错误消息字符串资源
 
 ## 代码规范
 
@@ -121,6 +122,7 @@ Rust 测试覆盖内容（保持全绿）：
 - **往返 / 真实语料** — 各 `*_core` crate 封包后再解包并逐字节比对。使用真实语料库 `files4testing`（约 423 向量 + 13 条注入故障，覆盖 14 种格式）：合法归档必须解出哈希一致，注入的故障（截断/损坏/错密码/缺卷）必须被干净拒绝。
 - **安全 / 恶意头** — 单元测试断言构造输入在不上崩的前提下被拒绝：解压炸弹（经 `BoundedWriter`/声明大小封顶输出）、超大头部数量（7z num_files/coders、ISO 目录大小）、负数/溢出长度（KSD、PFS 偏移）、路径穿越（`safe_join`）、栈深度限制（ISO 目录）。
 - **签名扫描** — scan-core 内置真实压缩样本向量（gzip/bzip2/xz/zstd/lz4/lzma），防止字节序/位域回归。
+- **真实归档 rar 探针** — `rar-core` 内置两条环境变量门控测试：`probe_real_archive_progress`（`UU_RAR_PROBE`）整包解压并断言顶条精确到 total（无漏/无双计）；`probe_selected_fast`（`UU_RAR_SEL_PROBE`）验证非 solid 随机访问路径解尾部成员不解前面。用法：`UU_RAR_PROBE=/path/to/big.rar cargo test -p archive_rar_core probe_real_archive_progress -- --nocapture`。
 
 Kotlin 改动通过构建 APK 冒烟验证：
 ```bash

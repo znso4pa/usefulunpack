@@ -186,6 +186,19 @@ impl FileHeader {
         session.write_file_to(archive, self, out)
     }
 
+    /// Same as [Self::write_to] but honors the caller's buffered-decode limit
+    /// (so a large selected member streams instead of buffering into RAM).
+    pub fn write_to_with_options(
+        &self,
+        archive: &Archive,
+        options: crate::ArchiveReadOptions<'_>,
+        out: &mut impl Write,
+    ) -> Result<()> {
+        let mut session =
+            DecoderSession::new_with_password(options.password, rar50_buffered_decode_limit(options));
+        session.write_file_to(archive, self, out)
+    }
+
     pub(crate) fn decoded_data_unverified(
         &self,
         archive: &Archive,

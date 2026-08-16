@@ -21,38 +21,48 @@ internal fun MainActivity.showHelpDialog() {
         setTextColor(C["accent"]!!)
         textSize = 14f
         setTypeface(null, Typeface.BOLD)
-        setPadding(20, 18, 20, 6)
+        setPadding(20, 20, 20, 8)
     }
 
     fun entry(title: String, body: String): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(20, 8, 20, 8)
+        setPadding(20, 12, 20, 12)
         if (title.isNotEmpty()) addView(TextView(act).apply {
             text = title
             setTextColor(C["accent"]!!)
-            textSize = 13f
+            textSize = 14f
             setTypeface(null, Typeface.BOLD)
+            setLineSpacing(0f, 1.15f)
         })
         if (body.isNotEmpty()) addView(TextView(act).apply {
             text = body
-            setTextColor(C["primary"]!!)
+            setTextColor(C["secondary"]!!)
             textSize = 12f
-            setLineSpacing(0f, 1.1f)
-            setPadding(0, 3, 0, 0)
+            setTypeface(null, Typeface.NORMAL)
+            setLineSpacing(0f, 1.35f)
+            setPadding(0, 6, 0, 0)
         })
     }
 
     fun divider(): View = View(this).apply {
         setBackgroundColor(C["divider_subtle"]!!)
         layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply {
-            setMargins(20, 4, 20, 4)
+            setMargins(20, 12, 20, 12)
         }
     }
 
     fun parseItem(raw: String): Pair<String, String> {
         val idx = raw.indexOf('\n')
-        return if (idx < 0) raw to ""
-        else raw.substring(0, idx) to raw.substring(idx + 1)
+        if (idx >= 0) return raw.substring(0, idx) to raw.substring(idx + 1)
+        // No newline (AAPT2 would have folded a literal one into a space):
+        // fall back to splitting at the first " — "/" - " separator so a
+        // title/body entry still renders with a distinct heading instead of
+        // the whole text becoming one bold title.
+        val sep = raw.indexOf(" — ")
+        if (sep >= 0) return raw.substring(0, sep) to raw.substring(sep + 3)
+        val hyphen = raw.indexOf(" - ")
+        if (hyphen >= 0) return raw.substring(0, hyphen) to raw.substring(hyphen + 3)
+        return raw to ""
     }
 
     val root = LinearLayout(this).apply {

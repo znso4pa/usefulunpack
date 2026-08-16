@@ -203,11 +203,16 @@ fn extract_zip_from<R: Read + Seek>(
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
         let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
         // Cap the decompressed output at the declared uncompressed size so a
-        // zip bomb can't exhaust disk.
+        // zip bomb can't exhaust disk. A short read (truncated/corrupt data)
+        // must be detected too — io::copy returns Ok with fewer bytes on EOF,
+        // which would silently leave an incomplete file.
         let size = entry.size();
-        if std::io::copy(&mut entry.take(size), &mut out).is_err() {
-            let _ = std::fs::remove_file(&dest);
-            fail += 1;
+        match std::io::copy(&mut entry.take(size), &mut out) {
+            Ok(written) if written >= size => {}
+            _ => {
+                let _ = std::fs::remove_file(&dest);
+                fail += 1;
+            }
         }
     }
     if selected.is_some() { Ok((selected_count, fail)) } else { Ok((total, fail)) }
@@ -233,24 +238,11 @@ fn extract_zip_volumes(paths: &[&str], output: &str, password: &str, selected: O
         let offsets = reader.disk_offsets();
         let mut archive = zip::ZipArchive::with_disk_offsets(zip::read::Config::default(), reader, &offsets)
             .map_err(|e| format!("ZIP split: {e}"))?;
-        // Cross-disk entries (a file whose data spans two disks) aren't
-        // supported yet — detect and report them instead of producing corrupt
-        // output. Entries wholly inside one disk are fine.
-        let ends = offsets.iter().skip(1).copied().chain(std::iter::once(u64::MAX));
-        use zip::read::HasZipMetadata as _;
-        for i in 0..archive.len() {
-            let e = archive.by_index_raw(i).map_err(|e| format!("{e}"))?;
-            let meta = e.get_metadata();
-            let disk = meta.disk_number_start as usize;
-            let disk_end = ends.clone().nth(disk).unwrap_or(u64::MAX);
-            let entry_end = meta.header_start.checked_add(meta.compressed_size).ok_or("overflow")?;
-            if entry_end > disk_end {
-                return Err(format!(
-                    "ZIP: entry '{}' spans disk boundaries (cross-disk entries not supported)",
-                    meta.file_name
-                ));
-            }
-        }
+        // PKWARE spanned archives are byte splits: each disk continues exactly
+        // where the previous one ended, so an entry whose data crosses a disk
+        // boundary is still contiguous in the concatenated stream. The vendored
+        // zip fork resolves each entry's local header via disk_offsets and
+        // find_content reads compressed_size bytes straight through the seam.
         extract_zip_from_multi(archive, output, password, selected)
     } else {
         extract_zip_from(reader, output, password, selected)
@@ -296,9 +288,14 @@ fn extract_zip_from_multi<R: Read + Seek>(
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
         let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
         let size = entry.size();
-        if std::io::copy(&mut entry.take(size), &mut out).is_err() {
-            let _ = std::fs::remove_file(&dest);
-            fail += 1;
+        // Short read (data crosses a disk boundary that's damaged / truncated,
+        // or a corrupt archive) must fail this entry, not leave a partial file.
+        match std::io::copy(&mut entry.take(size), &mut out) {
+            Ok(written) if written >= size => {}
+            _ => {
+                let _ = std::fs::remove_file(&dest);
+                fail += 1;
+            }
         }
     }
     if selected.is_some() { Ok((selected_count, fail)) } else { Ok((total, fail)) }
@@ -520,7 +517,6 @@ fn zip_modify(input: &str, output: &str, ops: &str, password: &str) -> Result<u3
     let pw = if password.is_empty() { None } else { Some(password.to_string()) };
 
     let mut added = 0u32;
-    let has_pw = !password.is_empty();
     let mut applied = vec![false; op_list.len()]; // tracks which ops touched an entry
     for idx in 0..arc.len() {
         // Name comes from the raw entry (metadata only, no decryption needed).
@@ -561,34 +557,14 @@ fn zip_modify(input: &str, output: &str, ops: &str, password: &str) -> Result<u3
                 }
             }
             None => {
-                if has_pw {
-                    // raw_copy_file would copy the AES bytes but lose the
-                    // encryption flag in the rewritten local header, so a
-                    // passworded archive re-writes untouched members by
-                    // decrypt+re-encrypt (correct, just not byte-copy).
-                    let raw_comp = {
-                        let raw = arc.by_index_raw(idx).map_err(|e| format!("ZIP modify read entry: {e}"))?;
-                        raw.compression()
-                    };
-                    let mut opts = zip::write::FileOptions::<'_, ()>::default()
-                        .compression_method(if raw_comp == zip::CompressionMethod::Stored {
-                            zip::CompressionMethod::Stored
-                        } else {
-                            zip::CompressionMethod::Deflated
-                        })
-                        .compression_level(if raw_comp == zip::CompressionMethod::Stored { None } else { Some(6) });
-                    if let Some(p) = &pw {
-                        opts = opts.with_aes_encryption(zip::AesMode::Aes256, p);
-                    }
-                    zw.start_file(&name, opts).map_err(|e| format!("ZIP modify start {name}: {e}"))?;
-                    let mut entry = arc.by_index_decrypt(idx, password.as_bytes())
-                        .map_err(|e| format!("ZIP modify decrypt {name}: {e}"))?;
-                    std::io::copy(&mut entry, &mut zw).map_err(|e| format!("ZIP modify write {name}: {e}"))?;
-                } else {
-                    // Untouched plain member: byte-copy, preserves method/bytes.
-                    let mut raw_entry = arc.by_index_raw(idx).map_err(|e| format!("ZIP modify copy {name}: {e}"))?;
-                    zw.raw_copy_file(raw_entry).map_err(|e| format!("ZIP modify copy {name}: {e}"))?;
-                }
+                // Untouched member: byte-copy. `raw_copy_file_preserve_encryption`
+                // keeps AES-encrypted entries' flag + AES extra field (bytes stay
+                // byte-identical and still decrypt with the ORIGINAL password),
+                // and plain-copies plain entries. A plain `raw_copy_file` would
+                // drop the AES flag and leave ciphertext mislabeled as plaintext.
+                let mut raw_entry = arc.by_index_raw(idx).map_err(|e| format!("ZIP modify copy {name}: {e}"))?;
+                zw.raw_copy_file_preserve_encryption(raw_entry)
+                    .map_err(|e| format!("ZIP modify copy {name}: {e}"))?;
             }
         }
     }
@@ -977,6 +953,116 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Editing one entry of an AES-encrypted archive must keep the untouched
+    /// AES entries encryptable — `raw_copy_file_preserve_encryption` preserves
+    /// the encrypted flag + AES extra field (raw_copy_file would drop them,
+    /// leaving ciphertext mislabeled as plaintext → corrupt on re-extract).
+    #[test]
+    fn modify_aes_archive_preserves_untouched_entries() {
+        let dir = tmp("modaes");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"aes payload a").unwrap();
+        std::fs::write(dir.join("b.txt"), b"aes payload b").unwrap();
+        let arc = dir.join("in.zip");
+        compress_zip_inner(dir.to_str().unwrap(), arc.to_str().unwrap(), 5, "pw").expect("compress");
+
+        // Replace only b.txt with the archive password.
+        let new_b = dir.join("nb.txt");
+        std::fs::write(&new_b, b"new b").unwrap();
+        let out = dir.join("out.zip");
+        let ops = format!("replace|b.txt|{}", new_b.display());
+        zip_modify(arc.to_str().unwrap(), out.to_str().unwrap(), &ops, "pw").expect("modify aes");
+
+        // The untouched a.txt must still decrypt with the ORIGINAL password and
+        // keep its exact bytes.
+        let outdir = dir.join("x");
+        std::fs::create_dir_all(&outdir).unwrap();
+        let r = extract_zip_with_password(out.to_str().unwrap(), outdir.to_str().unwrap(), "pw");
+        assert!(r.is_ok(), "extract aes after modify: {r:?}");
+        assert_eq!(std::fs::read(outdir.join("a.txt")).unwrap(), b"aes payload a");
+        assert_eq!(std::fs::read(outdir.join("b.txt")).unwrap(), b"new b");
+        // Without the password, extracting must fail (the entry stayed encrypted).
+        let outdir2 = dir.join("y");
+        std::fs::create_dir_all(&outdir2).unwrap();
+        let r2 = extract_zip_with_password(out.to_str().unwrap(), outdir2.to_str().unwrap(), "");
+        assert!(r2.is_err(), "AES entry must still require the password: {r2:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Editing a zip that contains a legacy ZipCrypto-encrypted entry must be
+    /// REFUSED, not silently corrupt the entry. `raw_copy_file` on a non-AES
+    /// encrypted entry would drop the encrypted flag while keeping the cipher
+    /// bytes — the result extracts as garbage.
+    #[test]
+    fn modify_legacy_zipcrypto_archive_rejected() {
+        // Hand-craft a minimal stored zip whose entry sets the encrypted flag
+        // (bit 0 of general-purpose flags) WITHOUT an AES extra field — this is
+        // the legacy ZipCrypto case.
+        let name = b"a.txt";
+        let data = b"zipcrypto payload";
+        // Local file header with flags bit0 = 1.
+        let mut z = Vec::new();
+        z.extend_from_slice(b"PK\x03\x04");
+        z.extend_from_slice(&20u16.to_le_bytes()); // version
+        z.extend_from_slice(&1u16.to_le_bytes()); // flags: encrypted
+        z.extend_from_slice(&0u16.to_le_bytes()); // method = stored
+        z.extend_from_slice(&0u16.to_le_bytes()); // time
+        z.extend_from_slice(&0u16.to_le_bytes()); // date
+        z.extend_from_slice(&0u32.to_le_bytes()); // crc
+        z.extend_from_slice(&(data.len() as u32).to_le_bytes()); // csize
+        z.extend_from_slice(&(data.len() as u32).to_le_bytes()); // usize
+        z.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        z.extend_from_slice(&0u16.to_le_bytes()); // extra len
+        z.extend_from_slice(name);
+        z.extend_from_slice(data);
+        let cd_off = z.len() as u32;
+        // Central directory header with flags bit0 = 1.
+        z.extend_from_slice(b"PK\x01\x02");
+        z.extend_from_slice(&20u16.to_le_bytes()); // version made by
+        z.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        z.extend_from_slice(&1u16.to_le_bytes()); // flags: encrypted
+        z.extend_from_slice(&0u16.to_le_bytes()); // method
+        z.extend_from_slice(&0u16.to_le_bytes()); // time
+        z.extend_from_slice(&0u16.to_le_bytes()); // date
+        z.extend_from_slice(&0u32.to_le_bytes()); // crc
+        z.extend_from_slice(&(data.len() as u32).to_le_bytes()); // csize
+        z.extend_from_slice(&(data.len() as u32).to_le_bytes()); // usize
+        z.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        z.extend_from_slice(&0u16.to_le_bytes()); // extra len
+        z.extend_from_slice(&0u16.to_le_bytes()); // comment len
+        z.extend_from_slice(&0u16.to_le_bytes()); // disk start
+        z.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
+        z.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+        z.extend_from_slice(&0u32.to_le_bytes()); // local header offset
+        z.extend_from_slice(name);
+        let cd_size = (z.len() as u32) - cd_off;
+        z.extend_from_slice(b"PK\x05\x06");
+        z.extend_from_slice(&0u16.to_le_bytes());
+        z.extend_from_slice(&0u16.to_le_bytes());
+        z.extend_from_slice(&1u16.to_le_bytes());
+        z.extend_from_slice(&1u16.to_le_bytes());
+        z.extend_from_slice(&cd_size.to_le_bytes());
+        z.extend_from_slice(&cd_off.to_le_bytes());
+        z.extend_from_slice(&0u16.to_le_bytes());
+
+        let dir = tmp("zipcrypto");
+        std::fs::create_dir_all(&dir).unwrap();
+        let arc = dir.join("in.zip");
+        std::fs::write(&arc, &z).unwrap();
+
+        // Replacing b.txt (not in the archive) triggers the untouched-copy path
+        // for a.txt — which must now fail with the ZipCrypto refusal.
+        let src = dir.join("nb.txt");
+        std::fs::write(&src, b"x").unwrap();
+        let out = dir.join("out.zip");
+        let ops = format!("add|b.txt|{}", src.display());
+        let r = zip_modify(arc.to_str().unwrap(), out.to_str().unwrap(), &ops, "");
+        assert!(r.is_err(), "legacy ZipCrypto archive must not be silently corrupted, got {r:?}");
+        let msg = r.unwrap_err();
+        assert!(msg.contains("ZipCrypto"), "msg must name ZipCrypto: {msg}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A replace/delete targeting a path that isn't in the archive must error,
     /// not silently succeed while changing nothing.
     #[test]
@@ -1166,32 +1252,95 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A PKWARE archive whose entry DATA straddles a disk boundary must be
-    /// rejected with a clear error rather than producing corrupt output.
+    /// A PKWARE archive whose entry DATA straddles a disk boundary extracts
+    /// correctly. Spanned archives are pure byte splits: disk 1 starts with the
+    /// remainder of disk 0's last entry (no per-disk EOCD), so the concatenated
+    /// stream is byte-contiguous and find_content reads through the seam.
     #[test]
-    fn pkware_split_cross_disk_entry_rejected() {
+    fn pkware_split_cross_disk_entry_extracts() {
         let dir = tmp("pkx");
         std::fs::create_dir_all(&dir).unwrap();
-        // a.txt lives on disk 0 and declares 1000 bytes, but disk 0 only holds
-        // the local header + a few bytes — the data runs into disk 1.
-        let a = vec![0x41u8; 1000];
+        // a.txt lives on disk 0 but declares 1000 bytes — disk 0 only holds
+        // the local header + 100 bytes, the remaining 900 bytes continue at the
+        // top of disk 1 (a real byte-split).
+        let a: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
         let lh_a = local_hdr("a.txt", &a);
         let mut z01 = lh_a.clone();
         z01.truncate(lh_a.len() - 900); // disk 0 cuts off 900 bytes of a's data
-        z01.extend_from_slice(&0x06054b50u32.to_le_bytes());
-        z01.extend_from_slice(&[0u8; 18]);
 
-        // disk 1: the rest of a.txt + b.txt
-        let b = b"b data";
+        // disk 1: the rest of a.txt (no EOCD, no padding) + b.txt
+        let b = b"b data on the second disk";
         let mut z02 = Vec::new();
-        z02.extend_from_slice(&a[900..]); // remainder of a.txt
+        z02.extend_from_slice(&a[100..]); // remainder of a.txt
         z02.extend(local_hdr("b.txt", b));
 
-        // final disk: c.txt + central dir + EOCD
+        // final disk: c.txt + central dir + real EOCD. Central-header offsets
+        // are relative to each entry's own disk.
+        let c = b"c data final disk";
+        let mut cd = Vec::new();
+        cd.extend(central_hdr("a.txt", 0, a.len() as u32, 0));
+        // On disk 1, the first 900 bytes are a's continuation, so b's local
+        // header sits at disk-relative offset 900.
+        cd.extend(central_hdr("b.txt", 900, b.len() as u32, 1));
+        cd.extend(central_hdr("c.txt", 0, c.len() as u32, 2));
+        let mut zip_part = local_hdr("c.txt", c);
+        let cd_offset = zip_part.len() as u32;
+        zip_part.extend_from_slice(&cd);
+        zip_part.extend_from_slice(&0x06054b50u32.to_le_bytes());
+        zip_part.extend_from_slice(&0u16.to_le_bytes());
+        zip_part.extend_from_slice(&2u16.to_le_bytes());
+        zip_part.extend_from_slice(&3u16.to_le_bytes());
+        zip_part.extend_from_slice(&3u16.to_le_bytes());
+        zip_part.extend_from_slice(&(cd.len() as u32).to_le_bytes());
+        zip_part.extend_from_slice(&cd_offset.to_le_bytes());
+        zip_part.extend_from_slice(&0u16.to_le_bytes());
+
+        let p1 = dir.join("test.z01");
+        let p2 = dir.join("test.z02");
+        let p3 = dir.join("test.zip");
+        std::fs::write(&p1, &z01).unwrap();
+        std::fs::write(&p2, &z02).unwrap();
+        std::fs::write(&p3, &zip_part).unwrap();
+
+        let paths = vec![p1, p2, p3];
+        let refs: Vec<&str> = paths.iter().map(|p| p.to_str().unwrap()).collect();
+        let list = list_zip_volumes(&refs).expect("list cross-disk");
+        assert!(list.contains("a.txt") && list.contains("b.txt") && list.contains("c.txt"), "list: {list}");
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let (total, fail) = extract_zip_volumes(&refs, out.to_str().unwrap(), "", None).expect("extract cross-disk");
+        assert_eq!(fail, 0, "cross-disk extract must not fail");
+        assert_eq!(total, 3);
+        assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), a, "cross-disk entry data must match");
+        assert_eq!(std::fs::read(out.join("b.txt")).unwrap(), b);
+        assert_eq!(std::fs::read(out.join("c.txt")).unwrap(), c);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A cross-disk archive whose disk 1 is missing its continuation bytes
+    /// must FAIL the affected entry (short read) instead of silently writing a
+    /// truncated file — io::copy returns Ok(fewer bytes) on EOF, so the copy
+    /// must be size-checked.
+    #[test]
+    fn pkware_split_short_read_fails_entry() {
+        let dir = tmp("pkxshort");
+        std::fs::create_dir_all(&dir).unwrap();
+        let a: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        let lh_a = local_hdr("a.txt", &a);
+        let mut z01 = lh_a.clone();
+        z01.truncate(lh_a.len() - 900); // disk 0 holds only 100 bytes of a's data
+
+        // disk 1 is BROKEN: it should carry a[100..] (900 bytes) but only has
+        // half of it — the rest is missing entirely.
+        let b = b"b data";
+        let mut z02 = Vec::new();
+        z02.extend_from_slice(&a[100..550]); // truncated continuation (450B)
+        z02.extend(local_hdr("b.txt", b));
+
         let c = b"c data";
         let mut cd = Vec::new();
         cd.extend(central_hdr("a.txt", 0, a.len() as u32, 0));
-        cd.extend(central_hdr("b.txt", 0, b.len() as u32, 1));
+        cd.extend(central_hdr("b.txt", 450, b.len() as u32, 1));
         cd.extend(central_hdr("c.txt", 0, c.len() as u32, 2));
         let mut zip_part = local_hdr("c.txt", c);
         let cd_offset = zip_part.len() as u32;
@@ -1216,10 +1365,12 @@ mod tests {
         let refs: Vec<&str> = paths.iter().map(|p| p.to_str().unwrap()).collect();
         let out = dir.join("out");
         std::fs::create_dir_all(&out).unwrap();
-        let r = extract_zip_volumes(&refs, out.to_str().unwrap(), "", None);
-        assert!(r.is_err(), "cross-disk entry must be rejected, got {r:?}");
-        let msg = r.unwrap_err();
-        assert!(msg.contains("spans disk boundaries"), "msg: {msg}");
+        let (total, fail) = extract_zip_volumes(&refs, out.to_str().unwrap(), "", None).expect("extract");
+        // a.txt must fail (short read) and leave NO partial file; b/c succeed.
+        assert_eq!(fail, 1, "short-read entry must fail: total={total} fail={fail}");
+        assert!(!out.join("a.txt").exists(), "no partial a.txt may be left");
+        assert_eq!(std::fs::read(out.join("b.txt")).unwrap(), b);
+        assert_eq!(std::fs::read(out.join("c.txt")).unwrap(), c);
         std::fs::remove_dir_all(&dir).ok();
     }
 

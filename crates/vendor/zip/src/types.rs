@@ -1135,7 +1135,7 @@ impl Zip64ExtraFieldBlock {
 ///
 /// According to the [specification](https://www.winzip.com/win/en/aes_info.html#winzip11) AE-2
 /// does not make use of the CRC check.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u16)]
 pub enum AesVendorVersion {
     Ae1 = 0x0001,

@@ -3,6 +3,68 @@ use super::{huffman, Error, Result};
 use std::collections::VecDeque;
 use std::io::Read;
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Cooperative cancellation for whole-member buffered decode. The buffered
+/// path (members ≤ the decode limit) decodes a whole member into RAM before
+/// writing it, so a cancel request only reaches the writer on the NEXT member.
+/// Checking this flag per compressed block lets a user cancel a large buffered
+/// member promptly instead of waiting for it to finish. The single-operation
+/// model (app holds one operation at a time) keeps this global safe.
+static DECODE_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// Sets or clears the whole-member decode cancel flag.
+pub fn set_decode_cancel(cancelled: bool) {
+    DECODE_CANCEL.store(cancelled, Ordering::SeqCst);
+}
+
+/// Returns whether a whole-member decode was cancelled.
+pub fn decode_cancelled() -> bool {
+    DECODE_CANCEL.load(Ordering::SeqCst)
+}
+
+/// Bytes produced by whole-member buffered decodes since the last reset. The
+/// app's progress dialog shows no movement while a ≤limit member decodes into
+/// RAM (nothing is written until it finishes), so the decoder reports its
+/// output here and the caller mirrors it into the UI progress. Reset to 0 when
+/// a new member starts decoding.
+static DECODE_PROGRESS: AtomicU64 = AtomicU64::new(0);
+
+/// Resets the whole-member decode progress counter.
+pub fn reset_decode_progress() {
+    DECODE_PROGRESS.store(0, Ordering::SeqCst);
+}
+
+/// Accumulates [bytes] of freshly decoded output into the whole-member decode
+/// progress counter.
+pub fn add_decode_progress(bytes: u64) {
+    DECODE_PROGRESS.fetch_add(bytes, Ordering::Relaxed);
+}
+
+/// Returns the bytes decoded so far by whole-member decodes.
+pub fn decode_progress() -> u64 {
+    DECODE_PROGRESS.load(Ordering::Relaxed)
+}
+
+/// True while a whole-member (buffered) decode is running. Streaming decodes
+/// feed the per-file progress bar via the caller's writer (bytes counted on
+/// write), so the progress watcher must mirror [decode_progress] into the bar
+/// ONLY during a buffered decode — otherwise a stale buffered value would
+/// clobber the write-driven progress of a large streamed member.
+static DECODE_BUFFERED_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Returns whether a whole-member buffered decode is currently in progress.
+pub fn decode_buffered_active() -> bool {
+    DECODE_BUFFERED_ACTIVE.load(Ordering::SeqCst)
+}
+
+/// Clears the buffered-decode flag on scope exit (success or error).
+struct DecodeActiveGuard;
+impl Drop for DecodeActiveGuard {
+    fn drop(&mut self) {
+        DECODE_BUFFERED_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
 
 pub const LEVEL_TABLE_SIZE: usize = 20;
 pub const MAIN_TABLE_SIZE: usize = 306;
@@ -1542,8 +1604,15 @@ impl Unpack50Decoder {
 
         let mut output = Vec::with_capacity(output_size.min(MAX_INITIAL_OUTPUT_CAPACITY));
         let mut filters = Vec::new();
+        reset_decode_progress();
+        DECODE_BUFFERED_ACTIVE.store(true, Ordering::SeqCst);
+        let _active_guard = DecodeActiveGuard;
+        let mut last_progress_len = 0usize;
 
         loop {
+            if decode_cancelled() {
+                return Err(crate::codec::Error::Cancelled);
+            }
             let block = read_compressed_block(input)?;
             let payload = block.payload.as_slice();
             let mut payload_bit_pos = 0;
@@ -1639,6 +1708,12 @@ impl Unpack50Decoder {
             }
 
             self.tables = Some(tables);
+            // Report decoded output so the progress dialog moves even while the
+            // whole-member decode is still buffering (nothing is written yet).
+            // Only the delta from the last block — add_decode_progress is
+            // additive, so cumulative values would over-count.
+            add_decode_progress((output.len() - last_progress_len) as u64);
+            last_progress_len = output.len();
             if block.header.is_last || output.len() >= output_size {
                 break;
             }
@@ -1698,6 +1773,9 @@ impl Unpack50Decoder {
         );
 
         loop {
+            if decode_cancelled() {
+                return Err(Error::Cancelled.into());
+            }
             let block = read_compressed_block(input)?;
             let payload = block.payload.as_slice();
             let mut payload_bit_pos = 0;
@@ -1712,7 +1790,6 @@ impl Unpack50Decoder {
                 .ok_or(Error::InvalidData("RAR 5 block reuses missing tables"))?;
             let mut bits = BitReader::new(payload);
             bits.bit_pos = payload_bit_pos;
-
             while bits.bit_pos < block.header.payload_bits && output.written() < output_size {
                 let symbol = tables.main.decode(&mut bits)?;
                 match symbol {
@@ -2454,12 +2531,20 @@ pub fn slot_to_distance(slot: usize, extra_bits: u32) -> Result<usize> {
     Ok((((2 | (slot & 1)) << bit_count) | extra_bits as usize) + 1)
 }
 
+/// Lookahead width for canonical-Huffman decode. Most RAR5 symbol codes are
+/// ≤ 8 bits, so a single peek of this many bits resolves them without walking
+/// 1..15 bits one at a time. Longer codes fall back to the bit-by-bit path.
+const HUFF_LOOKAHEAD: usize = 8;
+
 #[derive(Debug, Clone)]
 pub struct HuffmanTable {
     symbols: Vec<HuffmanSymbol>,
     first_code: [u16; 16],
     first_index: [usize; 16],
     counts: [u16; 16],
+    // lookup[prefix] = (symbol << 4) | code_len for codes with len <= 8.
+    // Zero = no short-code matches here (must decode bit-by-bit).
+    lookup: Vec<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -2512,11 +2597,29 @@ impl HuffmanTable {
             });
         }
         symbols.sort_by_key(|item| (item.len, item.code, item.symbol));
+
+        // Build the lookahead table: every 8-bit prefix that a code of len ≤ 8
+        // is a prefix of maps to (symbol, len). Prefixes of longer codes stay 0
+        // and take the bit-by-bit path.
+        let mut lookup = vec![0u16; 1 << HUFF_LOOKAHEAD];
+        for s in &symbols {
+            if s.len <= HUFF_LOOKAHEAD as u8 {
+                let entry = ((s.symbol as u16) << 4) | s.len as u16;
+                let shift = HUFF_LOOKAHEAD - s.len as usize;
+                let base = (s.code as usize) << shift;
+                let span = 1usize << shift;
+                for p in 0..span {
+                    lookup[base + p] = entry;
+                }
+            }
+        }
+
         Ok(Self {
             symbols,
             first_code,
             first_index,
             counts: count,
+            lookup,
         })
     }
 
@@ -2528,6 +2631,20 @@ impl HuffmanTable {
         if self.symbols.is_empty() {
             return Err(Error::InvalidData("RAR 5 empty Huffman table"));
         }
+        // Fast path: peek 8 bits and resolve a short (≤ 8 bit) code in one
+        // lookup instead of walking bits one at a time. entry = (symbol<<4)|len.
+        // If fewer than 8 bits remain (last symbol of the stream), peek errors —
+        // fall through to the bit-by-bit path which needs only the code's own
+        // length.
+        let mut entry = 0u16;
+        if let Ok(v) = bits.peek_bits(HUFF_LOOKAHEAD as u8) {
+            entry = self.lookup[v as usize];
+        }
+        if entry != 0 {
+            bits.skip_bits((entry & 0xF) as u8)?;
+            return Ok((entry >> 4) as usize);
+        }
+        // Longer codes (> 8 bits): walk bit-by-bit against the canonical table.
         let mut code = 0u16;
         for len in 1..=15 {
             code = (code << 1) | bits.read_bits(1)? as u16;
@@ -2591,6 +2708,28 @@ impl<'a> BitReader<'a> {
         }
 
         Ok(value)
+    }
+
+    /// Reads [count] bits without advancing the position (for lookahead
+    /// Huffman-table decodes, which peek a branch then skip the consumed code).
+    fn peek_bits(&mut self, count: u8) -> Result<u32> {
+        let saved = self.bit_pos;
+        let value = self.read_bits(count);
+        self.bit_pos = saved;
+        value
+    }
+
+    /// Advances the bit position by [count] without reading (pairs with
+    /// [Self::peek_bits] once a peeked Huffman code is resolved).
+    fn skip_bits(&mut self, count: u8) -> Result<()> {
+        self.bit_pos = self
+            .bit_pos
+            .checked_add(usize::from(count))
+            .ok_or(Error::NeedMoreInput)?;
+        if self.bit_pos > self.input.len() * 8 {
+            return Err(Error::NeedMoreInput);
+        }
+        Ok(())
     }
 }
 

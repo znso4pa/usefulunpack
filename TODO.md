@@ -1,5 +1,106 @@
 # TODO
 
+## v5.12.0 (PKWARE 跨盘 + ZIP 保 AES + scan 降误报 + md/rtf 渲染 + UI + 深度 debug)
+
+### A 组 — PKWARE 跨盘条目完整支持
+
+- [x] **移除跨盘硬拒绝** — `extract_zip_volumes` 不再检测 `entry_end > disk_end` 报错；PKWARE 多盘 zip 是纯字节切分（盘 N+1 紧接盘 N 数据续段），`ConcatReader` 拼接流下 `find_content` 的 `take(compressed_size)` 天然读穿盘界
+- [x] **回归测试** — 原 `pkware_split_cross_disk_entry_rejected` 改为 `pkware_split_cross_disk_entry_extracts`（跨盘 a.txt 1000B + b/c 三文件 list + extract byte-exact；中央目录偏移按盘相对：b 在盘 1 偏移 900）；`pkware_split_modify_rejected` 保留（zipModify 仍拒多盘）
+
+### B 组 — ZIP 加密条目编辑保 AES
+
+- [x] **vendored zip `AesPassthrough`** — `EncryptWith::AesPassthrough`：raw-copy 路径按源条目 AES 模式/厂商版本/真实压缩方法写头（加密标志 + 0x9901 extra），字节原样通过（不再走 AesWriter 二次加密）；`AesVendorVersion` 补 `Eq/PartialEq`
+- [x] **zipModify 统一 raw-copy** — 未触及条目一律 `raw_copy_file_preserve_encryption`：AES 条目保加密标志（仍可原密码解）、明文条目纯字节复制；删除原"密码归档解密重写"路径（重压缩、非字节原样）
+- [x] **回归测试** — `modify_aes_archive_preserves_untouched_entries`：AES 归档只改 b.txt → a.txt 原密码可解 + 字节一致；无密码提取仍失败（条目保持加密）
+
+### C 组 — scan-core xz/lzma 解压 dry-run（降误报）
+
+- [x] **xz dry-run** — `xz_dry_run`（xz2 `XzDecoder`，1MB 有界输出，出错即拒）；`validate_xz` 头部 CRC 通过后要求真实解码；真实 xz 样本接受、垃圾/随机拒绝
+- [x] **lzma dry-run** — `lzma_dry_run`（lzma-rs `lzma_decompress`，输入有界，截断但产出 ≥256B 接受）；`validate_lzma` 接入；`lzma_preset0_dict_validates`/`real_world_compressed_samples` 改用真实压缩流
+- [x] scan-core 新增依赖 `xz2` + `lzma-rs`（xz2 挂 liblzma，.so 略增可接受）
+
+### D 组 — -hp 头加密 RAR5 兜底
+
+- [x] **`validate_rar5_hp`** — 魔数 + 明文解析失败时退化为"仅魔数 + 全文件区间"（MEDIUM 置信度）；与明文 RAR5（HIGH，同魔数）同偏移共存，post-pass 高置信度胜出；明文不再被兜底重复命中
+- [x] **回归测试** — `rar5_hp_header_encrypted_reported_by_fallback`（-hp 魔数+密文：明文拒、兜底报全文件；明文 RAR 兜底不报）
+
+### E 组 — Markdown/RTF 富文本预览
+
+- [x] **轻量渲染器** `ui/RichTextRender.kt` — `renderMarkdown`（标题/粗斜体/行内码/围栏代码块/列表/引用/链接/分隔线，字符偏移不变、搜索高亮可叠加）+ `stripRtf`（剥控制字/分组，`\par`→换行、`\'hh`、`\uN`）
+- [x] **预览内渲染开关行** — md/markdown/rtf 默认富文本渲染，点击切换纯文本；编码行下新增"渲染"行；4 语言 string（preview_rich/on/off）
+
+### F 组 — UI 改进 + 深度 debug
+
+- [x] **批量/合并压缩内联选项流** — `showCompressOptionsDialog` 重构为共享（`onResolved(level, split)`），单文件/批量合并/批量分别统一走「格式 → 选项(等级+分卷)」流；split 透传 `compressDispatch`
+- [x] **批量栏窄屏横滚** — 批量操作栏按钮行包 `HorizontalScrollView`（计数固定左，按钮可横滚）；预览标题栏标题 `ellipsize=MIDDLE` 防按钮被挤出
+- [x] **JNI 接口一致性核对** — 脚本比对 279 个 Rust `Java_` 导出 vs 278 个 Kotlin `external fun`：补齐 `ScanCore.scanCancelled()` 声明
+- [x] 深度 debug：跨盘测试真实字节布局核对、AES passthrough 头写入验证、xz/lzma dry-run 边界、-hp 与明文同魔数共存 post-pass
+
+### 第一轮全面 debug（既有代码 + 接口 + 真实语料）
+
+- [x] **xz/lzma dry-run 嵌入宿主漏报（严重回归修复）** — 嵌入宿主流的 xz 解码完真实数据后撞尾随字节 Err → 现 produced>0 接受；lzma-rs 环形缓冲只在 finish 才 flush（嵌入必 sink=0），流式头(0xFFFF)跳过 dry-run 回退头部校验（否则嵌入全漏）；补 `xz_embedded_in_host`/`lzma_embedded_in_host` 回归（此前仅 gzip 有嵌入测试，回归未被捕获）
+- [x] **zip 解压短读检测** — `io::copy` 返回字节 < size → 删半成品 + fail（跨盘/损坏不再静默写不完整文件）；回归 `pkware_split_short_read_fails_entry`
+- [x] **批量栏 count 布局** — count 固定宽(WRAP/weight0)，scroll 占剩余；预览标题 ellipsize
+- [x] **传统 ZipCrypto 编辑拒绝** — `raw_copy_file_preserve_encryption` 对非 AES 加密条目返回错误（不静默损坏）；回归 `modify_legacy_zipcrypto_archive_rejected`
+- [x] **-hp 去重上移 scan 级** — `validate_rar5_hp` 不再内部调 `validate_rar5`（重复 EOF 搜索），同 offset 由 post-pass 高置信度胜出；scan 级测试确认明文 HIGH 唯一、无重复 -hp 命中
+- [x] 真实语料验证：8 格式真实样本精确命中+精确 size；嵌入宿主 xz/lzma 修复后全命中；RAR 明文/密码/-hp 头加密全正确；30MB 随机零误报；120 变异文件零崩溃；300MB 扫描 467ms 无 OOM；嵌入 zip/7z 精确切割逐字节一致
+- [x] JNI 一致性：279 个 Kotlin extern = 279 个 Rust `Java_` 导出零孤儿、返回类型零差异
+
+### 真机回归修复（荣耀，/sdcard/1）
+
+- [x] **① cross.z02 误判 rar（红色）** — `isVolumeFile` 只嗅探文件自身魔数，`.z02` 非首卷无 PK 魔数 → OLD_RAR_RE 误判 rar。修：`.zNN` 卷名先解析完整卷集(`resolveZipVolumes`)判首卷魔数，有 PK 兄弟才判 zip；rar 分支仅在无 zip 卷集时生效
+- [x] **② zipcrypto.zip 无密码（素材问题，非 app bug）** — macOS Python zipfile `setpassword` 写入不加密(flag_bits=0)，文件实为明文。真机改用系统 `zip -e` 生成的真 ZipCrypto(flag_bits 0x9)
+- [x] **③ test_hp.rar 打不开/解压不了（完整支持 -hp）** — `rar_needs_password` 用无密码 `read_path` 读 -hp 头失败→Kotlin 吞异常返 false→不弹密码框；`list_rar_inner` 也无密码读头失败。修：needs_password 读头失败返 true（-hp 即需密码信号）+ rar-core 密码版 list(`list_rar_inner_with_pw`/volumes)+ JNI `rarListEntriesWithPassword`/`rarListEntriesVolumesWithPassword` + Kotlin previewArchive/BatchExtract 透传密码；回归 `needs_password_true_on_unparseable_header`
+- [x] **④ 使用文档全粗/同色同号（AAPT2 折叠字面换行）** — help_formats/tutorials 的 `<item>` 内用字面换行，AAPT2 编译折叠成空格 → `parseItem` 的 `indexOf('\n')` 永远失败 → 整条全当标题(accent 加粗)、无正文。修：4 语言 31 条字面换行改 `\n` 转义(实测 `\n` 转义编译后保留 0x0a)+ disclaimer_body 同修 + `parseItem` 无换行启发式兜底(`—`/`-` 切分)；字号 14f 标题 accent 加粗 / 12f 正文 secondary + 空行
+- [x] 部署：build.sh 全量 + adb install + 素材推送 /sdcard/1
+
+### 第二轮真机 debug（RTF + rar 取消 + 进度）
+
+- [x] **RTF 渲染偏移错乱** — `\b0`/`\i0` 的 `0` 被数字参数解析吞掉 → cmd 变 "b"/"i" → 开关反转(加粗/斜体圈错范围)。修：b/i 后紧跟 0/1 并入 cmd(`b0`/`b1`/`i0`/`i1` 显式处理)；模拟验证 `hello \b bold\b0 rtf` → bold 正确加粗
+- [x] **rar 解压取消卡住** — rars 整块解码(`decoded_file_data`/`decode_split`)期间无取消检查 → 取消要等当前 ≤64MB 成员解完才响应。修：rars fork `codec/rar50.rs` 加 `DECODE_CANCEL` 静态标志 + 解码循环每块检查；rar-core `run_with_cancel_monitor` 桥接 `extract_progress::cancelled()`(50ms 轮询,`done` 标志防监视线程不退出)；取消响应回归测试
+- [x] **进度框取消时立即 dismiss** — `PollingProgressDialog` onCancel 时立即 dismiss(不再等 worker 返回),worker 后台清理 + finally 释放锁
+- [ ] **rar 进度跳变(格式特性)** — ≤64MB 成员走整块解压+一次写,进度在成员边界跳变;大成员(>64MB)流式进度正常。可接受,记录
+- [ ] **LZ4 列表 0b(已知限制)** — 无 Content Size flag 的 LZ4 无法预知解压大小(同类 lzma),显示 0b
+- [ ] **OperationLock 密码重试死锁(待用户复现决策)** — 解压失败弹密码重试框时外层锁未释放 → 重试报 busy;用户先自行试错,后续再修
+
+### 第三轮真机 debug（rar 性能 + 进度 + 编码 + 压缩 UI）
+
+- [x] **rar 解码器加速(Huffman 查表)** — RAR5 逐位 Huffman 解码(纯 Rust,~52-100MB/s)是性能瓶颈。试过 BitReader 64-bit 缓冲(反而慢 10%,回退);最终 8-bit lookahead 查表:短码(≤8 位)一次 peek 查表命中,长码 fallback 逐位;BitReader 加 `peek_bits`/`skip_bits`。文本数据解压 ~30% 提升(101→133MB/s),rars 598 测试全绿
+- [x] **rar 进度条双重计数(1.78G/1.34G)** — `run_with_cancel_monitor` 喂 `add_bytes`(整块解码进度)+ ProgressWriter 写盘再喂 → 超 total。修：common 加 `set_file_bytes`(只设当前文件底部条);monitor 改用 `set_file_bytes(decode_progress)` → 顶部只由写盘喂,不再超 100%
+- [x] **settings_chinese.txt 误判 GBK** — `detectBestEncoding` 对 SJIS 短文本 GBK 碰巧更干净 → 误选。修：优先 SJIS(galgame 惯例),仅当 GBK 替换字符显著更少(≥25% 优势)才选 GBK
+- [x] **LZ4 无 content size 列表显示未知** — 无 Content Size flag 的 LZ4 无法预知解压大小(硬伤),列表返回 -1,前端 `fmt(-1)` 显示 "?"(非误导的 0 B)
+- [x] **压缩分卷类型歧义** — 分卷行标注 `.001/.002` 字节分卷(7-Zip 语义,非 PKWARE z01 真分卷,writer 不生成 z01),消除歧义;内联压缩选项选择分卷后行文字即时刷新
+- [x] 注: 用户反馈 rar 解压单文件/txt 预览慢是 **solid 归档格式固有**(无随机访问索引,解压单条目=顺序解码之前所有 solid 块),zip/7z 有中央目录所以快;加密多小文件每文件 PBKDF2 亦固有
+
+### 第四轮 debug（压缩选项 UI + rar 进度 + RTF 偏移 + 编码优先修正）
+
+- [x] **压缩等级行切换不刷新** — 内联压缩选项对话框等级行 text 创建时算一次,onClick 只改 `level` 变量 → 切"低→中等"后行仍显示"压缩等级：低"。修：持 `levelRow` 引用,选择回调里同步刷新行文字(与分卷行 be51fa1 修法一致)
+- [x] **内联分卷缺"自定义"** — 内联对话框单选项只有 不分卷/1MB/100MB/1GB,无自定义入口(设置页有)。修：追加 `split_custom`(index 4),checked 索引按值 when 匹配(自定义设置值高亮"自定义"而非误高亮"不分卷"),index 4 弹 MB/GB 切换+1~2048 校验输入框(镜像设置页),确认回写 `chosenSplit` 并刷新行
+- [x] **rar 大成员(>64MB 流式)底部进度条冻结** — `run_with_cancel_monitor` 无条件 `set_file_bytes(decode_progress())`,但流式路径从不更新 decode_progress → 陈旧值(0 或上个成员 size)每 50ms 覆盖写盘驱动的 FILE_BYTES → 大成员底部条卡住/错乱。修：rars 加 `DECODE_BUFFERED_ACTIVE` 标志(Drop guard 包裹整块解码函数),monitor 仅在 buffered-active 时镜像 decode_progress;流式成员交给 ProgressWriter 写盘计数
+- [x] **RTF 样式 span 偏移错位/丢失** — `text.replace("\n{3,}","\n\n").trim()` 后 spans 只过滤不重算 → 末尾 `\par}` 被 trim 后末段 span 丢弃、前导空白/折叠处错位。修：构建最终文本时记录 输出位置→源位置 映射(srcIndex 严格递增),span 经二分映射重算后应用
+- [x] **detectBestEncoding SJIS 优先为死逻辑** — 第三轮 `bG*3 > bS*4` 阈值在 `bS > bG`(唯一生效场景)时恒假 → 行为与旧代码完全一致(GBK 只要坏字符更少就赢),"优先 SJIS"未实现。修：`bG*2 < bS`(GBK 坏字符不足 SJIS 一半才选 GBK)
+
+### 第五轮 debug（真实 1.1GB rar 复现：进度冻结根因 + 非 solid 随机访问）
+
+- [x] **rar 顶条冻结根因：`extract_to` 丢弃 rar_opts** — 用真实 1.1GB 非 solid rar(46 成员)探针复现：cg.ypf(392MB)解压时顶条卡死(写盘瞬间才跳)、底条靠 watcher 走。根因：`extract_rar_inner` 调 `archive.extract_to(pw,…)` → rars 内部 `read_options()` 用默认 **512MB** 缓冲上限,`rar_opts` 设的 64MB 只在解析时生效 → 392MB 成员也整块缓冲。修：单文件路径改用 `extract_to_with_options(rar_opts(pw),…)`(分卷路径原本就传了)。修后大成员流式,顶条字节级平滑;探针验证 顶条最终精确 = total(无漏/无双计)
+- [x] **rar 进度计数重构** — 顶条一律由**写盘**驱动(精确,不经 50ms 轮询,避免"一次轮询内解完的成员漏计"——实测 watcher 喂顶条漏 17.3MB);底条由 buffered 解码的 `decode_progress` 喂(watcher)。common 加 `add_top_bytes` + `ProgressWriter::extract_top`(只计顶条),rar_writer/快路径对缓冲成员用 extract_top(写盘只计顶条,底条归 watcher),流式/存储成员用 ProgressWriter(双条)
+- [x] **非 solid 选中解压/预览随机访问(快路径)** — RAR 无中央目录,顺序 `extract_to` 解码所有成员(未选中也解) → 预览排后 txt = 解码前面全部(1.3GB 归档里点最后一个 txt = 解 1.3GB)。修：非 solid(且无 split/redirection)时遍历 `files()` 只对选中成员调 `write_to`,未选中零解码(rars 每成员独立 data_range,天然随机访问)。fork 补 `FileHeader::write_to_with_options`(带 64MB 限制,大选中成员流式不 OOM)。真实归档实测：member #38/#45(前面有 392MB cg.ypf 等)选中解压 **0.06s**(原顺序路径 255s)。solid/分卷/rar13 回退顺序
+- [x] 真实归档回归：全量解压 46/46 成功,`extract_progress::bytes() == total_bytes()` 精确命中;rars rar50 62 测试 + rar-core 7 测试全绿
+
+### 待处理（延续 + v5.12.1 计划）
+
+- [x] **7z 包内修改（编辑闭环）** — 复用 xp3/pfs/nsa/iso 流程：全量解压→改脚本→`szCompress` 重压为 `原名-cn.7z` 副本(uniqueFile 叠加 (1))
+- [x] **zip 编辑改 -cn 副本** — `zipReplaceEntry`/`zipDeleteEntries`/`zipAddEntry` 从覆盖原文件改为 `原名-cn.zip` 副本（不再破坏原归档）
+- [x] **YPF 封包（带 XOR+SJIS）** — 逆向 SwapTable(len→marker) + XOR(0xFF) + ShiftJIS 文件名编码；`ypfCreateArchive` + 压缩路由 + 编辑闭环；自往返测试通过；待真实 YPF 样本校准短名(≤8 字节)marker 编码
+- [x] **RTF 富文本增强** — `stripRtf` 剥控制字后映射 `\b`/`\i` → BOLD/ITALIC span
+- [ ] **深嵌大 zip（wontfix）** — EOCD 前向 256MiB 封顶 + 文件尾 64KB 回退覆盖两类场景；深嵌中间且压缩体 >256MB 的 zip 仍漏（binwalk 同病，代价不值）
+- [ ] **进度静态量每操作局部上下文** — 全局 Atomic 静态量在单操作模型下安全；要真并发再改
+
+### v5.13.0 计划（多核并行解压）
+
+- [ ] **rar 非 solid 多线程/多核并行解压** — 非 solid 多成员 rar 用 `std::thread::scope` 起 N 个 worker(`N = min(available_parallelism,4)`,可设置),每 worker 对领到的成员调 `write_to_with_options`(流式、独立 data_range),共享 AtomicUsize 索引;顶条靠写盘原子累加精确聚合,底条改为"在飞聚合"(各 worker 上报 size/bytes,协调线程求和,`common` 需补 `set_file_total`);取消各 worker 成员间检查。solid/单大文件/分卷/rar13 无收益或格式限制,回退顺序。zip 并行(各 worker 独立开归档)也归 5.13
+- [ ] 设置项「解压线程数」自动/1/2/4(AppSettings, 存 pref `extract_threads`),JNI 走 `rarSetThreads(i32)`(0=自动)与 `zipSetEncoding` 同款模式;strings ×4
+
 ## v5.11.0 (Rust 加固 + 封包/转换/编辑扩展 + PKWARE 多盘 + 深度 debug + 真机回归)
 
 ### A 组 — 单文件解压输出封顶（防解压炸弹）

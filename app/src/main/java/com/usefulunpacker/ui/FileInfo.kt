@@ -61,6 +61,7 @@ internal fun MainActivity.showFileInfoDialog(f: File) {
                 val md5 = hashFile(f, "MD5")
                 val sha = hashFile(f, "SHA-256")
                 runOnUiThread {
+                    if (isFinishing || !dlg.isShowing) return@runOnUiThread
                     tvMd5Val.text = md5; btnMd5.isEnabled = true
                     btnMd5.setOnClickListener { copyToClipboard(this, md5); toast(getString(R.string.msg_hash_copied)) }
                     tvShaVal.text = sha; btnSha.isEnabled = true
@@ -68,6 +69,7 @@ internal fun MainActivity.showFileInfoDialog(f: File) {
                 }
             } catch (_: Exception) {
                 runOnUiThread {
+                    if (isFinishing || !dlg.isShowing) return@runOnUiThread
                     tvMd5Val.text = getString(R.string.calc_failed); tvShaVal.text = getString(R.string.calc_failed)
                 }
             }

@@ -26,10 +26,10 @@ macro_rules! progress_store {
             static CANCEL: AtomicBool = AtomicBool::new(false);
 
             pub fn reset(total_bytes: u64) {
-                BYTES.store(0, Ordering::SeqCst);
-                TOTAL.store(total_bytes, Ordering::SeqCst);
-                FILE_BYTES.store(0, Ordering::SeqCst);
-                FILE_TOTAL.store(0, Ordering::SeqCst);
+                BYTES.store(0, Ordering::Relaxed);
+                TOTAL.store(total_bytes, Ordering::Relaxed);
+                FILE_BYTES.store(0, Ordering::Relaxed);
+                FILE_TOTAL.store(0, Ordering::Relaxed);
                 // NOTE: the CANCEL flag is deliberately preserved — a cancel
                 // pressed during a pre-scan must survive into the extraction
                 // phase. Call clear_cancel() at the very start of a fresh
@@ -40,20 +40,20 @@ macro_rules! progress_store {
             /// Clears the cancel flag. Call once at the start of each new
             /// operation (JNI entry, before the pre-scan) so a stale cancel
             /// from a previous operation can't poison this one.
-            pub fn clear_cancel() { CANCEL.store(false, Ordering::SeqCst); }
+            pub fn clear_cancel() { CANCEL.store(false, Ordering::Relaxed); }
 
             /// Marks the start of a new member: resets the per-file byte
             /// counter and records the member's total size. Feed per-member
             /// sizes here from each format's extract/compress loop.
             pub fn set_file(total: u64) {
-                FILE_TOTAL.store(total, Ordering::SeqCst);
-                FILE_BYTES.store(0, Ordering::SeqCst);
+                FILE_TOTAL.store(total, Ordering::Relaxed);
+                FILE_BYTES.store(0, Ordering::Relaxed);
             }
 
             /// Accumulates into both the overall and the current-file counter.
             pub fn add_bytes(n: u64) {
-                BYTES.fetch_add(n, Ordering::SeqCst);
-                FILE_BYTES.fetch_add(n, Ordering::SeqCst);
+                BYTES.fetch_add(n, Ordering::Relaxed);
+                FILE_BYTES.fetch_add(n, Ordering::Relaxed);
             }
 
             /// Accumulates into the OVERALL counter only (the current-file
@@ -62,7 +62,7 @@ macro_rules! progress_store {
             /// the total bar without double-counting the current-file bar,
             /// which the decode watcher already drives.
             pub fn add_top_bytes(n: u64) {
-                BYTES.fetch_add(n, Ordering::SeqCst);
+                BYTES.fetch_add(n, Ordering::Relaxed);
             }
 
             /// Sets the current-file byte counter directly (no overall change).
@@ -70,17 +70,17 @@ macro_rules! progress_store {
             /// RAM before anything is written — the overall counter is fed by
             /// the writer later, so this must NOT double-count.
             pub fn set_file_bytes(n: u64) {
-                FILE_BYTES.store(n, Ordering::SeqCst);
+                FILE_BYTES.store(n, Ordering::Relaxed);
             }
 
             pub fn set_name(name: &str) { *FNAME.lock().unwrap_or_else(|e| e.into_inner()) = name.to_string(); }
 
-            pub fn cancel() { CANCEL.store(true, Ordering::SeqCst); }
-            pub fn cancelled() -> bool { CANCEL.load(Ordering::SeqCst) }
-            pub fn bytes() -> u64 { BYTES.load(Ordering::SeqCst) }
-            pub fn total_bytes() -> u64 { TOTAL.load(Ordering::SeqCst) }
-            pub fn file_bytes() -> u64 { FILE_BYTES.load(Ordering::SeqCst) }
-            pub fn file_total() -> u64 { FILE_TOTAL.load(Ordering::SeqCst) }
+            pub fn cancel() { CANCEL.store(true, Ordering::Relaxed); }
+            pub fn cancelled() -> bool { CANCEL.load(Ordering::Relaxed) }
+            pub fn bytes() -> u64 { BYTES.load(Ordering::Relaxed) }
+            pub fn total_bytes() -> u64 { TOTAL.load(Ordering::Relaxed) }
+            pub fn file_bytes() -> u64 { FILE_BYTES.load(Ordering::Relaxed) }
+            pub fn file_total() -> u64 { FILE_TOTAL.load(Ordering::Relaxed) }
             pub fn name() -> String { FNAME.lock().unwrap_or_else(|e| e.into_inner()).clone() }
         }
     }

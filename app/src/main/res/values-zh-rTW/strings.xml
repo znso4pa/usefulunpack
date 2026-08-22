@@ -14,7 +14,13 @@
     <string name="msg_editor_too_large">檔案過大,無法在應用程式內編輯(&gt;2MB)</string>
     <string name="msg_tjs_compiled">編譯後的 TJS 腳本（TJS2 二進位）,無法以文字預覽</string>
     <string name="edit_archive">編輯</string>
-    <string name="edit_only_pack">僅支援可封包的格式（XP3/PFS/ISO/NSA）</string>
+    <string name="action_more">更多</string>
+    <string name="edit_only_pack">僅支援可封包的格式（XP3/PFS/ISO/NSA/7Z/YPF）</string>
+    <string name="zip_manage_only_zip">僅 ZIP 封存支援條目管理</string>
+    <string name="convert_only_iso">僅 ISO 映像支援 CSO 轉換</string>
+    <string name="nested_archive_title">巢狀封存</string>
+    <string name="nested_archive_msg">在 %2$s 中發現巢狀封存 %1$s，是否在新視窗中預覽？</string>
+    <string name="nested_archive_open">開啟</string>
     <string name="edit_archive_title">編輯腳本</string>
     <string name="edit_repack">重新打包</string>
     <string name="edit_no_scripts">找不到可編輯的腳本</string>
@@ -27,6 +33,31 @@
     <string name="action_delete">🗑️ 刪除</string>
     <string name="action_move">✂️ 移動</string>
     <string name="action_copy_path">📋 複製路徑</string>
+    <string name="action_copy">📄 複製</string>
+    <string name="msg_copy_result">複製完成: %1$d 成功, %2$d 失敗</string>
+    <string name="action_choose_dir">📁 選擇目錄</string>
+    <string name="editor_unsaved_changes">未儲存的變更</string>
+    <string name="editor_restore_prompt">發現未儲存的編輯內容，是否復原？</string>
+    <string name="editor_restore">復原</string>
+    <string name="editor_discard">捨棄</string>
+    <string name="editor_no_save">不儲存</string>
+    <string name="editor_undo">復原</string>
+    <string name="search_regex">正規表達式</string>
+    <string name="search_case_sensitive">區分大小寫</string>
+    <string name="search_file_filter">檔案類型過濾（如 .txt,.md）</string>
+    <string name="search_export">匯出結果</string>
+    <string name="editor_redo">重做</string>
+    <string name="msg_calc_counting">正在統計：%1$d 個檔案…</string>
+    <string name="terminal_exec_timeout">命令執行逾時（30秒）</string>
+    <string name="settings_sort">排序</string>
+    <string name="settings_picker_mode">選擇路徑/檔案方式</string>
+    <string name="picker_mode_dialog">直接開啟路徑介面</string>
+    <string name="picker_mode_tab">在新視窗中開啟選擇</string>
+    <string name="sort_by_name">按名稱</string>
+    <string name="sort_by_size">按大小</string>
+    <string name="sort_by_date">按日期</string>
+    <string name="sort_ascending">升冪</string>
+    <string name="sort_descending">降冪</string>
     <string name="action_file_info">ℹ️ 檔案資訊</string>
     <string name="action_convert_cso">轉換為 CSO (.cso)</string>
     <string name="action_convert_iso">轉換為 ISO (.iso)</string>
@@ -179,12 +210,26 @@
     <string name="msg_move_result">移動完成：%1$d 成功，%2$d 失敗</string>
     <string name="confirm_delete_file_msg">確定刪除 %1$s？\n此操作無法復原！</string>
     <string name="confirm_delete_batch_msg">確定刪除 %1$d 項？無法復原！</string>
+    <string name="confirm_recycle_file_msg">將 %1$s 移到回收站？</string>
+    <string name="confirm_recycle_batch_msg">將 %1$d 項移到回收站？</string>
     <string name="msg_calc_dir_size_prompt">%1$s\n包含 %2$d 個項目\n\n遞迴計算資料夾大小需要逐檔統計，較大資料夾可能耗時 %3$d~%4$d 秒。是否繼續？</string>
     <string name="msg_read_all_fail">無法讀取歸檔內容，可能已加密</string>
     <string name="err_file_error">檔案操作失敗</string>
     <string name="msg_permission_storage">請授予「所有檔案存取」權限後重新開啟</string>
     <string name="msg_hash_copied">雜湊已複製</string>
     <string name="err_audio_playback">無法播放音訊：%1$s</string>
+    <string name="err_invalid_regex">正規表示式無效：%1$s</string>
+    <string name="msg_max_tabs">最多可開啟 3 個視窗</string>
+    <string name="msg_archive_open_in_tab">此歸檔已在「%1$s」開啟</string>
+    <string name="msg_archive_open_skipped">已跳過 %1$d 個在其他視窗開啟的歸檔</string>
+    <string name="merge_into_archive">合併到其他歸檔…</string>
+    <string name="merge_no_target">目前資料夾沒有可合併的歸檔</string>
+    <string name="merge_select_target">選擇目標歸檔</string>
+    <string name="merge_target_unsupported">該歸檔格式無法重新封包</string>
+    <string name="merge_title">正在合併到 %1$s</string>
+    <string name="merge_done">已合併，儲存為 %1$s</string>
+    <string name="tab_rename">✏️ 重新命名視窗</string>
+    <string name="tab_rename_prompt">視窗名稱</string>
     <string name="err_video_playback">無法播放影片：%1$s</string>
     <string name="msg_encoding_selected">編碼：%1$s</string>
     <string name="msg_renamed_to">已重新命名為 %1$s</string>
@@ -201,9 +246,25 @@
     <string name="msg_compressing_file">正在壓縮——%1$s</string>
     <string name="msg_extracting_file">正在解壓——%1$s</string>
     <string name="msg_delete_progress">正在刪除</string>
+    <string name="msg_move_to_recycle">正在移到回收站</string>
     <string name="msg_deleting_file">正在刪除——%1$s</string>
     <string name="msg_delete_counting">正在統計…</string>
     <string name="msg_delete_result">刪除完成: %1$d 成功, %2$d 失敗</string>
+    <string name="msg_moved_to_recycle">已移到回收站</string>
+    <string name="msg_restore_failed">復原失敗：%1$d 項</string>
+    <string name="title_recycle_bin">♻️ 回收站</string>
+    <string name="action_restore">♻️ 復原</string>
+    <string name="recycle_loading">正在載入回收站…</string>
+    <string name="recycle_empty">回收站為空</string>
+    <string name="recycle_items">%1$d 項（%2$s）</string>
+    <string name="recycle_permanent_delete">⚠️ 永久刪除</string>
+    <string name="recycle_empty_now">清空回收站</string>
+    <string name="recycle_empty_confirm">永久刪除回收站中的所有項目？\n此操作無法復原！</string>
+    <string name="recycle_days_format">%1$d 天</string>
+    <string name="recycle_disabled_message">回收站已在設定中停用</string>
+    <string name="recycle_enable">啟用回收站</string>
+    <string name="recycle_auto_clean">自動清理（天數）</string>
+    <string name="recycle_auto_clean_never">從不</string>
     <string name="msg_multivolume">共 %1$d 個分卷</string>
     <string name="msg_both_files_previewable">兩個檔案均可預覽</string>
     <string name="msg_same_size">大小相同: %1$s</string>
@@ -218,7 +279,9 @@
     <string name="format_group_single">單檔壓縮</string>
     <string name="msg_single_file_compress">單檔壓縮僅支援單一檔案</string>
     <string name="msg_ksd_need_txt">KSD 打包僅支援 .txt 文字檔</string>
-    <string name="settings_compress_generic">通用格式 (gzip/bzip2/xz/zstd/lzma/lz4/tar)</string>
+    <string name="settings_parallel_threads">並行解壓執行緒 (rar/zip)</string>
+    <string name="parallel_auto">自動</string>
+    <string name="settings_compress_generic">通用格式 (gzip/bzip2/xz/zstd/lzma/lz4/brotli/tar)</string>
     <string name="split_title">分卷大小 (zip/7z)</string>
     <string name="split_none">不分卷</string>
     <string name="split_custom">自訂</string>
@@ -308,6 +371,7 @@
         <item>LZMA (.lzma) — 解壓 + 壓縮\n注意：列表預覽不顯示解壓大小（alone 頭未記錄大小）</item>
         <item>TAR — 解壓 + 壓縮\n.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
         <item>KSD (.ksd) — 解壓 + 壓縮\nKirikiri2 存檔；壓縮僅接受 .txt 文字</item>
+        <item>BROTLI (.br) — 解壓 + 壓縮\nGoogle Brotli 壓縮；級別 0-11（預設 6）；廣泛用於網頁內容</item>
     </string-array>
         <string-array name="help_tutorials">
         <item>壓縮設定\n設定 → 壓縮：壓縮等級（zip/7z/通用）、分割大小（zip/7z）、ZIP 編碼、壓縮密碼；點「確定」一次儲存；工作模式（封包/壓縮）切換後標題欄會更新</item>
@@ -388,4 +452,33 @@
         <item>100MB</item>
         <item>1GB</item>
     </string-array>
+    <string name="img_edit_title">圖片編輯</string>
+    <string name="img_edit_brush">畫筆</string>
+    <string name="img_edit_crop">裁剪</string>
+    <string name="img_edit_eyedrop">取色</string>
+    <string name="img_edit_stretch_16">16:9</string>
+    <string name="img_edit_stretch_34">3:4</string>
+    <string name="img_edit_undo">復原</string>
+    <string name="img_edit_reset">還原</string>
+    <string name="img_edit_save">儲存</string>
+    <string name="img_edit_opacity">透明度</string>
+    <string name="img_edit_width">粗細</string>
+    <string name="img_edit_saved">已儲存 %1$s</string>
+    <string name="img_edit_failed">儲存失敗</string>
+    <string name="img_edit_restore_title">未儲存的編輯</string>
+    <string name="img_edit_restore_msg">是否還原上次的編輯？</string>
+    <string name="img_edit_pick_hint">點擊像素取色</string>
+    <string name="img_edit_tap_copy">點擊複製</string>
+    <string name="color_copied">已複製 %1$s</string>
+    <string name="msg_loading">載入中…</string>
+    <string name="img_convert_title">轉換格式</string>
+    <string name="img_convert_menu">轉換為其他格式</string>
+    <string name="img_convert_choose">選擇目標格式</string>
+    <string name="img_edit_crop_hint">拖曳框選區域後，再次點擊「裁剪」確認</string>
+    <string name="img_edit_stretch">拉伸</string>
+    <string name="settings_other">⚙️ 其餘設定</string>
+    <string name="restore_session">還原上次工作階段</string>
+    <string name="restore_session_desc">啟動時還原上次的視窗和目錄（最多 3 個）</string>
+    <string name="action_share">📤 分享</string>
+    <string name="msg_share_folder">資料夾不支援分享</string>
 </resources>

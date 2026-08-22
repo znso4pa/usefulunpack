@@ -46,6 +46,10 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 📂 **Batch Preview** | Preview multiple archives at once, select files across all of them |
 | 📂 **Local File Preview** | Tap any previewable file in the browser to view directly |
 | 🗂 **File Browser** | ZArchiver-style UI with path breadcrumb, fast scroll, folder ⭐ bookmarks |
+| 🪟 **Multi-Window Tabs** | Up to 3 independent windows (ViewPager2 swipe, add/close). Each window keeps its own path, selected file, multi-select state, batch bar and paste/move state — fully isolated. **Long-press a tab label to rename it**; Chrome-style top tab bar (active tab highlighted with a rounded pill) |
+| 📦 **In-Window Archive Preview** | FAB preview renders INSIDE the current window (no modal), so **you can swipe between windows while previewing**; bottom bar has Extract all / Extract selected / Merge into archive, top bar has Search + a **⋮ overflow menu** (Edit / ZIP-manage / ISO-convert, shown per format, toast when not applicable). Entering global search from a preview returns to the preview when closed |
+| 🔀 **Cross-Archive Merge** | In a preview, select entries → "Merge into archive" → pick a target archive → merged and repacked into a `target-cn.ext` copy (original untouched, guarded by the same-archive mutex) |
+| 📍 **Path/File Picker Mode** | General settings toggle: "Open path picker dialog" (default) or "Pick in a new window" — the latter opens a new window to browse and pick, then closes it and returns to the origin window (applies to search scope / extract target / ZIP add / compress target) |
 | 📌 **Bookmarks** | Quick-access paths via star button on folders or slide-out drawer |
 | 🏠 **Root Navigation** | One-tap home button to jump to `/storage/emulated/0` |
 | ⚡ **One-Tap Preview** | Tap an archive → FAB → direct archive preview; format auto-detected from the extension (`.tar.gz`/`.tgz`/`.pf6`/`.sar`…), no extra chooser dialogs |
@@ -54,6 +58,11 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 🔬 **Signature Scan** | Rust scan-core engine: **23 signatures / 70 magic patterns** at any offset, per-format header validation (real size + file counts, incl. **tar** `ustar` and **ISO 9660**), **decompression dry-runs** (gzip/xz/lzma) cutting false positives, **header-encrypted RAR5 fallback**, Aho-Corasick matching, streaming scan (no whole-file load), one tap to extract or carve (dd) the raw segment — works for archives embedded between other files |
 | 🔤 **Text Encoding** | Global text-encoding setting (UTF-8 / Shift-JIS / GBK / UTF-16) applied strictly to every text preview and content search — BOM-aware UTF-8/UTF-16 with **auto-detection** (a UTF-16 BOM opens as UTF-16 automatically); the preview/editor have an inline encoding switch that re-renders instantly; heavy garble prompts a switch hint, and a strictly-valid-UTF-8 check flags the classic "legal-but-wrong" cross-read |
 | ✏️ **Archive Text Editing** | Edit script/text files inside XP3/PFS/ISO/NSA/**7z** archives: extract the archive, pick a script (`.ks`/`.tjs`/`.csv`/…), edit it with an explicit encoding + byte-faithful BOM round-trip, then repack into a new `name-cn.xp3/pfs/iso/nsa/7z` — a full in-app edit loop; ZIP entries edit in place and save as `name-cn.zip` |
+| 🎨 **Image Editor** | Open from the image preview **⋮** menu: watercolor/highlighter brush (color palette + opacity + width), **rectangular crop** (drag → tap Crop again to confirm), **stretch to 1:1 / 4:3 / 3:4 / 16:9 / 9:16**, **pixel eyedropper** (drag to auto-sample, tap the readout to copy HEX/RGB), **two-finger pinch zoom (1–8×) + pan**, undo / reset. Saves a `name-edit.png` copy — original untouched (~2048px working cap, rotation-safe autosave with restore prompt) |
+| 🔄 **Image Format Conversion** | From the image preview **⋮** menu: convert static **JPG/PNG/WebP** between each other, and animated **GIF/WebP → a static first frame** (JPG/PNG/WebP). Saves a copy, original untouched |
+| 📤 **Share** | Long-press any file → **Share**: hands it to another app via FileProvider + `ACTION_SEND` — no network permission, no manifest change |
+| 💾 **Session Restore** | Settings → **Other settings** → "Restore last session": on launch reopen the previous windows/folders **and the archive previews that were open** for up to 3 tabs (toast if more). The Recycle-bin settings live under Other settings too |
+| 🎨 **Redesigned UI** | Unified design tokens (corner radii / spacing / type / row heights), a **⋮ overflow menu** in every preview, capped dialogs on tablets/landscape, and a **wide-screen master-detail layout** (file list left + in-window preview right on ≥600dp) |
 | 🖱️ **Draggable Scroll** | Long lists (archive preview, scan results, script lists, browser, search) get an always-visible draggable fast-scroll handle; text preview/editor get a custom draggable scrollbar (Honor/EMUI-safe) |
 | 🔄 **Auto-Refresh** | A background watcher on the current folder refreshes the file list automatically — rename/move/delete/extract/compress and external changes (adb push, USB) appear without re-entering the path |
 | ✂️ **Exact Carve** | Signature-scan carve/extract cuts the validated archive size (zip/rar/7z/zstd/lz4/iso) exactly — an archive embedded between other files (e.g. `mp4 + zip + mp4`) is carved cleanly without the trailing data and extracts successfully |
@@ -65,6 +74,26 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 🌙 **Dark Theme** | Eye-friendly dark theme matching ZArchiver's color scheme |
 | 🦀 **Rust Core** | JNI-powered native `.so` — one per format for isolation (17 formats incl. signature scan) |
 | 🔒 **Minimal Permissions** | Only requests storage access |
+
+## Multi-Window FAQ
+
+**1. Can three windows extract at once and risk an OOM?**
+
+No — currently only one extract/compress runs at a time. A global single lock (`OperationLock`) serializes operations, so the 2nd/3rd extract is rejected with a "busy" toast. Memory pressure stays identical to a single-window extract, so OOM risk is very low. The real memory source is *within* a single archive's parallel decode (RAR non-solid ≤4 threads, ZIP entry-level ≤32 MiB batches); members >64 MB stream without whole-buffer buffering. Note the "parallel decode threads" setting is global, not per-window — 4/8 threads on one window already uses the full memory budget.
+
+**2. If two windows open the same file, does a change in window 1 sync instantly to the others?**
+
+Each window has its own directory watcher (FileObserver). **When both windows are in the same directory** (e.g. both in `/Download`), any extract/rename/delete raises directory events that both watchers receive and both refresh — **instant sync**. Windows in different directories don't affect each other.
+
+The **same archive can never be open in two windows** (volume members like `name.zip.001/.zip` count as one archive): a built-in open-registry lock (OpenArchiveRegistry) makes the second window toast "This archive is already open in window N" and jump to it instead. The lock is held while previewing/editing and released on dialog dismiss or window close.
+
+**3. Can I switch windows while previewing an archive?**
+
+Yes. The archive preview renders **inside the current window** (not a modal dialog), so the ViewPager stays fully swipeable — flip between windows while previewing, each window keeps its own preview/selection state. Entering global search from a preview returns to the preview when the search dialog closes.
+
+**4. Can path/file picking open a new window?**
+
+Yes. General settings → "Path/file picker" toggles between **Open path picker dialog** (default) and **Pick in a new window** — the latter opens a new window to browse and pick, then auto-closes it and returns to the origin window (which keeps its state); pressing Back cancels the pick. Applies to search scope, extract target, ZIP add-entry and compress target.
 
 Signature scan details (parser + size-skip semantics, following the approach of the MIT-licensed binwalk project):
 

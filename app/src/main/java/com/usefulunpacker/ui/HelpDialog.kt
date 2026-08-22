@@ -16,38 +16,41 @@ import android.widget.TextView
 internal fun MainActivity.showHelpDialog() {
     val act = this
 
+    val sp = { id: Int -> resources.getDimension(id) / resources.displayMetrics.scaledDensity }
+    val pd = { id: Int -> resources.getDimensionPixelSize(id) }
+
     fun sectionHeader(text: String): View = TextView(this).apply {
         this.text = text
         setTextColor(C["accent"]!!)
-        textSize = 14f
+        textSize = sp(R.dimen.text_lg)
         setTypeface(null, Typeface.BOLD)
-        setPadding(20, 20, 20, 8)
+        setPadding(pd(R.dimen.space_lg), pd(R.dimen.space_lg), pd(R.dimen.space_lg), pd(R.dimen.space_md))
     }
 
     fun entry(title: String, body: String): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(20, 12, 20, 12)
+        setPadding(pd(R.dimen.space_lg), pd(R.dimen.space_md), pd(R.dimen.space_lg), pd(R.dimen.space_md))
         if (title.isNotEmpty()) addView(TextView(act).apply {
             text = title
             setTextColor(C["accent"]!!)
-            textSize = 14f
+            textSize = sp(R.dimen.text_lg)
             setTypeface(null, Typeface.BOLD)
             setLineSpacing(0f, 1.15f)
         })
         if (body.isNotEmpty()) addView(TextView(act).apply {
             text = body
             setTextColor(C["secondary"]!!)
-            textSize = 12f
+            textSize = sp(R.dimen.text_sm)
             setTypeface(null, Typeface.NORMAL)
             setLineSpacing(0f, 1.35f)
-            setPadding(0, 6, 0, 0)
+            setPadding(0, pd(R.dimen.space_xs), 0, 0)
         })
     }
 
     fun divider(): View = View(this).apply {
         setBackgroundColor(C["divider_subtle"]!!)
         layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply {
-            setMargins(20, 12, 20, 12)
+            setMargins(pd(R.dimen.space_lg), pd(R.dimen.space_md), pd(R.dimen.space_lg), pd(R.dimen.space_md))
         }
     }
 
@@ -98,6 +101,7 @@ internal fun MainActivity.showHelpDialog() {
         .setNegativeButton(getString(R.string.action_close), null)
         .create()
     val metrics = this.resources.displayMetrics
-    dlg.window?.setLayout((metrics.widthPixels * 0.92).toInt(), (metrics.heightPixels * 0.88).toInt())
+    val (hw, hh) = cappedDialogSize(0.92f, 0.88f)
+    dlg.window?.setLayout(hw, hh)
     dlg.show()
 }

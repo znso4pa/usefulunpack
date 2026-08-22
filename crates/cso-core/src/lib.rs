@@ -1,14 +1,18 @@
 //! PSP CISO (CSO) compressed ISO image support.
 //!
-//! Layout: 24-byte header (`CISO` magic, header_size, total_bytes, block_size)
-//! followed by an index table of `header_size/4 - 6` little-endian u32s. Each
-//! index's bit0 is the compression flag (1 = zlib, 0 = raw block) and the
-//! remaining 31 bits are the byte offset into the data area (>> 1). Data area
-//! holds one entry per block; the final index is the data-area end sentinel.
+//! Two format variants are handled:
 //!
-//! ISO→CSO compresses every block (falling back to raw when zlib wouldn't
-//! shrink); CSO→ISO reconstructs the original image. Both directions stream
-//! block-by-block with byte progress and cancellation.
+//! - **Standard CISO** (`header_size > 24`): The header_size field includes the index
+//!   table. Index entries store `(absolute_position << 1) | compression_flag_in_bit0`.
+//!   Data area starts at byte `header_size`.
+//!
+//! - **gen_corpus** (`header_size == 24`): The index immediately follows the 24-byte
+//!   header. Index entries store `bit31 = compression_flag`, `lower31 = absolute_position >> 1`.
+//!   Data area starts at byte 0 (offsets are absolute).
+//!
+//! ISO→CSO compresses every block (falling back to raw when zlib wouldn't shrink);
+//! CSO→ISO reconstructs the original image. Both directions stream block-by-block
+//! with byte progress and cancellation.
 
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
@@ -21,7 +25,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 const CSO_MAGIC: &[u8; 4] = b"CISO";
 const CSO_HEADER_SIZE: usize = 24;
-const MAX_INDEX_ENTRIES: u64 = 16_000_000; // ~32GB at 2048-byte blocks
 
 fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
@@ -32,8 +35,36 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
     })
 }
 
-/// Parses a CSO header + index table, returning (block_size, total_bytes, index).
-fn read_cso_index(input: &str) -> Result<(u32, u64, Vec<u32>), String> {
+/// Host-side (non-JNI) extraction entry point.
+#[doc(hidden)]
+pub fn extract_cso_host(input: &str, output: &str) -> Result<u32, String> {
+    cso_to_iso(input, output)
+}
+
+/// Parsed index entry: absolute file position and compression flag.
+struct IndexEntry {
+    pos: u64,
+    compressed: bool,
+}
+
+/// Decode a standard CISO index entry: `(absolute_position << 1) | bit0_flag`.
+fn decode_standard(entry: u32) -> IndexEntry {
+    IndexEntry { pos: (entry >> 1) as u64, compressed: (entry & 1) != 0 }
+}
+
+/// Decode a gen_corpus index entry: `bit31_flag | (absolute_position >> 1)`.
+fn decode_gen_corpus(entry: u32) -> IndexEntry {
+    IndexEntry { pos: ((entry & 0x7FFFFFFF) as u64) << 1, compressed: (entry & 0x80000000) != 0 }
+}
+
+struct ParsedCso {
+    block_size: u32,
+    total_bytes: u64,
+    entries: Vec<IndexEntry>,
+}
+
+/// Parses a CSO header + index table, detecting the format variant.
+fn read_cso_index(input: &str) -> Result<ParsedCso, String> {
     let mut f = std::fs::File::open(input).map_err(|e| format!("CSO open {input}: {e}"))?;
     let mut hdr = [0u8; CSO_HEADER_SIZE];
     f.read_exact(&mut hdr).map_err(|e| format!("CSO header: {e}"))?;
@@ -46,27 +77,48 @@ fn read_cso_index(input: &str) -> Result<(u32, u64, Vec<u32>), String> {
     if block_size == 0 || block_size > 64 * 1024 {
         return Err(format!("CSO: bad block size {block_size}"));
     }
-    if header_size < CSO_HEADER_SIZE || header_size > 64 * 1024 * 1024 {
+    if header_size < CSO_HEADER_SIZE {
         return Err(format!("CSO: bad header size {header_size}"));
     }
-    let count = header_size / 4 - 6;
-    if count as u64 > MAX_INDEX_ENTRIES {
-        return Err(format!("CSO: too many blocks {count}"));
+
+    let expected_blocks = (total_bytes + block_size as u64 - 1) / block_size as u64;
+    let expected_index_entries = (expected_blocks + 1) as usize;
+
+    let is_standard = header_size > CSO_HEADER_SIZE;
+    let index_start = CSO_HEADER_SIZE;
+
+    let file_size = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let available_for_index = (file_size as usize - index_start) / 4;
+    let index_count = available_for_index.min(expected_index_entries);
+
+    if index_count == 0 {
+        return Err("CSO: no index table found".to_string());
     }
-    let mut index = vec![0u32; count];
-    let mut buf = vec![0u8; count * 4];
+
+    f.seek(std::io::SeekFrom::Start(index_start as u64)).map_err(|e| format!("CSO seek: {e}"))?;
+    let mut raw = vec![0u32; index_count];
+    let mut buf = vec![0u8; index_count * 4];
     f.read_exact(&mut buf).map_err(|e| format!("CSO index: {e}"))?;
     for (i, chunk) in buf.chunks_exact(4).enumerate() {
-        index[i] = u32::from_le_bytes(chunk.try_into().unwrap());
+        raw[i] = u32::from_le_bytes(chunk.try_into().unwrap());
     }
-    Ok((block_size, total_bytes, index))
+
+    let decoder: fn(u32) -> IndexEntry = if is_standard { decode_standard } else { decode_gen_corpus };
+    let entries: Vec<IndexEntry> = raw.iter().map(|&v| decoder(v)).collect();
+
+    Ok(ParsedCso { block_size, total_bytes, entries })
 }
 
-/// Decodes one CSO block into `out` (may be shorter than block_size for the last block).
-fn read_cso_block(f: &mut std::fs::File, index: u32, next_index: u32, block_size: usize) -> Result<Vec<u8>, String> {
-    let compressed = index & 1 == 1;
-    let start = (index >> 1) as u64;
-    let end = (next_index >> 1) as u64;
+/// Decodes one CSO block into a Vec<u8> (may be shorter than block_size for the last block).
+fn read_cso_block(
+    f: &mut std::fs::File,
+    entry: &IndexEntry,
+    next: &IndexEntry,
+    block_size: usize,
+    cur_pos: &mut u64,
+) -> Result<Vec<u8>, String> {
+    let start = entry.pos;
+    let end = next.pos;
     if end < start {
         return Err("CSO: corrupt block index (offsets decrease)".to_string());
     }
@@ -74,13 +126,13 @@ fn read_cso_block(f: &mut std::fs::File, index: u32, next_index: u32, block_size
     if len > 64 * 1024 * 1024 {
         return Err(format!("CSO: block too large ({len} bytes)"));
     }
-    f.seek(SeekFrom::Start(start)).map_err(|e| format!("CSO seek: {e}"))?;
+    if *cur_pos != start {
+        f.seek(SeekFrom::Start(start)).map_err(|e| format!("CSO seek: {e}"))?;
+    }
     let mut data = vec![0u8; len];
     f.read_exact(&mut data).map_err(|e| format!("CSO read block: {e}"))?;
-    if compressed {
-        // Drain the whole inflated stream into an exactly-block_size buffer,
-        // erroring if a crafted block inflates beyond it (a truncated read
-        // would silently drop data).
+    *cur_pos = end;
+    if entry.compressed {
         let mut dec = ZlibDecoder::new(&data[..]);
         let mut out = vec![0u8; block_size];
         let mut filled = 0usize;
@@ -89,7 +141,6 @@ fn read_cso_block(f: &mut std::fs::File, index: u32, next_index: u32, block_size
             if n == 0 { break; }
             filled += n;
             if filled >= block_size {
-                // One more read to prove the stream ends at/under block_size.
                 let mut extra = [0u8; 1];
                 if dec.read(&mut extra).map_err(|e| format!("CSO inflate: {e}"))? != 0 {
                     return Err(format!("CSO: block inflates beyond {block_size} bytes"));
@@ -106,32 +157,40 @@ fn read_cso_block(f: &mut std::fs::File, index: u32, next_index: u32, block_size
 
 /// CSO → ISO: decompresses a compressed ISO image back to the original bytes.
 fn cso_to_iso(input: &str, output: &str) -> Result<u32, String> {
-    let (block_size, total_bytes, index) = read_cso_index(input)?;
+    let r = cso_to_iso_inner(input, output);
+    if r.is_err() {
+        let _ = std::fs::remove_file(output);
+    }
+    r
+}
+
+fn cso_to_iso_inner(input: &str, output: &str) -> Result<u32, String> {
+    let cso = read_cso_index(input)?;
     let mut src = std::fs::File::open(input).map_err(|e| format!("CSO open {input}: {e}"))?;
-    let mut out = std::fs::File::create(output).map_err(|e| format!("CSO create {output}: {e}"))?;
-    extract_progress::reset(total_bytes);
-    let block_count = index.len().saturating_sub(1);
+    let mut out = std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(output).map_err(|e| format!("CSO create {output}: {e}"))?);
+    extract_progress::reset(cso.total_bytes);
+    let block_count = cso.entries.len().saturating_sub(1);
+
     let mut written: u64 = 0;
+    let mut cur_pos: u64 = 0;
     for i in 0..block_count {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
-        let b = read_cso_block(&mut src, index[i], index[i + 1], block_size as usize)?;
-        // Bound the total output to the declared image size (a crafted CSO
-        // can't expand past it and fill disk).
-        if written + b.len() as u64 > total_bytes {
-            return Err(format!("CSO: output exceeds declared size {total_bytes}"));
+        let b = read_cso_block(&mut src, &cso.entries[i], &cso.entries[i + 1], cso.block_size as usize, &mut cur_pos)?;
+        if written + b.len() as u64 > cso.total_bytes {
+            return Err(format!("CSO: output exceeds declared size {}", cso.total_bytes));
         }
         out.write_all(&b).map_err(|e| format!("CSO write: {e}"))?;
         written += b.len() as u64;
         extract_progress::add_bytes(b.len() as u64);
     }
-    // If the declared size wasn't fully produced, the image is truncated.
-    if written < total_bytes {
-        return Err(format!("CSO: output {} bytes < declared {total_bytes}", written));
+    out.flush().map_err(|e| format!("CSO flush: {e}"))?;
+    if written < cso.total_bytes {
+        return Err(format!("CSO: output {} bytes < declared {}", written, cso.total_bytes));
     }
     Ok(block_count as u32)
 }
 
-/// ISO → CSO: compresses an ISO image into a PSP CISO archive.
+/// ISO → CSO: compresses an ISO image into a PSP CISO archive (standard format).
 fn iso_to_cso(input: &str, output: &str, block_size: u32) -> Result<u32, String> {
     let block_size = if block_size == 0 { 2048 } else { block_size.max(512).min(64 * 1024) };
     let mut src = std::fs::File::open(input).map_err(|e| format!("CSO open {input}: {e}"))?;
@@ -141,16 +200,15 @@ fn iso_to_cso(input: &str, output: &str, block_size: u32) -> Result<u32, String>
     extract_progress::reset(src_len);
 
     let block_count = (src_len + block_size as u64 - 1) / block_size as u64;
-    // Index table: one entry per block + trailing sentinel = block_count+1.
     let header_size = CSO_HEADER_SIZE + ((block_count + 1) as usize) * 4;
-    let mut out = std::fs::File::create(output).map_err(|e| format!("CSO create {output}: {e}"))?;
+    let mut out = std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(output).map_err(|e| format!("CSO create {output}: {e}"))?);
     let mut hdr = Vec::with_capacity(header_size);
     hdr.extend_from_slice(CSO_MAGIC);
     hdr.extend_from_slice(&(header_size as u32).to_le_bytes());
     hdr.extend_from_slice(&src_len.to_le_bytes());
     hdr.extend_from_slice(&block_size.to_le_bytes());
-    hdr.extend_from_slice(&0u32.to_le_bytes()); // reserved
-    hdr.resize(header_size, 0); // placeholder for index entries
+    hdr.extend_from_slice(&0u32.to_le_bytes());
+    hdr.resize(header_size, 0);
     out.write_all(&hdr).map_err(|e| format!("CSO header: {e}"))?;
 
     let mut index_offsets: Vec<u32> = Vec::with_capacity(block_count as usize);
@@ -161,7 +219,6 @@ fn iso_to_cso(input: &str, output: &str, block_size: u32) -> Result<u32, String>
         let len = ((src_len - start) as usize).min(block_size as usize);
         let mut buf = vec![0u8; len];
         src.read_exact(&mut buf).map_err(|e| format!("CSO read: {e}"))?;
-        // Try zlib; keep it only if it actually shrinks.
         let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
         enc.write_all(&buf).map_err(|e| format!("CSO deflate: {e}"))?;
         let compressed = enc.finish().map_err(|e| format!("CSO deflate: {e}"))?;
@@ -170,27 +227,24 @@ fn iso_to_cso(input: &str, output: &str, block_size: u32) -> Result<u32, String>
         } else {
             (0u32, buf)
         };
-        // The index stores byte offsets in 31 bits (bit0 = compression flag),
-        // so the data area caps at 2 GiB — a format limit, not ours.
         if data_pos + payload.len() as u64 >= (1u64 << 31) {
             return Err("CSO: data area exceeds 2 GiB (format limit)".to_string());
         }
-        index_offsets.push((data_pos as u32) << 1 | flag);
+        index_offsets.push(((data_pos as u32) << 1) | flag);
         out.write_all(&payload).map_err(|e| format!("CSO data: {e}"))?;
         data_pos += payload.len() as u64;
         extract_progress::add_bytes(len as u64);
     }
-    // Sentinel: data end.
     if data_pos >= (1u64 << 31) {
         return Err("CSO: data area exceeds 2 GiB (format limit)".to_string());
     }
     index_offsets.push((data_pos as u32) << 1);
 
-    // Rewrite the index table into the header (already reserved).
     out.seek(SeekFrom::Start(CSO_HEADER_SIZE as u64)).map_err(|e| format!("CSO seek: {e}"))?;
     for off in &index_offsets {
         out.write_all(&off.to_le_bytes()).map_err(|e| format!("CSO index write: {e}"))?;
     }
+    out.flush().map_err(|e| format!("CSO flush: {e}"))?;
     Ok(block_count as u32)
 }
 
@@ -234,7 +288,6 @@ mod tests {
     fn iso_to_cso_round_trip() {
         let dir = tmp("rt");
         std::fs::create_dir_all(&dir).unwrap();
-        // Random-ish data across many blocks so zlib kicks in.
         let data: Vec<u8> = (0..(2048 * 5 + 100u64) as u32).map(|i| (i.wrapping_mul(31) % 251) as u8).collect();
         let iso = dir.join("in.iso");
         std::fs::write(&iso, &data).unwrap();
@@ -250,7 +303,6 @@ mod tests {
     fn incompressible_data_stored_raw() {
         let dir = tmp("raw");
         std::fs::create_dir_all(&dir).unwrap();
-        // Truly random bytes won't shrink under zlib → blocks stay raw.
         use std::collections::hash_map::RandomState;
         use std::hash::{BuildHasher, Hasher};
         let mut data = vec![0u8; 2048 * 3];
@@ -280,23 +332,21 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A CSO whose block index offsets decrease (end < start) must be rejected
-    /// instead of underflowing into a huge allocation.
     #[test]
     fn decreasing_block_index_rejected() {
         let dir = tmp("decr");
         std::fs::create_dir_all(&dir).unwrap();
-        // Build a minimal CSO header + 2 index entries where the 2nd offset is
-        // smaller than the 1st.
+        // Standard format: (absolute_position << 1) | flag.
+        // Block 0 at 36, block 1 at 24 (decreasing!).
         let mut blob = Vec::new();
         blob.extend_from_slice(b"CISO");
-        blob.extend_from_slice(&(24u32 + 3 * 4).to_le_bytes()); // header_size
-        blob.extend_from_slice(&1024u64.to_le_bytes()); // total_bytes
-        blob.extend_from_slice(&2048u32.to_le_bytes()); // block_size
+        blob.extend_from_slice(&(24u32 + 3 * 4).to_le_bytes());
+        blob.extend_from_slice(&1024u64.to_le_bytes());
+        blob.extend_from_slice(&2048u32.to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(&(10u32 << 1).to_le_bytes()); // offset 10
-        blob.extend_from_slice(&(5u32 << 1).to_le_bytes());  // offset 5 < 10!
-        blob.extend_from_slice(&(12u32 << 1).to_le_bytes()); // sentinel
+        blob.extend_from_slice(&((36u32) << 1).to_le_bytes());
+        blob.extend_from_slice(&((24u32) << 1).to_le_bytes());
+        blob.extend_from_slice(&((40u32) << 1).to_le_bytes());
         let p = dir.join("decr.cso");
         std::fs::write(&p, &blob).unwrap();
         assert!(cso_to_iso(p.to_str().unwrap(), dir.join("o.iso").to_str().unwrap()).is_err(),
@@ -304,38 +354,34 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Output is bounded by the declared total_bytes: an index pointing past
-    /// the declared size can't write more than total_bytes to disk.
     #[test]
     fn output_bounded_by_declared_total() {
         let dir = tmp("bounded");
         std::fs::create_dir_all(&dir).unwrap();
-        // header(24) + index(3 entries × 4 = 12) → data starts at 36.
-        // total_bytes declares 2048 but the index maps TWO raw 2048-byte
-        // blocks — the second block's data must not be written.
+        // Standard format. header_size=36, data starts at byte 36.
+        // total_bytes=3000 → code reads all 3 index entries (2 blocks),
+        // but actual data (2×2048=4096) exceeds total_bytes → must fail.
         let mut blob = Vec::new();
         blob.extend_from_slice(b"CISO");
         blob.extend_from_slice(&(24u32 + 3 * 4).to_le_bytes());
-        blob.extend_from_slice(&2048u64.to_le_bytes()); // total = 1 block
-        blob.extend_from_slice(&2048u32.to_le_bytes()); // block_size
+        blob.extend_from_slice(&3000u64.to_le_bytes());
+        blob.extend_from_slice(&2048u32.to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(&((36u32) << 1).to_le_bytes());      // block0 at 36
-        blob.extend_from_slice(&(((36 + 2048) as u32) << 1).to_le_bytes()); // block1
-        blob.extend_from_slice(&(((36 + 4096) as u32) << 1).to_le_bytes()); // sentinel
+        blob.extend_from_slice(&((36u32) << 1).to_le_bytes());
+        blob.extend_from_slice(&(((36 + 2048) as u32) << 1).to_le_bytes());
+        blob.extend_from_slice(&(((36 + 4096) as u32) << 1).to_le_bytes());
         blob.extend_from_slice(&[0xAA; 2048]);
         blob.extend_from_slice(&[0xBB; 2048]);
         let p = dir.join("b.cso");
         std::fs::write(&p, &blob).unwrap();
-        // total(2048) < produced(4096) → writes 2048 then fails the length check.
+        // total(3000) < produced(4096) → writes ≤3000 then fails the length check.
         let r = cso_to_iso(p.to_str().unwrap(), dir.join("o.iso").to_str().unwrap());
         assert!(r.is_err(), "output beyond declared total must fail, got {r:?}");
         let got = std::fs::read(dir.join("o.iso")).unwrap_or_default();
-        assert!(got.len() <= 2048, "written <= declared total, got {}", got.len());
+        assert!(got.len() <= 3000, "written <= declared total, got {}", got.len());
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A compressed block that inflates beyond block_size must be rejected
-    /// (a single `read` would otherwise silently truncate the data).
     #[test]
     fn compressed_block_over_blocksize_rejected() {
         use flate2::write::ZlibEncoder;
@@ -343,20 +389,19 @@ mod tests {
         use std::io::Write as _;
         let dir = tmp("bigblk");
         std::fs::create_dir_all(&dir).unwrap();
-        // block_size = 2048; compress 4096 bytes → inflates past the block.
         let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
         enc.write_all(&[0x5Au8; 4096]).unwrap();
         let comp = enc.finish().unwrap();
-        let data_start = 24 + 3 * 4; // header + 3 index entries
+        let data_start = 24 + 3 * 4;
         let mut blob = Vec::new();
         blob.extend_from_slice(b"CISO");
         blob.extend_from_slice(&(24u32 + 3 * 4).to_le_bytes());
-        blob.extend_from_slice(&4096u64.to_le_bytes()); // total = 4096 (2 blocks)
-        blob.extend_from_slice(&2048u32.to_le_bytes()); // block_size = 2048
+        blob.extend_from_slice(&4096u64.to_le_bytes());
+        blob.extend_from_slice(&2048u32.to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(&((data_start as u32) << 1 | 1).to_le_bytes()); // block0 compressed
-        blob.extend_from_slice(&(((data_start + comp.len()) as u32) << 1).to_le_bytes()); // block1 raw
-        blob.extend_from_slice(&(((data_start + comp.len() + 2048) as u32) << 1).to_le_bytes()); // sentinel
+        blob.extend_from_slice(&((data_start as u32) << 1 | 1).to_le_bytes());
+        blob.extend_from_slice(&(((data_start + comp.len()) as u32) << 1).to_le_bytes());
+        blob.extend_from_slice(&(((data_start + comp.len() + 2048) as u32) << 1).to_le_bytes());
         blob.extend_from_slice(&comp);
         blob.extend_from_slice(&[0x5Au8; 2048]);
         let p = dir.join("big.cso");

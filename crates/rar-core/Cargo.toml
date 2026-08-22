@@ -3,8 +3,12 @@ name = "archive_rar_core"
 version.workspace = true
 edition.workspace = true
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 [dependencies]
 archive_common = { path = "../common" }
 jni = "0.21"
 rars = "0.4"
+
+[dev-dependencies]
+serde_json = "1"
+sha2 = "0.10"

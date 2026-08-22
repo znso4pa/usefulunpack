@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ═══ 圆角 (corner radii) ═══ -->
+    <dimen name="corner_dialog">14dp</dimen>
+    <dimen name="corner_card">12dp</dimen>
+    <dimen name="corner_input">8dp</dimen>
+    <dimen name="corner_pill">999dp</dimen>
+
+    <!-- ═══ 间距阶梯 (spacing scale) ═══ -->
+    <dimen name="space_xs">4dp</dimen>
+    <dimen name="space_sm">8dp</dimen>
+    <dimen name="space_md">12dp</dimen>
+    <dimen name="space_lg">16dp</dimen>
+    <dimen name="space_xl">24dp</dimen>
+
+    <!-- ═══ 字号阶梯 (type scale) ═══ -->
+    <dimen name="text_xs">11sp</dimen>
+    <dimen name="text_sm">12sp</dimen>
+    <dimen name="text_md">13sp</dimen>
+    <dimen name="text_lg">14sp</dimen>
+    <dimen name="text_xl">15sp</dimen>
+    <dimen name="text_title">18sp</dimen>
+
+    <!-- ═══ 栏高 / 行高 (heights) ═══ -->
+    <dimen name="bar_height">44dp</dimen>
+    <dimen name="tabbar_height">50dp</dimen>
+    <dimen name="row_file">56dp</dimen>
+    <dimen name="row_setting">52dp</dimen>
+    <dimen name="row_preview">56dp</dimen>
+    <dimen name="icon_list">40dp</dimen>
+    <dimen name="icon_action">40dp</dimen>
+
+    <!-- ═══ 弹窗 / 内容上限 (caps) ═══ -->
+    <dimen name="dialog_max_width">600dp</dimen>
+    <dimen name="dialog_max_height">720dp</dimen>
+    <!-- 手机上内容不限宽（用一个很大的值），宽屏再收窄 -->
+    <dimen name="content_max_width">10000dp</dimen>
+</resources>

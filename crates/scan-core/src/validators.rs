@@ -27,6 +27,28 @@ fn read_at(f: &mut File, off: u64, buf: &mut [u8]) -> bool {
     f.read_exact(buf).is_ok()
 }
 
+/// Absolute position of the first NUL byte at or after [off], scanning in
+/// bounded chunks (no per-byte seeks). None when none exists within [limit]
+/// bytes or before the end of the file — used to prove NUL-terminated gzip
+/// FNAME/FCOMMENT fields and similar C-string walks.
+fn find_nul(f: &mut File, off: u64, file_len: u64, limit: u64) -> Option<u64> {
+    const CHUNK: u64 = 64 * 1024;
+    let mut buf = vec![0u8; CHUNK as usize];
+    let mut pos = off;
+    let end = file_len.min(off.saturating_add(limit));
+    while pos < end {
+        let want = (end - pos).min(CHUNK) as usize;
+        if !read_at(f, pos, &mut buf[..want]) {
+            return None;
+        }
+        if let Some(idx) = buf[..want].iter().position(|&b| b == 0) {
+            return Some(pos + idx as u64);
+        }
+        pos += want as u64;
+    }
+    None
+}
+
 fn u16le(b: &[u8], i: usize) -> u16 {
     u16::from_le_bytes([b[i], b[i + 1]])
 }
@@ -84,10 +106,32 @@ fn validate_zip(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
     if lh_len < 30 || off + lh_len > file_len {
         return None;
     }
-    // Forward scan for EOCD, bounded (256 MiB), with overlap carry so an
-    // EOCD magic straddling a 64 KiB chunk boundary is still found.
+    // Standalone archives first: a zip's EOCD always sits within 64 KiB + 22
+    // bytes of the archive end, so probe the FILE tail for a validating EOCD
+    // before spending up to 256 MiB on a forward scan. Huge standalone zips
+    // resolve in one 64 KiB read instead of a 256 MiB miss. Embedded zips (EOCD
+    // not at file end) fall through to the forward scan below unchanged.
     const EOCD_MAGIC: [u8; 4] = [0x50, 0x4B, 0x05, 0x06];
     const FWD_CAP: u64 = 268_435_456;
+    let tail_from = file_len.saturating_sub(64 * 1024 + 22);
+    if tail_from > off + lh_len {
+        let mut search_end = file_len;
+        for _ in 0..2 {
+            let eocd = find_marker_in_tail(f, search_end, search_end - tail_from + 1, &EOCD_MAGIC);
+            match eocd {
+                Some(eocd_abs) => {
+                    if let Some(info) = check_eocd(f, eocd_abs, off, file_len) {
+                        return Some(info);
+                    }
+                    search_end = eocd_abs; // try an earlier candidate
+                }
+                None => break,
+            }
+        }
+    }
+    // Forward scan for EOCD, bounded (256 MiB), with overlap carry so an
+    // EOCD magic straddling a 64 KiB chunk boundary is still found. Reached
+    // only for embedded archives whose EOCD is not in the file tail.
     let mut pos = off + lh_len;
     let end = file_len.min(off + FWD_CAP);
     let mut buf = [0u8; 64 * 1024];
@@ -123,25 +167,6 @@ fn validate_zip(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
         }
         overlap = window[window.len().saturating_sub(EOCD_MAGIC.len() - 1)..].to_vec();
         pos += n as u64;
-    }
-    // Fallback for archives whose EOCD is beyond the forward cap: the EOCD
-    // sits within 64 KiB + 22 bytes of the end of the archive. Try the last
-    // candidate(s) in the file tail until one validates.
-    let tail_from = file_len.saturating_sub(64 * 1024 + 22);
-    if tail_from > end {
-        let mut search_end = file_len;
-        for _ in 0..2 {
-            let eocd = find_marker_in_tail(f, search_end, search_end - tail_from + 1, &EOCD_MAGIC);
-            match eocd {
-                Some(eocd_abs) => {
-                    if let Some(info) = check_eocd(f, eocd_abs, off, file_len) {
-                        return Some(info);
-                    }
-                    search_end = eocd_abs; // try an earlier candidate
-                }
-                None => break,
-            }
-        }
     }
     None
 }
@@ -188,6 +213,7 @@ fn find_marker(f: &mut File, off: u64, end: u64, magic: &[u8]) -> Option<u64> {
     let mut buf = vec![0u8; CHUNK];
     let mut pos = off;
     let mut overlap: Vec<u8> = Vec::new();
+    let mut window: Vec<u8> = Vec::with_capacity(CHUNK + magic.len());
     while pos < end {
         if f.seek(SeekFrom::Start(pos)).is_err() {
             return None;
@@ -196,7 +222,7 @@ fn find_marker(f: &mut File, off: u64, end: u64, magic: &[u8]) -> Option<u64> {
         if n == 0 {
             return None;
         }
-        let mut window = Vec::with_capacity(overlap.len() + n);
+        window.clear();
         window.extend_from_slice(&overlap);
         window.extend_from_slice(&buf[..n]);
         let window_base = pos.saturating_sub(overlap.len() as u64);
@@ -208,7 +234,8 @@ fn find_marker(f: &mut File, off: u64, end: u64, magic: &[u8]) -> Option<u64> {
                 }
             }
         }
-        overlap = window[window.len().saturating_sub(magic.len() - 1)..].to_vec();
+        overlap.clear();
+        overlap.extend_from_slice(&window[window.len().saturating_sub(magic.len() - 1)..]);
         pos += n as u64;
     }
     None
@@ -225,6 +252,7 @@ fn find_marker_in_tail(f: &mut File, end: u64, tail_limit: u64, magic: &[u8]) ->
     let mut buf = vec![0u8; 1 << 20];
     let mut pos = end;
     let mut carry: Vec<u8> = Vec::new();
+    let mut window: Vec<u8> = Vec::with_capacity(buf.len() + magic.len());
     while pos > from {
         let read_from = pos.saturating_sub(buf.len() as u64).max(from);
         let want = (pos - read_from) as usize;
@@ -236,7 +264,7 @@ fn find_marker_in_tail(f: &mut File, end: u64, tail_limit: u64, magic: &[u8]) ->
             break;
         }
         // Prepend: carry holds bytes already read after this chunk.
-        let mut window = Vec::with_capacity(n + carry.len());
+        window.clear();
         window.extend_from_slice(&buf[..n]);
         window.extend_from_slice(&carry);
         // Search for the LAST occurrence of magic in this window.
@@ -247,7 +275,8 @@ fn find_marker_in_tail(f: &mut File, end: u64, tail_limit: u64, magic: &[u8]) ->
                 }
             }
         }
-        carry = window[..magic.len().saturating_sub(1).min(window.len())].to_vec();
+        carry.clear();
+        carry.extend_from_slice(&window[..magic.len().saturating_sub(1).min(window.len())]);
         pos = read_from;
         if n < want {
             break; // reached file start
@@ -418,27 +447,10 @@ fn validate_gzip(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
     // the terminator to prove the optional fields exist within the file.
     for bit in [0x08u8, 0x10u8] {
         if flg & bit != 0 {
-            let mut b = [0u8; 1];
-            let mut guard = 0u32;
-            let mut terminated = false;
-            while guard < 65536 {
-                guard += 1;
-                if pos >= file_len {
-                    return None; // no terminator → false positive
-                }
-                if !read_at(f, pos, &mut b) {
-                    return None;
-                }
-                if b[0] == 0 {
-                    terminated = true;
-                    break;
-                }
-                pos += 1;
-            }
-            if !terminated {
-                return None; // 64KB without a NUL → not a real gzip field
-            }
-            pos += 1;
+            // Chunked in-memory NUL scan — the old loop did one seek+read per
+            // byte (up to 128k syscalls on two long fields).
+            let nul = find_nul(f, pos, file_len, 65536)?;
+            pos = nul + 1;
         }
     }
     // Decompression dry-run: feed the stream to MultiGzDecoder (concatenated
@@ -816,22 +828,47 @@ fn validate_lzma(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
     Some(HitInfo { size: None, count: None })
 }
 
-/// XP3: 8-byte "XP3\r\n \x1a\n" signature + 4-byte version + 8-byte index
-/// offset + 8-byte index size, all within bounds.
+/// XP3 (Kirikiri): 10-byte magic "XP3\r\n \n\x1a\x8b\x67" then:
+///   byte 10      unused
+///   bytes 11..19 u64 LE marker: 0x17 (current) or old-format index offset
+/// For the current format, skip u32 minor + u8(128) + u64 index_offset
+/// (relative), then read the u64 index offset. The index offset is relative
+/// to the archive start; a standalone archive extends to EOF (no total-size
+/// field in the header), so the reported extent is `file_len - off`.
+const XP3_MAGIC10: &[u8] = b"XP3\r\n \n\x1a\x8b\x67";
+const XP3_CURRENT_VER: u64 = 0x17;
+const XP3_VERSION_IDENTIFIER: u8 = 128;
+
 fn validate_xp3(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
-    let mut h = [0u8; 28];
+    let mut h = [0u8; 32];
     if !read_at(f, off, &mut h) {
         return None;
     }
-    if &h[0..8] != b"XP3\r\n \x1a\n" {
+    if &h[0..10] != XP3_MAGIC10 {
         return None;
     }
-    let idx_off = u64le(&h, 12);
-    let idx_size = u64le(&h, 20);
-    if idx_off == 0 || idx_size == 0 || off + idx_off + idx_size > file_len {
+    let index_offset: u64 = match u64le(&h, 11) {
+        XP3_CURRENT_VER => {
+            // bytes 19..23 = u32 minor; byte 23 must be the version identifier.
+            if h[23] != XP3_VERSION_IDENTIFIER {
+                return None;
+            }
+            let rel = u64le(&h, 24);
+            let read_pos = off + 19 + rel;
+            let mut buf = [0u8; 8];
+            if !read_at(f, read_pos, &mut buf) {
+                return None;
+            }
+            u64le(&buf, 0)
+        }
+        old => old, // old format: u64 at bytes 11..19 is the index offset
+    };
+    // Index offset is relative to the archive start.
+    if index_offset == 0 || off + index_offset > file_len {
         return None;
     }
-    Some(HitInfo { size: Some(idx_off + idx_size), count: None })
+    // No total-size field; a standalone archive runs to EOF.
+    Some(HitInfo { size: Some(file_len - off), count: None })
 }
 
 /// PNG: magic + IHDR chunk header (16 bytes), then walk the chunk chain to the
@@ -922,20 +959,46 @@ fn validate_jpeg(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
             }
             next += u16::from_be_bytes([sz[0], sz[1]]) as u64;
         }
-        // Start Of Scan: scan ahead until the next real marker.
+        // Start Of Scan: scan ahead until the next real marker. The old loop
+        // advanced one byte per seek+read (potentially the whole scan data);
+        // scan in chunks with a 1-byte carry so a marker straddling a chunk
+        // boundary (a `FF` as the chunk's last byte) is still found.
         if marker_id == SOS_MARKER {
-            loop {
-                if next + 2 > file_len {
+            let mut scan_pos = next;
+            let mut chunk = vec![0u8; 64 * 1024];
+            let mut carry: Vec<u8> = Vec::with_capacity(1);
+            let mut found = false;
+            while scan_pos + 1 < file_len {
+                let want = ((file_len - scan_pos) as usize).min(chunk.len());
+                if !read_at(f, scan_pos, &mut chunk[..want]) {
                     return None;
                 }
-                let mut nb = [0u8; 2];
-                if !read_at(f, next, &mut nb) {
-                    return None;
+                let win_len = carry.len() + want;
+                let mut i = 0usize;
+                let mut hit: Option<usize> = None;
+                while i + 1 < win_len {
+                    let b = if i < carry.len() { carry[i] } else { chunk[i - carry.len()] };
+                    let b2 = if i + 1 < carry.len() { carry[i + 1] } else { chunk[i + 1 - carry.len()] };
+                    if b == MARKER_MAGIC && !SOS_SKIP.contains(&b2) {
+                        hit = Some(i);
+                        break;
+                    }
+                    i += 1;
                 }
-                if nb[0] == MARKER_MAGIC && !SOS_SKIP.contains(&nb[1]) {
+                if let Some(rel) = hit {
+                    next = scan_pos - carry.len() as u64 + rel as u64;
+                    found = true;
                     break;
                 }
-                next += 1;
+                if want == 0 {
+                    break;
+                }
+                carry.clear();
+                carry.push(chunk[want - 1]); // may be 0xFF — check against next chunk
+                scan_pos += want as u64;
+            }
+            if !found {
+                return None;
             }
         }
         if marker_id == EOF_MARKER {
@@ -1108,9 +1171,9 @@ fn validate_iso(f: &mut File, magic_off: u64, file_len: u64) -> Option<HitInfo> 
     if lsb != msb || lsb == 0 {
         return None;
     }
-    // Logical block size: both-endian at PVD offset 128 (LSB at 128, MSB at 132).
+    // Logical block size: both-endian at PVD offset 128 (LSB at 128, MSB at 130).
     let block_lsb = u16le(&vd, 128) as u64;
-    let block_msb = u16::from_be_bytes([vd[132], vd[133]]) as u64;
+    let block_msb = u16::from_be_bytes([vd[130], vd[131]]) as u64;
     if block_lsb != block_msb || block_lsb == 0 {
         return None;
     }
@@ -1241,13 +1304,26 @@ fn tar_octal_size(h: &[u8; 512]) -> u64 {
     v
 }
 
+/// CRC32 with precomputed 256-entry lookup table (~8x faster than bit-by-bit).
 fn crc32(data: &[u8], init: u32) -> u32 {
+    const TABLE: [u32; 256] = {
+        let mut t = [0u32; 256];
+        let mut i = 0u32;
+        while i < 256 {
+            let mut c = i;
+            let mut j = 0;
+            while j < 8 {
+                c = if c & 1 != 0 { (c >> 1) ^ 0xEDB88320 } else { c >> 1 };
+                j += 1;
+            }
+            t[i as usize] = c;
+            i += 1;
+        }
+        t
+    };
     let mut c = init ^ 0xFFFFFFFF;
     for &b in data {
-        c ^= b as u32;
-        for _ in 0..8 {
-            c = if c & 1 != 0 { (c >> 1) ^ 0xEDB88320 } else { c >> 1 };
-        }
+        c = TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
     }
     c ^ 0xFFFFFFFF
 }
@@ -1372,6 +1448,73 @@ pub fn make_min_zip_with_pad(pad: usize) -> Vec<u8> {
     z
 }
 
+/// NSA (NScripter): no magic bytes — validated structurally at file start.
+/// Header: u16 BE entry count + 4 reserved bytes, then per entry:
+///   name (NUL-terminated ≤512) + comp(1) + offset(4 BE) + csize(4 BE) + usize(4 BE).
+/// Offsets are relative to the body start; the body follows all entries.
+/// Only meaningful as a whole-file check (offset 0).
+pub fn validate_nsa_whole_file(f: &mut File, file_len: u64) -> Option<HitInfo> {
+    if file_len < 6 {
+        return None;
+    }
+    let mut hdr = [0u8; 6];
+    if !read_at(f, 0, &mut hdr) {
+        return None;
+    }
+    let count = u16::from_be_bytes([hdr[0], hdr[1]]) as usize;
+    if count == 0 || count > 100_000 {
+        return None;
+    }
+    let mut pos: u64 = 6;
+    let mut max_data_end: u64 = 0;
+    for _ in 0..count {
+        // Filename: NUL-terminated, bounded, printable ASCII (real NSA names
+        // are like "bg\542-1.jpg" — this rejects random binary data).
+        let mut name_len = 0usize;
+        let mut name_buf = [0u8; 1];
+        loop {
+            if pos >= file_len || !read_at(f, pos, &mut name_buf) {
+                return None;
+            }
+            pos += 1;
+            let b = name_buf[0];
+            if b == 0 {
+                break;
+            }
+            if b < 0x20 || b > 0x7E {
+                return None; // non-printable filename byte → not a real NSA
+            }
+            name_len += 1;
+            if name_len > 512 {
+                return None;
+            }
+        }
+        // comp(1) + offset(4) + csize(4) + usize(4).
+        if pos + 13 > file_len {
+            return None;
+        }
+        let mut meta = [0u8; 13];
+        if !read_at(f, pos, &mut meta) {
+            return None;
+        }
+        pos += 13;
+        let comp = meta[0];
+        if comp > 2 {
+            return None; // only stored(0) / zlib(1) / lzss(2)
+        }
+        let offset = u32::from_be_bytes([meta[1], meta[2], meta[3], meta[4]]) as u64;
+        let csize = u32::from_be_bytes([meta[5], meta[6], meta[7], meta[8]]) as u64;
+        max_data_end = max_data_end.max(offset.saturating_add(csize));
+    }
+    // A body must follow the entries, and the last entry's data must fit:
+    // data_start (=pos) + max_data_end ≤ file_len.
+    if pos >= file_len || pos + max_data_end > file_len || max_data_end == 0 {
+        return None;
+    }
+    // A standalone NSA runs to EOF; the header walk already proves structure.
+    Some(HitInfo { size: Some(file_len), count: Some(count as u32) })
+}
+
 /// Signature table: one or more magic byte patterns + label + validator +
 /// confidence. Pattern order in `magics` determines match priority.
 pub struct Sig {
@@ -1411,7 +1554,7 @@ pub const SIGNATURES: &[Sig] = &[
         b"\x6c\x00\x00\x40", b"\x6c\x00\x00\x20", b"\x6c\x00\x00\x10", b"\x6c\x00\x00\x08",
         b"\x6c\x00\x00\x04", b"\x6c\x00\x00\x02", b"\x6c\x00\x00\x01", b"\x6c\x00\x00\x00",
     ], label: "LZMA compressed data", confidence: CONFIDENCE_MEDIUM, validate: validate_lzma },
-    Sig { magics: &[b"XP3\r\n \x1a\n"], label: "XP3 archive", confidence: CONFIDENCE_HIGH, validate: validate_xp3 },
+    Sig { magics: &[b"XP3\r\n \n\x1a\x8b\x67"], label: "XP3 archive", confidence: CONFIDENCE_HIGH, validate: validate_xp3 },
     // POSIX/GNU tar: "ustar" at archive offset 257 + header checksum.
     Sig { magics: &[b"ustar"], label: "POSIX tar archive", confidence: CONFIDENCE_MEDIUM, validate: validate_tar },
     // PNG: full 16-byte magic incl. IHDR chunk header (binwalk parity).
@@ -1427,7 +1570,165 @@ pub const SIGNATURES: &[Sig] = &[
     Sig { magics: &[b"\x00\x00\x01\xba"], label: "MPEG program stream", confidence: CONFIDENCE_MEDIUM, validate: validate_mpeg },
     // ISO 9660: magic \x01CD001\x01\x00 sits at offset 32768 inside the image.
     Sig { magics: &[b"\x01CD001\x01\x00"], label: "ISO 9660 disc image", confidence: CONFIDENCE_HIGH, validate: validate_iso },
+    // ─── Gal engine formats ───
+    // YPF (YU-RIS): 4-byte magic "YPF\0" + header with record count and header length.
+    Sig { magics: &[b"YPF\x00"], label: "YPF archive", confidence: CONFIDENCE_HIGH, validate: validate_ypf },
+    // PFS/PF6/PF8 (Artemis/Malie): 3-byte magic "pf6" or "pf8".
+    Sig { magics: &[b"pf6"], label: "PF6 archive", confidence: CONFIDENCE_HIGH, validate: validate_pf6pf8 },
+    Sig { magics: &[b"pf8"], label: "PF8 archive", confidence: CONFIDENCE_HIGH, validate: validate_pf6pf8 },
+    // KSD (Kirikiri2 save data): 2-byte prefix "FE FE" followed by mode byte.
+    // Note: "FE FE" alone is too short (high false-positive), so we require the
+    // subsequent pattern "FE FE 0x02 FF FE" (mode 2) or "FE FE 0x00" (mode 0/1).
+    Sig { magics: &[b"\xfe\xfe\x02\xff\xfe", b"\xfe\xfe\x01\xff\xfe", b"\xfe\xfe\x00"], label: "KSD save data", confidence: CONFIDENCE_MEDIUM, validate: validate_ksd },
+    // ─── Media format signatures ───
+    // Ogg container: "OggS" magic followed by version byte (0x00).
+    Sig { magics: &[b"OggS\x00"], label: "Ogg container", confidence: CONFIDENCE_HIGH, validate: validate_ogg },
+    // MP3/MPEG audio frame: sync word 0xFF followed by frame header bits.
+    // Multiple valid sync patterns: 0xFFFB, 0xFFFA, 0xFFF3, 0xFFF2, etc.
+    Sig { magics: &[b"\xff\xfb", b"\xff\xfa", b"\xff\xf3", b"\xff\xf2"], label: "MP3 audio", confidence: CONFIDENCE_MEDIUM, validate: validate_mp3 },
+    // FLAC: "fLaC" magic (4 bytes).
+    Sig { magics: &[b"fLaC"], label: "FLAC audio", confidence: CONFIDENCE_HIGH, validate: validate_flac },
+    // BMP image: "BM" magic followed by file size (u32le) and reserved bytes.
+    Sig { magics: &[b"BM"], label: "BMP image", confidence: CONFIDENCE_MEDIUM, validate: validate_bmp },
 ];
+
+// ─── Gal engine format validators ───
+
+/// YPF (YU-RIS) archive validator.
+/// Magic: "YPF\0" (4 bytes) at offset 0.
+/// Header: magic(4) + version(u32 @4) + count(u32 @8) + header_len(u32 @12).
+/// We check that count > 0 and header_len is within file bounds.
+fn validate_ypf(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
+    let mut buf = [0u8; 16];
+    if !read_at(f, off, &mut buf) { return None; }
+    // buf[0..4] = "YPF\0" (already matched by AC)
+    let count = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+    let hdr_len = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+    if count == 0 || count > 100_000 { return None; }
+    if hdr_len < 0x20 || (off + hdr_len as u64) > file_len { return None; }
+    Some(HitInfo { size: None, count: Some(count) })
+}
+
+/// PF6/PF8 (Artemis/Malie) archive validator.
+/// Magic: "pf6" or "pf8" (3 bytes) at offset 0.
+/// The pf8 crate validates the header internally; here we just check the magic
+/// is present and the file is at least 12 bytes (header size).
+fn validate_pf6pf8(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
+    if file_len - off < 12 { return None; }
+    let mut buf = [0u8; 3];
+    if !read_at(f, off, &mut buf) { return None; }
+    if &buf != b"pf6" && &buf != b"pf8" { return None; }
+    Some(HitInfo { size: None, count: None })
+}
+
+/// KSD (Kirikiri2 save data) validator.
+/// Magic patterns: "FE FE 02 FF FE" (mode 2) or "FE FE 00" (mode 0/1).
+/// For mode 2, we can calculate the exact size from compressed_len in the header.
+fn validate_ksd(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
+    let mut buf = [0u8; 16];
+    if !read_at(f, off, &mut buf) { return None; }
+    // buf[0..2] = 0xFE 0xFE (already matched)
+    if buf[0] != 0xFE || buf[1] != 0xFE { return None; }
+    let mode = buf[2];
+    match mode {
+        0 | 1 => {
+            // Mode 0/1: no embedded size, just report as hit
+            Some(HitInfo { size: None, count: None })
+        }
+        2 => {
+            // Mode 2: header is "FE FE 02 FF FE" + compressed_len:i64 + uncompressed_len:i64
+            // We already matched "FE FE 02 FF FE" (5 bytes), so buf[5..13] is compressed_len.
+            if buf[3] != 0xFF || buf[4] != 0xFE { return None; }
+            if file_len - off < 21 { return None; } // 5 (magic) + 8 (compressed_len) + 8 (uncompressed_len)
+            let mut len_buf = [0u8; 8];
+            if !read_at(f, off + 5, &mut len_buf) { return None; }
+            let compressed_len = i64::from_le_bytes(len_buf);
+            if compressed_len <= 0 || compressed_len > 2 * 1024 * 1024 * 1024 { return None; }
+            let total_size = 5 + 8 + 8 + compressed_len as u64; // magic + 2 i64s + compressed data
+            if off + total_size > file_len { return None; }
+            Some(HitInfo { size: Some(total_size), count: None })
+        }
+        _ => None,
+    }
+}
+
+// ─── Media format validators ───
+
+/// Ogg container validator.
+/// Magic: "OggS" (4 bytes) + version byte 0x00 at offset 4.
+/// We check the version byte and that the file has at least one page header.
+fn validate_ogg(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
+    if file_len - off < 27 { return None; } // minimum Ogg page header size
+    let mut buf = [0u8; 27];
+    if !read_at(f, off, &mut buf) { return None; }
+    // buf[0..4] = "OggS" (already matched)
+    if buf[4] != 0x00 { return None; } // version must be 0
+    // Check segment count at offset 26
+    let num_segments = buf[26] as u64;
+    // Total header size = 27 + num_segments (at least)
+    if off + 27 + num_segments > file_len { return None; }
+    Some(HitInfo { size: None, count: None })
+}
+
+/// MP3/MPEG audio frame validator.
+/// Sync word: 0xFF followed by frame header byte.
+/// We check that the frame header bits are valid (bitrate and sample rate not zero).
+fn validate_mp3(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
+    if file_len - off < 4 { return None; }
+    let mut buf = [0u8; 4];
+    if !read_at(f, off, &mut buf) { return None; }
+    // buf[0] = 0xFF (already matched), buf[1] = frame header byte
+    let header = buf[1];
+    // Check sync word continuation (bits 7-6 must be 11)
+    if (header & 0xE0) != 0xE0 { return None; }
+    // Check MPEG version (bits 5-4): 00 = MPEG2.5, 01 = reserved, 10 = MPEG2, 11 = MPEG1
+    let version = (header >> 3) & 0x03;
+    if version == 0x01 { return None; } // reserved
+    // Check layer (bits 3-2): 00 = reserved
+    let layer = (header >> 1) & 0x03;
+    if layer == 0x00 { return None; } // reserved
+    // Check bitrate index (bits 7-4 of buf[2]): not 0 (free) or 0xF (bad)
+    let bitrate_index = (buf[2] >> 4) & 0x0F;
+    if bitrate_index == 0x00 || bitrate_index == 0x0F { return None; }
+    // Check sample rate index (bits 3-2 of buf[2]): not 0x03 (reserved)
+    let sample_rate_index = (buf[2] >> 2) & 0x03;
+    if sample_rate_index == 0x03 { return None; }
+    Some(HitInfo { size: None, count: None })
+}
+
+/// FLAC audio validator.
+/// Magic: "fLaC" (4 bytes) at offset 0.
+/// We check the STREAMINFO block header (block type 0x00, length 34).
+fn validate_flac(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
+    if file_len - off < 42 { return None; } // 4 (magic) + 4 (block header) + 34 (STREAMINFO)
+    let mut buf = [0u8; 8];
+    if !read_at(f, off, &mut buf) { return None; }
+    // buf[0..4] = "fLaC" (already matched)
+    // buf[4] = block type (must be 0x00 for STREAMINFO)
+    // buf[5..7] = block length (must be 34 for STREAMINFO)
+    let block_type = buf[4];
+    let block_length = u32::from_be_bytes([0, buf[5], buf[6], buf[7]]);
+    if block_type != 0x00 { return None; }
+    if block_length != 34 { return None; }
+    Some(HitInfo { size: None, count: None })
+}
+
+/// BMP image validator.
+/// Magic: "BM" (2 bytes) at offset 0.
+/// File size at offset 2 (u32le), pixel data offset at offset 10 (u32le).
+fn validate_bmp(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
+    if file_len - off < 14 { return None; } // minimum BMP header
+    let mut buf = [0u8; 14];
+    if !read_at(f, off, &mut buf) { return None; }
+    // buf[0..2] = "BM" (already matched)
+    let file_size = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
+    let pixel_offset = u32::from_le_bytes([buf[10], buf[11], buf[12], buf[13]]);
+    // Basic sanity checks
+    if file_size < 14 || file_size as u64 > file_len { return None; }
+    if pixel_offset < 14 || pixel_offset as u64 > file_len { return None; }
+    if pixel_offset < 54 { return None; } // minimum DIB header is 40 bytes after 14-byte file header
+    Some(HitInfo { size: Some(file_size as u64), count: None })
+}
 
 #[cfg(test)]
 mod tests {
@@ -1653,7 +1954,7 @@ mod tests {
         // Logical block size (both-endian at PVD offset 128): 2048.
         let blk: u16 = 2048;
         iso[start + 128..start + 130].copy_from_slice(&blk.to_le_bytes());
-        iso[start + 132..start + 134].copy_from_slice(&blk.to_be_bytes());
+        iso[start + 130..start + 132].copy_from_slice(&blk.to_be_bytes());
         let p = tmp("t.iso", &iso);
         let mut f = File::open(&p).unwrap();
         let info = validate_iso(&mut f, 32768, iso.len() as u64).expect("valid iso");
@@ -1748,6 +2049,102 @@ mod tests {
         let mut f = File::open(&p).unwrap();
         let info = validate_tar(&mut f, 257, tar.len() as u64).expect("space-padded tar");
         assert_eq!(info.size, Some(tar.len() as u64 - 257));
+    }
+
+    /// Old-format XP3: 10-byte magic + unused byte + u64 index offset.
+    /// Standalone archive extends to EOF.
+    #[test]
+    fn xp3_old_format_validates() {
+        let mut blob = vec![0u8; 4096];
+        blob[0..10].copy_from_slice(b"XP3\r\n \n\x1a\x8b\x67");
+        blob[10] = 0x01; // unused byte
+        blob[11..19].copy_from_slice(&2048u64.to_le_bytes()); // index offset (relative to start)
+        blob[2048..2052].copy_from_slice(b"File"); // index section identifier
+        let p = tmp("ok.xp3", &blob);
+        let mut f = File::open(&p).unwrap();
+        let info = validate_xp3(&mut f, 0, blob.len() as u64).expect("valid old-format xp3");
+        // Standalone archive → extent to EOF.
+        assert_eq!(info.size, Some(blob.len() as u64));
+    }
+
+    /// Current-format XP3: version identifier 0x17 + minor + u8(128) + relative
+    /// index offset, then the absolute index offset.
+    #[test]
+    fn xp3_current_format_validates() {
+        let mut blob = vec![0u8; 8192];
+        blob[0..10].copy_from_slice(b"XP3\r\n \n\x1a\x8b\x67");
+        blob[11..19].copy_from_slice(&XP3_CURRENT_VER.to_le_bytes()); // 0x17
+        blob[19..23].copy_from_slice(&0u32.to_le_bytes()); // minor
+        blob[23] = XP3_VERSION_IDENTIFIER; // 128
+        blob[24..32].copy_from_slice(&64u64.to_le_bytes()); // relative skip to the absolute-offset field
+        // At offset 11+8+64 = 83: the absolute index offset.
+        blob[83..91].copy_from_slice(&2048u64.to_le_bytes());
+        blob[2048..2052].copy_from_slice(b"File");
+        let p = tmp("current.xp3", &blob);
+        let mut f = File::open(&p).unwrap();
+        let info = validate_xp3(&mut f, 0, blob.len() as u64).expect("valid current-format xp3");
+        assert_eq!(info.size, Some(blob.len() as u64));
+    }
+
+    /// Wrong magic at 0 → rejected.
+    #[test]
+    fn xp3_bad_magic_rejected() {
+        let mut blob = vec![0u8; 1024];
+        blob[0..10].copy_from_slice(b"XP3\r\n \n\x1a\x8b\x68"); // last byte wrong
+        let p = tmp("bad.xp3", &blob);
+        let mut f = File::open(&p).unwrap();
+        assert!(validate_xp3(&mut f, 0, blob.len() as u64).is_none());
+    }
+
+    /// Build a minimal NSA: count + 4 reserved + one entry (name\0 + comp + 3×u32 BE).
+    fn make_min_nsa(name: &str, comp: u8, body: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&1u16.to_be_bytes()); // count = 1
+        v.extend_from_slice(&[0u8; 4]); // reserved
+        v.extend_from_slice(name.as_bytes());
+        v.push(0); // NUL
+        v.push(comp);
+        v.extend_from_slice(&0u32.to_be_bytes()); // offset (relative to body)
+        v.extend_from_slice(&(body.len() as u32).to_be_bytes()); // csize
+        v.extend_from_slice(&(body.len() as u32).to_be_bytes()); // usize
+        v.extend_from_slice(body);
+        v
+    }
+
+    #[test]
+    fn nsa_whole_file_validates() {
+        let nsa = make_min_nsa("bg\\542-1.jpg", 0, &[0u8; 64]);
+        let p = tmp("ok.nsa", &nsa);
+        let mut f = File::open(&p).unwrap();
+        let info = validate_nsa_whole_file(&mut f, nsa.len() as u64).expect("valid nsa");
+        assert_eq!(info.size, Some(nsa.len() as u64));
+        assert_eq!(info.count, Some(1));
+    }
+
+    #[test]
+    fn nsa_random_data_rejected() {
+        use std::collections::hash_map::RandomState;
+        use std::hash::{BuildHasher, Hasher};
+        let mut data = vec![0u8; 4096];
+        let s = RandomState::new();
+        for chunk in data.chunks_mut(8) {
+            let mut h = s.build_hasher();
+            h.write_u64(chunk.len() as u64);
+            chunk.copy_from_slice(&h.finish().to_le_bytes());
+        }
+        let p = tmp("rand.nsa", &data);
+        let mut f = File::open(&p).unwrap();
+        assert!(validate_nsa_whole_file(&mut f, data.len() as u64).is_none(),
+            "random bytes must not validate as NSA");
+    }
+
+    #[test]
+    fn nsa_non_printable_name_rejected() {
+        let mut nsa = make_min_nsa("ok", 0, &[0u8; 32]);
+        nsa[6] = 0x01; // first name byte non-printable
+        let p = tmp("badname.nsa", &nsa);
+        let mut f = File::open(&p).unwrap();
+        assert!(validate_nsa_whole_file(&mut f, nsa.len() as u64).is_none());
     }
 
     #[test]

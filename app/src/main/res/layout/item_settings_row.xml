@@ -2,19 +2,19 @@
 <!-- Standard settings row: title (weight 1) + current value + chevron -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="52dp"
+    android:layout_height="@dimen/row_setting"
     android:orientation="horizontal"
     android:gravity="center_vertical"
     android:background="?attr/selectableItemBackground"
-    android:paddingStart="20dp"
-    android:paddingEnd="16dp">
+    android:paddingStart="@dimen/space_lg"
+    android:paddingEnd="@dimen/space_md">
 
     <TextView
         android:id="@+id/settings_row_title"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="1"
-        android:textSize="14sp"
+        android:textSize="@dimen/text_lg"
         android:textColor="@color/text_secondary"
         android:singleLine="true"
         android:ellipsize="end" />
@@ -23,18 +23,19 @@
         android:id="@+id/settings_row_value"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:textSize="13sp"
+        android:textSize="@dimen/text_md"
         android:textColor="@color/accent"
         android:singleLine="true"
         android:ellipsize="end" />
 
     <ImageView
         android:id="@+id/settings_row_chevron"
-        android:layout_width="20dp"
-        android:layout_height="20dp"
+        android:layout_width="@dimen/icon_action"
+        android:layout_height="@dimen/icon_action"
         android:src="@drawable/ic_chevron_right"
         android:tint="@color/text_hint"
-        android:layout_marginStart="6dp"
+        android:scaleType="centerInside"
+        android:layout_marginStart="@dimen/space_sm"
         android:importantForAccessibility="no" />
 
 </LinearLayout>

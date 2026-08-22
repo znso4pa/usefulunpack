@@ -2,33 +2,33 @@
 <!-- Search result row: icon + name(+tags) + parent/snippet/size -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="64dp"
+    android:layout_height="@dimen/row_file"
     android:orientation="horizontal"
     android:gravity="center_vertical"
     android:background="?attr/selectableItemBackground"
-    android:paddingStart="12dp"
-    android:paddingEnd="12dp">
+    android:paddingStart="@dimen/space_md"
+    android:paddingEnd="@dimen/space_md">
 
     <ImageView
         android:id="@+id/search_icon"
-        android:layout_width="36dp"
-        android:layout_height="36dp"
+        android:layout_width="@dimen/icon_list"
+        android:layout_height="@dimen/icon_list"
         android:scaleType="centerInside"
-        android:padding="4dp"
+        android:padding="@dimen/space_xs"
         android:importantForAccessibility="no" />
 
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="1"
-        android:layout_marginStart="8dp"
+        android:layout_marginStart="@dimen/space_sm"
         android:orientation="vertical">
 
         <TextView
             android:id="@+id/search_text1"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="14sp"
+            android:textSize="@dimen/text_xl"
             android:textColor="@color/text_primary"
             android:singleLine="true"
             android:ellipsize="middle" />
@@ -37,7 +37,7 @@
             android:id="@+id/search_text2"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="11sp"
+            android:textSize="@dimen/text_sm"
             android:textColor="@color/text_tertiary"
             android:maxLines="2"
             android:ellipsize="end" />

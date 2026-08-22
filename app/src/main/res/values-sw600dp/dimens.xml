@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 平板 / 大屏：放宽弹窗与内容上限，放大间距字号 -->
+    <dimen name="space_xs">6dp</dimen>
+    <dimen name="space_sm">10dp</dimen>
+    <dimen name="space_md">14dp</dimen>
+    <dimen name="space_lg">20dp</dimen>
+    <dimen name="space_xl">28dp</dimen>
+
+    <dimen name="text_xs">12sp</dimen>
+    <dimen name="text_sm">13sp</dimen>
+    <dimen name="text_md">14sp</dimen>
+    <dimen name="text_lg">15sp</dimen>
+    <dimen name="text_xl">16sp</dimen>
+    <dimen name="text_title">20sp</dimen>
+
+    <dimen name="row_file">64dp</dimen>
+    <dimen name="row_setting">58dp</dimen>
+    <dimen name="row_preview">64dp</dimen>
+    <dimen name="icon_list">44dp</dimen>
+    <dimen name="icon_action">44dp</dimen>
+
+    <dimen name="dialog_max_width">720dp</dimen>
+    <dimen name="dialog_max_height">860dp</dimen>
+    <dimen name="content_max_width">820dp</dimen>
+</resources>

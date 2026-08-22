@@ -4,15 +4,16 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:background="?attr/selectableItemBackground">
+    android:background="?attr/selectableItemBackground"
+    android:paddingTop="@dimen/space_sm">
 
     <TextView
         android:id="@+id/scan_hit_text"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingStart="12dp"
-        android:paddingTop="8dp"
-        android:textSize="12sp"
+        android:paddingStart="@dimen/space_md"
+        android:paddingEnd="@dimen/space_md"
+        android:textSize="@dimen/text_sm"
         android:textColor="@color/text_primary"
         android:typeface="monospace"
         android:singleLine="true"
@@ -22,31 +23,37 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:paddingStart="4dp"
-        android:paddingEnd="4dp"
-        android:paddingBottom="2dp">
+        android:paddingStart="@dimen/space_xs"
+        android:paddingEnd="@dimen/space_xs"
+        android:paddingBottom="@dimen/space_xs">
 
         <Button
             android:id="@+id/btnExtract"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/scan_extract"
-            android:textSize="12sp"
+            android:textSize="@dimen/text_sm"
             android:textColor="@color/accent"
-            android:background="@null"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:drawableStart="@drawable/ic_extract"
+            android:drawableTint="@color/accent"
+            android:drawablePadding="@dimen/space_xs"
             android:minHeight="0dp"
-            android:padding="8dp" />
+            android:padding="@dimen/space_sm" />
 
         <Button
             android:id="@+id/btnCarve"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/scan_carve"
-            android:textSize="12sp"
+            android:textSize="@dimen/text_sm"
             android:textColor="@color/text_tertiary"
-            android:background="@null"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:drawableStart="@drawable/ic_carve"
+            android:drawableTint="@color/text_tertiary"
+            android:drawablePadding="@dimen/space_xs"
             android:minHeight="0dp"
-            android:padding="8dp" />
+            android:padding="@dimen/space_sm" />
 
     </LinearLayout>
 

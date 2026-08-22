@@ -14,7 +14,13 @@
     <string name="msg_editor_too_large">ファイルが大きすぎてアプリ内で編集できません(&gt;2MB)</string>
     <string name="msg_tjs_compiled">コンパイル済み TJS スクリプト（TJS2 バイナリ）のため、テキストとしてプレビューできません</string>
     <string name="edit_archive">編集</string>
-    <string name="edit_only_pack">対応するのはパック可能な形式のみです（XP3/PFS/ISO/NSA）</string>
+    <string name="action_more">More</string>
+    <string name="edit_only_pack">対応するのはパック可能な形式のみです（XP3/PFS/ISO/NSA/7Z/YPF）</string>
+    <string name="zip_manage_only_zip">エントリ管理に対応しているのは ZIP のみです</string>
+    <string name="convert_only_iso">CSO 変換に対応しているのは ISO のみです</string>
+    <string name="nested_archive_title">入れ子のアーカイブ</string>
+    <string name="nested_archive_msg">%2$s 内に入れ子のアーカイブ %1$s が見つかりました。新しいウィンドウで開きますか？</string>
+    <string name="nested_archive_open">開く</string>
     <string name="edit_archive_title">スクリプト編集</string>
     <string name="edit_repack">再パック</string>
     <string name="edit_no_scripts">編集可能なスクリプトが見つかりません</string>
@@ -27,6 +33,31 @@
     <string name="action_delete">🗑️ 削除</string>
     <string name="action_move">✂️ 移動</string>
     <string name="action_copy_path">📋 パスをコピー</string>
+    <string name="action_copy">📄 コピー</string>
+    <string name="msg_copy_result">コピー完了: 成功 %1$d, 失敗 %2$d</string>
+    <string name="action_choose_dir">📁 ディレクトリを選択</string>
+    <string name="editor_unsaved_changes">未保存の変更</string>
+    <string name="editor_restore_prompt">未保存の編集が見つかりました。復元しますか？</string>
+    <string name="editor_restore">復元</string>
+    <string name="editor_discard">破棄</string>
+    <string name="editor_no_save">保存しない</string>
+    <string name="editor_undo">元に戻す</string>
+    <string name="search_regex">正規表現</string>
+    <string name="search_case_sensitive">大文字小文字を区別</string>
+    <string name="search_file_filter">ファイルフィルター（例: .txt,.md）</string>
+    <string name="search_export">結果をエクスポート</string>
+    <string name="editor_redo">やり直す</string>
+    <string name="msg_calc_counting">計算中：%1$d ファイル…</string>
+    <string name="terminal_exec_timeout">コマンドがタイムアウトしました（30秒）</string>
+    <string name="settings_sort">並べ替え</string>
+    <string name="settings_picker_mode">パス/ファイルの選択方法</string>
+    <string name="picker_mode_dialog">パス選択ダイアログを開く</string>
+    <string name="picker_mode_tab">新しいウィンドウで選択</string>
+    <string name="sort_by_name">名前順</string>
+    <string name="sort_by_size">サイズ順</string>
+    <string name="sort_by_date">日付順</string>
+    <string name="sort_ascending">昇順</string>
+    <string name="sort_descending">降順</string>
     <string name="action_file_info">ℹ️ ファイル情報</string>
     <string name="action_convert_cso">CSO (.cso) に変換</string>
     <string name="action_convert_iso">ISO (.iso) に変換</string>
@@ -179,12 +210,26 @@
     <string name="msg_move_result">移動完了：%1$d 成功、%2$d 失敗</string>
     <string name="confirm_delete_file_msg">%1$s を削除しますか？\nこの操作は元に戻せません！</string>
     <string name="confirm_delete_batch_msg">%1$d 件を削除しますか？元に戻せません！</string>
+    <string name="confirm_recycle_file_msg">%1$s をゴミ箱に移動しますか？</string>
+    <string name="confirm_recycle_batch_msg">%1$d 件をゴミ箱に移動しますか？</string>
     <string name="msg_calc_dir_size_prompt">%1$s\n%2$d 個のアイテムを含む\n\nフォルダサイズの計算にはファイルごとの統計が必要です。大きなフォルダでは %3$d~%4$d 秒かかる場合があります。続行しますか？</string>
     <string name="msg_read_all_fail">アーカイブを読み取れません、暗号化されている可能性があります</string>
     <string name="err_file_error">ファイル操作に失敗しました</string>
     <string name="msg_permission_storage">「すべてのファイルアクセス」権限を許可して再起動してください</string>
     <string name="msg_hash_copied">ハッシュをコピーしました</string>
     <string name="err_audio_playback">音声を再生できません：%1$s</string>
+    <string name="err_invalid_regex">正規表現が無効です：%1$s</string>
+    <string name="msg_max_tabs">最大3つのウィンドウを開けます</string>
+    <string name="msg_archive_open_in_tab">このアーカイブは「%1$s」で開かれています</string>
+    <string name="msg_archive_open_skipped">他のウィンドウで開いている %1$d 個のアーカイブをスキップしました</string>
+    <string name="merge_into_archive">他のアーカイブに統合…</string>
+    <string name="merge_no_target">このフォルダに統合先のアーカイブがありません</string>
+    <string name="merge_select_target">統合先アーカイブを選択</string>
+    <string name="merge_target_unsupported">このアーカイブ形式は再パックできません</string>
+    <string name="merge_title">%1$s に統合中</string>
+    <string name="merge_done">統合しました、%1$s として保存</string>
+    <string name="tab_rename">✏️ ウィンドウ名を変更</string>
+    <string name="tab_rename_prompt">ウィンドウ名</string>
     <string name="err_video_playback">動画を再生できません：%1$s</string>
     <string name="msg_encoding_selected">エンコード：%1$s</string>
     <string name="msg_renamed_to">%1$s に名前変更しました</string>
@@ -201,9 +246,25 @@
     <string name="msg_compressing_file">圧縮中——%1$s</string>
     <string name="msg_extracting_file">解凍中——%1$s</string>
     <string name="msg_delete_progress">削除中</string>
+    <string name="msg_move_to_recycle">ゴミ箱に移動中</string>
     <string name="msg_deleting_file">削除中——%1$s</string>
     <string name="msg_delete_counting">ファイルを数えています…</string>
     <string name="msg_delete_result">削除完了: 成功 %1$d, 失敗 %2$d</string>
+    <string name="msg_moved_to_recycle">ゴミ箱に移動しました</string>
+    <string name="msg_restore_failed">復元失敗: %1$d 件</string>
+    <string name="title_recycle_bin">♻️ ゴミ箱</string>
+    <string name="action_restore">♻️ 復元</string>
+    <string name="recycle_loading">ゴミ箱を読み込み中…</string>
+    <string name="recycle_empty">ゴミ箱は空です</string>
+    <string name="recycle_items">%1$d 件（%2$s）</string>
+    <string name="recycle_permanent_delete">⚠️ 完全に削除</string>
+    <string name="recycle_empty_now">ゴミ箱を空にする</string>
+    <string name="recycle_empty_confirm">ゴミ箱のすべてのアイテムを完全に削除しますか？\n元に戻せません！</string>
+    <string name="recycle_days_format">%1$d 日</string>
+    <string name="recycle_disabled_message">ゴミ箱は設定で無効になっています</string>
+    <string name="recycle_enable">ゴミ箱を有効にする</string>
+    <string name="recycle_auto_clean">自動削除（日数）</string>
+    <string name="recycle_auto_clean_never">しない</string>
     <string name="msg_multivolume">全 %1$d ボリューム</string>
     <string name="msg_both_files_previewable">両方のファイルをプレビューできます</string>
     <string name="msg_same_size">同じサイズ: %1$s</string>
@@ -218,7 +279,9 @@
     <string name="format_group_single">単一ファイル圧縮</string>
     <string name="msg_single_file_compress">単一ファイル圧縮は単一ファイルのみ対応</string>
     <string name="msg_ksd_need_txt">KSD パックは .txt テキストファイルのみ対応</string>
-    <string name="settings_compress_generic">汎用形式 (gzip/bzip2/xz/zstd/lzma/lz4/tar)</string>
+    <string name="settings_parallel_threads">並列解凍スレッド数 (rar/zip)</string>
+    <string name="parallel_auto">自動</string>
+    <string name="settings_compress_generic">汎用形式 (gzip/bzip2/xz/zstd/lzma/lz4/brotli/tar)</string>
     <string name="split_title">分割サイズ (zip/7z)</string>
     <string name="split_none">分割なし</string>
     <string name="split_custom">カスタム</string>
@@ -308,6 +371,7 @@
         <item>LZMA (.lzma) — 解凍 + 圧縮\n注意：一覧プレビューで解凍サイズを表示しません（alone ヘッダーにサイズなし）</item>
         <item>TAR — 解凍 + 圧縮\n.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
         <item>KSD (.ksd) — 解凍 + 圧縮\nKirikiri2 セーブ；圧縮は .txt のみ受付</item>
+        <item>BROTLI (.br) — 解凍 + 圧縮\nGoogle Brotli 圧縮；レベル 0-11（デフォルト 6）；Web コンテンツで広く使用</item>
     </string-array>
         <string-array name="help_tutorials">
         <item>圧縮設定\n設定 → 圧縮：圧縮レベル（zip/7z/汎用）、分割サイズ（zip/7z）、ZIP エンコーディング、圧縮パスワード；「OK」で一括保存；作業モード（アーカイブ/圧縮）切替でタイトルバー更新</item>
@@ -388,4 +452,33 @@
         <item>100MB</item>
         <item>1GB</item>
     </string-array>
+    <string name="img_edit_title">画像編集</string>
+    <string name="img_edit_brush">ブラシ</string>
+    <string name="img_edit_crop">切り取り</string>
+    <string name="img_edit_eyedrop">スポイト</string>
+    <string name="img_edit_stretch_16">16:9</string>
+    <string name="img_edit_stretch_34">3:4</string>
+    <string name="img_edit_undo">元に戻す</string>
+    <string name="img_edit_reset">リセット</string>
+    <string name="img_edit_save">保存</string>
+    <string name="img_edit_opacity">不透明度</string>
+    <string name="img_edit_width">太さ</string>
+    <string name="img_edit_saved">%1$s を保存しました</string>
+    <string name="img_edit_failed">保存に失敗しました</string>
+    <string name="img_edit_restore_title">未保存の編集</string>
+    <string name="img_edit_restore_msg">前回の編集を復元しますか？</string>
+    <string name="img_edit_pick_hint">ピクセルをタップして色を取得</string>
+    <string name="img_edit_tap_copy">タップでコピー</string>
+    <string name="color_copied">%1$s をコピーしました</string>
+    <string name="msg_loading">読み込み中…</string>
+    <string name="img_convert_title">形式変換</string>
+    <string name="img_convert_menu">形式を変換</string>
+    <string name="img_convert_choose">変換先の形式を選択</string>
+    <string name="img_edit_crop_hint">ドラッグで範囲を選択後、もう一度「切り取り」をタップして確定</string>
+    <string name="img_edit_stretch">引き伸ばし</string>
+    <string name="settings_other">⚙️ その他の設定</string>
+    <string name="restore_session">前回のセッションを復元</string>
+    <string name="restore_session_desc">起動時に前回のウィンドウとフォルダを再開（最大 3 つ）</string>
+    <string name="action_share">📤 共有</string>
+    <string name="msg_share_folder">フォルダは共有できません</string>
 </resources>

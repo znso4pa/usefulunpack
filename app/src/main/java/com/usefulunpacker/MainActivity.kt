@@ -7,6 +7,7 @@ package com.usefulunpacker
 import android.app.AlertDialog
 import android.app.ProgressDialog
 import android.content.Intent
+import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.BitmapFactory
 import android.graphics.drawable.ColorDrawable
@@ -21,6 +22,8 @@ import android.widget.AdapterView.OnItemClickListener
 import android.widget.PopupMenu
 import androidx.appcompat.app.AppCompatActivity
 import androidx.drawerlayout.widget.DrawerLayout
+import androidx.fragment.app.Fragment
+import androidx.viewpager2.adapter.FragmentStateAdapter
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import org.json.JSONArray
 import org.json.JSONObject
@@ -29,69 +32,124 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.concurrent.thread
+import com.usefulunpacker.fileops.showRecycleBinDialog
 
+/**
+ * Caps a dialog to sensible max dimensions so it never stretches edge-to-edge
+ * on tablets / landscape phones. `relW`/`relH` are the legacy "fraction of
+ * screen" sizes; the result is `min(screen*frac, dimen cap)` — the cap grows
+ * on sw600dp / landscape via the resource qualifiers.
+ */
+internal fun Context.cappedDialogSize(relW: Float, relH: Float): Pair<Int, Int> {
+    val dm = resources.displayMetrics
+    val maxW = resources.getDimensionPixelSize(R.dimen.dialog_max_width)
+    val maxH = resources.getDimensionPixelSize(R.dimen.dialog_max_height)
+    val w = minOf((dm.widthPixels * relW).toInt(), maxW).coerceAtLeast(0)
+    val h = minOf((dm.heightPixels * relH).toInt(), maxH).coerceAtLeast(0)
+    return w to h
+}
 
 class MainActivity : AppCompatActivity() {
 
     internal lateinit var drawer: DrawerLayout
-    internal lateinit var tvPath: TextView
-    internal lateinit var tvCount: TextView
-    internal lateinit var tvSelected: TextView
-    internal lateinit var tvEmpty: TextView
-    internal lateinit var bottomBar: LinearLayout
-    internal lateinit var progress: ProgressBar
-    internal lateinit var btnExtract: Button
-    internal lateinit var listFiles: ListView
-    internal lateinit var fabExtract: FloatingActionButton
-    internal lateinit var btnFolderNext: Button
     internal lateinit var listBookmarks: ListView
 
-    internal var currentDir = Environment.getExternalStorageDirectory()
-    internal var selectedFile: File? = null
-    internal var fileToMove: File? = null
-    internal var MultiFiles = listOf<File>()
-    internal var multiSelectMode = false
-    internal val multiSelected = mutableSetOf<File>()
+    // Multi-window views + adapters
+    internal lateinit var viewPager: androidx.viewpager2.widget.ViewPager2
+    internal lateinit var tabList: androidx.recyclerview.widget.RecyclerView
+    internal val tabAdapter = TabStripAdapter(this)
+    internal val fragAdapter = TabPagerAdapter(this)
+
     internal val prefs: SharedPreferences by lazy { getSharedPreferences("bm", MODE_PRIVATE) }
-    internal val bookmarks = mutableListOf<String>()
+    internal val bookmarks = java.util.concurrent.CopyOnWriteArrayList<String>()
     internal val df = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-    internal var lastTap = 0L
+    internal var currentMediaPlayer: android.media.MediaPlayer? = null
+
+    // ── Multi-window (tab) state ─────────────────────────────────────────
+    // Each tab owns a TabState; the "active" tab's state is what the legacy
+    // MainActivity extension functions read/write (currentDir, selectedFile,
+    // multiSelected, etc.), so those functions keep working against whichever
+    // tab the user is currently viewing.
+    internal val tabs = mutableListOf<TabState>()
+    internal var activeTabIndex: Int = 0
+    internal var activeTab: TabState
+        get() = tabs[activeTabIndex]
+        set(v) {
+            val idx = tabs.indexOf(v)
+            if (idx >= 0) activeTabIndex = idx
+        }
+
+    // Delegate per-tab state to the active tab.
+    internal var currentDir: File
+        get() = activeTab.currentDir
+        set(v) { activeTab.currentDir = v }
+    internal var selectedFile: File?
+        get() = activeTab.selectedFile
+        set(v) { activeTab.selectedFile = v }
+    internal var fileToMove: File?
+        get() = activeTab.fileToMove
+        set(v) { activeTab.fileToMove = v }
+    internal var multiFiles: List<File>
+        get() = activeTab.multiFiles
+        set(v) { activeTab.multiFiles = v }
+    internal var multiSelectMode: Boolean
+        get() = activeTab.multiSelectMode
+        set(v) { activeTab.multiSelectMode = v }
+    internal val multiSelected: MutableSet<File>
+        get() = activeTab.multiSelected
+
+    // Views delegated to the active tab. Read-only — per-tab views are written
+    // through the tab's own fields (tab.tvPath etc.), never assigned here.
+    internal val tvPath: TextView get() = activeTab.tvPath
+    internal val tvCount: TextView get() = activeTab.tvCount
+    internal val tvSelected: TextView get() = activeTab.tvSelected
+    internal val tvEmpty: TextView get() = activeTab.tvEmpty
+    internal val bottomBar: LinearLayout get() = activeTab.bottomBar
+    internal val progress: ProgressBar get() = activeTab.progress
+    internal val btnExtract: Button get() = activeTab.btnExtract
+    internal val listFiles: ListView get() = activeTab.listFiles
+    internal val fabExtract: FloatingActionButton get() = activeTab.fabExtract
+
+    // Global bottom-left "add folder" button (shared across tabs, added to the
+    // activity root). Hidden during multi-select so it can't overlap the batch bar.
+    internal var btnAddFolder: ImageButton? = null
 
     // Background watcher on the current directory: auto-refresh the file list
     // when anything in it changes (rename / move / delete / extract / compress
     // / external changes like adb push or USB), so the user never has to
     // exit and re-enter a path to see the result.
-    private var dirObserver: android.os.FileObserver? = null
-    private val refreshHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val refreshRunnable = Runnable { nav(currentDir) }
+    private var dirObserver: android.os.FileObserver?
+        get() = activeTab.dirObserver
+        set(v) { activeTab.dirObserver = v }
+    private val refreshHandler: android.os.Handler
+        get() = activeTab.refreshHandler
+    private val refreshRunnable: Runnable
+        get() = activeTab.refreshRunnable
 
     internal fun restartDirObserver(dir: File) {
-        dirObserver?.stopWatching()
-        dirObserver = null
-        refreshHandler.removeCallbacks(refreshRunnable)
+        val tab = activeTab
+        tab.dirObserver?.stopWatching()
+        tab.dirObserver = null
+        tab.refreshHandler.removeCallbacks(tab.refreshRunnable)
         if (!dir.isDirectory) return
-        dirObserver = object : android.os.FileObserver(dir.absolutePath) {
+        tab.dirObserver = object : android.os.FileObserver(dir.absolutePath) {
             override fun onEvent(event: Int, path: String?) {
-                // Only content-changing events matter — reading the list
-                // (ACCESS/OPEN/CLOSE_NOWRITE) must never re-trigger a refresh,
-                // or the observer ↔ nav loop would spin forever.
                 val e = event and android.os.FileObserver.ALL_EVENTS
                 val content = android.os.FileObserver.CREATE or android.os.FileObserver.DELETE or
                     android.os.FileObserver.MOVED_FROM or android.os.FileObserver.MOVED_TO or
                     android.os.FileObserver.CLOSE_WRITE or android.os.FileObserver.DELETE_SELF or
                     android.os.FileObserver.MOVE_SELF or android.os.FileObserver.MODIFY
                 if (e and content == 0) return
-                // Debounce: a big extraction emits a burst of events.
-                refreshHandler.removeCallbacks(refreshRunnable)
-                refreshHandler.postDelayed(refreshRunnable, 400)
+                tab.refreshHandler.removeCallbacks(tab.refreshRunnable)
+                tab.refreshHandler.postDelayed(tab.refreshRunnable, FILE_OBSERVER_DEBOUNCE_MS)
             }
         }.apply { startWatching() }
     }
 
-    internal fun tryTap(): Boolean {
+    internal fun tryTap(tab: TabState): Boolean {
         val now = System.currentTimeMillis()
-        if (now - lastTap < 800) return false
-        lastTap = now
+        if (now - tab.lastTapAt < DOUBLE_TAP_INTERVAL_MS) return false
+        tab.lastTapAt = now
         return true
     }
 
@@ -123,6 +181,15 @@ class MainActivity : AppCompatActivity() {
                 prefs.getString("app_lang", "zh-CN") ?: "zh-CN"
             )
         )
+        // Parallel-decode thread count (0 = auto). 1 disables parallel for
+        // low-RAM devices; 2/4/8 cap the worker count.
+        val parallelThreads = prefs.getInt("parallel_threads", 0).coerceIn(0, 8)
+        try {
+            RarCore.setParallelThreads(parallelThreads)
+            ZipCore.setParallelThreads(parallelThreads)
+        } catch (_: UnsatisfiedLinkError) {
+            // stale .so without the setter — parallel uses the auto default
+        }
 
         drawer = findViewById(R.id.drawer)
 
@@ -140,20 +207,48 @@ class MainActivity : AppCompatActivity() {
         prefs.getString("bg_image_uri", null)?.let { uriStr ->
             try { applyBackgroundImage(Uri.parse(uriStr)) } catch (_: Exception) {}
         }
-        tvPath = findViewById(R.id.tvPath)
-        tvCount = findViewById(R.id.tvCount)
-        tvSelected = findViewById(R.id.tvSelected)
-        tvEmpty = findViewById(R.id.tvEmpty)
-        bottomBar = findViewById(R.id.bottomBar)
-        progress = findViewById(R.id.progress)
-        btnExtract = findViewById(R.id.btnExtract)
-        listFiles = findViewById(R.id.listFiles)
-        fabExtract = findViewById(R.id.fabExtract)
         listBookmarks = findViewById(R.id.listBookmarks)
+
+        // ── Set up multi-window (tab) browsing ─────────────────────────
+        viewPager = findViewById(R.id.viewPager)
+        tabList = findViewById(R.id.tabList)
+        tabList.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(this, androidx.recyclerview.widget.LinearLayoutManager.HORIZONTAL, false)
+        tabList.adapter = tabAdapter
+        findViewById<ImageButton>(R.id.btnAddTab).setOnClickListener { addTab() }
+
+        // Initial tabs: start with one, let the user open up to 3.
+        viewPager.adapter = fragAdapter
+        viewPager.offscreenPageLimit = 3
+        // 3 fragments always exist (one per slot), but only `tabs.size` are visible.
+        viewPager.registerOnPageChangeCallback(object : androidx.viewpager2.widget.ViewPager2.OnPageChangeCallback() {
+            override fun onPageSelected(position: Int) {
+                activeTabIndex = position
+                tabAdapter.notifyDataSetChanged()
+                updateTitle()
+                // Per-tab toolbar paste button + batch bar must be re-synced to the
+                // newly-active tab (fileToMove / multiSelectMode are per-tab).
+                updatePasteButton()
+                syncMultiBar(activeTab)
+                // Re-render an in-tab preview when its tab becomes active again.
+                if (activeTab.previewActive) syncPreview(activeTab)
+                // Re-derive the compression-mode "→" button visibility for the
+                // now-active tab (it's gated on activeTab === tab).
+                val tab = activeTab
+                if (tab.multiSelectMode) {
+                    tab.btnFolderNext?.visibility = View.GONE
+                } else if (tab.selectedFile?.isDirectory == true) {
+                    tab.btnFolderNext?.visibility = View.VISIBLE
+                } else {
+                    tab.btnFolderNext?.visibility = View.GONE
+                }
+            }
+        })
+        // Initial tabs: restore the saved session if enabled, else one tab.
+        restoreSession()
 
         findViewById<ImageButton>(R.id.btnDrawer).setOnClickListener { drawer.open() }
         findViewById<ImageButton>(R.id.btnRoot).setOnClickListener { nav(Environment.getExternalStorageDirectory()) }
-        findViewById<ImageButton>(R.id.btnUp).setOnClickListener { currentDir.parentFile?.let { nav(it) } }
+        findViewById<ImageButton>(R.id.btnRecycle).setOnClickListener { showRecycleBinDialog(this) }
         // Initial btnCLI setup (dropdown arrow)
         updatePasteButton()
         // Bottom-left circular "add folder" button
@@ -200,87 +295,17 @@ class MainActivity : AppCompatActivity() {
             }
         }
         findViewById<androidx.constraintlayout.widget.ConstraintLayout>(R.id.root)?.addView(btnAddFolder)
-        btnExtract.setOnClickListener { extract() }
-        fabExtract.setOnClickListener { extract() }
+        this.btnAddFolder = btnAddFolder
+        // btnExtract/fabExtract click listeners are set per-tab in FolderFragment
+        // (the views now live inside each tab's folder_view.xml).
         findViewById<TextView>(R.id.btnAddBookmark).setOnClickListener {
             if (bookmarks.contains(currentDir.absolutePath).not()) {
                 bookmarks.add(0, currentDir.absolutePath); saveBookmarks()
             }
             drawer.close()
         }
-        // Add folder-nav button to bottom bar (for compression mode)
-        btnFolderNext = Button(this).apply {
-            text = "→"
-            textSize = 14f
-            visibility = View.GONE
-            setPadding(8, 0, 8, 0)
-        }
-        bottomBar.addView(btnFolderNext, LinearLayout.LayoutParams(WRAP, WRAP))
-        btnFolderNext.setOnClickListener { selectedFile?.let { if (it.isDirectory) nav(it) } }
-
-        listFiles.onItemClickListener = OnItemClickListener { _, _, pos, _ ->
-            val f = listFiles.adapter.getItem(pos) as File
-            if (multiSelectMode) { toggleMultiSelect(f); return@OnItemClickListener }
-            if (f.isDirectory) {
-                val isCompressMode = prefs.getInt("work_mode", 0) == 1
-                if (isCompressMode) {
-                    selectedFile = f
-                    tvSelected.text = getString(R.string.folder_selected, f.name)
-                    bottomBar.visibility = View.VISIBLE
-                    fabExtract.visibility = View.GONE
-                    btnExtract.text = getString(R.string.msg_compress_title)
-                    btnExtract.setOnClickListener { showCompressFormatPicker(this, f, prefs, currentDir) { nav(currentDir) } }
-                    btnFolderNext.visibility = View.VISIBLE
-                    progress.visibility = View.GONE
-                } else {
-                    nav(f)
-                }
-                return@OnItemClickListener
-            }
-            if (tryTap()) select(f)
-        }
-        listFiles.onItemLongClickListener = AdapterView.OnItemLongClickListener { _, _, pos, _ ->
-            val f = listFiles.adapter.getItem(pos) as File
-            AlertDialog.Builder(this)
-                .setTitle(f.name)
-                .setItems(arrayOf(getString(R.string.action_copy_path), getString(R.string.action_move), getString(R.string.action_rename), getString(R.string.action_delete), getString(R.string.action_select), getString(R.string.action_file_info), getString(R.string.action_scan))) { _, w ->
-                    when (w) {
-                        0 -> { (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
-                            .setPrimaryClip(android.content.ClipData.newPlainText("p", f.path)); toast(getString(R.string.msg_copied)) }
-                        1 -> { fileToMove = f; updatePasteButton(); toast(getString(R.string.msg_selected_nav, f.name)) }
-                        2 -> { showRenameDialog(this, f, currentDir, bookmarks) { saveBookmarks(); nav(currentDir) } }
-                        3 -> {
-                            AlertDialog.Builder(this@MainActivity)
-                                .setTitle(getString(R.string.title_delete))
-                                                                .setMessage(getString(R.string.confirm_delete_file_msg, f.name))
-                                .setPositiveButton(getString(R.string.action_delete)) { _, _ ->
-                                    deleteWithProgress(this@MainActivity, listOf(f)) { del, fail ->
-                                        if (fail > 0) toast(getString(R.string.msg_delete_result, del, fail)) else toast(getString(R.string.msg_deleted))
-                                        pruneBookmarksForDeleted(listOf(f))
-                                        nav(currentDir)
-                                    }
-                                }
-                                .setNegativeButton(getString(R.string.action_cancel), null).show()
-                        }
-                        4 -> { enterMultiSelect(f) }
-                         5 -> {
-                            if (f.isDirectory) {
-                                val fileCount = f.listFiles()?.size ?: 0
-                                val eta = fileCount / 200
-                                AlertDialog.Builder(this)
-                                    .setTitle(getString(R.string.action_file_info))
-                                                                        .setMessage(getString(R.string.msg_calc_dir_size_prompt, f.name, fileCount, eta, eta + 3))
-                                    .setPositiveButton(getString(R.string.calc_size)) { _, _ -> calcDirSize(this, f) }
-                                    .setNegativeButton(getString(R.string.action_cancel), null).show()
-                            } else {
-                                showFileInfoDialog(f)
-                            }
-                        }
-                        6 -> { showSignatureScan(f) }
-                    }
-                }.show()
-            true
-        }
+        // Note: the compression-mode "→" folder button is now created per-tab
+        // in FolderFragment (bottomBar lives in each tab's folder_view).
         listBookmarks.onItemClickListener = OnItemClickListener { _, _, pos, _ ->
             nav(File(bookmarks[pos])); drawer.close()
         }
@@ -288,88 +313,110 @@ class MainActivity : AppCompatActivity() {
             bookmarks.removeAt(pos); saveBookmarks(); true
         }
 
-        // Batch action bar for multi-select. The count stays fixed on the left;
-        // the buttons live in a horizontal ScrollView so a narrow screen can
-        // reach every action instead of the row overflowing.
-        val batchBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(C["surface_dim"]!!); visibility = View.GONE
-            setPadding(12, 6, 12, 6)
-            layoutParams = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams(MATCH, WRAP).apply {
-                bottomToBottom = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
-                startToStart = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
-                endToEnd = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
-            }
-        }
-        val tvBatchCount = TextView(this).apply { setTextColor(C["primary"]!!); textSize = 12f }
-        fun b(text: String, color: Int) = Button(this).apply { this.text = text; setTextColor(color); background = null; textSize = 12f; isAllCaps = false; setPadding(4, 0, 4, 0) }
-        val btnBatchExtract = b(getString(R.string.batch_extract), C["accent"]!!).apply { setOnClickListener { startBatchExtract() } }
-        val btnBatchPreview = b(getString(R.string.action_preview), C["accent"]!!).apply { setOnClickListener { startBatchPreviewOnly() } }
-        val btnBatchCompress = b(getString(R.string.batch_compress), C["accent"]!!).apply { setOnClickListener { startBatchCompress() } }
-        val btnBatchMove = b(getString(R.string.action_move), C["accent"]!!).apply { setOnClickListener { startBatchMove() } }
-        val btnBatchDelete = b(getString(R.string.action_delete), C["error"]!!).apply { setOnClickListener { confirmBatchDelete() } }
-        val btnBatchCancel = b("✕ " + getString(R.string.action_cancel), C["tertiary"]!!).apply { setOnClickListener { exitMultiSelect() } }
-        val batchScroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            isVerticalScrollBarEnabled = false
-            addView(LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                addView(btnBatchPreview)
-                addView(btnBatchExtract)
-                addView(btnBatchCompress)
-                addView(btnBatchMove)
-                addView(btnBatchDelete)
-                addView(btnBatchCancel)
-            }, LinearLayout.LayoutParams(WRAP, WRAP))
-        }
-        // Count is a fixed-width label (never stretched); the scrollable button
-        // row takes the remaining width so a narrow screen keeps the count
-        // readable and lets the buttons scroll instead of overflowing.
-        batchBar.addView(tvBatchCount, LinearLayout.LayoutParams(WRAP, WRAP))
-        batchBar.addView(batchScroll, LinearLayout.LayoutParams(0, WRAP, 1f))
-        findViewById<androidx.constraintlayout.widget.ConstraintLayout>(R.id.root)?.addView(batchBar)
-
         loadBookmarks(); nav(currentDir)
         showDisclaimer()
     }
 
     override fun onPause() {
         super.onPause()
-        dirObserver?.stopWatching()
-        refreshHandler.removeCallbacks(refreshRunnable)
+        saveSession()
+        try { currentMediaPlayer?.release() } catch (_: Exception) {}
+        currentMediaPlayer = null
+        tabs.forEach { it.dirObserver?.stopWatching() }
     }
 
     override fun onResume() {
         super.onResume()
-        restartDirObserver(currentDir)
+        // Restart each tab's observer; skip background tabs whose fragment views
+        // aren't attached yet (their onCreateView re-registers the observer).
+        tabs.forEach { restartDirObserverFor(it) }
+        thread { com.usefulunpacker.fileops.RecycleBin.autoClean(this, prefs) }
+    }
+
+    override fun onBackPressed() {
+        // An in-tab archive preview intercepts back to exit the preview first,
+        // rather than closing the whole activity.
+        if (activeTab.previewActive) {
+            exitPreview(activeTab)
+            return
+        }
+        // A picker window's back key cancels the pick: close the tab and return
+        // to the origin tab (no file picked).
+        val picker = activeTab
+        if (picker.pickerCallback != null) {
+            val owner = picker.pickerOriginTab
+            closeTab(picker)
+            if (owner != null && tabs.contains(owner)) {
+                val idx = tabs.indexOf(owner)
+                if (idx >= 0) viewPager.currentItem = idx
+            }
+            return
+        }
+        super.onBackPressed()
     }
 
     override fun onDestroy() {
-        dirObserver?.stopWatching()
-        refreshHandler.removeCallbacks(refreshRunnable)
+        try { currentMediaPlayer?.release() } catch (_: Exception) {}
+        currentMediaPlayer = null
+        // 清理编辑临时文件
+        try {
+            val editDir = File(cacheDir, "edit")
+            if (editDir.exists()) {
+                editDir.listFiles()?.forEach { it.delete() }
+                editDir.delete()
+            }
+        } catch (_: Exception) {}
+        tabs.forEach { it.stopObserver() }
+        OpenArchiveRegistry.clearAll()
         super.onDestroy()
     }
 
+    internal fun restartDirObserverFor(tab: TabState) {
+        if (!tabs.contains(tab)) return
+        val wasActive = activeTab === tab
+        if (wasActive) {
+            restartDirObserver(tab.currentDir)
+        } else {
+            tab.dirObserver?.stopWatching()
+            tab.dirObserver = null
+            tab.refreshHandler.removeCallbacks(tab.refreshRunnable)
+            val dir = tab.currentDir
+            if (!dir.isDirectory) return
+            tab.dirObserver = object : android.os.FileObserver(dir.absolutePath) {
+                override fun onEvent(event: Int, path: String?) {
+                    val e = event and android.os.FileObserver.ALL_EVENTS
+                    val content = android.os.FileObserver.CREATE or android.os.FileObserver.DELETE or
+                        android.os.FileObserver.MOVED_FROM or android.os.FileObserver.MOVED_TO or
+                        android.os.FileObserver.CLOSE_WRITE or android.os.FileObserver.DELETE_SELF or
+                        android.os.FileObserver.MOVE_SELF or android.os.FileObserver.MODIFY
+                    if (e and content == 0) return
+                    tab.refreshHandler.removeCallbacks(tab.refreshRunnable)
+                    tab.refreshHandler.postDelayed(tab.refreshRunnable, FILE_OBSERVER_DEBOUNCE_MS)
+                }
+            }.apply { startWatching() }
+        }
+    }
+
     internal fun updatePasteButton() {
-        findViewById<TextView>(R.id.btnCLI)?.let { cli ->
+        findViewById<ImageButton>(R.id.btnCLI)?.let { cli ->
             val hasFile = fileToMove != null
-            cli.text = if (hasFile) "📋" else "▾"
-            cli.textSize = if (hasFile) 16f else 22f
+            cli.setImageResource(if (hasFile) R.drawable.ic_clipboard else R.drawable.ic_overflow)
+            cli.setColorFilter(if (hasFile) C["accent"]!! else C["tertiary"]!!)
             cli.setOnClickListener { v ->
                 if (hasFile) {
-                    if (MultiFiles.size > 1) {
+                    if (multiFiles.size > 1) {
                         var ok = 0; var fail = 0
-                        for (src in MultiFiles) {
+                        for (src in multiFiles) {
                             val dst = File(currentDir, src.name)
                             if (dst.exists()) { fail++; continue }
                             if (src.renameTo(dst)) ok++ else fail++
                         }
-                                                toast(getString(R.string.msg_move_result, ok, fail)); fileToMove = null; MultiFiles = listOf(); updatePasteButton(); nav(currentDir)
+                                                toast(getString(R.string.msg_move_result, ok, fail)); fileToMove = null; multiFiles = listOf(); updatePasteButton(); nav(currentDir)
                     } else {
                         val src = fileToMove ?: return@setOnClickListener
                         val dst = File(currentDir, src.name)
                         if (dst.exists()) { toast(getString(R.string.msg_target_exists)); return@setOnClickListener }
-                        if (src.renameTo(dst)) { toast(getString(R.string.msg_moved_to, dst.path)); fileToMove = null; MultiFiles = listOf(); updatePasteButton(); nav(currentDir) }
+                        if (src.renameTo(dst)) { toast(getString(R.string.msg_moved_to, dst.path)); fileToMove = null; multiFiles = listOf(); updatePasteButton(); nav(currentDir) }
                         else toast(getString(R.string.msg_move_failed))
                     }
                 } else {
@@ -396,7 +443,7 @@ class MainActivity : AppCompatActivity() {
                     textSize = 16f; setTextColor(C["error"]!!)
                     gravity = Gravity.CENTER; setPadding(4, 0, 8, 0)
                     tag = "cancel_move"
-                    setOnClickListener { fileToMove = null; MultiFiles = listOf(); updatePasteButton(); toast(getString(R.string.msg_cancelled)) }
+                    setOnClickListener { fileToMove = null; multiFiles = listOf(); updatePasteButton(); toast(getString(R.string.msg_cancelled)) }
                 }
                 toolbar?.addView(btnCancel)
             }
@@ -405,6 +452,160 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+
+    // ── Tab management ──────────────────────────────────────────────────
+    /** Display title of a tab: its custom name, or the default "窗口 N". */
+    internal fun tabTitle(tab: TabState): String {
+        val idx = tabs.indexOf(tab)
+        return tab.title.ifEmpty { "窗口 ${(idx + 1).coerceAtLeast(1)}" }
+    }
+
+    internal fun updateTitle() {
+        val isCompress = prefs.getInt("work_mode", 0) == 1
+        findViewById<TextView>(R.id.tvTitle)?.text =
+            "UsefulUnpack" + (if (isCompress) getString(R.string.title_mode_compress) else getString(R.string.title_mode_archive))
+        tabAdapter.notifyDataSetChanged()
+    }
+
+    internal fun addTab() {
+        if (tabs.size >= MAX_TABS) {
+            toast(getString(R.string.msg_max_tabs))
+            return
+        }
+        val tab = TabState(tabs.size)
+        // New windows start at the external storage root, like the original app.
+        tab.currentDir = android.os.Environment.getExternalStorageDirectory()
+        tabs.add(tab)
+        rebuildPager()
+        viewPager.post { viewPager.currentItem = tabs.size - 1 }
+    }
+
+    /** Renames the given tab (long-press its label in the strip). Empty input
+     *  resets to the default "窗口 N". The custom name is also what the
+     *  same-archive conflict toast shows, so the user can tell windows apart. */
+    internal fun showTabRenameDialog(tab: TabState) {
+        val inp = EditText(this).apply {
+            setText(tab.title)
+            selectAll()
+            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+            setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
+            hint = getString(R.string.tab_rename_prompt)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.tab_rename))
+            .setView(inp)
+            .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
+                tab.title = inp.text.toString().trim()
+                tabAdapter.notifyDataSetChanged()
+            }
+            .setNegativeButton(getString(R.string.action_cancel), null)
+            .show()
+    }
+
+    /**
+     * Opens a NEW WINDOW as a path/file picker (the "pick in a new window" mode):
+     * adds a tab rooted at [startDir], runs it in picker mode, and on pick closes
+     * the picker tab and returns to the tab that launched it (origin tab keeps its
+     * state). File mode: tap a file to pick. Dir mode: a ✓ "pick this dir" button
+     * appears in the picker tab's path bar.
+     */
+    internal fun openPickerInTab(startDir: File, allowFiles: Boolean, onPick: (File) -> Unit) {
+        if (tabs.size >= MAX_TABS) {
+            // No slot for a picker window — fall back to the in-dialog picker.
+            showFolderPickerDialog(this, startDir, allowFiles, onPick)
+            return
+        }
+        val origin = activeTab
+        val picker = TabState(tabs.size)
+        picker.currentDir = startDir
+        picker.pickerCallback = { picked ->
+            // Pick complete: close the picker tab and return to the origin tab.
+            val owner = picker.pickerOriginTab
+            onPick(picked)
+            if (tabs.contains(picker)) {
+                closeTab(picker)
+            }
+            if (owner != null && tabs.contains(owner)) {
+                val idx = tabs.indexOf(owner)
+                if (idx >= 0) viewPager.currentItem = idx
+            }
+        }
+        picker.pickerAllowFiles = allowFiles
+        picker.pickerOriginTab = origin
+        tabs.add(picker)
+        rebuildPager()
+        viewPager.post {
+            viewPager.currentItem = tabs.size - 1
+            restartDirObserverFor(picker)
+        }
+    }
+
+    internal fun closeTab(tab: TabState) {
+        if (tabs.size <= 1) return // keep at least one
+        val idx = tabs.indexOf(tab)
+        if (idx < 0) return
+        tab.stopObserver()
+        // Drop any archive the closed tab had open so its keys free up.
+        OpenArchiveRegistry.releaseTab(tab)
+        tabs.removeAt(idx)
+        if (activeTabIndex > idx) activeTabIndex--
+        if (activeTabIndex >= tabs.size) activeTabIndex = tabs.size - 1
+        // Rebuild the pager so every fragment re-binds to the (shifted) tabs by
+        // position — FragmentStateAdapter would otherwise reuse a stale fragment
+        // that still points at the removed tab.
+        rebuildPager()
+        viewPager.post {
+            viewPager.currentItem = activeTabIndex
+            restartDirObserver(activeTab.currentDir)
+        }
+    }
+
+    /** Detaches and re-attaches the pager adapter so fragments rebind to tabs.
+     *  A FRESH adapter instance is used each time — reusing the same
+     *  FragmentStateAdapter after adapter=null can retain stale fragments bound
+     *  to pre-removal TabStates, which breaks tab isolation after closeTab(). */
+    internal fun rebuildPager() {
+        val idx = viewPager.currentItem
+        viewPager.adapter = null
+        viewPager.adapter = TabPagerAdapter(this)
+        tabAdapter.notifyDataSetChanged()
+        viewPager.post { viewPager.currentItem = idx.coerceIn(0, tabs.size - 1) }
+    }
+
+    /** Refreshes a tab's current directory (used by TabState's debounce). */
+    internal fun refreshTab(tab: TabState) {
+        if (tabs.contains(tab)) navTab(tab, tab.currentDir)
+    }
+
+    // ── Per-tab helpers used by FolderFragment ──────────────────────────
+    internal fun copySingleFile(tab: TabState, f: File) {
+        val targetDir = tab.currentDir
+        thread {
+            try {
+                val dest = File(targetDir, getCopyFileName(f, targetDir))
+                if (f.isDirectory) f.copyRecursively(dest, overwrite = false)
+                else f.copyTo(dest, overwrite = false)
+                runOnUiThread { toast(getString(R.string.msg_copied)); refreshTab(tab) }
+            } catch (e: Exception) {
+                runOnUiThread { toast(getString(R.string.msg_copied)) }
+            }
+        }
+    }
+
+    internal fun confirmDeleteSingle(tab: TabState, f: File) {
+        val recycleEnabled = com.usefulunpacker.fileops.RecycleBin.isEnabled(prefs)
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.title_delete))
+            .setMessage(getString(if (recycleEnabled) R.string.confirm_recycle_file_msg else R.string.confirm_delete_file_msg, f.name))
+            .setPositiveButton(getString(R.string.action_delete)) { _, _ ->
+                deleteWithProgress(this, listOf(f), prefs) { del, fail ->
+                    if (fail > 0) toast(getString(R.string.msg_delete_result, del, fail)) else toast(getString(if (recycleEnabled) R.string.msg_moved_to_recycle else R.string.msg_deleted))
+                    pruneBookmarksForDeleted(listOf(f))
+                    refreshTab(tab)
+                }
+            }
+            .setNegativeButton(getString(R.string.action_cancel), null).show()
+    }
 
     internal fun showDisclaimer(fromSettings: Boolean = false) {
         if (!fromSettings && prefs.getBoolean("disclaimer_accepted_v2", false)) return
@@ -422,5 +623,110 @@ class MainActivity : AppCompatActivity() {
     internal var bgImageLauncher: androidx.activity.result.ActivityResultLauncher<String>? = null
 
     internal fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
+
+    /** Honor/EMUI touch-state workaround: a dismissed dialog (its fast-scroll
+     *  list / scrollview) can leave the ViewPager2 unable to intercept horizontal
+     *  swipes, so tab switching dies until restart. Re-arming the pager's input
+     *  state on dismiss resets the internal RecyclerView's touch handling.
+     *  [also] runs first if provided. */
+    internal fun resetPagerInputOnDialogDismiss(dlg: android.app.Dialog, also: (() -> Unit)? = null) {
+        dlg.setOnDismissListener {
+            also?.invoke()
+            viewPager.setUserInputEnabled(false)
+            viewPager.setUserInputEnabled(true)
+        }
+    }
+
+    companion object {
+        const val MAX_TABS = 3
+    }
 }
+
+/**
+ * Adapter for the horizontal tab strip. Each tab shows "窗口 N" plus a close
+ * button (hidden when only one tab remains). Tapping a tab activates it.
+ */
+internal class TabStripAdapter(private val act: MainActivity) :
+    androidx.recyclerview.widget.RecyclerView.Adapter<TabStripAdapter.VH>() {
+    class VH(val root: LinearLayout) : androidx.recyclerview.widget.RecyclerView.ViewHolder(root)
+
+    override fun getItemCount(): Int = act.tabs.size
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+        val root = LinearLayout(act).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val pd = act.resources.getDimensionPixelSize(R.dimen.space_md)
+            setPadding(pd, pd / 2, (pd * 2 / 3), pd / 2)
+            setBackgroundColor(0x00000000)
+        }
+        val label = TextView(act).apply {
+            textSize = act.resources.getDimension(R.dimen.text_xl) / act.resources.displayMetrics.scaledDensity
+            setPadding(0, 0, act.resources.getDimensionPixelSize(R.dimen.space_sm), 0)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            // Browser-tab feel: bold accent text on an active tab.
+            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+        }
+        val close = TextView(act).apply {
+            text = "✕"
+            textSize = act.resources.getDimension(R.dimen.text_sm) / act.resources.displayMetrics.scaledDensity
+            setPadding(act.resources.getDimensionPixelSize(R.dimen.space_xs), 0, act.resources.getDimensionPixelSize(R.dimen.space_xs), 0)
+        }
+        root.addView(label, LinearLayout.LayoutParams(WRAP, WRAP))
+        root.addView(close, LinearLayout.LayoutParams(WRAP, WRAP))
+        return VH(root)
+    }
+
+    override fun onBindViewHolder(holder: VH, position: Int) {
+        val tabs = act.tabs
+        if (position >= tabs.size) {
+            // Guard: unbind the close/root listeners so a stale holder can't
+            // index tabs[position] out of bounds after a tab is removed.
+            holder.root.setOnClickListener(null)
+            holder.root.getChildAt(1).setOnClickListener(null)
+            return
+        }
+        val label = holder.root.getChildAt(0) as TextView
+        val close = holder.root.getChildAt(1) as TextView
+        val isActive = position == act.activeTabIndex
+        val thisTab = tabs[position]
+        label.text = act.tabTitle(thisTab)
+        label.setTextColor(if (isActive) C["accent"]!! else C["tertiary"]!!)
+        // Rounded "tab" pill: active tab gets a RAISED (lighter) background so
+        // it reads as a protruding Chrome-style tab, not a sunken one.
+        holder.root.background = if (isActive) {
+            android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = 10f * act.resources.displayMetrics.density
+                setColor(C["surface_raised"]!!)
+                setStroke((1 * act.resources.displayMetrics.density).toInt(), C["accent"]!!)
+            }
+        } else {
+            android.graphics.drawable.ColorDrawable(0x00000000)
+        }
+        close.setTextColor(C["tertiary"]!!)
+        close.visibility = if (tabs.size > 1) View.VISIBLE else View.GONE
+        holder.root.setOnClickListener {
+            act.activeTabIndex = position
+            act.viewPager.currentItem = position
+            act.tabAdapter.notifyDataSetChanged()
+            act.updateTitle()
+            act.updatePasteButton()
+            act.syncMultiBar(act.activeTab)
+        }
+        holder.root.setOnLongClickListener { act.showTabRenameDialog(thisTab); true }
+        close.setOnClickListener { act.closeTab(thisTab) }
+    }
+}
+
+/** ViewPager2 adapter hosting one FolderFragment per tab slot (max 3). */
+internal class TabPagerAdapter(private val act: MainActivity) :
+    androidx.viewpager2.adapter.FragmentStateAdapter(act) {
+    override fun getItemCount(): Int = act.tabs.size
+
+    override fun createFragment(position: Int): Fragment {
+        return FolderFragment.newInstance(position)
+    }
+}
+
 

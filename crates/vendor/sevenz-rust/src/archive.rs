@@ -218,6 +218,7 @@ impl SevenZMethod {
     pub const ID_BZIP2: &'static [u8] = &[0x04, 0x02, 0x02];
     pub const ID_AES256SHA256: &'static [u8] = &[0x06, 0xf1, 0x07, 0x01];
     pub const ID_BCJ2: &'static [u8] = &[0x03, 0x03, 0x01, 0x1B];
+    pub const ID_PPMD_H: &'static [u8] = &[0x03, 0x04, 0x01];
     /// no compression
     pub const COPY: SevenZMethod = Self("COPY", Self::ID_COPY);
 
@@ -230,6 +231,8 @@ impl SevenZMethod {
 
     pub const BZIP2: Self = Self("BZIP2", Self::ID_BZIP2);
     pub const AES256SHA256: Self = Self("AES256SHA256", Self::ID_AES256SHA256);
+
+    pub const PPMD_H: Self = Self("PPMd", Self::ID_PPMD_H);
 
     pub const BCJ_X86_FILTER: Self = Self("BCJ_X86", Self::ID_BCJ_X86);
     pub const BCJ_PPC_FILTER: Self = Self("BCJ_PPC", Self::ID_BCJ_PPC);
@@ -257,6 +260,7 @@ impl SevenZMethod {
         &Self::BCJ_SPARC_FILTER,
         &Self::DELTA_FILTER,
         &Self::BCJ2_FILTER,
+        &Self::PPMD_H,
     ];
 
     #[inline]

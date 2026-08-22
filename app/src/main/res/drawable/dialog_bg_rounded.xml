@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Rounded dialog background (all AlertDialogs get a soft corner instead of
+     the stock square panel). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/bg_surface_dim" />
+    <corners android:radius="14dp" />
+</shape>

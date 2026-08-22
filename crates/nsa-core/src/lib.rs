@@ -5,7 +5,7 @@ use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json
 use archive_common::{extract_progress, compress_progress};
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
@@ -221,8 +221,10 @@ fn nsa_spb_decompress(data: &[u8], usize: u32) -> Result<Vec<u8>, String> {
 
 struct NsaEntry { name: String, offset: u64, comp_method: u8, csize: u64, usize: u64 }
 
-fn open_nsa(input: &str) -> Result<(Vec<NsaEntry>, u64, File), String> {
-    let mut file = File::open(input).map_err(|e| format!("{e}"))?;
+fn open_nsa(input: &str) -> Result<(Vec<NsaEntry>, u64, BufReader<File>), String> {
+    // BufReader: header parsing does hundreds of 1-byte filename reads per
+    // entry — unbuffered that's one syscall each.
+    let mut file = BufReader::new(File::open(input).map_err(|e| format!("{e}"))?);
     let mut hdr = [0u8; 6]; file.read_exact(&mut hdr).map_err(|e| format!("{e}"))?;
     let count = u16::from_be_bytes([hdr[0], hdr[1]]) as usize;
     if count > 100000 { return Err("Invalid archive".to_string()); }
@@ -242,39 +244,57 @@ fn open_nsa(input: &str) -> Result<(Vec<NsaEntry>, u64, File), String> {
     Ok((entries, data_start, file))
 }
 
-fn extract_nsa_entry(entries: &[NsaEntry], file: &mut File, index: usize, output: &str, data_start: u64) -> Result<(), String> {
+fn extract_nsa_entry(entries: &[NsaEntry], file: &mut BufReader<File>, index: usize, output: &str, data_start: u64) -> Result<(), String> {
     let e = &entries[index];
+    let dest = safe_join(output, &e.name)?;
+    // csize==0 but a declared uncompressed size → still create the (empty)
+    // file so the UI's "success" matches an on-disk entry and progress isn't
+    // lost. csize==0 && usize==0 is a zero-byte entry.
+    if e.csize == 0 && e.usize == 0 {
+        if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
+        std::fs::File::create(&dest).map_err(|e| format!("{e}"))?;
+        return Ok(());
+    }
     if e.csize == 0 { return Ok(()); }
     // A malicious NSA header can declare a csize up to 4GB (u32). Reject sizes
     // that are out of range or too large to buffer, instead of OOM-aborting.
-    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let file_len = file.get_ref().metadata().map(|m| m.len()).unwrap_or(0);
     let csize = e.csize as u64;
     if csize > 2 * 1024 * 1024 * 1024 || data_start + e.offset + csize > file_len {
         return Err(format!("NSA: corrupt csize {}", e.csize));
     }
-    let dest = safe_join(output, &e.name)?;
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
     file.seek(SeekFrom::Start(data_start + e.offset)).map_err(|e| format!("{e}"))?;
-    let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
-    match e.comp_method {
-        0 => {
-            let mut limited = (&mut *file).take(e.csize);
-            std::io::copy(&mut limited, &mut out).map_err(|e| format!("{e}"))?;
+    // BufWriter: extraction writes the whole entry through io::copy in small
+    // chunks — 256 KiB output buffering collapses those syscalls.
+    let mut out = ProgressWriter::extract(BufWriter::with_capacity(256 * 1024, std::fs::File::create(&dest).map_err(|e| format!("{e}"))?));
+    let result = (|| -> Result<(), String> {
+        match e.comp_method {
+            0 => {
+                let mut limited = (&mut *file).take(e.csize);
+                std::io::copy(&mut limited, &mut out).map_err(|e| format!("{e}"))?;
+            }
+            2 => {
+                let mut cdata = vec![0u8; e.csize as usize];
+                file.read_exact(&mut cdata).map_err(|e| format!("{e}"))?;
+                nsa_lzss_decompress_to(&cdata, e.usize as u32, &mut out)?;
+            }
+            1 => {
+                let mut cdata = vec![0u8; e.csize as usize];
+                file.read_exact(&mut cdata).map_err(|e| format!("{e}"))?;
+                let raw = nsa_spb_decompress(&cdata, e.usize as u32)?;
+                out.write_all(&raw).map_err(|e| format!("{e}"))?;
+            }
+            _ => return Err(format!("NSA: unsupported compression {}", e.comp_method)),
         }
-        2 => {
-            let mut cdata = vec![0u8; e.csize as usize];
-            file.read_exact(&mut cdata).map_err(|e| format!("{e}"))?;
-            nsa_lzss_decompress_to(&cdata, e.usize as u32, &mut out)?;
-        }
-        1 => {
-            let mut cdata = vec![0u8; e.csize as usize];
-            file.read_exact(&mut cdata).map_err(|e| format!("{e}"))?;
-            let raw = nsa_spb_decompress(&cdata, e.usize as u32)?;
-            out.write_all(&raw).map_err(|e| format!("{e}"))?;
-        }
-        _ => return Err(format!("NSA: unsupported compression {}", e.comp_method)),
+        out.flush().map_err(|e| format!("{e}"))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        // Don't leave a half-written/corrupt file on disk.
+        let _ = fs::remove_file(&dest);
     }
-    Ok(())
+    result
 }
 
 fn list_nsa(input: &str) -> Result<String, String> {
@@ -367,6 +387,12 @@ fn create_nsa(input: &str, output: &str, level: i32) -> Result<u32, String> {
         // Stream each file: read in bounded chunks (compression can't fit a
         // huge file in RAM), write the compressed-or-raw payload to disk.
         let csize;
+        // NSA stores per-file sizes/offsets in u32 BE — reject any single file
+        // that would overflow (a >4GiB raw store truncates the header fields
+        // into a corrupt archive, and the cumulative offset check can't catch it).
+        if size > u32::MAX as u64 {
+            return Err(format!("NSA: file too large (>4GiB) at {name}"));
+        }
         if level >= 1 && size > 0 && size <= 64 * 1024 * 1024 {
             // LZSS is non-streaming (whole-file ring buffer), so it's only
             // attempted for files ≤ 64 MiB; bigger files are stored raw

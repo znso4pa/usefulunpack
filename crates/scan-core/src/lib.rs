@@ -79,6 +79,22 @@ fn scan_file(path: &str) -> Result<Vec<Hit>, String> {
     SCAN_TOTAL.store(available_data, Ordering::SeqCst);
     SCAN_CANCEL.store(false, Ordering::SeqCst);
 
+    // NSA (NScripter) has no magic bytes, so the Aho-Corasick pass would only
+    // find the media embedded inside. Detect a standalone NSA structurally at
+    // file start and report it as a single high-confidence hit to EOF.
+    if let Some(info) = validators::validate_nsa_whole_file(&mut f, available_data) {
+        let mut hits = Vec::new();
+        hits.push(Hit {
+            offset: 0,
+            label: "NSA archive",
+            size: info.size.unwrap_or(available_data),
+            count: info.count,
+            confidence: validators::CONFIDENCE_HIGH,
+        });
+        SCAN_BYTES.store(available_data, Ordering::SeqCst);
+        return Ok(hits);
+    }
+
     // Build the Aho-Corasick matcher over all magic patterns.
     let mut patterns: Vec<&[u8]> = Vec::new();
     let mut sig_for_pattern: Vec<&validators::Sig> = Vec::new();
@@ -102,7 +118,10 @@ fn scan_file(path: &str) -> Result<Vec<Hit>, String> {
     let buf_size = 1usize << 20;
     let mut buf = vec![0u8; buf_size];
     let mut pos: u64 = 0;
-    let mut overlap: Vec<u8> = Vec::new();
+    let mut overlap: Vec<u8> = Vec::with_capacity(max_sig_len);
+    // Reused across chunks (clear + extend keeps capacity) so a scan never
+    // re-allocates per 1 MiB window.
+    let mut window: Vec<u8> = Vec::with_capacity(buf_size + max_sig_len);
 
     // Main scan loop over streaming chunks. Each iteration reads up to 1 MiB
     // from `pos - overlap.len()`, searches the whole window, and advances
@@ -120,11 +139,12 @@ fn scan_file(path: &str) -> Result<Vec<Hit>, String> {
         if n == 0 {
             break;
         }
-        let mut window = Vec::with_capacity(overlap.len() + n);
-        window.extend_from_slice(&overlap);
-        window.extend_from_slice(&buf[..n]);
         let window_base = pos.saturating_sub(overlap.len() as u64);
         let overlap_len = overlap.len() as u64;
+
+        window.clear();
+        window.extend_from_slice(&overlap);
+        window.extend_from_slice(&buf[..n]);
 
         // Search the whole window. Matches that lie entirely inside the
         // overlap tail were already reported by the previous chunk, so skip
@@ -168,7 +188,8 @@ fn scan_file(path: &str) -> Result<Vec<Hit>, String> {
             continue;
         }
         // No size-skip in this chunk: carry the tail into the next window.
-        overlap = window[window.len().saturating_sub(max_sig_len - 1)..].to_vec();
+        overlap.clear();
+        overlap.extend_from_slice(&window[window.len().saturating_sub(max_sig_len - 1)..]);
         pos += n as u64;
         SCAN_BYTES.store(pos, Ordering::SeqCst);
     }
@@ -176,58 +197,61 @@ fn scan_file(path: &str) -> Result<Vec<Hit>, String> {
     // ── Post-pass (binwalk parity) ──
     file_map.sort_by_key(|h| h.offset);
 
+    // Pass 1: in-place compaction (a Vec `remove` is O(n) per hit — quadratic
+    // on thousands of hits). Drop same-offset conflicts (highest confidence
+    // wins, tie → first wins), drop hits contained inside a previously kept
+    // signature, and drop sizes extending beyond EOF.
+    let mut w = 0usize;
     let mut next_kept_offset: u64 = 0;
-    let mut i = 0usize;
-    while i < file_map.len() {
-        let this = file_map[i];
-        let remaining = available_data.saturating_sub(this.offset);
-
+    for r in 0..file_map.len() {
+        let hit = file_map[r];
         // Same offset conflict → highest confidence wins; tie → first wins.
-        if i > 0 && this.offset == file_map[i - 1].offset {
-            let prev = file_map[i - 1];
-            if this.confidence > prev.confidence {
-                file_map.remove(i - 1);
-                // Re-examine the same index: file_map[i] is now the previous entry.
-                i = i.saturating_sub(1);
-                continue;
-            } else {
-                file_map.remove(i);
-                continue;
-            }
-        }
-
-        // Contained inside a previously kept signature → drop.
-        if this.offset < next_kept_offset {
-            file_map.remove(i);
-            continue;
-        }
-
-        // Size extends beyond EOF → drop.
-        if this.size > remaining {
-            file_map.remove(i);
-            continue;
-        }
-
-        // Keep: advance the kept range end (only for confident hits).
-        if this.confidence >= validators::CONFIDENCE_MEDIUM {
-            next_kept_offset = this.offset + this.size;
-        }
-        i += 1;
-    }
-
-    // Extend unknown sizes (size == 0) to the next confident hit or EOF.
-    for i in 0..file_map.len() {
-        if file_map[i].size == 0 {
-            let mut next_offset = available_data;
-            for entry in file_map.iter().skip(i + 1) {
-                if entry.confidence >= validators::CONFIDENCE_MEDIUM {
-                    next_offset = entry.offset;
-                    break;
+        if w > 0 && file_map[w - 1].offset == hit.offset {
+            let prev = file_map[w - 1];
+            if hit.confidence > prev.confidence {
+                file_map[w - 1] = hit;
+                if hit.confidence >= validators::CONFIDENCE_MEDIUM {
+                    next_kept_offset = hit.offset + hit.size;
                 }
             }
-            file_map[i].size = next_offset - file_map[i].offset;
+            continue;
+        }
+        // Contained inside a previously kept signature → drop.
+        if hit.offset < next_kept_offset {
+            continue;
+        }
+        // Size extends beyond EOF → drop.
+        if hit.size > available_data.saturating_sub(hit.offset) {
+            continue;
+        }
+        file_map[w] = hit;
+        w += 1;
+        // Keep: advance the kept range end (only for confident hits).
+        if hit.confidence >= validators::CONFIDENCE_MEDIUM {
+            next_kept_offset = hit.offset + hit.size;
         }
     }
+    file_map.truncate(w);
+
+    // Pass 2: extend unknown sizes (size == 0) to the next confident hit or
+    // EOF. One reverse pass: a confident entry defines the boundary for every
+    // earlier unknown-size entry.
+    let mut boundary = available_data;
+    for i in (0..file_map.len()).rev() {
+        if file_map[i].size == 0 {
+            file_map[i].size = boundary - file_map[i].offset;
+        }
+        if file_map[i].confidence >= validators::CONFIDENCE_MEDIUM {
+            boundary = file_map[i].offset;
+        }
+    }
+
+    // ── Pass 3: recursive scan of tar/zip entries ──
+    // For Gal game distributions, archives often contain other archives inside
+    // (e.g., tar containing XP3 files, zip containing YPF files).
+    // We scan the data regions of tar and zip hits to find nested formats.
+    // Skip recursive scan for now to avoid duplicate hits.
+    // TODO: Implement proper recursive scanning with deduplication
 
     Ok(file_map)
 }

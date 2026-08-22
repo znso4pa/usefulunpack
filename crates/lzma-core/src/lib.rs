@@ -11,12 +11,12 @@ fn output_name(input: &str) -> String {
     Path::new(input).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "output".to_string())
 }
 
-/// LZMA header bytes 6-13 hold the uncompressed size (u64 LE, all-FF = unknown).
+/// LZMA header: bytes 0 = props, bytes 1-4 = dict_size, bytes 5-12 = unpacked_size.
 fn decompressed_size(input: &str) -> u64 {
     let Ok(mut f) = File::open(input) else { return 0 };
-    let mut hdr = [0u8; 14];
+    let mut hdr = [0u8; 13];
     if f.read_exact(&mut hdr).is_err() { return 0; }
-    let size = u64::from_le_bytes(hdr[6..14].try_into().unwrap());
+    let size = u64::from_le_bytes(hdr[5..13].try_into().unwrap());
     if size == u64::MAX { 0 } else { size }
 }
 
@@ -31,10 +31,13 @@ fn extract_lzma(input: &str, output: &str) -> Result<u32, String> {
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
     let mut r = BufReader::new(File::open(input).map_err(|e| format!("lzma: {e}"))?);
     let declared = decompressed_size(input);
-    // Cap the decompressed output at the header-declared uncompressed size
-    // (0 = unknown → no cap) so a crafted bomb can't exhaust disk.
+    // Cap the decompressed output: honor the header-declared uncompressed
+    // size when present, otherwise fall back to the hard cap (unknown-size
+    // .lzma is the common case, and an attacker can't then expand to fill
+    // disk — same policy as xz/bzip2/zstd).
+    let cap = if declared > 0 { declared } else { archive_common::DEFAULT_EXTRACT_CAP };
     let file = File::create(&dest).map_err(|e| format!("{e}"))?;
-    let bounded = archive_common::BoundedWriter::new(file, if declared > 0 { declared } else { u64::MAX });
+    let bounded = archive_common::BoundedWriter::new(file, cap);
     let mut writer = ProgressWriter::extract(bounded);
     extract_progress::reset(declared);
     extract_progress::set_name(&name);
@@ -107,6 +110,14 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
             .unwrap_or("unknown panic");
         Err(format!("panic: {msg}"))
     })
+}
+
+/// Host-side (non-JNI) extraction entry point for examples/tests/benchmarks.
+/// Delegates to the same path the app uses. Returns the count of successfully
+/// decompressed files.
+#[doc(hidden)]
+pub fn extract_lzma_host(input: &str, output: &str) -> Result<u32, String> {
+    extract_lzma(input, output)
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_LzmaCore_lzmaListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {

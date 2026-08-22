@@ -40,6 +40,7 @@ CRATES=(
     "archive_ksd-core:ksd_core"
     "archive_scan-core:scan_core"
     "archive_cso-core:cso_core"
+    "archive_brotli-core:brotli_core"
 )
 TARGETS=("aarch64-linux-android" "armv7-linux-androideabi" "x86_64-linux-android")
 

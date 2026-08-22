@@ -1780,16 +1780,47 @@ impl Unpack20 {
         if offset > current {
             return Err(Error::InvalidData("RAR 2.0 match distance is out of range"));
         }
-        for index in 0..length {
-            if self.current_pos() >= output_size {
-                self.pending_match = Some((length - index, offset));
-                break;
+        if self.current_pos() + length > output_size {
+            self.pending_match = Some((length, offset));
+            let available = output_size.saturating_sub(self.current_pos());
+            if available == 0 { return Ok(()); }
+            if offset <= self.output.len() {
+                let src_start = self.output.len() - offset;
+                let mut written = 0;
+                while written < available {
+                    let take = available - written;
+                    let src = src_start + (written % offset);
+                    let chunk = take.min(offset - (written % offset));
+                    self.output.extend_from_within(src..src + chunk);
+                    written += chunk;
+                }
+            } else {
+                for _ in 0..available {
+                    let src = self.current_pos() - offset;
+                    let byte = *self.raw_byte(src)
+                        .ok_or(Error::InvalidData("RAR 2.0 match distance is out of range"))?;
+                    self.output.push(byte);
+                }
             }
-            let src = self.current_pos() - offset;
-            let byte = *self
-                .raw_byte(src)
-                .ok_or(Error::InvalidData("RAR 2.0 match distance is out of range"))?;
-            self.output.push(byte);
+            return Ok(());
+        }
+        if offset <= self.output.len() {
+            let src_start = self.output.len() - offset;
+            let mut written = 0;
+            while written < length {
+                let take = length - written;
+                let src = src_start + (written % offset);
+                let chunk = take.min(offset - (written % offset));
+                self.output.extend_from_within(src..src + chunk);
+                written += chunk;
+            }
+        } else {
+            for _ in 0..length {
+                let src = self.current_pos() - offset;
+                let byte = *self.raw_byte(src)
+                    .ok_or(Error::InvalidData("RAR 2.0 match distance is out of range"))?;
+                self.output.push(byte);
+            }
         }
         Ok(())
     }
@@ -2007,14 +2038,13 @@ fn validate_huffman_counts(count: &[u16; 16]) -> Result<()> {
 struct BitReader {
     input: Vec<u8>,
     bit_pos: usize,
+    buf: u64,
+    nbits: u32,
 }
 
 impl BitReader {
     fn new() -> Self {
-        Self {
-            input: Vec::new(),
-            bit_pos: 0,
-        }
+        Self { input: Vec::new(), bit_pos: 0, buf: 0, nbits: 0 }
     }
 
     fn append(&mut self, input: &[u8]) {
@@ -2024,11 +2054,22 @@ impl BitReader {
 
     fn compact(&mut self) {
         let bytes = self.bit_pos / 8;
-        if bytes == 0 {
-            return;
-        }
+        if bytes == 0 { return; }
         self.input.drain(..bytes);
         self.bit_pos -= bytes * 8;
+        self.nbits = 0;
+    }
+
+    fn refill(&mut self) {
+        let byte_pos = self.bit_pos / 8;
+        let bit_off = (self.bit_pos % 8) as u32;
+        let avail = self.input.len().saturating_sub(byte_pos).min(8);
+        let mut b: u64 = 0;
+        for k in 0..avail {
+            b |= u64::from(self.input[byte_pos + k]) << (56 - 8 * k);
+        }
+        self.buf = b << bit_off;
+        self.nbits = (avail as u32) * 8 - bit_off;
     }
 
     fn read_bit(&mut self) -> Result<u8> {
@@ -2036,23 +2077,28 @@ impl BitReader {
     }
 
     fn read_bits(&mut self, count: u8) -> Result<u32> {
-        let value = self.peek_bits(count)?;
+        let end_bit = self.bit_pos + count as usize;
+        if end_bit > self.input.len() * 8 {
+            return Err(Error::NeedMoreInput);
+        }
+        if self.nbits < u32::from(count) { self.refill(); }
+        let value = (self.buf >> (64 - count)) as u32;
+        self.buf <<= count;
+        self.nbits -= u32::from(count);
         self.bit_pos += count as usize;
         Ok(value)
     }
 
-    fn peek_bits(&self, count: u8) -> Result<u32> {
+    fn peek_bits(&mut self, count: u8) -> Result<u32> {
         if count > 24 {
             return Err(Error::InvalidData("RAR 2.0 bit read is too wide"));
         }
-        let mut value = 0u32;
-        for i in 0..count as usize {
-            let bit_index = self.bit_pos + i;
-            let byte = *self.input.get(bit_index / 8).ok_or(Error::NeedMoreInput)?;
-            let bit = (byte >> (7 - (bit_index % 8))) & 1;
-            value = (value << 1) | bit as u32;
+        let end_bit = self.bit_pos + count as usize;
+        if end_bit > self.input.len() * 8 {
+            return Err(Error::NeedMoreInput);
         }
-        Ok(value)
+        if self.nbits < count as u32 { self.refill(); }
+        Ok((self.buf >> (64 - count)) as u32)
     }
 
     fn remaining_bytes_from_current(&self) -> usize {

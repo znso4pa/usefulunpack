@@ -146,6 +146,7 @@ pub enum Decoder<R: Read> {
     BZip2(BzDecoder<R>),
     #[cfg(feature = "aes256")]
     AES256SHA256(Aes256Sha256Decoder<R>),
+    PPMD(ppmd_rust::Ppmd7Decoder<R>),
 }
 
 // impl<R: Read> Decoder<R> {
@@ -171,6 +172,7 @@ impl<R: Read> Read for Decoder<R> {
             Decoder::BZip2(r) => r.read(buf),
             #[cfg(feature = "aes256")]
             Decoder::AES256SHA256(r) => r.read(buf),
+            Decoder::PPMD(r) => r.read(buf),
         }
     }
 }
@@ -263,6 +265,22 @@ pub fn add_decoder<I: Read>(
         SevenZMethod::ID_BZIP2 => {
             let de = BzDecoder::new(input);
             Ok(Decoder::BZip2(de))
+        }
+        SevenZMethod::ID_PPMD_H => {
+            // PPMd H/J properties: order(1) + mem_size(4, u32 LE)
+            let props = &coder.properties;
+            if props.len() < 5 {
+                return Err(Error::Other(std::borrow::Cow::Owned(format!(
+                    "PPMd properties too short: {} bytes", props.len()
+                ))));
+            }
+            let order = props[0] as u32;
+            let mem_size = u32::from_le_bytes([props[1], props[2], props[3], props[4]]);
+            let order = order.max(ppmd_rust::PPMD7_MIN_ORDER).min(ppmd_rust::PPMD7_MAX_ORDER);
+            let mem_size = mem_size.max(ppmd_rust::PPMD7_MIN_MEM_SIZE).min(ppmd_rust::PPMD7_MAX_MEM_SIZE);
+            let de = ppmd_rust::Ppmd7Decoder::new(input, order, mem_size)
+                .map_err(|e| Error::Other(std::borrow::Cow::Owned(format!("PPMd init: {e}"))))?;
+            Ok(Decoder::PPMD(de))
         }
         #[cfg(feature = "aes256")]
         SevenZMethod::ID_AES256SHA256 => {

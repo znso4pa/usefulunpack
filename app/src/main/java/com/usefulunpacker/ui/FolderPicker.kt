@@ -15,8 +15,20 @@ import java.io.File
  * [allowFiles] is set, files) of the current path; tap a row to descend,
  * the top "parent" row (or the path-bar up button) to ascend. Confirm returns
  * the currently displayed directory — or, in file mode, the selected file.
+ *
+ * Dispatches to a NEW WINDOW picker when the "pick in a new window" setting is
+ * on (prefs key `picker_mode` = "tab"), otherwise shows this dialog.
  */
 fun showFolderPicker(activity: AppCompatActivity, startDir: File, allowFiles: Boolean = false, onPick: (File) -> Unit) {
+    if (activity is MainActivity && activity.prefs.getString("picker_mode", "dialog") == "tab") {
+        activity.openPickerInTab(startDir, allowFiles, onPick)
+        return
+    }
+    showFolderPickerDialog(activity, startDir, allowFiles, onPick)
+}
+
+/** The legacy in-dialog folder/file picker. */
+internal fun showFolderPickerDialog(activity: AppCompatActivity, startDir: File, allowFiles: Boolean = false, onPick: (File) -> Unit) {
     val view = LayoutInflater.from(activity).inflate(R.layout.dialog_folder_picker, null)
     val tvPath = view.findViewById<TextView>(R.id.folderPath)
     val list = view.findViewById<ListView>(R.id.folderList)
@@ -88,6 +100,7 @@ fun showFolderPicker(activity: AppCompatActivity, startDir: File, allowFiles: Bo
     // size (resizing in onShow causes a visible jump/flash during the enter
     // animation).
     val metrics = activity.resources.displayMetrics
-    dlg.window?.setLayout((metrics.widthPixels * 0.92).toInt(), (metrics.heightPixels * 0.75).toInt())
+    val (fw, fh) = activity.cappedDialogSize(0.92f, 0.75f)
+    dlg.window?.setLayout(fw, fh)
     dlg.show()
 }

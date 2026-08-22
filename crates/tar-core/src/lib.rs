@@ -118,12 +118,17 @@ fn extract_tar(input: &str, output: &str, selected: Option<&HashSet<String>>) ->
             };
             if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
             let mut out = match File::create(&dest) {
-                Ok(f) => ProgressWriter::extract(f),
+                Ok(f) => ProgressWriter::extract(std::io::BufWriter::with_capacity(256 * 1024, f)),
                 Err(_) => { fail += 1; continue; }
             };
-            if io::copy(&mut e, &mut out).is_err() {
-                let _ = fs::remove_file(&dest);
-                fail += 1;
+            // A truncated tar member yields fewer bytes than declared; treat
+            // that as a failure and drop the half-written file (like zip/7z).
+            match io::copy(&mut e, &mut out) {
+                Ok(written) if written as u64 >= e.size() => {}
+                _ => {
+                    let _ = fs::remove_file(&dest);
+                    fail += 1;
+                }
             }
         }
         Ok((total, fail))

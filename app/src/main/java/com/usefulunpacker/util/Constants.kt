@@ -5,6 +5,14 @@ import java.io.File
 // Layout params helpers (moved out of MainActivity's companion object).
 internal val MATCH = android.widget.LinearLayout.LayoutParams.MATCH_PARENT
 internal val WRAP = android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+
+// Magic numbers / timing constants
+const val DOUBLE_TAP_INTERVAL_MS = 800L
+const val FILE_OBSERVER_DEBOUNCE_MS = 400L
+const val SEARCH_POLL_INTERVAL_MS = 200L
+const val TEXT_PREVIEW_MAX_CHARS = 50000
+const val RECYCLE_BIN_CLEAN_INTERVAL_MS = 86400000L
+
 val C = mapOf(
     "accent" to 0xFF35acc6.toInt(),
     "primary" to 0xFFe0f9ff.toInt(),
@@ -15,6 +23,7 @@ val C = mapOf(
     "surface" to 0xFF303030.toInt(),
     "surface_dim" to 0xFF252525.toInt(),
     "surface_dark" to 0xFF1a1a1a.toInt(),
+    "surface_raised" to 0xFF3a3a3a.toInt(),
     "nav_bg" to 0xFF222222.toInt(),
     "divider" to 0xFF1a1a1a.toInt(),
     "divider_subtle" to 0xFF555555.toInt(),
@@ -44,6 +53,7 @@ val FORMAT_COLORS = mapOf(
     "lzma" to 0xFF7f8c8d.toInt(),
     "tar" to 0xFF7f8c8d.toInt(),
     "ksd" to 0xFF95a5a6.toInt(),
+    "br" to 0xFF7f8c8d.toInt(),
 )
 private val FILE_GRAY = 0xFFb0b0b0.toInt()
 
@@ -74,6 +84,7 @@ fun formatOfName(name: String): String? {
         "lzma" -> "lzma"
         "tar", "tgz", "tbz2", "txz", "tzst" -> "tar"
         "ksd" -> "ksd"
+        "br" -> "br"
         else -> null
     }
 }
@@ -93,7 +104,7 @@ fun iconTintFor(f: File): Int {
 
 val ARCHIVE_EXTS = setOf(
     "xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso", "ypf", "zip", "7z", "rar", "lz4",
-    "gz", "bz2", "xz", "zst", "lzma", "tar", "tgz", "tbz2", "txz", "tzst", "ksd",
+    "gz", "bz2", "xz", "zst", "lzma", "tar", "tgz", "tbz2", "txz", "tzst", "ksd", "br",
 )
 
 // 归档模式格式选择器：格式 key → 显示标签
@@ -102,19 +113,19 @@ val FORMAT_LABELS = mapOf(
     "zip" to "ZIP", "7z" to "7z", "rar" to "RAR", "lz4" to "LZ4",
     "tar" to "TAR (.tar/.tgz/.tar.gz/.tbz2/.txz)", "gz" to "GZIP (.gz)", "bz2" to "BZIP2 (.bz2)",
     "xz" to "XZ (.xz)", "zst" to "ZSTD (.zst)", "lzma" to "LZMA (.lzma)",
-    "ksd" to "KSD",
+    "ksd" to "KSD", "br" to "BROTLI (.br)",
 )
 
 // 归档模式格式选择器分组顺序（表头用 string 资源，格式 key 列表）
 val FORMAT_GROUPS = listOf(
-    Pair(R.string.format_group_generic, listOf("zip", "7z", "rar", "lz4", "tar", "gz", "bz2", "xz", "zst", "lzma")),
+    Pair(R.string.format_group_generic, listOf("zip", "7z", "rar", "lz4", "tar", "gz", "bz2", "xz", "zst", "lzma", "br")),
     Pair(R.string.format_group_other, listOf("xp3", "pfs", "nsa", "iso", "ypf", "ksd")),
 )
 
 // 压缩模式格式选择器分组（zip/7z + tar 变体 = 归档打包；单流 = 单文件压缩）
 val COMPRESS_GROUPS = listOf(
     Pair(R.string.format_group_generic, listOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")),
-    Pair(R.string.format_group_single, listOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "ksd")),
+    Pair(R.string.format_group_single, listOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "br", "ksd")),
     Pair(R.string.format_group_other, listOf("xp3", "pfs", "nsa", "iso", "ypf")),
 )
 
@@ -124,11 +135,11 @@ val COMPRESS_EXT = mapOf(
     "zip" to "zip", "7z" to "7z",
     "tar" to "tar", "tgz" to "tar.gz", "tbz2" to "tar.bz2", "txz" to "tar.xz", "tzst" to "tar.zst",
     "gz" to "gz", "bz2" to "bz2", "xz" to "xz", "zst" to "zst", "lzma" to "lzma", "lz4" to "lz4",
-    "ksd" to "ksd",
+    "br" to "br", "ksd" to "ksd",
 )
 
 // 单文件压缩格式（选中文件夹时不可用）
-val SINGLE_FILE_COMPRESS = setOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "ksd")
+val SINGLE_FILE_COMPRESS = setOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "br", "ksd")
 
 // 批量"合并为一个压缩包"可用格式（多条目归档，排除单文件格式）
 val MERGE_COMPRESS_GROUPS = listOf(
@@ -144,7 +155,7 @@ val COMPRESS_LABELS = mapOf(
     "txz" to "TAR.XZ (.tar.xz)", "tzst" to "TAR.ZST (.tar.zst)",
     "gz" to "GZIP (.gz)", "bz2" to "BZIP2 (.bz2)", "xz" to "XZ (.xz)",
     "zst" to "ZSTD (.zst)", "lzma" to "LZMA (.lzma)", "lz4" to "LZ4 (.lz4)",
-    "ksd" to "KSD (.ksd)",
+    "br" to "BROTLI (.br)", "ksd" to "KSD (.ksd)",
 )
 
 val TEXT_SEARCH_EXTS = setOf(
@@ -155,7 +166,7 @@ val TEXT_SEARCH_EXTS = setOf(
     "xhtml", "vsq", "ksc"
 )
 
-val PREVIEW_EXTS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "mp3", "ogg", "mp4") + TEXT_SEARCH_EXTS
+val PREVIEW_EXTS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "mp3", "ogg", "wav", "aac", "flac", "aif", "aiff", "m4a", "mp4", "mkv", "avi", "mov", "webm") + TEXT_SEARCH_EXTS
 
 /** Script/plain-text extensions the 编辑 (localization) workflow treats as editable. */
 val EDIT_SCRIPT_EXTS = setOf("ks", "tjs", "csv", "txt", "ini", "cfg", "json", "log")

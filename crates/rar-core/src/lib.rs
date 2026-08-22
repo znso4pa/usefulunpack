@@ -1,7 +1,7 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jstring, jlong, JNI_TRUE, JNI_FALSE};
-use archive_common::{s, json_escape, safe_join, extract_result_json, ProgressWriter};
+use jni::sys::{jboolean, jstring, jlong, jint, JNI_TRUE, JNI_FALSE};
+use archive_common::{s, json_escape, safe_join, extract_result_json, ProgressWriter, BoundedWriter};
 use archive_common::extract_progress;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -80,17 +80,23 @@ fn rar_writer<'a>(
             Ok(f) => f,
             Err(_) => { fail.fetch_add(1, Ordering::SeqCst); return Ok(Box::new(std::io::sink()) as Box<dyn Write>); }
         };
+        let size = sizes.get(&name).copied().unwrap_or(0);
         // Buffered members (compressed and ≤ the decode limit) decode whole
         // into RAM before writing; the progress watcher feeds the CURRENT-FILE
         // bar from rars decode_progress during that window, so the write must
         // count only the OVERALL bar (exact, no double-count of the file bar).
         // Stored members always stream (write_stored_to) and large members
         // stream — ProgressWriter counts both bars from the write.
-        let buffered = !stored.contains(&name) && sizes.get(&name).copied().unwrap_or(0) <= RAR50_BUFFERED_LIMIT;
+        let buffered = !stored.contains(&name) && size <= RAR50_BUFFERED_LIMIT;
+        // Defense-in-depth: cap each member's output at its declared size so a
+        // vendored-rars decode regression can't over-write past unpack_size.
+        let capped = |w: Box<dyn Write>| -> Box<dyn Write> {
+            Box::new(BoundedWriter::new(w, size)) as Box<dyn Write>
+        };
         if buffered {
-            Ok(Box::new(ProgressWriter::extract_top(out_file)) as Box<dyn Write>)
+            Ok(capped(Box::new(ProgressWriter::extract_top(out_file)) as Box<dyn Write>))
         } else {
-            Ok(Box::new(ProgressWriter::extract(out_file)) as Box<dyn Write>)
+            Ok(capped(Box::new(ProgressWriter::extract(std::io::BufWriter::with_capacity(256 * 1024, out_file))) as Box<dyn Write>))
         }
     }
 }
@@ -142,9 +148,190 @@ where
     let mut out: Box<dyn Write> = if buffered {
         Box::new(ProgressWriter::extract_top(out_file))
     } else {
-        Box::new(ProgressWriter::extract(out_file))
+        Box::new(ProgressWriter::extract(std::io::BufWriter::with_capacity(256 * 1024, out_file)))
     };
     write(&mut out)
+}
+
+/// True while the parallel full-extract path is running. The progress watcher
+/// (which mirrors rars' single-threaded `decode_progress` into the per-file bar)
+/// must NOT run then — parallel decodes share that global counter and would
+/// clobber it. The parallel path drives both bars from the writes instead.
+static PARALLEL_DECODE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Thread count override (0 = auto). Set via JNI (settings) or the
+/// `UU_PARALLEL_THREADS` env var (host tests). Clamped to 1..=8.
+static PARALLEL_THREADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Sets the parallel-decode thread count; 0 restores the automatic choice.
+#[doc(hidden)]
+pub fn set_parallel_threads(n: u32) {
+    PARALLEL_THREADS.store(n, Ordering::Relaxed);
+}
+
+fn parallel_thread_count() -> usize {
+    if let Ok(v) = std::env::var("UU_PARALLEL_THREADS") {
+        if let Ok(n) = v.parse::<u32>() {
+            if n > 0 { return n.clamp(1, 8) as usize; }
+        }
+    }
+    let n = PARALLEL_THREADS.load(Ordering::Relaxed);
+    if n > 0 {
+        n.clamp(1, 8) as usize
+    } else {
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).min(4)
+    }
+}
+
+/// Decodes [items] concurrently (one thread per item, bounded by the caller)
+/// into byte buffers, preserving input order. Each item is decoded into its own
+/// Vec — used to parallelise buffered RAR5 members whose data ranges are
+/// independent in a non-solid archive.
+fn decode_batch<T, F>(items: &[T], decode: F) -> Vec<rars::Result<Vec<u8>>>
+where
+    T: Sync,
+    F: Fn(&T) -> rars::Result<Vec<u8>> + Sync + Send,
+{
+    let mut out: Vec<rars::Result<Vec<u8>>> = items.iter().map(|_| Ok(Vec::new())).collect();
+    std::thread::scope(|s| {
+        let decode_ref = &decode;
+        let handles: Vec<_> = items
+            .iter()
+            .enumerate()
+            .map(|(k, item)| s.spawn(move || (k, decode_ref(item))))
+            .collect();
+        for (idx, h) in handles.into_iter().enumerate() {
+            match h.join() {
+                Ok((k, Ok(v))) => out[k] = Ok(v),
+                Ok((k, Err(e))) => out[k] = Err(e),
+                Err(_) => out[idx] = Err(rars::Error::InvalidHeader("parallel decode panicked")),
+            }
+        }
+    });
+    out
+}
+
+/// Writes an already-decoded buffered member: the per-file bar is set manually
+/// (the decode watcher is disabled while parallel), and the write counts only
+/// the OVERALL bar — matching the sequential buffered path's accounting.
+fn write_buffered_member(name: &str, size: u64, data: &[u8], out_base: &str, fail: &AtomicU32) -> rars::Result<()> {
+    if extract_progress::cancelled() {
+        return Err(rars::Error::Cancelled);
+    }
+    extract_progress::set_name(name);
+    extract_progress::set_file(size);
+    let dest = match safe_join(out_base, name) {
+        Ok(d) => d,
+        Err(_) => {
+            fail.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
+        }
+    };
+    if let Some(p) = Path::new(&dest).parent() {
+        std::fs::create_dir_all(p).ok();
+    }
+    let out_file = match std::fs::File::create(&dest) {
+        Ok(f) => f,
+        Err(_) => {
+            fail.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
+        }
+    };
+    let mut out = ProgressWriter::extract_top(out_file);
+    if out.write_all(data).is_err() || out.flush().is_err() {
+        let _ = std::fs::remove_file(&dest);
+        fail.fetch_add(1, Ordering::SeqCst);
+        return Ok(());
+    }
+    extract_progress::set_file_bytes(size);
+    Ok(())
+}
+
+/// Full-extraction parallel fast path for NON-solid RAR5 archives. Buffered
+/// members (≤ 64 MiB) decode concurrently in bounded batches (thread count and
+/// decode RAM both capped); streaming members (> 64 MiB) stream sequentially.
+/// Output files are independent, so write order doesn't affect correctness.
+/// Returns Ok(None) when the archive can't be fast-pathed (solid / split /
+/// redirection / RAR4 / too few members) and the caller falls back to the
+/// sequential extractor.
+fn extract_all_parallel(
+    archive: &rars::Archive,
+    pw: Option<&[u8]>,
+    out_base: &str,
+    fail: &AtomicU32,
+) -> rars::Result<Option<()>> {
+    let rars::Archive::Rar50Plus(a) = archive else {
+        return Ok(None);
+    };
+    if a.main.is_solid() {
+        return Ok(None);
+    }
+    let mut buffered: Vec<&rars::rar50::FileHeader> = Vec::new();
+    let mut streaming: Vec<&rars::rar50::FileHeader> = Vec::new();
+    for f in a.files() {
+        if f.is_split_before() || f.is_split_after() || f.redirection.is_some() {
+            return Ok(None);
+        }
+        let name = f.name_lossy().replace('\\', "/").trim_matches('/').to_string();
+        if f.is_directory() || name.is_empty() {
+            continue;
+        }
+        if f.unpacked_size > RAR50_BUFFERED_LIMIT {
+            streaming.push(f);
+        } else {
+            buffered.push(f);
+        }
+    }
+    if buffered.len() < 2 {
+        return Ok(None); // nothing to parallelise
+    }
+
+    PARALLEL_DECODE_ACTIVE.store(true, Ordering::Relaxed);
+    let r = (|| -> rars::Result<()> {
+        // Decode buffers for one batch cap at ~192 MiB; threads cap at 4.
+        let n_threads = parallel_thread_count();
+        const BATCH_MEM_BUDGET: u64 = 192 * 1024 * 1024;
+        let mut i = 0usize;
+        while i < buffered.len() {
+            let mut end = i;
+            let mut sum = 0u64;
+            while end < buffered.len() && end - i < n_threads {
+                if sum + buffered[end].unpacked_size > BATCH_MEM_BUDGET && end > i {
+                    break;
+                }
+                sum += buffered[end].unpacked_size;
+                end += 1;
+            }
+            let batch = &buffered[i..end];
+            let decoded = decode_batch(batch, |f| {
+                let mut v = Vec::new();
+                f.write_to_with_options(a, rar_opts(pw), &mut v)?;
+                Ok(v)
+            });
+            for (k, res) in decoded.into_iter().enumerate() {
+                if extract_progress::cancelled() {
+                    return Err(rars::Error::Cancelled);
+                }
+                let data = res?;
+                let name = batch[k].name_lossy().replace('\\', "/").trim_matches('/').to_string();
+                write_buffered_member(&name, batch[k].unpacked_size, &data, out_base, fail)?;
+            }
+            i = end;
+        }
+        // Streaming members sequentially (they already show byte-level progress).
+        for f in &streaming {
+            if extract_progress::cancelled() {
+                return Err(rars::Error::Cancelled);
+            }
+            let name = f.name_lossy().replace('\\', "/").trim_matches('/').to_string();
+            fast_write_member(&name, f.unpacked_size, out_base, fail, |out| {
+                f.write_to_with_options(a, rar_opts(pw), out)
+            })?;
+        }
+        Ok(())
+    })();
+    PARALLEL_DECODE_ACTIVE.store(false, Ordering::Relaxed);
+    r.map(Some)
 }
 
 /// Selected-extraction fast path for NON-solid archives. RAR has no central
@@ -210,7 +397,7 @@ fn read_volumes(paths: &[&str], pw: Option<&[u8]>) -> Result<Vec<rars::Archive>,
 }
 
 fn extract_rar_inner(input: &str, output: &str, selected: Option<&HashSet<String>>, password: &str) -> Result<(u32, u32), String> {
-    let pw: Option<&[u8]> = Some(password.as_bytes());
+    let pw: Option<&[u8]> = if password.is_empty() { None } else { Some(password.as_bytes()) };
     let archive = rars::ArchiveReader::read_path_with_options(Path::new(input), rar_opts(pw)).map_err(|e| format!("rar: {e}"))?;
     let sel_set: Option<HashSet<String>> = selected.map(|s| s.iter().map(|x| x.to_string()).collect());
     let out_base = output.to_string();
@@ -246,6 +433,9 @@ fn extract_rar_inner(input: &str, output: &str, selected: Option<&HashSet<String
                 return Ok(());
             }
         }
+        if let Some(()) = extract_all_parallel(&archive, pw, &out_base, &fail)? {
+            return Ok(());
+        }
         archive.extract_to_with_options(rar_opts(pw), rar_writer(&sel_set, &sizes, &stored, &out_base, &fail))
     });
     result.map_err(|e| format!("rar: {e}"))?;
@@ -278,22 +468,40 @@ fn run_with_cancel_monitor<T>(f: impl FnOnce() -> rars::Result<T>) -> rars::Resu
             if extract_progress::cancelled() {
                 rars::codec::rar50::set_decode_cancel(true);
             }
-            if rars::codec::rar50::decode_buffered_active() {
+            if !PARALLEL_DECODE_ACTIVE.load(Ordering::Relaxed)
+                && rars::codec::rar50::decode_buffered_active()
+            {
                 extract_progress::set_file_bytes(rars::codec::rar50::decode_progress());
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         rars::codec::rar50::set_decode_cancel(true);
     });
+    // RAII guard guarantees the watcher thread always terminates and the
+    // vendored cancel flag is reset even if `f()` panics — otherwise the
+    // watcher would leak and keep driving the progress/cancel state of every
+    // later RAR operation.
+    struct Guard {
+        done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        watcher: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(h) = self.watcher.take() {
+                let _ = h.join();
+            }
+            rars::codec::rar50::set_decode_cancel(false);
+        }
+    }
+    let guard = Guard { done: done.clone(), watcher: Some(watcher) };
     let result = f();
-    done.store(true, std::sync::atomic::Ordering::SeqCst);
-    let _ = watcher.join();
-    rars::codec::rar50::set_decode_cancel(false);
+    drop(guard);
     result
 }
 
 fn extract_rar_volumes_inner(paths: &[&str], output: &str, selected: Option<&HashSet<String>>, password: &str) -> Result<(u32, u32), String> {
-    let pw: Option<&[u8]> = Some(password.as_bytes());
+    let pw: Option<&[u8]> = if password.is_empty() { None } else { Some(password.as_bytes()) };
     let sel_set: Option<HashSet<String>> = selected.map(|s| s.iter().map(|x| x.to_string()).collect());
     let out_base = output.to_string();
     let archives = read_volumes(paths, pw)?;
@@ -331,8 +539,7 @@ fn extract_rar_volumes_inner(paths: &[&str], output: &str, selected: Option<&Has
 }
 
 fn rar_needs_password_inner(input: &str) -> Result<bool, String> {
-    match rars::ArchiveReader::read_path(Path::new(input)) {
-        Ok(archive) => Ok(archive.members().any(|m| m.meta.is_encrypted)),
+    match rars::ArchiveReader::read_path(Path::new(input)) {        Ok(archive) => Ok(archive.members().any(|m| m.meta.is_encrypted)),
         // Header-encrypted (-hp) archives cannot be parsed without a password —
         // the read failure IS the "needs password" signal.
         Err(_) => Ok(true),
@@ -390,6 +597,32 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
     })
 }
 
+/// Host-side (non-JNI) extraction entry point for examples/tests/benchmarks.
+/// Delegates to the same path the app uses. `selected` is an optional list of
+/// entry names to extract (all when empty).
+#[doc(hidden)]
+pub fn extract_rar_host(input: &str, output: &str, selected: &[String], password: &str) -> Result<(u32, u32), String> {
+    let sel: Option<HashSet<String>> = if selected.is_empty() { None } else { Some(selected.iter().cloned().collect()) };
+    extract_rar_inner(input, output, sel.as_ref(), password)
+}
+
+/// Host-side list entry point (mirrors the app's list JSON).
+#[doc(hidden)]
+pub fn list_rar_host(input: &str, password: &str) -> Result<String, String> {
+    if password.is_empty() {
+        list_rar_inner(input)
+    } else {
+        list_rar_inner_with_pw(input, password)
+    }
+}
+
+/// Host-side multi-volume extract for examples/tests/benchmarks.
+#[doc(hidden)]
+pub fn extract_rar_volumes_host(paths: &[String], output: &str, password: &str) -> Result<(u32, u32), String> {
+    let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+    extract_rar_volumes_inner(&refs, output, None, password)
+}
+
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
     let inp = s(&mut e, &i); match guarded(move || list_rar_inner(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }
 }
@@ -431,6 +664,7 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
     e.new_string(&extract_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarExtractCancel(_: JNIEnv, _: JClass) { extract_progress::cancel(); }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_setParallelThreads(_: JNIEnv, _: JClass, n: jint) { set_parallel_threads(n.max(0) as u32); }
 
 fn volume_refs(vols: &[String]) -> Vec<&str> { vols.iter().map(|s| s.as_str()).collect() }
 
@@ -469,7 +703,8 @@ fn volume_refs(vols: &[String]) -> Vec<&str> { vols.iter().map(|s| s.as_str()).c
     let ss: HashSet<String> = sel_str.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(move || extract_rar_volumes_inner(&volume_refs(&vols), &out, Some(&ss), &pwd)) { Ok((total, f)) => { let json = extract_result_json(total, total.saturating_sub(f), f); match e.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }, Err(er) => { let _ = e.throw_new("java/io/IOException", er); std::ptr::null_mut() } }
 }
-#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_RarCore_rarVolumesNeedsPassword(mut e: JNIEnv, _: JClass, v: JString) -> jboolean {
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_RarCore_rarVolumesNeedsPassword(mut e: JNIEnv, _: JClass, v: JString) -> jboolean {
     let vs = s(&mut e, &v); let vols: Vec<String> = vs.lines().filter(|l| !l.is_empty()).map(|x| x.to_string()).collect();
     match guarded(move || rar_volumes_needs_password_inner(&volume_refs(&vols))) { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("rar: {er}")); JNI_FALSE } }
 }

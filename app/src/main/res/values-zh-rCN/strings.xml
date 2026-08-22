@@ -14,7 +14,13 @@
     <string name="msg_editor_too_large">文件过大,无法在应用内编辑(&gt;2MB)</string>
     <string name="msg_tjs_compiled">编译后的 TJS 脚本（TJS2 二进制）,无法按文本预览</string>
     <string name="edit_archive">编辑</string>
-    <string name="edit_only_pack">仅支持可封包的格式（XP3/PFS/ISO/NSA）</string>
+    <string name="action_more">更多</string>
+    <string name="edit_only_pack">仅支持可封包的格式（XP3/PFS/ISO/NSA/7Z/YPF）</string>
+    <string name="zip_manage_only_zip">仅 ZIP 归档支持条目管理</string>
+    <string name="convert_only_iso">仅 ISO 镜像支持 CSO 转换</string>
+    <string name="nested_archive_title">嵌套归档</string>
+    <string name="nested_archive_msg">在 %2$s 中发现嵌套归档 %1$s，是否在新窗口中预览？</string>
+    <string name="nested_archive_open">打开</string>
     <string name="edit_archive_title">编辑脚本</string>
     <string name="edit_repack">重新打包</string>
     <string name="edit_no_scripts">未找到可编辑的脚本</string>
@@ -27,6 +33,31 @@
     <string name="action_delete">🗑️ 删除</string>
     <string name="action_move">✂️ 移动</string>
     <string name="action_copy_path">📋 复制路径</string>
+    <string name="action_copy">📄 复制</string>
+    <string name="msg_copy_result">复制完成: %1$d 成功, %2$d 失败</string>
+    <string name="action_choose_dir">📁 选择目录</string>
+    <string name="editor_unsaved_changes">未保存的更改</string>
+    <string name="editor_restore_prompt">发现未保存的编辑内容，是否恢复？</string>
+    <string name="editor_restore">恢复</string>
+    <string name="editor_discard">放弃</string>
+    <string name="editor_no_save">不保存</string>
+    <string name="editor_undo">撤销</string>
+    <string name="search_regex">正则表达式</string>
+    <string name="search_case_sensitive">区分大小写</string>
+    <string name="search_file_filter">文件类型过滤（如 .txt,.md）</string>
+    <string name="search_export">导出结果</string>
+    <string name="editor_redo">重做</string>
+    <string name="msg_calc_counting">正在统计：%1$d 个文件…</string>
+    <string name="terminal_exec_timeout">命令执行超时（30秒）</string>
+    <string name="settings_sort">排序</string>
+    <string name="settings_picker_mode">选择路径/文件方式</string>
+    <string name="picker_mode_dialog">直接打开路径界面</string>
+    <string name="picker_mode_tab">在新窗口中打开选择</string>
+    <string name="sort_by_name">按名称</string>
+    <string name="sort_by_size">按大小</string>
+    <string name="sort_by_date">按日期</string>
+    <string name="sort_ascending">升序</string>
+    <string name="sort_descending">降序</string>
     <string name="action_file_info">ℹ️ 文件信息</string>
     <string name="action_convert_cso">转换为 CSO (.cso)</string>
     <string name="action_convert_iso">转换为 ISO (.iso)</string>
@@ -191,12 +222,26 @@
     <string name="msg_move_result">移动完成：%1$d 成功，%2$d 失败</string>
     <string name="confirm_delete_file_msg">确定删除 %1$s？\n此操作不可恢复！</string>
     <string name="confirm_delete_batch_msg">确定删除 %1$d 项？不可恢复！</string>
+    <string name="confirm_recycle_file_msg">将 %1$s 移到回收站？</string>
+    <string name="confirm_recycle_batch_msg">将 %1$d 项移到回收站？</string>
     <string name="msg_calc_dir_size_prompt">%1$s\n包含 %2$d 个项目\n\n递归计算文件夹大小需要逐文件统计，较大文件夹可能耗时 %3$d~%4$d 秒。是否继续？</string>
     <string name="msg_read_all_fail">无法读取归档内容，可能已加密</string>
     <string name="err_file_error">文件操作失败</string>
     <string name="msg_permission_storage">请授予「所有文件访问」权限后重新打开</string>
     <string name="msg_hash_copied">哈希已复制</string>
     <string name="err_audio_playback">无法播放音频：%1$s</string>
+    <string name="err_invalid_regex">正则表达式无效：%1$s</string>
+    <string name="msg_max_tabs">最多可打开 3 个窗口</string>
+    <string name="msg_archive_open_in_tab">该归档已在「%1$s」打开</string>
+    <string name="msg_archive_open_skipped">已跳过 %1$d 个在其他窗口打开的归档</string>
+    <string name="merge_into_archive">合并到其他归档…</string>
+    <string name="merge_no_target">当前文件夹没有可合并的归档</string>
+    <string name="merge_select_target">选择目标归档</string>
+    <string name="merge_target_unsupported">该归档格式无法重新封包</string>
+    <string name="merge_title">正在合并到 %1$s</string>
+    <string name="merge_done">已合并，保存为 %1$s</string>
+    <string name="tab_rename">✏️ 重命名窗口</string>
+    <string name="tab_rename_prompt">窗口名称</string>
     <string name="err_video_playback">无法播放视频：%1$s</string>
     <string name="msg_encoding_selected">编码：%1$s</string>
     <string name="msg_renamed_to">已重命名为 %1$s</string>
@@ -213,9 +258,25 @@
     <string name="msg_compressing_file">正在压缩——%1$s</string>
     <string name="msg_extracting_file">正在解压——%1$s</string>
     <string name="msg_delete_progress">正在删除</string>
+    <string name="msg_move_to_recycle">正在移到回收站</string>
     <string name="msg_deleting_file">正在删除——%1$s</string>
     <string name="msg_delete_counting">正在统计…</string>
     <string name="msg_delete_result">删除完成: %1$d 成功, %2$d 失败</string>
+    <string name="msg_moved_to_recycle">已移到回收站</string>
+    <string name="msg_restore_failed">恢复失败：%1$d 项</string>
+    <string name="title_recycle_bin">♻️ 回收站</string>
+    <string name="action_restore">♻️ 恢复</string>
+    <string name="recycle_loading">正在加载回收站…</string>
+    <string name="recycle_empty">回收站为空</string>
+    <string name="recycle_items">%1$d 项（%2$s）</string>
+    <string name="recycle_permanent_delete">⚠️ 永久删除</string>
+    <string name="recycle_empty_now">清空回收站</string>
+    <string name="recycle_empty_confirm">永久删除回收站中的所有项目？\n此操作不可恢复！</string>
+    <string name="recycle_days_format">%1$d 天</string>
+    <string name="recycle_disabled_message">回收站已在设置中禁用</string>
+    <string name="recycle_enable">启用回收站</string>
+    <string name="recycle_auto_clean">自动清理（天数）</string>
+    <string name="recycle_auto_clean_never">从不</string>
     <string name="msg_multivolume">共 %1$d 个分卷</string>
     <string name="msg_both_files_previewable">两个文件均可预览</string>
     <string name="msg_same_size">大小相同: %1$s</string>
@@ -230,7 +291,9 @@
     <string name="format_group_single">单文件压缩</string>
     <string name="msg_single_file_compress">单文件压缩仅支持单个文件</string>
     <string name="msg_ksd_need_txt">KSD 打包仅支持 .txt 文本文件</string>
-    <string name="settings_compress_generic">通用格式 (gzip/bzip2/xz/zstd/lzma/lz4/tar)</string>
+    <string name="settings_parallel_threads">并行解压线程 (rar/zip)</string>
+    <string name="parallel_auto">自动</string>
+    <string name="settings_compress_generic">通用格式 (gzip/bzip2/xz/zstd/lzma/lz4/brotli/tar)</string>
     <string name="split_title">分卷大小 (zip/7z)</string>
     <string name="split_none">不分卷</string>
     <string name="split_custom">自定义</string>
@@ -320,6 +383,7 @@
         <item>LZMA (.lzma) — 解压 + 压缩\n注意：列表预览不显示解压大小（alone 头未记录大小）</item>
         <item>TAR — 解压 + 压缩\n.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
         <item>KSD (.ksd) — 解压 + 压缩\nKirikiri2 存档；压缩仅接受 .txt 文本</item>
+        <item>BROTLI (.br) — 解压 + 压缩\nGoogle Brotli 压缩；级别 0-11（默认 6）；广泛用于网页内容</item>
     </string-array>
         <string-array name="help_tutorials">
         <item>压缩设置\n设置 → 压缩：压缩等级（zip/7z/通用）、分卷大小（zip/7z）、ZIP 编码、压缩密码；点“确定”一次性保存；工作模式（归档/压缩）切换后标题栏会更新</item>
@@ -336,6 +400,7 @@
         <item>就地编辑 ZIP 条目\nZIP 预览里点「条目」：删除选中条目（有确认框）或从本地文件新增条目（选文件 → 命名 → deflate 写入）。未动条目字节级保留。多盘 ZIP 不可编辑</item>
         <item>编码与乱码\n每个预览/编辑器都有编码行：点它切换 UTF-8/SHIFT-JIS/GBK/UTF-16，文本立即重渲染；带 BOM 的 UTF-16/UTF-8 文件自动按正确编码打开；用错的非 UTF-8 编码读文件时会提示「看起来是 UTF-8」</item>
         <item>滚动与自动刷新\n长列表右侧有常显可拖把手（抓住拖动即可跳转）；文本预览/编辑器也有可拖滚动条。当前目录内容变化（重命名/移动/删除/解压/压缩或 USB 等外部改动）时文件列表自动刷新</item>
+        <item>回收站\n删除操作默认将文件移到回收站而非直接永久删除（可在设置中关闭）。点工具栏回收站图标查看、恢复或永久删除项目。自动清理可设置保留天数（7/14/30/60/90天或从不）。回收站中的文件占用存储空间。注意：回收站存储在应用私有目录，卸载应用时会清除</item>
     </string-array>
 
 
@@ -400,4 +465,33 @@
         <item>100MB</item>
         <item>1GB</item>
     </string-array>
+    <string name="img_edit_title">图片编辑</string>
+    <string name="img_edit_brush">画笔</string>
+    <string name="img_edit_crop">裁剪</string>
+    <string name="img_edit_eyedrop">取色</string>
+    <string name="img_edit_stretch_16">16:9</string>
+    <string name="img_edit_stretch_34">3:4</string>
+    <string name="img_edit_undo">撤销</string>
+    <string name="img_edit_reset">还原</string>
+    <string name="img_edit_save">保存</string>
+    <string name="img_edit_opacity">透明度</string>
+    <string name="img_edit_width">粗细</string>
+    <string name="img_edit_saved">已保存 %1$s</string>
+    <string name="img_edit_failed">保存失败</string>
+    <string name="img_edit_restore_title">未保存的编辑</string>
+    <string name="img_edit_restore_msg">是否恢复上次的编辑？</string>
+    <string name="img_edit_pick_hint">点击像素取色</string>
+    <string name="img_edit_tap_copy">点击复制</string>
+    <string name="color_copied">已复制 %1$s</string>
+    <string name="msg_loading">加载中…</string>
+    <string name="img_convert_title">转换格式</string>
+    <string name="img_convert_menu">转换为其他格式</string>
+    <string name="img_convert_choose">选择目标格式</string>
+    <string name="img_edit_crop_hint">拖动框选区域后，再次点击「裁剪」确认</string>
+    <string name="img_edit_stretch">拉伸</string>
+    <string name="settings_other">⚙️ 其余设置</string>
+    <string name="restore_session">恢复上次会话</string>
+    <string name="restore_session_desc">启动时恢复上次的窗口和目录（最多 3 个）</string>
+    <string name="action_share">📤 分享</string>
+    <string name="msg_share_folder">文件夹不支持分享</string>
 </resources>

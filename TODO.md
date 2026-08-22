@@ -1,5 +1,314 @@
 # TODO
 
+## v5.13.0 (多窗口 + 内嵌预览 + 合并/编辑 + 图片编辑器/格式转换 + 分享/会话恢复 + 全量UI重构 + 性能与全格式)
+
+> 本版在 v5.12 的基础上继续大改：先是「多窗口 Tab 浏览器」「内嵌归档预览」「跨归档合并」「脚本编辑回封」「回收站」，随后加入图片编辑/转换、文件分享、恢复上次会话，并做了一次彻底的外观翻新。整版统一记为 v5.13.0。
+
+### 图片编辑器（图片预览 ⋮ → 编辑）
+- 画笔：在图上涂色，颜色 / 透明度 / 粗细都能调（水彩或荧光笔效果）。
+- 裁剪：框选一块区域，再点一次「裁剪」就裁掉。
+- 拉伸：一键拉成 1:1 / 4:3 / 3:4 / 16:9 / 9:16 常见比例。
+- 取色：按住拖动，实时显示手指下的颜色，点一下复制色值。
+- 缩放平移：双指捏合缩放、拖动平移；放大后画笔/取色依旧准确。
+- 保存：另存「原名-edit.png」，不动原图；中途退出自动保存，可回来继续。
+
+### 图片格式转换（图片预览 ⋮ → 转换为其他格式）
+- 普通图 jpg/png/webp 互转；动图 gif/webp 可转成普通图的首帧。
+- 另存新文件，原图不动。
+
+### 分享文件（长按文件 → 分享）
+- 直接把文件交给微信/QQ 等应用，无需联网权限。
+- 文件名原样传给对方（带 (1) 是接收方按同名去重，不是本 App 造成的）。
+
+### 恢复上次会话（设置 → 其余设置）
+- 打开开关后，下次启动回到上次的文件夹，并重开上次正在看的归档；最多 3 个窗口，超出会提示。
+- 回收站设置也收进了「其余设置」。
+
+### 全量 UI 重构
+- 圆角、间距、字号、行高等统一规范，界面更整齐。
+- 归档预览顶部的操作收进右上角 ⋮ 菜单，不再挤成一排。
+- 平板 / 横屏：弹窗不再铺满全屏，自动限宽居中；宽屏下左侧文件列表、右侧预览并排。
+- 修复右下角圆形按钮尺寸异常；工具栏图标统一矢量，不再用奇怪字符。
+
+### Debug 修复
+- 全局搜索一打开就闪退 → 修。
+- 预览里点「编辑」闪退 → 修。
+- 图片编辑器画笔 / 拉伸 / 取色闪退（同一个根因：图片被解码成硬件位图）→ 修。
+- 裁剪无法确认、放大后取色失灵 → 修。
+
+### 已知限制 / 待完善
+- [ ] 动图 gif ↔ 动图 webp 互相转换（需要额外的解码库 / Rust 集成），暂未做。
+- [ ] 图片编辑上限约 2048 像素，超大图的输出分辨率受此限制。
+- [ ] 文本格式转换（仅改后缀）已按用户指示放弃，改为文件分享。
+
+---
+
+### 多窗口 Tab 浏览器（最多3窗口 + 并行操作 + 同归档互斥）
+
+### 总目标
+- 最多 **3 个 tab**（ViewPager2 滑动分页，可新建/关闭）
+- 最多 **3 个并行操作**（方案 A：限不同格式，不动 Rust）
+- **同一归档不能同时在多个 tab 打开**（自动跳转到已有 tab）
+
+### Phase 1 — UI 拆分（Tab 状态容器 + 三窗口浏览）✅
+
+- [x] **`folder_view.xml`** — 把 `panel/listFiles/tvEmpty/bottomBar/tvSelected/progress/btnExtract/fabExtract` 从 `activity_main.xml` 抽为 per-tab 布局，由每个 `FolderFragment` 复用 inflate
+- [x] **`activity_main.xml`** — 改为 `toolbar + tabBar(tabList RecyclerView + btnAddTab) + ViewPager2`；`btnUp/pathBar/panel/bottomBar/fabExtract` 移除（进 folder_view）
+- [x] **`TabState`** — per-tab 状态容器（`currentDir/selectedFile/fileToMove/multiFiles/multiSelectMode/multiSelected` + `dirObserver/refreshHandler` + 视图引用）
+- [x] **`FolderFragment`** — 每个 tab 一个，绑定 TabState 视图，处理列表点击/长按/上一级/多选栏（batchBar 改为 per-tab，`buildBatchBar`）
+- [x] **MainActivity 委托** — `currentDir/selectedFile/listFiles/tvPath/...` 等字段委托到 `activeTab`，使大量既有扩展函数无需改动即可对当前 tab 工作
+- [x] **`nav/select/extract/multiSelect`** 全部改为 tab 参数化（`navTab(tab,dir)` / `select(tab,f)` 等），无参版本委托到 activeTab
+- [x] **Tab 增删** — `TabStripAdapter`（顶部 "窗口 N" + ✕ 关闭）+ `TabPagerAdapter`（FragmentStateAdapter）+ `addTab/closeTab/rebuildPager`（关闭中间 tab 时强制重建 fragment 避免状态错位）
+- [x] 依赖：`androidx.viewpager2:viewpager2:1.1.0` + `androidx.fragment:fragment-ktx:1.6.2`
+- [x] 新增字符串 `msg_max_tabs` ×4 语言
+- [x] **启动崩溃修复** — `btnExtract/fabExtract/bottomBar` 等 per-tab 视图在 fragment 创建前被 `onCreate` 访问（委托到 activeTab 的 lateinit）→ `UninitializedPropertyAccessException`。修复：
+  - 从 `onCreate` 移除 `btnExtract/fabExtract` 点击监听与 `btnFolderNext` 的添加（移到 FolderFragment per-tab 创建）
+  - `btnFolderNext` 改 per-tab（`TabState.btnFolderNext`），由 FolderFragment 创建到各 tab bottomBar
+  - `navTab` 加 `viewsBound` 守卫：fragment 未绑定视图时只更新 currentDir，等 fragment `onCreateView` 后主动渲染
+  - `AppSettings.kt`/`FileBrowser.kt` 的 `btnFolderNext` 引用改 `tab.btnFolderNext`
+
+### Phase 2 — 并行操作槽（3 许可信号量 + per-format 锁）【待做】
+- [ ] `OperationLock` 单互斥 → `Semaphore(3)` + per-format `ConcurrentHashMap<String,Mutex>`；`tryStartOperation(fmt)` 双重检查
+- [ ] 24 处操作入口传 fmt；`release()` 调用点兼容
+- [ ] 效果：3 个不同格式并行；同格式第 2 个被格式锁挡住；第 4 个被槽位挡住
+
+### Phase 3 — 同归档互斥（打开注册表）✅
+- [x] `OpenArchiveRegistry`（canonicalKey → TabState），`previewArchive`/`startEditArchive`/批量预览前注册，冲突 toast「该归档已在『窗口 N』打开」+ 自动跳转到已有 tab
+- [x] 分卷 `archiveKey` 归一到主卷 canonicalPath——`name.zip.001/.002/.zip`、`name.7z.001`、`name.part1.rar` 视作同一归档
+- [x] 释放：预览/编辑对话框 dismiss、`closeTab`（`releaseTab`）、`onDestroy`（`clearAll`）
+- [x] **Tab 重命名** — 长按标签弹「✏️ 重命名窗口」，自定义名用于标签显示与冲突 toast（空输入恢复「窗口 N」）
+
+### 已知限制 / 待完善
+- [ ] 完成回调（解压/压缩/搜索等 `nav(currentDir)`）仍未全部路由到发起 tab（后台 tab 操作会刷新当前 activeTab）—— Phase 2 一并处理
+- [ ] `btnFolderNext`（压缩模式进入按钮）只加到 active tab 的 bottomBar，切换后其他 tab 无此按钮
+- [ ] 批量预览（多选归档）仍是对话框（非内嵌）；归档内单文件预览（图片/文本）仍是对话框（临时查看合理）
+- [ ] 方案 B（任意格式并行）需重构 Rust `common` 进度存储为每操作上下文，本轮不做
+
+### 已修复（v5.13.0 debug 轮次）
+- [x] **预览后 Tab 无法滑动** — 对话框（归档/文本/图片/编辑器）关闭后 ViewPager2 无法横向滑动（荣耀/EMUI touch-state 残留）。新增 `resetPagerInputOnDialogDismiss`：对话框 dismiss 时 `setUserInputEnabled(false→true)` 复位触摸，应用到归档预览/文本/图片/编辑器 4 处
+- [x] **多选批量按钮位置回归** — 批量操作按钮从最右跑到最左。内层按钮行改 `MATCH_PARENT + Gravity.END` 右对齐，窄屏仍可横向滚动
+- [x] **孤儿 TabState** — `FolderFragment` 越界 `tab_id` 改绑最近有效 tab，不再伪造未管理状态（原导致目录 `/`、无 FileObserver、隔离失效）
+- [x] **全局粘贴按钮切 tab 不刷新** — `onPageSelected`/TabStrip 点击补调 `updatePasteButton()`+`syncMultiBar()`
+- [x] **rebuildPager 复用同一 FragmentStateAdapter** — 改每次新建 `TabPagerAdapter` 实例，杜绝 stale fragment 引用已删除 tab
+- [x] **多选时 FAB/全局加文件夹按钮遮挡** — `syncMultiBar` 多选隐藏 FAB（退出恢复）+ `btnAddFolder` 多选隐藏
+- [x] **压缩模式 → 按钮切 tab 后可见性不重算** — `onPageSelected` 按新 active tab 重推导
+- [x] **onDestroyView 误停存活 tab 的 observer** — 仅当 tab 确实被移除才 `stopObserver`
+- [x] **TabStrip 关闭按钮越界索引** — 提前捕获 tab 引用 + 守卫时清空监听
+- [x] **进入回收站异步加载+进度条** — `showRecycleBinDialog` 同步读 `listEntries`（大回收站冻结 UI）改后台线程 + spinner 进度条
+- [x] **预览时返回键退出预览** — `onBackPressed`：`activeTab.previewActive` 时先 `exitPreview` 而非退出 App
+- [x] **zipModify 三函数刷新错 tab** — `zipReplace/Delete/AddEntry` 加 ownerTab，完成后刷新发起 tab 而非 activeTab
+
+### Phase 4 — 预览内嵌 + 选择方式（v5.13.0 增量）✅
+- [x] **归档预览内嵌 tab** — FAB 预览不再弹全局对话框：`renderPreview/exitPreview/syncPreview`，预览状态存 `TabState`（entries/selected/expanded/searchQuery）
+  - `folder_view.xml` 加 `previewRoot`（顶栏 + 条目列表 + 操作栏），ViewPager 全程可划屏切换窗口（彻底解决「预览不能切 tab」）
+  - 视图重建/旋转时恢复预览；`navTab` 进入时退出预览并释放归档锁
+- [x] **预览操作栏** — 底部「提取全部 / 提取选中 / 合并到归档」+ 统计条；顶栏「搜索 / 编辑 / ZIP 管理 / ISO 转 CSO」按格式显隐（编辑=xp3/pfs/iso/nsa/7z/ypf、ZIP管理=zip、转换=iso）
+- [x] **预览搜索不退出预览** — `previewSearch` 提取文本后 `globalSearch` 盖在预览上，关闭搜索回到预览（勾选/展开保留）
+- [x] **Chrome 式顶置 Tab 栏** — tab 栏移到最顶（50dp），toolbar（回收站/主页/标题/CLI）在其下，ViewPager 在 toolbar 下；活动 tab 圆角高亮胶囊 + 加粗 accent（浏览器标签风格）
+- [x] **跨归档合并提取** — 预览勾选 → 「合并到其他归档」：提取源选中 → 解包目标 → 合并 staging → 封包 `目标-cn.ext` 副本（原归档不动）；目标限定可封包格式 + `OpenArchiveRegistry` 保护 + 加密目标弹密码
+- [x] **选择路径/文件方式** — 一般设置新增 `picker_mode`：**直接打开路径界面**（对话框）/**在新窗口中打开选择**（新 tab）
+  - `openPickerInTab`：picker tab 选择模式（TabState 加 pickerCallback/AllowFiles/OriginTab），文件模式点文件选择、目录模式「✓ 选择此目录」按钮，选中后关闭 picker tab 回原 tab，返回键取消选择
+  - 所有 `showFolderPicker` 调用点（搜索改路径/提取目标/ZIP 加条目/压缩目标）统一走分派
+- [x] **同归档互斥 + Tab 重命名**（Phase 3 完成）
+
+### 并发 / 隔离现状（FAQ）
+**Q1：三个 tab 同时开解压，OOM 概率大吗（即便 zip/rar 都是默认单核）？**
+- 当前 v5.13.0：**三个 tab 无法真正同时解压**——`OperationLock` 是全局单锁（`ArchiveExtractor.kt:20`），第 2、3 个解压会被拒并 toast「操作进行中」。因此 **OOM 概率极低**，内存压力与单 tab 解压一致
+- 真正的内存来源是**单个归档内部的并行解码**：RAR 非 solid 并行 ≤4 线程（>192MiB 才并行、batch ≤4 线程）、ZIP 条目级并行（≤32MiB batch），大成员（>64MB）已流式解码不整块缓冲
+- ⚠️ 注意：`parallel_threads` 是 **per-format 全局设置，不是 per-tab**——单 tab 解压用 4/8 线程时即占满内存预算
+- 未来 Phase 2 把单锁改成 `Semaphore(3)` 后，3 个 tab 才真正并行解压，届时 OOM 风险上升，需 per-format 锁 + 流式 + 成员上限兜底
+
+**Q2：多 tab 同时打开同一个文件，第一个 tab 的窗口会即刻同步更新到其他 tab 吗？**
+- 每个 tab 有独立 `FileObserver`（监听各自 `currentDir`）+ debounce。**两个 tab 若在同一目录**（如都在 `/Download`），任一 tab 解压/改名/删除产生目录事件，两个 observer 各自收到并各自刷新 → **即刻同步**
+- 两个 tab 若在不同目录则互不干扰（目录不同无事件）
+- **inode/inotify 层面允许多个 observer 监听同一目录，不存在「禁止多 tab 操作同一文件」的限制**——真正防并发的是应用层 `OperationLock`（同一时刻全局只有一个解压/压缩操作）
+- ⚠️ 潜在隐患：两个 tab 在同一目录、对**同一文件**同时写（如都编辑同一个脚本后各自保存），FileObserver 只是观察不提供文件锁，存在并发写同一文件的竞争——目前被 `OperationLock` 串行化兜住，Phase 3 的 `OpenArchiveRegistry`（同归档互斥）会进一步封死
+
+---
+
+### 旗舰版（性能全链路 + 多核并行 + 全格式回归 + Brotli + 回收站 + 复制/排序）
+
+### Phase 1 — 性能全链路（真实 before/after 基准，同机 Apple M-series）
+
+- [x] **1A release profile** — `opt-level "s"→3` + `codegen-units=1` → 全格式普涨；原子 `SeqCst→Relaxed`（每块写省 2 barrier）；不用 `panic=abort`
+- [x] **1B RAR5 解码提速** — BitReader 64-bit O(1) + copy_match 批量 + filter 尾克隆 + E8/E9 memchr
+  - **before/after（56 条目 377 MiB，同机同文件）：84 → 111 MiB/s，聚合 +32%**
+  - 单文件：JPEG +73%、text +50%、bitmap +47%、streaming +57%、DNA +68%
+  - 密码条目（PBKDF2 瓶颈）：+21%
+- [x] **1C scan-core** — gzip/JPEG 批量读 + EOCD 尾先 + post-pass 线性化 + 缓冲复用 + CRC32 查表
+- [x] **1D IO 批量化** — nsa/ypf BufReader+BufWriter、cso 顺序读、zip BufWriter+flush、iso HashMap、sevenz 单次 open
+- [x] **1E tar/rar BufWriter** — tar 解压 +10-25%、rar 流式成员 +5-15%
+- [x] **1F RAR4 BitReader 64-bit buffer** — rar29/rar20 移植 64-bit 位缓冲（RAR4 decode 3-5x）
+- [x] **1G RAR4 copy_match bulk** — extend_from_within 批量复制（rar29/rar20，+20-40%）
+- [x] **1H Brotli 格式支持** — brotli-core crate + 21 语料全 PASS
+
+### Phase 2 — 多核并行解压
+
+- [x] **2A RAR 非 solid 并行** — extract_all_parallel（batch ≤4 线程/192MiB，大成员流式）
+  - **1 线程 72 → 自动 118 MiB/s，1.64×**
+- [x] **2B ZIP 条目级并行** — extract_zip_parallel（无密码单文件，≤32MiB batch）
+- [x] **2C 线程数设置** — JNI setParallelThreads + 设置页「并行解压线程」（自动/1/2/4/8，4 语言）
+
+### 全量回归（files4testing v1.2，484 条目，测机 Apple M-series）
+
+`cargo run --release -p corpus-regress -- <corpus_dir>`
+
+**303/330 PASS（91.8%）**，31 skipped（split volumes），1 failed
+> CSO 4 个失败已修复（见下方「CSO 两种索引编码」）：修正后 4/4 CSO 全 PASS。剩余 1 失败为 pre-existing `rawfile_tree.iso`（ISO 语料问题，与 CSO 无关）
+
+| 格式 | 条目 | PASS | FAIL | SKIP |
+|------|------|------|------|------|
+| rar | 65 | 56 | 0 | 9 |
+| zip | 47 | 46 | 0 | 1 |
+| 7z | 68 | 47 | 0 | 21 |
+| gzip | 22 | 22 | 0 | 0 |
+| bzip2 | 15 | 15 | 0 | 0 |
+| xz | 25 | 25 | 0 | 0 |
+| lzma | 16 | 16 | 0 | 0 |
+| lz4 | 23 | 23 | 0 | 0 |
+| zstd | 24 | 24 | 0 | 0 |
+| brotli | 21 | 21 | 0 | 0 |
+| iso | 5 | 5 | 0 | 0 |
+| cso | 4 | 4 | 0 | 0 |
+
+- CSO 已修复（见下）：header_size=24 与标准格式分别用 bit31/bit0 压缩标志解码，4/4 PASS
+- 31 skipped = split volumes（单文件 harness 不支持多卷）
+- 40 套件全绿
+- 聚合吞吐：2164.9 MiB / 27.76s = **78 MiB/s**（含密码/PBKDF2）
+
+### TODO
+
+- [x] 三架构 .so 重编 + APK 更新（已完成）
+- [x] **Brotli 格式 Kotlin 层接入** — `BrotliCore.kt` JNI 桥接 + Constants 9处注册 + 解压/压缩流水线 + 预览/批量 + 压缩级别 0/2/5/8/11（共用通用格式设置）+ 4语言字符串 + help_formats 文档
+- [x] **回收站/软删除** — `RecycleBin.kt` 核心类（moveToRecycleBin/restore/emptyRecycleBin/autoClean）+ `RecycleBinDialog.kt` 浏览/恢复/永久删除 UI + `DeleteProgress.kt` 软删除支持 + 设置页回收站开关（启用/自动清理天数7/14/30/60/90/从不）+ 抽屉旁回收站入口 + 4语言字符串 + manifest.json 元数据 + 自动清理 + .recycle 目录隐藏 + 使用文档说明 + 垃圾桶图标
+- [x] **文件复制功能** — 多选批量复制（默认文件名(1).后缀）+ 批量操作栏复制按钮 + 长按菜单复制选项 + 4语言字符串
+- [x] **文件排序功能** — 一般设置排序选项（名称/大小/日期 × 升序/降序）+ 持久化到SharedPreferences + nav()实时应用
+- [x] **媒体预览优化** — 移除FLAG_HW_AV_SYNC修复MP3无声 + 扩展支持格式（wav/aac/flac/aif/aiff/m4a/mkv/avi/mov/webm）+ 归档内预览显示进度 + 视频MIME改为video/* + 屏幕旋转不再重建Activity + MediaPlayer生命周期管理（onPause/onDestroy释放）
+- [x] **自由选解压目录** — showOutputDirDialog/showDirectExtractDialog添加第三选项"选择目录" + 复用FolderPicker + 4语言字符串
+- [x] **文本编辑器增强** — EditHistory类（50步撤销/重做）+ 自动保存到临时文件 + 异常退出恢复询问 + 正常退出删除临时文件 + 编辑历史管理
+- [x] **搜索增强** — 正则表达式支持 + 大小写敏感切换 + 文件类型过滤（扩展名） + UI添加CheckBox和过滤输入框 + 无效正则提示
+
+### 出口路径修复记录
+
+- [x] **EXIT-3 [中]** — 回收站清空后关闭对话框
+- [x] **EXIT-4 [低]** — 编辑器Back键退出时清理临时文件（setOnDismissListener）
+- [x] **EXIT-5 [低]** — 编辑器保存失败时清理临时文件（catch块添加delete）
+- [x] **EXIT-6 [低]** — 音频播放完成时释放MediaPlayer（setOnCompletionListener）
+- [x] **EXIT-7 [低]** — onDestroy中MediaPlayer release添加try-catch
+
+### Debug修复记录
+
+- [x] **BUG-1 [高]** — 文本编辑器BOM/编码检测改为传递rawData参数，保留原始字节信息
+- [x] **BUG-2 [高]** — 撤销/重做添加suppressWatcher标志位，防止setText触发TextWatcher破坏redo分支
+- [x] **BUG-3 [中]** — 文本编辑器添加重做按钮（与撤销并排）
+- [x] **BUG-4 [中]** — 临时文件命名使用文件路径哈希，避免同名文件冲突
+- [x] **BUG-5 [高]** — MediaPlayer添加released标志位，防止双重release崩溃
+- [x] **BUG-7 [低]** — showOutputDirDialog添加pwd参数（密码传递）
+- [x] **BUG-9 [低]** — 正则表达式无效时Toast提示用户
+- [x] **BUG-13 [中]** — 补充editor_redo翻译（4语言）
+- [x] **BUG-16 [中]** — onDestroy中清理cacheDir/edit/临时文件目录
+- [x] **BUG-17 [中]** — EditHistory maxSteps从50降为30，减少内存占用
+
+### 出口路径修复记录
+
+- [x] **EXIT-1 [中]** — 搜索对话框关闭时中断搜索线程（setOnDismissListener）
+- [x] **EXIT-3 [中]** — 回收站清空后关闭对话框（dialog?.dismiss()）
+- [x] **EXIT-4 [低]** — 编辑器Back键退出时清理临时文件（setOnDismissListener）
+- [x] **EXIT-5 [低]** — 编辑器保存失败时清理临时文件（catch块添加delete）
+- [x] **EXIT-6 [低]** — 音频播放完成时释放MediaPlayer（setOnCompletionListener）
+- [x] **EXIT-7 [低]** — onDestroy中MediaPlayer release添加try-catch
+
+### 全面Debug修复记录（Kotlin + Rust）
+
+- [x] **KOT-1 [高]** — getCopyFileName改为检查currentDir路径而非源文件路径
+- [x] **KOT-2 [高]** — RecycleBin清空操作移到后台线程，避免ANR
+- [x] **KOT-3 [中]** — RecycleBin.moveToRecycleBin控制流优化，renameTo成功后直接return
+- [x] **KOT-4 [中]** — 移除showTextEditor中无关的MediaPlayer释放代码
+- [x] **KOT-5 [中]** — syncMultiBar改用findViewWithTag替代childCount匹配
+- [x] **KOT-10 [中]** — multiSelected改用Collections.synchronizedSet线程安全
+- [x] **RUST-1 [中]** — RAR空密码传递修复：extract_rar_inner和extract_rar_volumes_inner中空密码改为None
+- [x] **KOT-6 [中]** — ProgressDialog添加isFinishing检查，防止Activity销毁后dismiss崩溃
+- [x] **P2-1 [低]** — calcDirSize改为单次遍历，添加进度提示
+- [x] **P2-2 [低]** — bookmarks改用CopyOnWriteArrayList线程安全
+- [x] **P2-3 [低]** — PreviewAdapter优化：rebuildVisible移至notifyDataSetChanged
+- [x] **P2-4 [低]** — 关键位置异常日志记录（FileBrowser APK备份）
+- [x] **P2-5 [低]** — Magic数字提取为命名常量（DOUBLE_TAP_INTERVAL_MS等）
+- [x] **Toast增强** — 关键操作添加详细错误日志（复制失败等）
+- [x] **P2-7 [低]** — 命名规范化：MultiFiles→multiFiles
+- [x] **P2-8 [低]** — previewLocalFile无扩展名处理
+- [x] **P2-9 [低]** — Shell命令添加30秒超时机制
+- [x] **P2-10 [低]** — Bitmap内存回收（scaled/cropped后recycle原bitmap）
+- [ ] Phase 3 剩余功能（自由选解压目录/文本编辑器/搜索增强）
+
+### 真机 Bug 修复（v5.13 追加轮次）
+
+- [x] **KOT-11 [严重]** — 多选后直接闪退：`MultiSelect.kt` `syncMultiBar` 用 `findViewById<LinearLayout>(R.id.root)` 强转根视图，但根视图实际是 `ConstraintLayout`（`MainActivity` 以 `ConstraintLayout` 添加 batchBar）→ `ClassCastException`。改 `findViewById<ViewGroup>(R.id.root)`（LinearLayout 与 ConstraintLayout 共同父类），多选恢复可用
+- [x] **RUST-2 [高]** — scan-core XP3 未检测：magic 字节写反（`\x1a\n` 应为 `\n\x1a`，且 magic 实为 10 字节 `XP3\r\n \n\x1a\x8b\x67` 非 8 字节）；且头部字段解析偏移错误（XP3 无固定 idx_size 字段）。重写 `validate_xp3`：10 字节 magic + 识别旧格式（u64 直接索引偏移）与现行格式（0x17 标识 + minor + 128 + 相对偏移），独立文件延伸至 EOF。实测 video.xp3 由 0 命中 → **1x XP3 archive**
+- [x] **RUST-3 [高]** — scan-core ISO 未检测：PVD logical block size 的 BE 字段偏移写错（读 132-133，应为 130-131）→ `block_lsb != block_msb` 校验失败 → validate_iso 返回 None。改读 `vd[130..132]`。实测 Memories_Off ISO 由一堆无用命中 → **1x ISO 9660**
+- [x] **RUST-4 [中]** — scan-core NSA 全误报：NSA 无 magic bytes，Aho-Corasick 只扫出内部 JPEG/MP3（arc.nsa 7314 命中）。新增 `validate_nsa_whole_file` 结构验证（u16 BE count + 可打印 NUL 文件名 + comp≤2 + 数据体在文件内），scan_file 入口预检整文件报 **1x NSA archive**；随机/非可打印名拒绝
+
+### 全量 Debug 轮次（v5.13 — 全功能 + 旧 bug 复盘）
+
+#### Rust 安全/正确性（H 级）
+
+- [x] **H1 brotli 解压无输出上限** — `brotli-core` 只包 `ProgressWriter` 未套 `BoundedWriter`，几 KB 流可膨胀写满磁盘。包 `BoundedWriter::new(_, DEFAULT_EXTRACT_CAP)`（对齐 xz/bzip2/zstd）
+- [x] **H2 lz4 无 Content-Size 时无上限** — `declared==0` 时用 `u64::MAX`。改为回退 `DEFAULT_EXTRACT_CAP`
+- [x] **H3 lzma 流式头无上限** — `.lzma` alone 头 `usize=u64::MAX`（liblzma 默认输出）时 `declared==0` → 无上限，最常见的 LZMA 形态放开炸弹口。改回退 `DEFAULT_EXTRACT_CAP`
+- [x] **H4 scan-core YPF 验证器偏移全错** — 真实 YPF 头是 magic(4)+version(u32@4)+count(u32@8)+hdr_len(u32@12)，但验证器读 count=u16@4、hdr_len=u32@6 → 所有合法 YPF 被拒。改读 u32@8 与 u32@12
+- [x] **H5 rar 取消监视线程 panic 泄漏** — `run_with_cancel_monitor` 中 `f()` panic 时 `done.store`+`join` 不执行 → 僵尸线程永久泄漏并错误驱动后续 RAR 进度/取消。改 RAII Guard 保证 panic 路径也终止 + reset
+
+#### Rust 数据完整性/进度（M 级）
+
+- [x] **M1 tar 截断成员不报错** — `io::copy` 返回短字节被当成功。改 `written >= e.size()` 校验，不足删半成品 + fail++
+- [x] **M2 7z 成员短读不检测** — 无 CRC 文件夹截断算成功。改 `copied >= entry.size()` 校验，不足删文件 + fail++
+- [x] **M3 nsa 打包 >4GiB 单文件静默截断** — `size as u32` 溢出生成损坏归档。进 store 分支前校验 `size <= u32::MAX` 否则报错
+- [x] **M4 nsa 失败留半成品 / csize==0 误成功** — 错误路径统一 `remove_file`；csize==0&&usize==0 创建空文件（成功匹配磁盘）；仅 csize==0 保留原行为
+- [x] **M5 iso 打包进度恒 0** — `create_iso` reset 后 `write_iso` 不喂 `add_bytes`。文件拷贝处补进度
+- [x] **M6 ypf 压缩进度量纲错乱** — `reset(files.len())`（个数）但 `add_bytes`（字节）。改 reset 为文件字节总和
+- [x] **M7 zip 单个坏条目中止整个解压** — `by_index` 用 `?` 中断。改 fail++ & continue（单/分卷两处），对齐 xp3/nsa/rar
+- [x] **M9 scan-core KSD mode-1 漏检** — 签名表只覆盖 mode0/2，mode1（`FE FE 01 FF FE`）永不触发。补 mode1 magic
+- [x] **M10 cso/iso 失败留半成品** — cso_to_iso 外包一层清理；extract_iso_one 失败删文件
+
+#### Kotlin 功能正确性（高）
+
+- [x] **KOT-12 [高]** — RecycleBin manifest 损坏后条目永久不可恢复：`updateManifest` 解析失败直接重建空 manifest 覆盖，丢弃全部条目。改 `recoverManifest`（从各 entryDir 的 `_meta.json` 重建）+ 原子写（tmp + rename）
+- [x] **KOT-13 [高]** — RecycleBin.restore 路径前缀 `startsWith` 误判：`/.recycleXXX/...` 兄弟路径被误判在回收站内而永久拒绝恢复。改组件级比较（base + `File.separator`）+ canonicalPath 包 runCatching
+- [x] **KOT-14 [高]** — nav() 并发导航旧目录列表覆盖当前目录：后台扫描完成时 `runOnUiThread { listFiles.adapter = adapter }` 无 `currentDir` 校验 → 旧目录覆盖新目录（用户可对看不见的文件操作）。加 `if (currentDir != dir) return@runOnUiThread` 守卫
+- [x] **KOT-15 [高]** — 全局搜索大小写不敏感时正则模式被 lowercased：`query.lowercase()` 破坏 `\p{Lu}`/`[A-Z]`/字符类。改仅对普通文本 lower，正则保持原样（IGNORE_CASE 单独控制）
+- [x] **KOT-16 [中]** — 搜索 "Invalid regex" 硬编码英文未国际化。新增 `err_invalid_regex` 4 语言 + 改用 getString
+
+#### Kotlin 中低
+
+- [x] **KOT-17 [中]** — 批量复制读取非 volatile `currentDir`，复制中导航会拷错目录。进线程前快照 `targetDir`
+- [x] **KOT-18 [中]** — syncMultiBar 的 📂/📦 显隐是死代码：按钮嵌套在 HorizontalScrollView 内层，`bar.getChildAt(i)` 遍历不到。改递归遍历内层按钮
+- [x] **KOT-19 [中]** — 编辑器保存失败时删除临时文件丢编辑：tempFile 是恢复副本，保存失败应保留（删掉则未保存编辑无法恢复）
+- [x] **KOT-20 [中]** — showRenameDialog 未校验路径分隔符/`..` → 改名可逃逸目录。拒绝 `/`、`\`、`..`
+
+### scan-core 回归测试（v5.13 追加）
+
+- [x] 新增 `xp3_old_format_validates` / `xp3_current_format_validates` / `xp3_bad_magic_rejected`
+- [x] 新增 `nsa_whole_file_validates` / `nsa_random_data_rejected` / `nsa_non_printable_name_rejected`
+- [x] 修正 `iso9660_volume_descriptor` 测试（BE block size 写入偏移 132→130）
+- [x] workspace 全绿（scan-core 34 测试）
+- [x] **全量验证** — `cargo test --workspace` 全绿；语料回归 303/330 PASS（CSO 4/4 全 PASS，唯一失败为 pre-existing `rawfile_tree.iso`）；实测 video.xp3 / arc.nsa / Memories_Off ISO 均报 **1x 对应归档**；随机数据仅 ~5 个 MEDIUM MP3 误报（正常率）；`cargo check --workspace` + `gradle compileDebugKotlin` 均通过
+
+### 回收站 Debug 修复记录
+
+- [x] **BUG-9 [严重]** — RecycleBinDialog.kt 重写为命名适配器 RecycleEntryAdapter，修复 ListView 更新失效
+- [x] **BUG-1/4 [高]** — restore() 和永久删除时正确更新 manifest，添加 removeFromManifest() 方法
+- [x] **BUG-7/8 [高]** — DeleteProgress.kt 进度计算改为以目标数量为基准，每个目标处理后更新消息
+- [x] **BUG-2 [中]** — restore() 中添加 parentFile null 安全检查
+- [x] **BUG-3 [中]** — readManifest() 添加 synchronized 加锁
+- [x] **BUG-11 [中]** — 恢复操作移到后台线程，避免 ANR
+- [x] **BUG-12/23 [中]** — 添加 recycle_disabled_message/recycle_enable 字符串资源，AppSettings 使用 getString
+- [x] **BUG-13 [低]** — RecycleEntryAdapter.updateEntries() 更新头部条目数和总大小
+- [x] **BUG-26 [严重]** — 永久删除操作移到后台线程
+- [x] **BUG-27 [中等]** — DeleteProgress 直接删除模式改为以目标数量为基准
+- [x] **BUG-28 [低]** — emptyRecycleBin() 添加 synchronized 保护
+- [x] **BUG-29 [低]** — 删除/恢复最后一个条目后关闭外层列表对话框
+
+---
+
 ## v5.12.0 (PKWARE 跨盘 + ZIP 保 AES + scan 降误报 + md/rtf 渲染 + UI + 深度 debug)
 
 ### A 组 — PKWARE 跨盘条目完整支持
@@ -96,7 +405,7 @@
 - [ ] **深嵌大 zip（wontfix）** — EOCD 前向 256MiB 封顶 + 文件尾 64KB 回退覆盖两类场景；深嵌中间且压缩体 >256MB 的 zip 仍漏（binwalk 同病，代价不值）
 - [ ] **进度静态量每操作局部上下文** — 全局 Atomic 静态量在单操作模型下安全；要真并发再改
 
-### v5.13.0 计划（多核并行解压）
+#### v5.13.0 计划（多核并行解压）
 
 - [ ] **rar 非 solid 多线程/多核并行解压** — 非 solid 多成员 rar 用 `std::thread::scope` 起 N 个 worker(`N = min(available_parallelism,4)`,可设置),每 worker 对领到的成员调 `write_to_with_options`(流式、独立 data_range),共享 AtomicUsize 索引;顶条靠写盘原子累加精确聚合,底条改为"在飞聚合"(各 worker 上报 size/bytes,协调线程求和,`common` 需补 `set_file_total`);取消各 worker 成员间检查。solid/单大文件/分卷/rar13 无收益或格式限制,回退顺序。zip 并行(各 worker 独立开归档)也归 5.13
 - [ ] 设置项「解压线程数」自动/1/2/4(AppSettings, 存 pref `extract_threads`),JNI 走 `rarSetThreads(i32)`(0=自动)与 `zipSetEncoding` 同款模式;strings ×4
@@ -762,3 +1071,22 @@
 - **LZ4 列表大小显示 0 字节** — 解压后取 `decompressed.len()` 作为实际大小
 - **`guarded()` 吞掉 panic 细节** — 6 个 crate (rar/lz4/zip/sevenz-core + ypf-core 内联) 全部改为析出 panic 信息
 - **`rarNeedsPassword` / `zipNeedsPassword` / `szNeedsPassword` 吞 IO 错误** — Err 时 throw IOException 而非返回 false
+
+### Phase 1 补全 b（RAR4 copy_match + Brotli）
+
+- [x] **RAR4 copy_match 批量复制** — rar29/rar20 streaming 路径：offset ≤ output.len() 时用 `extend_from_within` 批量复制，pending 路径同理，预期 20-40%（repetitive data）
+- [x] **Brotli 格式支持** — 新增 brotli-core crate（brotli 8.0，pure Rust），JNI/host 入口 + compress/extract + BufWriter(256K) + corpus-regress 21 条目全 PASS
+
+#### 全量回归最终成绩
+
+- **295/326 PASS（90.5%）**，31 skipped（tar 变体不支持），0 失败
+- 39 套件全绿（含 brotli-core）
+
+#### 最终全量回归（v1.2 语料 484 条目，全部格式）
+
+- **299/330 PASS（90.6%）**，31 skipped（split volumes），5 failed
+- 5 个失败全是 **CSO 语料格式问题**（header_size=24 → 0 index 条目，生成时 bug，非代码 bug）
+- CSO core 6 个内部测试全绿（代码正确，语料无效）
+- 31 skipped = RAR/7z/zip split volumes（单文件 harness 不支持多卷）
+- 支持格式：rar 65/zip 47/7z 68/gzip 22/bzip2 15/xz 25/lzma 16/lz4 23/zstd 24/brotli 21/iso 5
+- 39 套件全绿

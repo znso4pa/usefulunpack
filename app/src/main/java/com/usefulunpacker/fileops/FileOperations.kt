@@ -21,6 +21,12 @@ fun showRenameDialog(activity: AppCompatActivity, f: File, currentDir: File, boo
         .setPositiveButton(activity.getString(R.string.action_confirm)) { _, _ ->
             val newName = inp.text.toString().trim()
             if (newName.isEmpty() || newName == f.name) return@setPositiveButton
+            // Reject path separators / ".." so a rename can't escape the folder
+            // or descend into a subdirectory (unpredictable / unsafe paths).
+            if (newName.contains('/') || newName.contains('\\') || newName == ".." || newName.contains("..")) {
+                Toast.makeText(activity, activity.getString(R.string.err_file_error), Toast.LENGTH_SHORT).show()
+                return@setPositiveButton
+            }
             val dst = File(f.parentFile ?: return@setPositiveButton, newName)
             if (!dst.exists()) { f.renameTo(dst); Toast.makeText(activity, activity.getString(R.string.action_rename), Toast.LENGTH_SHORT).show(); onSaved(); return@setPositiveButton }
             AlertDialog.Builder(activity)
@@ -63,21 +69,17 @@ fun calcDirSize(activity: AppCompatActivity, dir: File) {
         show()
     }
     thread {
-        // Count all nodes first so the progress bar has a real denominator
-        // (listFiles() only sees the top level and would overflow 100%).
-        val totalNodes = dir.walkTopDown().count()
         var total = 0L
         var processed = 0
         dir.walkTopDown().forEach { f ->
             if (f.isFile) total += runCatching { f.length() }.getOrDefault(0L)
             processed++
             if (processed % 50 == 0) {
-                val pct = if (totalNodes > 0) (processed * 100 / totalNodes).coerceAtMost(100) else 100
-                activity.runOnUiThread { pd.progress = pct }
+                activity.runOnUiThread { pd.setMessage(activity.getString(R.string.msg_calc_counting, processed)) }
             }
         }
         activity.runOnUiThread {
-            pd.dismiss()
+            if (!activity.isFinishing) pd.dismiss()
             AlertDialog.Builder(activity)
                 .setTitle(dir.name)
                 .setMessage(activity.getString(R.string.msg_calc_result, fmt(total), processed))

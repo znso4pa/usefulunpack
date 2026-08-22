@@ -3,10 +3,14 @@ package com.usefulunpacker
 import android.app.AlertDialog
 import android.app.ProgressDialog
 import android.graphics.drawable.ColorDrawable
+import android.view.Gravity
 import android.view.View
 import android.widget.*
 import java.io.File
 import kotlin.concurrent.thread
+
+private fun MainActivity.dp(id: Int) = resources.getDimensionPixelSize(id)
+private fun MainActivity.spx(id: Int) = resources.getDimension(id) / resources.displayMetrics.scaledDensity
 
 @Volatile internal var showBatchPreview_all: List<Pair<File, List<ArchiveEntry>>>? = null
 
@@ -107,7 +111,20 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
     }
 
 internal fun MainActivity.batchPreview(archives: List<File>, fmt: String) {
-        val pd = ProgressDialog(this).apply { setTitle(getString(R.string.reading)); setMessage(getString(R.string.reading_archives, archives.size)); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
+        // Same-archive mutex: drop archives already open in another window
+        // (volume sets count as one archive), so a preview can't race an open
+        // copy elsewhere.
+        val conflictNames = mutableListOf<String>()
+        val filtered = archives.filter { a ->
+            val k = archiveKey(a)
+            val o = OpenArchiveRegistry.owner(k)
+            if (o != null && o !== activeTab) { conflictNames.add(a.name); false } else true
+        }
+        if (filtered.isEmpty()) {
+            toast(getString(R.string.msg_archive_open_skipped, conflictNames.size))
+            return
+        }
+        val pd = ProgressDialog(this).apply { setTitle(getString(R.string.reading)); setMessage(getString(R.string.reading_archives, filtered.size)); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
         thread {
             // Shared password state: asked once for all archives; a cancel stops
             // further prompts (and further listing) instead of silently failing.
@@ -123,7 +140,7 @@ internal fun MainActivity.batchPreview(archives: List<File>, fmt: String) {
                 return p
             }
             val all: MutableList<Pair<File, List<ArchiveEntry>>> = mutableListOf()
-            for (src in archives) {
+            for (src in filtered) {
                 val json = try { when(fmt) {
                     "xp3"->Xp3Core.xp3ListEntries(src.path)
                     "pfs"->PfsCore.pfsListEntries(src.path)
@@ -133,13 +150,13 @@ internal fun MainActivity.batchPreview(archives: List<File>, fmt: String) {
                     "zip"->{ val vols = resolveZipVolumes(src); if (vols.size>1) ZipCore.zipListEntriesVolumes(volumeJoin(vols)) else ZipCore.zipListEntries(src.path) }
                     "7z"->{ val vols = resolveSevenZVolumes(src); if (vols.size>1) { val p = resolvePwd(src); if (p == null) null else if (p.isEmpty()) SevenZCore.szListEntriesVolumes(volumeJoin(vols)) else SevenZCore.szListEntriesVolumesWithPassword(volumeJoin(vols), p) } else { val p = resolvePwd(src); if (p == null) null else if (p.isEmpty()) SevenZCore.szListEntries(src.path) else SevenZCore.szListEntriesWithPassword(src.path, p) } }
                     "rar"->{ val vols = resolveRarVolumes(src); val p = resolvePwd(src); if (p == null) null else if (vols.size>1) (if (p.isEmpty()) RarCore.rarListEntriesVolumes(volumeJoin(vols)) else RarCore.rarListEntriesVolumesWithPassword(volumeJoin(vols), p)) else (if (p.isEmpty()) RarCore.rarListEntries(src.path) else RarCore.rarListEntriesWithPassword(src.path, p)) }
-                    "lz4"->Lz4Core.lz4ListEntries(src.path); "gz"->GzipCore.gzListEntries(src.path); "bz2"->Bzip2Core.bz2ListEntries(src.path); "xz"->XzCore.xzListEntries(src.path); "zst"->ZstdCore.zstListEntries(src.path); "lzma"->LzmaCore.lzmaListEntries(src.path); "tar"->TarCore.tarListEntries(src.path)
+                    "lz4"->Lz4Core.lz4ListEntries(src.path); "gz"->GzipCore.gzListEntries(src.path); "bz2"->Bzip2Core.bz2ListEntries(src.path); "xz"->XzCore.xzListEntries(src.path); "zst"->ZstdCore.zstListEntries(src.path); "lzma"->LzmaCore.lzmaListEntries(src.path); "br"->BrotliCore.brotliListEntries(src.path); "tar"->TarCore.tarListEntries(src.path)
                     else->null
                 } } catch(_:Exception){null}
                 if (json != null) all.add(src to parseEntries(json))
                 if (pwdCancelled) break
             }
-            runOnUiThread { pd.dismiss(); if (all.isEmpty()) toast(getString(R.string.msg_cannot_read)); else showBatchPreviewDialog(all, fmt, batchPwd, pwdCancelled) }
+            runOnUiThread { pd.dismiss(); if (all.isEmpty()) toast(getString(R.string.msg_cannot_read)); else { if (conflictNames.isNotEmpty()) toast(getString(R.string.msg_archive_open_skipped, conflictNames.size)); showBatchPreviewDialog(all, fmt, batchPwd, pwdCancelled) } }
         }
     }
 
@@ -165,8 +182,8 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
         // Stats bar
         val tvStats = TextView(this).apply {
             text = getString(R.string.batch_preview_stats, all.size, totalFiles, fmt(totalSize), 0, fmt(0))
-            setTextColor(C["tertiary_light"]!!); textSize = 12f
-            setPadding(12, 8, 12, 4); setBackgroundColor(C["surface_dim"]!!)
+            setTextColor(C["tertiary_light"]!!); textSize = spx(R.dimen.text_sm)
+            setPadding(dp(R.dimen.space_md), dp(R.dimen.space_sm), dp(R.dimen.space_md), dp(R.dimen.space_xs)); setBackgroundColor(C["surface_dim"]!!)
         }
         fun updateStats() {
             val selFiles = selectedPaths.filter { p -> merged.find { e -> e.path == p && !e.isDirectory } != null }
@@ -238,13 +255,13 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
 
         lateinit var dlg: AlertDialog
         // Title bar with search button
-        val titleBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(24, 14, 8, 14); setBackgroundColor(C["surface"]!!) }
+        val titleBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(R.dimen.space_lg), dp(R.dimen.space_md), dp(R.dimen.space_sm), dp(R.dimen.space_md)); setBackgroundColor(C["surface"]!!) }
         titleBar.addView(TextView(this).apply {
-            text = getString(R.string.batch_preview_title, all.map{it.first.name}.joinToString(", ").take(40)); setTextColor(C["primary"]!!); textSize = 17f
+            text = getString(R.string.batch_preview_title, all.map{it.first.name}.joinToString(", ").take(40)); setTextColor(C["primary"]!!); textSize = spx(R.dimen.text_title)
             layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
         })
         val btnSearchTitle = ImageButton(this).apply {
-            setImageResource(R.drawable.ic_search); setBackgroundColor(C["surface"]!!); setPadding(8, 4, 8, 4)
+            setImageResource(R.drawable.ic_search); setBackgroundColor(C["surface"]!!); setPadding(dp(R.dimen.space_xs), dp(R.dimen.space_xs), dp(R.dimen.space_xs), dp(R.dimen.space_xs))
             scaleType = ImageView.ScaleType.FIT_XY; layoutParams = LinearLayout.LayoutParams(52, 40)
             setOnClickListener {
                 val cacheDir = File(cacheDir, "archive_search/batch_${all.map{it.first.nameWithoutExtension}.joinToString("_").take(50)}")
@@ -366,5 +383,16 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                 }
             }
             .setNegativeButton(getString(R.string.action_cancel), null).create()
+        // Keep the tab strip tappable while batch preview is open (bottom-align
+        // below toolbar + tab bar), so the user can still switch windows.
+        dlg.window?.let { w ->
+            val dm = resources.displayMetrics
+            val density = dm.density
+            val top = 50f * density + 56f * density + 130f * density
+            w.setGravity(Gravity.BOTTOM)
+            val sheetW = minOf(dm.widthPixels, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
+            w.setLayout(sheetW, (dm.heightPixels - top).toInt().coerceAtLeast(0))
+            w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0x99000000.toInt()))
+        }
         dlg.show()
     }

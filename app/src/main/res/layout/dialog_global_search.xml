@@ -118,16 +118,71 @@
             android:textColor="#000000" />
     </LinearLayout>
 
-    <!-- Circular indeterminate spinner while searching — a horizontal
-         indeterminate bar renders as a static full bar on some ROMs (Honor). -->
-    <ProgressBar
-        android:id="@+id/searchProgress"
-        android:layout_width="wrap_content"
+    <!-- Search options: stacked vertically so the Chinese labels never crowd
+         on narrow phones. -->
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:visibility="gone"
-        android:paddingTop="10dp"
-        android:paddingBottom="4dp" />
+        android:orientation="vertical"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp">
+
+        <CheckBox
+            android:id="@+id/cbRegex"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/search_regex"
+            android:textSize="12sp"
+            android:textColor="@color/text_secondary" />
+
+        <CheckBox
+            android:id="@+id/cbCaseSensitive"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/search_case_sensitive"
+            android:textSize="12sp"
+            android:textColor="@color/text_secondary" />
+    </LinearLayout>
+
+    <!-- File filter input -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="4dp">
+
+        <EditText
+            android:id="@+id/etFileFilter"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textSize="12sp"
+            android:singleLine="true"
+            android:hint="@string/search_file_filter"
+            android:background="@drawable/bg_input"
+            android:padding="8dp"
+            android:textColor="@color/text_primary"
+            android:textColorHint="@color/text_hint" />
+    </LinearLayout>
+
+    <!-- Flowing indeterminate progress bar while searching. Honor/EMUI's stock
+         ProgressBar indeterminate animation renders static/full on some ROMs —
+         this custom view draws a sweeping accent bar instead (see
+         IndeterminateBar.kt), so the user always sees motion. -->
+    <com.usefulunpacker.IndeterminateBar
+        android:id="@+id/searchProgress"
+        android:layout_width="match_parent"
+        android:layout_height="6dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginTop="10dp"
+        android:layout_marginBottom="4dp"
+        android:visibility="gone" />
 
     <!-- Results -->
     <ListView

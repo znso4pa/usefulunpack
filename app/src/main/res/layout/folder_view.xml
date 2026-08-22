@@ -1,0 +1,318 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Per-tab folder view: path bar + file panel + bottom bar + FAB.
+     One instance is inflated per tab in a ViewPager2 (FolderFragment). -->
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/folderRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_file_list">
+
+    <!-- Path breadcrumb -->
+    <LinearLayout
+        android:id="@+id/pathBar"
+        android:layout_width="0dp"
+        android:layout_height="40dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@color/bg_pathbar"
+        android:paddingStart="6dp"
+        android:paddingEnd="4dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <ImageButton
+            android:id="@+id/btnUp"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:src="@drawable/ic_back"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:tint="@color/ui_icon_tint" />
+
+        <TextView
+            android:id="@+id/tvPath"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="/"
+            android:textSize="11sp"
+            android:textColor="@color/text_secondary"
+            android:singleLine="true"
+            android:ellipsize="start" />
+
+        <TextView
+            android:id="@+id/tvCount"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="10sp"
+            android:textColor="@color/text_file_msg"
+            android:paddingEnd="6dp" />
+
+        <!-- Picker mode: confirm the current directory (shown only when this
+             tab runs as a path picker without file mode). -->
+        <Button
+            android:id="@+id/btnPickDir"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:text="✓ 选择此目录"
+            android:textSize="11sp"
+            android:minWidth="0dp"
+            android:backgroundTint="@color/accent"
+            android:textColor="#000000"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- File panel (main area) -->
+    <FrameLayout
+        android:id="@+id/panel"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@color/bg_file_list"
+        app:layout_constraintTop_toBottomOf="@id/pathBar"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <ListView
+            android:id="@+id/listFiles"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:divider="@color/divider"
+            android:dividerHeight="1dp"
+            android:listSelector="#40ffffff"
+            android:cacheColorHint="@color/bg_file_list"
+            android:fastScrollEnabled="true"
+            android:fastScrollAlwaysVisible="true"
+            android:fastScrollThumbDrawable="@drawable/fastscroll_thumb"
+            android:fastScrollTrackDrawable="@drawable/fastscroll_track"
+            android:clipToPadding="false" />
+
+        <TextView
+            android:id="@+id/tvEmpty"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:text=""
+            android:textSize="14sp"
+            android:textColor="@color/text_file_msg"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <!-- Bottom bar (selected file) -->
+        <LinearLayout
+            android:id="@+id/bottomBar"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/bar_height"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@color/bg_surface_raised"
+            android:paddingStart="@dimen/space_md"
+            android:paddingEnd="@dimen/space_sm"
+            android:visibility="gone"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent">
+
+        <TextView
+            android:id="@+id/tvSelected"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text=""
+            android:textSize="12sp"
+            android:textColor="@color/ui_icon_tint" />
+
+        <ProgressBar
+            android:id="@+id/progress"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:visibility="gone"
+            android:layout_marginEnd="8dp" />
+
+        <Button
+            android:id="@+id/btnExtract"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/msg_extract_title"
+            android:textSize="12sp"
+            android:textColor="@color/accent"
+            android:minWidth="0dp"
+            android:background="?attr/selectableItemBackgroundBorderless" />
+    </LinearLayout>
+
+    <!-- FAB -->
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/fabExtract"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="32dp"
+        android:src="@drawable/ic_extract"
+        android:visibility="gone"
+        android:backgroundTint="@color/ui_base"
+        app:fabSize="normal"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- In-tab archive preview (renders inside this tab; the ViewPager above
+         stays swipeable so the user can flip windows while previewing). -->
+    <LinearLayout
+        android:id="@+id/previewRoot"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:orientation="vertical"
+        android:background="@color/bg_file_list"
+        android:visibility="gone"
+        app:layout_constraintTop_toBottomOf="@id/pathBar"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <!-- Preview top bar: back + title + search + overflow menu -->
+        <LinearLayout
+            android:id="@+id/previewTopBar"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/bar_height"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@color/bg_surface_raised"
+            android:paddingStart="@dimen/space_xs"
+            android:paddingEnd="@dimen/space_sm">
+
+            <ImageButton
+                android:id="@+id/btnPreviewBack"
+                android:layout_width="@dimen/icon_action"
+                android:layout_height="@dimen/icon_action"
+                android:src="@drawable/ic_back"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:tint="@color/ui_icon_tint"
+                android:contentDescription="返回" />
+
+            <TextView
+                android:id="@+id/tvPreviewTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text=""
+                android:textSize="@dimen/text_xl"
+                android:textColor="@color/ui_icon_tint"
+                android:singleLine="true"
+                android:ellipsize="middle"
+                android:paddingStart="@dimen/space_sm" />
+
+            <!-- Actions: search (icon) + overflow (编辑/条目/转换为CSO) -->
+            <ImageButton
+                android:id="@+id/btnPreviewSearch"
+                android:layout_width="@dimen/icon_action"
+                android:layout_height="@dimen/icon_action"
+                android:src="@drawable/ic_search"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:tint="@color/accent"
+                android:contentDescription="搜索" />
+
+            <ImageButton
+                android:id="@+id/btnPreviewOverflow"
+                android:layout_width="@dimen/icon_action"
+                android:layout_height="@dimen/icon_action"
+                android:src="@drawable/ic_overflow"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:tint="@color/accent"
+                android:contentDescription="更多操作" />
+        </LinearLayout>
+
+        <!-- Entry list -->
+        <ListView
+            android:id="@+id/previewList"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:divider="@color/divider"
+            android:dividerHeight="1dp"
+            android:listSelector="#40ffffff"
+            android:cacheColorHint="@color/bg_file_list" />
+
+        <!-- Preview action bar: stats on top (single line), action buttons in
+             a second row so they never crowd/overlap on narrow screens. -->
+        <LinearLayout
+            android:id="@+id/previewActionBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@color/bg_surface_raised"
+            android:paddingTop="@dimen/space_sm"
+            android:paddingBottom="@dimen/space_sm">
+
+            <TextView
+                android:id="@+id/tvPreviewStats"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="@dimen/text_sm"
+                android:textColor="@color/text_secondary"
+                android:singleLine="true"
+                android:ellipsize="end"
+                android:paddingStart="@dimen/space_lg"
+                android:paddingEnd="@dimen/space_lg"
+                android:paddingBottom="@dimen/space_sm" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingStart="@dimen/space_sm"
+                android:paddingEnd="@dimen/space_sm">
+
+                <Button
+                    android:id="@+id/btnPreviewExtractAll"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="4dp"
+                    android:text="@string/extract_all"
+                    android:textSize="12sp"
+                    android:textColor="@color/accent"
+                    android:minWidth="0dp"
+                    android:background="?attr/selectableItemBackgroundBorderless" />
+
+                <Button
+                    android:id="@+id/btnPreviewExtract"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginEnd="4dp"
+                    android:text="@string/extract_selected"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_primary"
+                    android:minWidth="0dp"
+                    android:background="?attr/selectableItemBackgroundBorderless" />
+
+                <Button
+                    android:id="@+id/btnPreviewMerge"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="4dp"
+                    android:text="@string/merge_into_archive"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_primary"
+                    android:minWidth="0dp"
+                    android:background="?attr/selectableItemBackgroundBorderless" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Vertical split guideline: on wide screens the in-tab archive preview
+         is pinned to the right of this line (master-detail), leaving the file
+         list visible on the left. Unused on phones. -->
+    <androidx.constraintlayout.widget.Guideline
+        android:id="@+id/guidelineSplit"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        app:layout_constraintGuide_percent="0.45" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>

@@ -1,10 +1,11 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jstring, jlong, JNI_TRUE, JNI_FALSE};
+use jni::sys::{jboolean, jstring, jlong, jint, JNI_TRUE, JNI_FALSE};
 use archive_common::{s, json_escape, safe_join, extract_result_json, ProgressWriter, ProgressReader};
 use archive_common::{extract_progress, compress_progress};
 use std::collections::HashSet;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
 static ZIP_ENCODING: Mutex<String> = Mutex::new(String::new());
@@ -63,11 +64,9 @@ impl ConcatReader {
     /// Disk 0 starts at 0; disk N starts after the previous N disks.
     fn disk_offsets(&self) -> Vec<u64> {
         let mut v = Vec::with_capacity(self.bounds.len());
-        let mut acc = 0u64;
         v.push(0);
         for &b in &self.bounds {
-            acc = b;
-            v.push(acc);
+            v.push(b);
         }
         v.pop(); // last entry is total length = end of final disk, not a start
         v
@@ -165,6 +164,164 @@ fn list_zip_volumes(paths: &[&str]) -> Result<String, String> {
     list_zip_from(archive)
 }
 
+/// Thread count override (0 = auto). Set via JNI (settings) or the
+/// `UU_PARALLEL_THREADS` env var (host tests). Clamped to 1..=8.
+static PARALLEL_THREADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Sets the parallel-decode thread count; 0 restores the automatic choice.
+#[doc(hidden)]
+pub fn set_parallel_threads(n: u32) {
+    PARALLEL_THREADS.store(n, Ordering::Relaxed);
+}
+
+fn parallel_thread_count() -> usize {
+    if let Ok(v) = std::env::var("UU_PARALLEL_THREADS") {
+        if let Ok(n) = v.parse::<u32>() {
+            if n > 0 { return n.clamp(1, 8) as usize; }
+        }
+    }
+    let n = PARALLEL_THREADS.load(Ordering::Relaxed);
+    if n > 0 {
+        n.clamp(1, 8) as usize
+    } else {
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).min(4)
+    }
+}
+
+/// Decodes one zip entry (by central-directory index) into RAM via its own
+/// ZipArchive instance — the archive holds a single reader, so concurrent
+/// entry reads need one archive per thread. Bounded by the caller (entries
+/// larger than the buffering cap never reach here).
+fn zip_decode_one(input: &str, index: usize, expected_size: u64) -> Result<(Vec<u8>, u64), String> {
+    let mut a = zip::ZipArchive::new(std::fs::File::open(input).map_err(|e| format!("{e}"))?)
+        .map_err(|e| format!("{e}"))?;
+    let entry = a.by_index(index).map_err(|e| format!("{e}"))?;
+    let size = entry.size();
+    let mut data = Vec::with_capacity(size as usize);
+    entry.take(size).read_to_end(&mut data).map_err(|e| format!("{e}"))?;
+    if data.len() as u64 != size {
+        return Err(format!("zip short read: {} != {}", data.len(), size));
+    }
+    let _ = expected_size;
+    Ok((data, size))
+}
+
+/// Decodes [items] (index, name, size) concurrently, preserving order.
+fn zip_decode_batch(input: &str, items: &[(usize, String, u64)]) -> Vec<Result<(Vec<u8>, u64), String>> {
+    let mut out: Vec<Result<(Vec<u8>, u64), String>> = items.iter().map(|_| Ok((Vec::new(), 0))).collect();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = items
+            .iter()
+            .enumerate()
+            .map(|(k, (idx, _, size))| s.spawn(move || (k, zip_decode_one(input, *idx, *size))))
+            .collect();
+        for (idx, h) in handles.into_iter().enumerate() {
+            match h.join() {
+                Ok((k, Ok(v))) => out[k] = Ok(v),
+                Ok((k, Err(e))) => out[k] = Err(e),
+                Err(_) => out[idx] = Err("zip parallel decode panicked".into()),
+            }
+        }
+    });
+    out
+}
+
+/// Writes an already-decoded entry: per-file bar + overall bar from the write.
+fn write_zip_entry_data(name: &str, size: u64, data: &[u8], output: &str) -> Result<(), String> {
+    if extract_progress::cancelled() { return Err("cancelled".to_string()); }
+    extract_progress::set_name(name);
+    extract_progress::set_file(size);
+    let dest = safe_join(output, name)?;
+    if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
+    let mut out = ProgressWriter::extract(std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(&dest).map_err(|e| format!("{e}"))?));
+    if out.write_all(data).is_err() || out.flush().is_err() {
+        let _ = std::fs::remove_file(&dest);
+        return Err("zip write failed".into());
+    }
+    Ok(())
+}
+
+/// Parallel full-extract fast path for SINGLE-file, no-password zips. Entries
+/// ≤ 32 MiB decode in bounded batches (one thread per entry, each with its own
+/// ZipArchive); larger entries stream sequentially. Returns Ok(None) when
+/// parallel doesn't apply, and the caller falls back to the sequential path.
+fn extract_zip_parallel(input: &str, output: &str) -> Result<Option<(u32, u32)>, String> {
+    const ENTRY_LIMIT: u64 = 32 * 1024 * 1024;
+    const BATCH_MEM_BUDGET: u64 = 128 * 1024 * 1024;
+    let enc = get_enc();
+
+    let mut scan = zip::ZipArchive::new(std::fs::File::open(input).map_err(|e| format!("{e}"))?)
+        .map_err(|e| format!("{e}"))?;
+    let mut buffered: Vec<(usize, String, u64)> = Vec::new();
+    let mut streaming: Vec<(usize, String, u64)> = Vec::new();
+    let mut prog_total = 0u64;
+    for i in 0..scan.len() {
+        if extract_progress::cancelled() { return Err("cancelled".to_string()); }
+        if let Ok(entry) = scan.by_index_raw(i) {
+            let name = decode_entry_name(&entry, &enc).replace('\\', "/").trim_matches('/').to_string();
+            if name.is_empty() || entry.is_dir() { continue; }
+            let size = entry.size();
+            prog_total += size;
+            if size <= ENTRY_LIMIT { buffered.push((i, name, size)); } else { streaming.push((i, name, size)); }
+        }
+    }
+    let total = buffered.len() + streaming.len();
+    if buffered.len() < 2 || total == 0 {
+        return Ok(None);
+    }
+    extract_progress::reset(prog_total);
+    let mut fail = 0u32;
+    let n_threads = parallel_thread_count();
+
+    let mut i = 0usize;
+    while i < buffered.len() {
+        let mut end = i;
+        let mut sum = 0u64;
+        while end < buffered.len() && end - i < n_threads {
+            if sum + buffered[end].2 > BATCH_MEM_BUDGET && end > i { break; }
+            sum += buffered[end].2;
+            end += 1;
+        }
+        let batch = &buffered[i..end];
+        let decoded = zip_decode_batch(input, batch);
+        for (k, res) in decoded.into_iter().enumerate() {
+            if extract_progress::cancelled() { return Err("cancelled".to_string()); }
+            let (data, size) = res?;
+            if write_zip_entry_data(&batch[k].1, size, &data, output).is_err() { fail += 1; }
+        }
+        i = end;
+    }
+    // Streaming entries sequentially (byte-level progress via the write).
+    for (idx, name, size) in &streaming {
+        if extract_progress::cancelled() { return Err("cancelled".to_string()); }
+        let mut a = zip::ZipArchive::new(std::fs::File::open(input).map_err(|e| format!("{e}"))?)
+            .map_err(|e| format!("{e}"))?;
+        let entry = match a.by_index(*idx) {
+            Ok(e) => e,
+            Err(_e) => { fail += 1; continue; }
+        };
+        extract_progress::set_name(name);
+        extract_progress::set_file(*size);
+        let dest = match safe_join(output, name) {
+            Ok(d) => d,
+            Err(_) => { fail += 1; continue; }
+        };
+        if let Some(p) = dest.parent() { std::fs::create_dir_all(p).ok(); }
+        let mut out = ProgressWriter::extract(std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(&dest).map_err(|e| format!("{e}"))?));
+        let mut limited = entry.take(*size);
+        match std::io::copy(&mut limited, &mut out) {
+            Ok(written) if written >= *size => {
+                if std::io::Write::flush(&mut out).is_err() {
+                    let _ = std::fs::remove_file(&dest);
+                    fail += 1;
+                }
+            }
+            _ => { let _ = std::fs::remove_file(&dest); fail += 1; }
+        }
+    }
+    Ok(Some((total as u32, fail)))
+}
+
 fn extract_zip_from<R: Read + Seek>(
     reader: R, output: &str, password: &str, selected: Option<&HashSet<String>>,
 ) -> Result<(u32, u32), String> {
@@ -190,7 +347,10 @@ fn extract_zip_from<R: Read + Seek>(
     let mut selected_count = 0u32;
     for i in 0..archive.len() {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
-        let mut entry = if let Some(p) = pw { archive.by_index_decrypt(i, p).map_err(|e| format!("{e}"))? } else { archive.by_index(i).map_err(|e| format!("{e}"))? };
+        let entry = match if let Some(p) = pw { archive.by_index_decrypt(i, p) } else { archive.by_index(i) } {
+            Ok(e) => e,
+            Err(_) => { fail += 1; continue; }
+        };
         let name = decode_entry_name(&entry, &enc).replace('\\', "/").trim_matches('/').to_string();
         if name.is_empty() || entry.is_dir() { continue; }
         if let Some(ss) = selected {
@@ -201,14 +361,24 @@ fn extract_zip_from<R: Read + Seek>(
         extract_progress::set_file(entry.size());
         let dest = safe_join(output, &name).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
-        let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
+        let mut out = match std::fs::File::create(&dest) {
+            Ok(f) => ProgressWriter::extract(std::io::BufWriter::with_capacity(256 * 1024, f)),
+            Err(_) => { fail += 1; continue; }
+        };
         // Cap the decompressed output at the declared uncompressed size so a
         // zip bomb can't exhaust disk. A short read (truncated/corrupt data)
         // must be detected too — io::copy returns Ok with fewer bytes on EOF,
         // which would silently leave an incomplete file.
         let size = entry.size();
         match std::io::copy(&mut entry.take(size), &mut out) {
-            Ok(written) if written >= size => {}
+            Ok(written) if written >= size => {
+                // BufWriter may still hold bytes — a flush failure (e.g. disk
+                // full) must fail the entry like a write error would.
+                if std::io::Write::flush(&mut out).is_err() {
+                    let _ = std::fs::remove_file(&dest);
+                    fail += 1;
+                }
+            }
             _ => {
                 let _ = std::fs::remove_file(&dest);
                 fail += 1;
@@ -222,6 +392,11 @@ fn extract_zip_all_inner(input: &str, output: &str) -> Result<(u32, u32), String
     extract_zip_with_password(input, output, "")
 }
 fn extract_zip_with_password(input: &str, output: &str, password: &str) -> Result<(u32, u32), String> {
+    if password.is_empty() {
+        if let Some(r) = extract_zip_parallel(input, output)? {
+            return Ok(r);
+        }
+    }
     let file = std::fs::File::open(input).map_err(|e| format!("{e}"))?;
     extract_zip_from(file, output, password, None)
 }
@@ -236,7 +411,7 @@ fn extract_zip_volumes(paths: &[&str], output: &str, password: &str, selected: O
     let reader = ConcatReader::open(paths)?;
     if reader.is_pkware_split(paths) {
         let offsets = reader.disk_offsets();
-        let mut archive = zip::ZipArchive::with_disk_offsets(zip::read::Config::default(), reader, &offsets)
+        let archive = zip::ZipArchive::with_disk_offsets(zip::read::Config::default(), reader, &offsets)
             .map_err(|e| format!("ZIP split: {e}"))?;
         // PKWARE spanned archives are byte splits: each disk continues exactly
         // where the previous one ended, so an entry whose data crosses a disk
@@ -275,7 +450,10 @@ fn extract_zip_from_multi<R: Read + Seek>(
     let mut selected_count = 0u32;
     for i in 0..archive.len() {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
-        let mut entry = if let Some(p) = pw { archive.by_index_decrypt(i, p).map_err(|e| format!("{e}"))? } else { archive.by_index(i).map_err(|e| format!("{e}"))? };
+        let entry = match if let Some(p) = pw { archive.by_index_decrypt(i, p) } else { archive.by_index(i) } {
+            Ok(e) => e,
+            Err(_) => { fail += 1; continue; }
+        };
         let name = decode_entry_name(&entry, &enc).replace('\\', "/").trim_matches('/').to_string();
         if name.is_empty() || entry.is_dir() { continue; }
         if let Some(ss) = selected {
@@ -286,12 +464,20 @@ fn extract_zip_from_multi<R: Read + Seek>(
         extract_progress::set_file(entry.size());
         let dest = safe_join(output, &name).map_err(|e| format!("{e}"))?;
         if let Some(p) = dest.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
-        let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
+        let mut out = match std::fs::File::create(&dest) {
+            Ok(f) => ProgressWriter::extract(std::io::BufWriter::with_capacity(256 * 1024, f)),
+            Err(_) => { fail += 1; continue; }
+        };
         let size = entry.size();
         // Short read (data crosses a disk boundary that's damaged / truncated,
         // or a corrupt archive) must fail this entry, not leave a partial file.
         match std::io::copy(&mut entry.take(size), &mut out) {
-            Ok(written) if written >= size => {}
+            Ok(written) if written >= size => {
+                if std::io::Write::flush(&mut out).is_err() {
+                    let _ = std::fs::remove_file(&dest);
+                    fail += 1;
+                }
+            }
             _ => {
                 let _ = std::fs::remove_file(&dest);
                 fail += 1;
@@ -374,6 +560,18 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
             .unwrap_or("unknown panic");
         Err(format!("panic: {msg}"))
     })
+}
+
+/// Host-side (non-JNI) extraction for examples/tests/benchmarks.
+#[doc(hidden)]
+pub fn extract_zip_host(input: &str, output: &str, password: &str) -> Result<(u32, u32), String> {
+    extract_zip_with_password(input, output, password)
+}
+
+/// Host-side list (mirrors the app's list JSON).
+#[doc(hidden)]
+pub fn list_zip_host(input: &str) -> Result<String, String> {
+    list_zip_inner(input)
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipNeedsPassword(mut e: JNIEnv, _: JClass, i: JString) -> jboolean {
@@ -562,7 +760,7 @@ fn zip_modify(input: &str, output: &str, ops: &str, password: &str) -> Result<u3
                 // byte-identical and still decrypt with the ORIGINAL password),
                 // and plain-copies plain entries. A plain `raw_copy_file` would
                 // drop the AES flag and leave ciphertext mislabeled as plaintext.
-                let mut raw_entry = arc.by_index_raw(idx).map_err(|e| format!("ZIP modify copy {name}: {e}"))?;
+                let raw_entry = arc.by_index_raw(idx).map_err(|e| format!("ZIP modify copy {name}: {e}"))?;
                 zw.raw_copy_file_preserve_encryption(raw_entry)
                     .map_err(|e| format!("ZIP modify copy {name}: {e}"))?;
             }
@@ -617,6 +815,7 @@ fn zip_modify(input: &str, output: &str, ops: &str, password: &str) -> Result<u3
     e.new_string(&extract_progress::name()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipExtractCancel(_: JNIEnv, _: JClass) { extract_progress::cancel(); }
+#[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_setParallelThreads(_: JNIEnv, _: JClass, n: jint) { set_parallel_threads(n.max(0) as u32); }
 
 fn vol_refs(vols: &[String]) -> Vec<&str> { vols.iter().map(|s| s.as_str()).collect() }
 

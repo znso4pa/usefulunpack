@@ -63,6 +63,14 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
     })
 }
 
+/// Host-side (non-JNI) extraction entry point for examples/tests/benchmarks.
+/// Delegates to the same path the app uses. Returns the count of successfully
+/// decompressed files.
+#[doc(hidden)]
+pub fn extract_xz_host(input: &str, output: &str) -> Result<u32, String> {
+    extract_xz(input, output)
+}
+
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_XzCore_xzListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
     let inp = s(&mut e, &i);
     match guarded(move || list_xz(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("listEntries: {er}")); std::ptr::null_mut() } }

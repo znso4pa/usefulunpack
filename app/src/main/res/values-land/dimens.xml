@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 横屏手机：弹窗略放宽，内容限宽避免极宽留白 -->
+    <dimen name="dialog_max_width">680dp</dimen>
+    <dimen name="content_max_width">720dp</dimen>
+    <dimen name="row_file">60dp</dimen>
+    <dimen name="row_preview">60dp</dimen>
+</resources>

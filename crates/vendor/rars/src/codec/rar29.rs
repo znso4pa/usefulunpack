@@ -2499,16 +2499,56 @@ impl Unpack29 {
         if offset > current {
             return Err(Error::InvalidData("RAR 2.9 match distance is out of range"));
         }
-        for index in 0..length {
-            if self.current_pos() >= output_size {
-                self.pending_match = Some((length - index, offset));
-                break;
+        if self.current_pos() + length > output_size {
+            self.pending_match = Some((length, offset));
+            let available = output_size.saturating_sub(self.current_pos());
+            if available == 0 { return Ok(()); }
+            // Copy as much as fits, then the rest goes into pending_match
+            // For the partial copy, use bulk approach
+            if offset <= self.output.len() {
+                let src_start = self.output.len() - offset;
+                let mut written = 0;
+                while written < available {
+                    let take = available - written;
+                    let src = src_start + (written % offset);
+                    let chunk = take.min(offset - (written % offset));
+                    self.output.extend_from_within(src..src + chunk);
+                    written += chunk;
+                }
+            } else {
+                // Offset exceeds output — shouldn't happen for valid data
+                for _ in 0..available {
+                    let src = self.current_pos() - offset;
+                    let byte = *self.raw_byte(src)
+                        .ok_or(Error::InvalidData("RAR 2.9 match distance is out of range"))?;
+                    self.output.push(byte);
+                }
             }
-            let src = self.current_pos() - offset;
-            let byte = *self
-                .raw_byte(src)
-                .ok_or(Error::InvalidData("RAR 2.9 match distance is out of range"))?;
-            self.output.push(byte);
+            // Now set pending for the remainder
+            let copied = output_size.saturating_sub(self.current_pos());
+            if copied > 0 {
+                self.pending_match = Some((0, offset)); // all copied
+            }
+            return Ok(());
+        }
+        // Full copy fits — use bulk extend_from_within
+        if offset <= self.output.len() {
+            let src_start = self.output.len() - offset;
+            let mut written = 0;
+            while written < length {
+                let take = length - written;
+                let src = src_start + (written % offset);
+                let chunk = take.min(offset - (written % offset));
+                self.output.extend_from_within(src..src + chunk);
+                written += chunk;
+            }
+        } else {
+            for _ in 0..length {
+                let src = self.current_pos() - offset;
+                let byte = *self.raw_byte(src)
+                    .ok_or(Error::InvalidData("RAR 2.9 match distance is out of range"))?;
+                self.output.push(byte);
+            }
         }
         Ok(())
     }
@@ -2700,6 +2740,10 @@ fn validate_huffman_counts(count: &[u16; 16]) -> Result<()> {
 struct BitReader {
     input: Vec<u8>,
     bit_pos: usize,
+    /// 64-bit window for fast bit reads. MSB-first layout: the next unread
+    /// bit is at position 63. Refilled lazily from `input` at `bit_pos`.
+    buf: u64,
+    nbits: u32,
 }
 
 impl BitReader {
@@ -2707,6 +2751,8 @@ impl BitReader {
         Self {
             input: Vec::new(),
             bit_pos: 0,
+            buf: 0,
+            nbits: 0,
         }
     }
 
@@ -2714,6 +2760,8 @@ impl BitReader {
         Self {
             input: input.to_vec(),
             bit_pos: 0,
+            buf: 0,
+            nbits: 0,
         }
     }
 
@@ -2729,13 +2777,16 @@ impl BitReader {
         }
         self.input.drain(..bytes);
         self.bit_pos -= bytes * 8;
+        // Invalidate the buffer — refill on next read.
+        self.nbits = 0;
     }
 
     fn align_byte(&mut self) {
         self.bit_pos = (self.bit_pos + 7) & !7;
+        self.nbits = 0; // invalidate buffer after alignment
     }
 
-    fn peek_bit(&self) -> Result<u8> {
+    fn peek_bit(&mut self) -> Result<u8> {
         self.peek_bits(1).map(|value| value as u8)
     }
 
@@ -2744,7 +2795,16 @@ impl BitReader {
     }
 
     fn read_bits(&mut self, count: u8) -> Result<u32> {
-        let value = self.peek_bits(count)?;
+        let end_bit = self.bit_pos + count as usize;
+        if end_bit > self.input.len() * 8 {
+            return Err(Error::NeedMoreInput);
+        }
+        if self.nbits < u32::from(count) {
+            self.refill();
+        }
+        let value = (self.buf >> (64 - count)) as u32;
+        self.buf <<= count;
+        self.nbits -= u32::from(count);
         self.bit_pos += count as usize;
         Ok(value)
     }
@@ -2768,18 +2828,20 @@ impl BitReader {
         rest.iter().all(|&byte| byte == 0)
     }
 
-    fn peek_bits(&self, count: u8) -> Result<u32> {
+    fn peek_bits(&mut self, count: u8) -> Result<u32> {
         if count > 24 {
             return Err(Error::InvalidData("RAR 2.9 bit read is too wide"));
         }
-        let mut value = 0u32;
-        for i in 0..count as usize {
-            let bit_index = self.bit_pos + i;
-            let byte = *self.input.get(bit_index / 8).ok_or(Error::NeedMoreInput)?;
-            let bit = (byte >> (7 - (bit_index % 8))) & 1;
-            value = (value << 1) | bit as u32;
+        // Bounds check: ensure requested bits are within the input.
+        let end_bit = self.bit_pos + count as usize;
+        if end_bit > self.input.len() * 8 {
+            return Err(Error::NeedMoreInput);
         }
-        Ok(value)
+        if self.nbits < count as u32 {
+            self.refill();
+        }
+        let shift = 64 - count;
+        Ok((self.buf >> shift) as u32)
     }
 
     fn read_encoded_u32(&mut self) -> Result<u32> {
@@ -2796,6 +2858,19 @@ impl BitReader {
             2 => self.read_bits(16),
             _ => Ok((self.read_bits(16)? << 16) | self.read_bits(16)?),
         }
+    }
+
+    fn refill(&mut self) {
+        if self.nbits >= 24 { return; } // enough for max peek
+        let byte_pos = self.bit_pos / 8;
+        let bit_off = (self.bit_pos % 8) as u32;
+        let avail = self.input.len().saturating_sub(byte_pos).min(8);
+        let mut b: u64 = 0;
+        for k in 0..avail {
+            b |= u64::from(self.input[byte_pos + k]) << (56 - 8 * k);
+        }
+        self.buf = b << bit_off;
+        self.nbits = 64 - bit_off;
     }
 }
 

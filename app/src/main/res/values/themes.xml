@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Base app theme — inherits DayNight so system dark mode works -->
-    <style name="Theme.UsefulUnpack" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <!-- Base app theme — Material (superset of AppCompat) so Material widgets
+         like FloatingActionButton get their size/elevation attrs; inherits
+         DayNight so system dark mode works -->
+    <style name="Theme.UsefulUnpack" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="alertDialogTheme">@style/Theme.UsefulUnpack.Dialog</item>
         <item name="colorAccent">@color/accent</item>
         <item name="android:colorAccent">@color/accent</item>
@@ -20,7 +22,7 @@
     <!-- Dialog theme — dark consistent surface -->
     <style name="Theme.UsefulUnpack.Dialog" parent="Theme.AppCompat.DayNight.Dialog.Alert">
         <item name="android:background">@color/bg_surface_dim</item>
-        <item name="android:windowBackground">@color/bg_surface_dim</item>
+        <item name="android:windowBackground">@drawable/dialog_bg_rounded</item>
         <item name="android:backgroundDimEnabled">true</item>
         <item name="android:backgroundDimAmount">0.6</item>
         <item name="colorAccent">@color/accent</item>

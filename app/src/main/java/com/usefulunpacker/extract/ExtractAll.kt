@@ -8,7 +8,7 @@ import android.widget.*
 import java.io.File
 import kotlin.concurrent.thread
 
-internal fun MainActivity.extractAll(destFile: File, src: File, format: String, initialPwd: String = "") {
+internal fun MainActivity.extractAll(destFile: File, src: File, format: String, initialPwd: String = "", ownerTab: TabState = activeTab) {
         // Acquire the lock BEFORE showing the progress dialog — otherwise a busy
         // lock leaves the dialog spinning forever with the work silently dropped.
         if (!tryStartOperation(this)) return
@@ -65,7 +65,7 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                     toast(getString(R.string.msg_cancelled))
                     return@runOnUiThread
                 }
-                if (finalResult != null && finalResult.counts.ok) { showExtractSuccess(src.name, destFile.name, finalResult.counts); nav(currentDir) }
+                if (finalResult != null && finalResult.counts.ok) { showExtractSuccess(src.name, destFile.name, finalResult.counts); navTab(ownerTab, ownerTab.currentDir) }
                 else if (format in setOf("zip", "7z", "rar")) {
                     cleanupCancelledOutput(destFile, existedBefore)
                     // The lock is free now — the retry acquires it like any
@@ -102,7 +102,7 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                                         if (cancelled2) {
                                             cleanupCancelledOutput(destFile, existedBefore)
                                             toast(getString(R.string.msg_cancelled))
-                                        } else if (result2.counts.ok) { showExtractSuccess(src.name, destFile.name, result2.counts); nav(currentDir) }
+                                        } else if (result2.counts.ok) { showExtractSuccess(src.name, destFile.name, result2.counts); navTab(ownerTab, ownerTab.currentDir) }
                                         else toast(friendlyExtractError(this, result2.error))
                                     }
                                 } finally {

@@ -30,4 +30,4 @@ Thumbs.db
 logcat.txt
 releases/
 issuesfile/
-java_pid77671.hprof
+*.hprof

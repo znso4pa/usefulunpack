@@ -218,22 +218,21 @@ fn sz_volumes_needs_password(paths: &[&str]) -> Result<bool, String> {
 fn extract_7z(input: &str, output: &str, selected: Option<&HashSet<String>>) -> Result<(u32, u32), String> {
     // total must reflect the SELECTED entries, not the whole archive — a
     // selective extract reporting the full count produces a false "success"
-    // when the selection is empty / matches nothing.
-    let total = sevenz_rust::Archive::open(input)
-        .map(|a| match selected {
-            Some(sel) => a.files.iter().filter(|f| {
+    // when the selection is empty / matches nothing. One header parse yields
+    // both total and the progress total (the old code parsed twice).
+    let (total, prog_total) = sevenz_rust::Archive::open(input)
+        .map(|a| {
+            let matching: Vec<_> = a.files.iter().filter(|f| {
                 let name = normalize_entry_name(f.name());
-                !extract_progress::cancelled() && !name.is_empty() && !f.is_directory() && is_selected(&name, Some(sel))
-            }).count() as u32,
-            None => a.files.len() as u32,
+                !extract_progress::cancelled() && !name.is_empty() && !f.is_directory() && is_selected(&name, selected)
+            }).collect();
+            let size_sum = matching.iter().map(|f| f.size()).sum::<u64>();
+            match selected {
+                Some(_) => (matching.len() as u32, size_sum),
+                None => (a.files.len() as u32, size_sum),
+            }
         })
-        .unwrap_or(0);
-    let prog_total = sevenz_rust::Archive::open(input)
-        .map(|a| a.files.iter().filter(|f| {
-            let name = normalize_entry_name(f.name());
-            !extract_progress::cancelled() && !name.is_empty() && !f.is_directory() && is_selected(&name, selected)
-        }).map(|f| f.size()).sum::<u64>())
-        .unwrap_or(0);
+        .unwrap_or((0, 0));
     extract_progress::reset(prog_total);
     let fail = AtomicU32::new(0);
     decompress_file_with_extract_fn(input, output, |entry, reader, _| {
@@ -281,12 +280,19 @@ fn handle_entry(
         Err(_) => { fail.fetch_add(1, Ordering::SeqCst); return Ok(true); }
     };
     let mut writer = ProgressWriter::extract(std::io::BufWriter::new(file));
-    let copied = std::io::copy(reader, &mut writer);
+    // Application-side cap: never write more than the entry's declared size,
+    // even if the vendored folder reader mis-decodes past unpack_size.
+    let mut limited = (&mut *reader).take(entry.size());
+    let copied = std::io::copy(&mut limited, &mut writer);
     let flushed = writer.flush();
     drop(writer);
-    if copied.is_err() || flushed.is_err() {
-        // CRC/data/flush error (e.g. ENOSPC surfaces at flush): don't leave
-        // corrupt output on disk
+    let ok = match &copied {
+        Ok(n) if *n as u64 >= entry.size() => flushed.is_ok(),
+        _ => false,
+    };
+    if !ok {
+        // CRC/data/flush error (e.g. ENOSPC surfaces at flush) or a short
+        // read (truncated/corrupt): don't leave corrupt output on disk.
         let _ = std::fs::remove_file(&dest);
         fail.fetch_add(1, Ordering::SeqCst);
     }
@@ -459,6 +465,19 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
             .unwrap_or("unknown panic");
         Err(format!("panic: {msg}"))
     })
+}
+
+/// Host-side (non-JNI) extraction entry point for examples/tests/benchmarks.
+/// Delegates to the same path the app uses. `selected` is an optional list of
+/// entry names to extract (all when empty).
+#[doc(hidden)]
+pub fn extract_7z_host(input: &str, output: &str, selected: &[String], password: &str) -> Result<(u32, u32), String> {
+    let sel: Option<HashSet<String>> = if selected.is_empty() { None } else { Some(selected.iter().cloned().collect()) };
+    if password.is_empty() {
+        extract_7z(input, output, sel.as_ref())
+    } else {
+        extract_7z_with_password(input, output, password)
+    }
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_SevenZCore_szExtractWithPassword(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, pw: JString) -> jstring {

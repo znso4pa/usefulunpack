@@ -28,4 +28,5 @@ object ZipCore {
     external fun zipExtractVolumesWithPassword(tool: String, volumes: String, output: String, password: String): String?
     external fun zipVolumesNeedsPassword(volumes: String): Boolean
     external fun zipModify(tool: String, input: String, output: String, ops: String, password: String): Boolean
+    external fun setParallelThreads(threads: Int)
 }

@@ -56,12 +56,18 @@ fun showTerminal(activity: AppCompatActivity, currentDir: File, onNavigate: (Fil
                     } else activity.getString(R.string.terminal_not_found, target)
                 }
                 else -> runCatching {
-                    ProcessBuilder("/system/bin/sh", "-c", "cd \"${currentDir.absolutePath}\" && $cmd")
+                    val process = ProcessBuilder("/system/bin/sh", "-c", "cd \"${currentDir.absolutePath}\" && $cmd")
                         .redirectErrorStream(true).start()
-                        .let { String(it.inputStream.readBytes()) }
+                    val completed = process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+                    if (completed) {
+                        String(process.inputStream.readBytes())
+                    } else {
+                        process.destroyForcibly()
+                        activity.getString(R.string.terminal_exec_timeout)
+                    }
                 }.getOrDefault(activity.getString(R.string.terminal_exec_failed))
             }
-            activity.runOnUiThread { out.text = r.take(4000) }
+            activity.runOnUiThread { out.text = r.take(TEXT_PREVIEW_MAX_CHARS) }
         }
     }
 

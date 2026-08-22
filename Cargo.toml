@@ -19,6 +19,8 @@ members = [
     "crates/ksd-core",
     "crates/scan-core",
     "crates/cso-core",
+    "crates/brotli-core",
+
 ]
 resolver = "2"
 
@@ -27,9 +29,12 @@ version = "0.1.0"
 edition = "2021"
 
 [profile.release]
-opt-level = "s"
+opt-level = 3
 strip = true
 lto = true
+codegen-units = 1
+# NOTE: no `panic = "abort"` — the JNI `guarded`/`catch_unwind` crash guards
+# depend on unwinding; abort would turn every Rust panic into a process death.
 
 # Local fork of rars with streaming RAR5 filter support
 # (upstream refuses to stream filtered members over the buffered-decode limit)

@@ -1,37 +1,9 @@
-#[cfg(feature = "fast")]
-use std::simd::{cmp::SimdPartialEq, Simd};
-
-#[cfg(feature = "fast")]
-const LANES: usize = 32;
-
 pub(crate) fn match_length(input: &[u8], pos: usize, distance: usize, max_length: usize) -> usize {
     if distance == 0 || distance > pos {
         return 0;
     }
 
     let max_length = max_length.min(input.len().saturating_sub(pos));
-    match_length_impl(input, pos, distance, max_length)
-}
-
-#[cfg(feature = "fast")]
-fn match_length_impl(input: &[u8], pos: usize, distance: usize, max_length: usize) -> usize {
-    let mut length = 0usize;
-    while length + LANES <= max_length {
-        let current = Simd::<u8, LANES>::from_slice(&input[pos + length..pos + length + LANES]);
-        let previous = Simd::<u8, LANES>::from_slice(
-            &input[pos + length - distance..pos + length - distance + LANES],
-        );
-        if let Some(mismatch) = current.simd_ne(previous).first_set() {
-            return length + mismatch;
-        }
-        length += LANES;
-    }
-
-    match_length_scalar(input, pos, distance, max_length, length)
-}
-
-#[cfg(not(feature = "fast"))]
-fn match_length_impl(input: &[u8], pos: usize, distance: usize, max_length: usize) -> usize {
     match_length_scalar(input, pos, distance, max_length, 0)
 }
 
@@ -62,47 +34,24 @@ pub(crate) fn next_x86_opcode(
     next_x86_opcode_impl(data, start, end, cmp_mask)
 }
 
-#[cfg(feature = "fast")]
-fn next_x86_opcode_impl(
-    data: &[u8],
-    start: usize,
-    end_exclusive: usize,
-    cmp_mask: u8,
-) -> Option<usize> {
-    let mask = Simd::<u8, LANES>::splat(cmp_mask);
-    let needle = Simd::<u8, LANES>::splat(0xe8);
-    let mut pos = start;
-    while pos + LANES <= end_exclusive {
-        let bytes = Simd::<u8, LANES>::from_slice(&data[pos..pos + LANES]);
-        if let Some(lane) = (bytes & mask).simd_eq(needle).first_set() {
-            return Some(pos + lane);
-        }
-        pos += LANES;
-    }
-
-    next_x86_opcode_scalar(data, pos, end_exclusive, cmp_mask)
-}
-
+/// Scans for the next byte that satisfies `byte & cmp_mask == 0xe8`. The only
+/// masks used in practice are `0xff` (E8 only) and `0xfe` (E8 or E9), so the
+/// scan reduces to a single-needle or two-needle memchr search — SIMD-vectorised
+/// by the crate on every target instead of a per-byte loop.
 #[cfg(not(feature = "fast"))]
 fn next_x86_opcode_impl(
     data: &[u8],
     start: usize,
-    end_exclusive: usize,
+    end: usize,
     cmp_mask: u8,
 ) -> Option<usize> {
-    next_x86_opcode_scalar(data, start, end_exclusive, cmp_mask)
-}
-
-fn next_x86_opcode_scalar(
-    data: &[u8],
-    start: usize,
-    end_exclusive: usize,
-    cmp_mask: u8,
-) -> Option<usize> {
-    data[start..end_exclusive]
-        .iter()
-        .position(|&byte| byte & cmp_mask == 0xe8)
-        .map(|offset| start + offset)
+    let haystack = &data[start..end];
+    let offset = if cmp_mask == 0xff {
+        memchr::memchr(0xe8, haystack)
+    } else {
+        memchr::memchr2(0xe8, 0xe9, haystack)
+    };
+    offset.map(|offset| start + offset)
 }
 
 #[cfg(test)]

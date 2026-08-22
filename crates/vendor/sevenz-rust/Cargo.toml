@@ -53,6 +53,9 @@ required-features = [
     "aes256",
 ]
 
+[dependencies]
+ppmd-rust = "1.4.0"
+
 [dependencies.aes]
 version = "0.8"
 optional = true

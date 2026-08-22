@@ -11,6 +11,17 @@ import java.io.File
 import kotlin.concurrent.thread
 
 internal fun MainActivity.previewArchive(src: File, format: String) {
+        // Same-archive mutex: an archive already open in another window (any
+        // split-volume part counts as the same archive) → toast + jump there
+        // instead of opening a second copy.
+        val openKey = archiveKey(src)
+        val conflict = OpenArchiveRegistry.owner(openKey)
+        if (conflict != null && conflict !== activeTab) {
+            toast(getString(R.string.msg_archive_open_in_tab, tabTitle(conflict)))
+            val idx = tabs.indexOf(conflict)
+            if (idx >= 0) viewPager.currentItem = idx
+            return
+        }
         val pd = ProgressDialog(this).apply {
             setTitle(getString(R.string.reading))
                         setMessage(getString(R.string.msg_reading_archive, src.name))
@@ -25,7 +36,7 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
             val pwDetected = format in setOf("zip", "7z", "rar") && isPasswordProtected(src)
             if (pwDetected) {
                 val entered = promptPasswordSync(this)
-                if (entered == null) { runOnUiThread { pd.dismiss() }; return@thread }
+                if (entered == null) { runOnUiThread { if (!isFinishing) pd.dismiss() }; return@thread }
                 pwd = entered
             }
             val json = try { when(format) { "xp3" -> Xp3Core.xp3ListEntries(src.absolutePath)
@@ -43,10 +54,11 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
                 "zst" -> ZstdCore.zstListEntries(src.absolutePath)
                 "lzma" -> LzmaCore.lzmaListEntries(src.absolutePath)
                 "ksd" -> KsdCore.ksdListEntries(src.absolutePath)
+                "br" -> BrotliCore.brotliListEntries(src.absolutePath)
                 "tar" -> TarCore.tarListEntries(src.absolutePath)
                 else -> null
             } } catch (_: Exception) { null }
-            runOnUiThread { pd.dismiss() }
+            runOnUiThread { if (!isFinishing) pd.dismiss() }
             if (json == null || json == "[]") {
                 val msg = if (format in setOf("zip", "7z", "rar")) getString(R.string.err_cannot_read_maybe_pwd) else getString(R.string.msg_cannot_read)
                 runOnUiThread {
@@ -62,11 +74,213 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
                 return@thread
             }
             val entries = parseEntries(json)
-            runOnUiThread { showPreviewDialog(src, entries, format, pwd) }
+            // Register only once we actually have entries to show (a failed
+            // parse never holds the slot). register() re-checks ownership so a
+            // tab that won the race in between is respected.
+            if (!OpenArchiveRegistry.register(openKey, activeTab)) {
+                val winner = OpenArchiveRegistry.owner(openKey)
+                runOnUiThread {
+                    if (winner != null && winner !== activeTab) {
+                        toast(getString(R.string.msg_archive_open_in_tab, tabTitle(winner)))
+                        val idx = tabs.indexOf(winner)
+                        if (idx >= 0) viewPager.currentItem = idx
+                    }
+                }
+                return@thread
+            }
+            runOnUiThread { renderPreview(activeTab, src, entries, format, pwd, openKey) }
         }
     }
 
-internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntry>, format: String, pwd: String = "") {
+/**
+ * Renders an archive preview INSIDE the given tab (no modal dialog), so the
+ * ViewPager above stays swipeable and the user can flip windows while looking
+ * at archive contents. Entries/selection state live on the TabState.
+ */
+internal fun MainActivity.renderPreview(tab: TabState, src: File, entries: List<ArchiveEntry>, format: String, pwd: String, openKey: String) {
+    tab.previewActive = true
+    tab.previewSrc = src
+    tab.previewFormat = format
+    tab.previewPwd = pwd
+    tab.previewOpenKey = openKey
+    tab.previewEntries = entries
+    tab.previewSelected.clear()
+    tab.previewExpanded.clear()
+    tab.previewExpanded.addAll(entries.filter { it.isDirectory }.map { it.path })
+    tab.previewSearchQuery = ""
+    if (tab.viewsBound) {
+        tab.fabExtract.visibility = View.GONE
+        tab.bottomBar.visibility = View.GONE
+        tab.batchBar?.visibility = View.GONE
+        tab.tvPreviewTitle.text = src.name
+        // Preview top-bar: search icon + overflow menu (编辑/条目/转换 live in
+        // the menu and toast when the format doesn't apply — see FolderFragment).
+        tab.btnPreviewSearch.visibility = View.VISIBLE
+        tab.btnPreviewOverflow.visibility = View.VISIBLE
+        syncPreview(tab)
+        updatePreviewStats(tab)
+    }
+    saveSession()
+}
+
+/** Exits in-tab preview, releasing the archive slot and restoring the browser. */
+internal fun MainActivity.exitPreview(tab: TabState) {
+    if (!tab.previewActive) return
+    tab.previewActive = false
+    tab.previewOpenKey?.let { OpenArchiveRegistry.unregister(it) }
+    tab.previewOpenKey = null
+    tab.previewEntries = emptyList()
+    tab.previewSelected.clear()
+    tab.previewExpanded.clear()
+    if (tab.viewsBound) {
+        tab.previewRoot.visibility = View.GONE
+        navTab(tab, tab.currentDir)
+    }
+    saveSession()
+}
+
+/** In-preview "search inside archive": extract text entries to a cache dir,
+ *  exit the preview, and open the global search on the extracted content. */
+internal fun MainActivity.previewSearch(tab: TabState) {
+    val src = tab.previewSrc ?: return
+    val format = tab.previewFormat
+    val pwd = tab.previewPwd
+    val entries = tab.previewEntries
+    if (!tryStartOperation(this)) return
+    var cancelled = false
+    val accessors = extractAccessors(format)
+    val prog = PollingProgressDialog(
+        this,
+        getString(R.string.preparing_search),
+        accessors,
+        { n, b, t -> extractProgressMessage(this, n, b, t) },
+        getString(R.string.action_cancel),
+        { cancelled = true; accessors.cancel() }
+    )
+    prog.start()
+    thread {
+        try {
+            val cacheDir = File(cacheDir, "archive_search/${src.nameWithoutExtension}")
+            cacheDir.deleteRecursively()
+            cacheDir.mkdirs()
+            searchSourceArchive = src; searchSourceFormat = format
+            searchSourceCacheBase = cacheDir
+            searchSourcePassword = pwd
+            searchSourceResolver = null
+            // Phase 1: touch placeholders for ALL entries (fast filename search).
+            for (e in entries) {
+                if (e.isDirectory) continue
+                val rel = sanitizeEntryPath(e.path) ?: continue
+                val f = File(cacheDir, rel)
+                f.parentFile?.mkdirs()
+                try { f.createNewFile() } catch (_: Exception) {}
+            }
+            // Phase 2: extract only text entries (content search).
+            val textExts = TEXT_SEARCH_EXTS
+            if (format == "rar") {
+                extractByFormat(format, src.path, cacheDir.path, "", prefs, pwd)
+            } else {
+                for (e in entries) {
+                    if (e.isDirectory) continue
+                    val rel = sanitizeEntryPath(e.path) ?: continue
+                    val ext = e.path.substringAfterLast('.').lowercase()
+                    if (ext !in textExts) continue
+                    extractByFormat(format, src.path, cacheDir.path, rel, prefs, pwd)
+                }
+            }
+            runOnUiThread {
+                prog.dismiss()
+                if (cancelled) { toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
+                // Keep the in-tab preview alive: search opens on top, and closing
+                // it returns to the preview (selection/expansion preserved on the
+                // TabState). No exitPreview here.
+                globalSearch(cacheDir, tempDir = cacheDir)
+            }
+        } catch (e: Exception) {
+            runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+        } finally {
+            OperationLock.release()
+        }
+    }
+}
+
+/** In-preview ZIP entry management (delete selected / add from local file),
+ *  mirroring the legacy dialog. */
+internal fun MainActivity.previewZipManage(tab: TabState) {
+    val src = tab.previewSrc ?: return
+    val format = tab.previewFormat
+    val pwd = tab.previewPwd
+    val entries = tab.previewEntries
+    AlertDialog.Builder(this)
+        .setTitle(getString(R.string.zip_manage))
+        .setItems(arrayOf(
+            getString(R.string.zip_manage_delete),
+            getString(R.string.zip_manage_add))) { _, w ->
+            when (w) {
+                0 -> {
+                    val sel = tab.previewSelected.filter { p -> tab.previewSelected.none { o -> o != p && o.startsWith(p + "/") } }
+                        .filter { p -> entries.find { e -> e.path == p }?.isDirectory == false }
+                    if (sel.isEmpty()) { toast(getString(R.string.msg_select_one)); return@setItems }
+                    AlertDialog.Builder(this)
+                        .setMessage(getString(R.string.zip_confirm_delete))
+                        .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
+                            exitPreview(tab)
+                            zipDeleteEntries(src, sel, pwd, tab)
+                        }
+                        .setNegativeButton(getString(R.string.action_cancel), null)
+                        .show()
+                }
+                1 -> {
+                    showFolderPicker(this, tab.currentDir, true) { picked ->
+                        val baseName = picked.name
+                        val inp = EditText(this).apply {
+                            setText(baseName)
+                            hint = getString(R.string.zip_add_name)
+                            setTextColor(C["primary"]!!)
+                            setHintTextColor(C["hint"]!!)
+                            setBackgroundColor(C["surface"]!!)
+                            setPadding(12, 8, 12, 8)
+                        }
+                        AlertDialog.Builder(this)
+                            .setTitle(getString(R.string.zip_add_title))
+                            .setView(inp)
+                            .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
+                                val name = inp.text.toString().trim().ifEmpty { baseName }
+                                exitPreview(tab)
+                                zipAddEntry(src, name, picked, pwd, tab)
+                            }
+                            .setNegativeButton(getString(R.string.action_cancel), null)
+                            .show()
+                    }
+                }
+            }
+        }
+        .setNegativeButton(getString(R.string.action_cancel), null)
+        .show()
+}
+
+/** Rebuilds the in-tab preview list from the tab's entries + selection. */
+internal fun MainActivity.syncPreview(tab: TabState) {
+    if (!tab.viewsBound) return
+    val src = tab.previewSrc ?: return
+    tab.previewRoot.visibility = View.VISIBLE
+    val adapter = PreviewAdapter(this, tab.previewEntries, tab.previewSelected, tab.previewExpanded,
+        { entry -> previewFileEntry(src, entry, tab.previewFormat, tab.previewPwd) },
+        { updatePreviewStats(tab) })
+    adapter.searchQuery = tab.previewSearchQuery
+    tab.previewList.adapter = adapter
+}
+
+internal fun MainActivity.updatePreviewStats(tab: TabState) {
+    val sel = tab.previewSelected.filter { p -> tab.previewSelected.none { o -> o != p && o.startsWith(p + "/") } }
+    val selFiles = sel.count { p -> tab.previewEntries.find { e -> e.path == p }?.isDirectory == false }
+    val totalFiles = tab.previewEntries.count { !it.isDirectory }
+    val totalSize = tab.previewEntries.filter { !it.isDirectory }.sumOf { it.size }
+    tab.tvPreviewStats.text = getString(R.string.preview_stats, totalFiles, fmt(totalSize), selFiles,
+        sel.sumOf { p -> tab.previewEntries.find { e -> e.path == p }?.size ?: 0L })
+}
+
+internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntry>, format: String, pwd: String = "", openKey: String? = null, ownerTab: TabState = activeTab) {
     val act = this
         val selectedPaths = mutableSetOf<String>()
         val expandedPaths = entries.filter { it.isDirectory }.map { it.path }.toMutableSet()
@@ -306,6 +520,27 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
             .setNeutralButton(getString(R.string.extract_all), null)
             .setNegativeButton(getString(R.string.action_cancel), null)
             .create()
+        // Honor/EMUI touch-state bug: a dismissed dialog (its fast-scroll list)
+        // can leave the ViewPager2 unable to intercept horizontal swipes, so tab
+        // switching dies until restart. Reset the pager's input state on dismiss.
+        resetPagerInputOnDialogDismiss(dlg) { openKey?.let { OpenArchiveRegistry.unregister(it) } }
+        // Preview should not hide the tab strip: bottom-align the dialog below
+        // status bar + toolbar + tab bar so the user can still tap a different
+        // window while an archive preview is open.
+        dlg.window?.let { w ->
+            val dm = resources.displayMetrics
+            val density = dm.density
+            val tabBarH = 50f * density    // tab bar height (now at the very top)
+            val toolbarH = 56f * density   // ?attr/actionBarSize (Material default)
+            val swipeArea = 130f * density // keep this much ViewPager visible for swiping windows
+            w.setGravity(Gravity.BOTTOM)
+            val sheetW = minOf(dm.widthPixels, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
+            w.setLayout(sheetW, (dm.heightPixels - tabBarH - toolbarH - swipeArea).toInt().coerceAtLeast(0))
+            // Local dim: dim only the window's own area (tab bar + toolbar stay
+            // bright and tappable above it) — system FLAG_DIM_BEHIND would dim the
+            // whole screen including the tab strip.
+            w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0x99000000.toInt()))
+        }
         dlg.setOnShowListener {
             dlg.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
                 val sel = selectedPaths.filter { p -> selectedPaths.none { o -> o != p && o.startsWith(p + "/") } }
@@ -313,12 +548,12 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                     toast(getString(R.string.msg_select_one))
                 } else {
                     dlg.dismiss()
-                    showOutputDirDialog(src, sel, format)
+                    showOutputDirDialog(src, sel, format, pwd, ownerTab)
                 }
             }
             dlg.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
                 dlg.dismiss()
-                extractAll(uniqueFile(src.parentFile ?: return@setOnClickListener, src.nameWithoutExtension), src, format, pwd)
+                extractAll(uniqueFile(src.parentFile ?: return@setOnClickListener, src.nameWithoutExtension), src, format, pwd, ownerTab)
             }
             dlg.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(C["accent"]!!)
             dlg.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(C["tertiary"]!!)
@@ -326,18 +561,125 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
         dlg.show()
     }
 
-internal fun MainActivity.showOutputDirDialog(src: File, selectedPaths: List<String>, format: String) {
+internal fun MainActivity.showOutputDirDialog(src: File, selectedPaths: List<String>, format: String, pwd: String = "", ownerTab: TabState = activeTab) {
         val parent = src.parentFile ?: return
         val outDir = uniqueFile(parent, src.nameWithoutExtension)
 
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.title_extract_to))
-            .setItems(arrayOf(getString(R.string.extract_new_folder, getString(R.string.title_new_folder), outDir.name), getString(R.string.action_extract))) { _, w ->
-                val out = if (w == 0) outDir else parent
-                extractSelected(src, out, selectedPaths, format)
+            .setItems(arrayOf(getString(R.string.extract_new_folder, getString(R.string.title_new_folder), outDir.name), getString(R.string.action_extract), getString(R.string.action_choose_dir), getString(R.string.merge_into_archive))) { _, w ->
+                when (w) {
+                    0 -> extractSelected(src, outDir, selectedPaths, format, ownerTab)
+                    1 -> extractSelected(src, parent, selectedPaths, format, ownerTab)
+                    2 -> showFolderPicker(this, parent) { picked ->
+                        extractSelected(src, picked, selectedPaths, format, ownerTab)
+                    }
+                    3 -> showMergeTargetPicker(src, selectedPaths, format, pwd, ownerTab)
+                }
             }.setNegativeButton(getString(R.string.action_cancel), null)
             .show()
     }
+
+/**
+ * Cross-archive merge: pick a target archive in the current directory, then
+ * add the source preview's selected entries into it. Implemented as
+ * extract → merge dirs → repack into a `目标-cn.ext` copy (original untouched).
+ */
+internal fun MainActivity.showMergeTargetPicker(src: File, selectedPaths: List<String>, format: String, pwd: String, ownerTab: TabState) {
+    // List candidates in the OWNING tab's directory (not the active tab's) —
+    // the picker can be invoked from a background tab's preview.
+    val dir = ownerTab.currentDir
+    val candidates = dir.listFiles()?.filter {
+        it.isFile && it !== src && isArchiveFile(it)
+    }?.sortedBy { it.name.lowercase() } ?: emptyList()
+    if (candidates.isEmpty()) {
+        toast(getString(R.string.merge_no_target))
+        return
+    }
+    AlertDialog.Builder(this)
+        .setTitle(getString(R.string.merge_select_target))
+        .setItems(candidates.map { it.name }.toTypedArray()) { _, w ->
+            val target = candidates[w]
+            val targetFmt = detectFormat(target) ?: detectFormatByMagic(target)
+            // Only formats that can be repacked are mergeable targets
+            // (zip/7z/tar + xp3/pfs/nsa/iso/ypf).
+            val mergeable = MERGE_COMPRESS_GROUPS.flatMap { it.second }.toSet()
+            if (targetFmt == null || targetFmt !in mergeable) {
+                toast(getString(R.string.merge_target_unsupported))
+                return@setItems
+            }
+            mergeIntoArchive(src, selectedPaths, format, pwd, target, targetFmt, ownerTab)
+        }
+        .setNegativeButton(getString(R.string.action_cancel), null)
+        .show()
+}
+
+/**
+ * Extracts the source preview's selected entries, unpacks the target archive,
+ * overlays them into one staging dir, and repacks into `目标-cn.ext`. Runs under
+ * OperationLock with the dual progress dialog; source/target are both held by
+ * OpenArchiveRegistry so a second window can't race the same archives.
+ */
+internal fun MainActivity.mergeIntoArchive(
+    src: File, selectedPaths: List<String>, format: String, pwd: String,
+    target: File, targetFmt: String, ownerTab: TabState = activeTab
+) {
+    // Same-archive mutex on the TARGET: another window holding it must not
+    // repack a stale copy under it.
+    val targetKey = archiveKey(target)
+    val targetOwner = OpenArchiveRegistry.owner(targetKey)
+    if (targetOwner != null && targetOwner !== activeTab) {
+        toast(getString(R.string.msg_archive_open_in_tab, tabTitle(targetOwner)))
+        return
+    }
+    if (!tryStartOperation(this)) return
+    val parent = target.parentFile ?: ownerTab.currentDir
+    val outF = uniqueFile(parent, "${target.nameWithoutExtension}-cn.${target.extension.ifEmpty { targetFmt }}")
+    val stageDir = File(cacheDir, "merge/${target.nameWithoutExtension}")
+    var cancelled = false
+    val accessors = extractAccessors(targetFmt)
+    val prog = PollingProgressDialog(
+        this,
+        getString(R.string.merge_title, target.name),
+        accessors,
+        { n, b, t -> extractProgressMessage(this, n, b, t) },
+        getString(R.string.action_cancel),
+        { cancelled = true; accessors.cancel() }
+    )
+    prog.start()
+    thread {
+        try {
+            stageDir.deleteRecursively(); stageDir.mkdirs()
+            // 1. Extract source's selected entries.
+            val selStr = selectedPaths.joinToString("\n")
+            val srcOutcome = if (selStr.isEmpty()) ExtractOutcome(ExtractCounts(0, 0, 0), null)
+                else extractByFormat(format, src.path, stageDir.path, selStr, prefs, pwd)
+            if (cancelled) return@thread
+            // 2. Unpack the target archive into the same staging dir (its
+            //    existing entries stay; source entries with a matching path
+            //    overwrite them — merge intent). Encrypted targets ask once.
+            var tgtPwd = ""
+            if (targetFmt in setOf("zip", "7z", "rar") && isPasswordProtected(target)) {
+                tgtPwd = promptPasswordSync(this) ?: run { runOnUiThread { prog.dismiss(); toast(getString(R.string.msg_cancelled)) }; return@thread }
+            }
+            val tgtOutcome = extractByFormat(targetFmt, target.path, stageDir.path, "", prefs, tgtPwd)
+            if (cancelled) return@thread
+            // 3. Repack into a -cn copy (never overwrite the original target).
+            val ok = compressDispatch(stageDir, outF, targetFmt, prefs.getInt("generic_level", 6), "", prefs)
+            runOnUiThread {
+                prog.dismiss()
+                if (cancelled) toast(getString(R.string.msg_cancelled))
+                else if (ok) toast(getString(R.string.merge_done, outF.name))
+                else toast(getString(R.string.title_compress_failed))
+            }
+        } catch (e: Exception) {
+            runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+        } finally {
+            stageDir.deleteRecursively()
+            OperationLock.release()
+        }
+    }
+}
 
 /** 编辑 minimal loop: full extract to a cache dir → script list → in-place
  *  edit (showTextEditor) → repack into a new "…-cn.xp3/pfs" alongside the
@@ -345,10 +687,21 @@ internal fun MainActivity.showOutputDirDialog(src: File, selectedPaths: List<Str
  *  accumulate until the user taps 封回; re-entering 编辑 re-extracts fresh. */
 internal fun MainActivity.startEditArchive(src: File, format: String, pwd: String) {
     val act = this
+    // Same-archive mutex: never let two windows edit the same archive (each
+    // would write its own -cn copy / repack from the same source).
+    val openKey = archiveKey(src)
+    val conflict = OpenArchiveRegistry.owner(openKey)
+    if (conflict != null && conflict !== activeTab) {
+        toast(getString(R.string.msg_archive_open_in_tab, tabTitle(conflict)))
+        val idx = tabs.indexOf(conflict)
+        if (idx >= 0) viewPager.currentItem = idx
+        return
+    }
     val editDir = File(cacheDir, "edit/${src.nameWithoutExtension}")
     // Lock first, then the dual progress dialog (see extractAll); the work dir
     // is cleared INSIDE the lock so a refused re-edit can't destroy an active one.
     if (!tryStartOperation(this)) return
+    OpenArchiveRegistry.register(openKey, activeTab)
     var cancelled = false
     val accessors = extractAccessors(format)
     val prog = PollingProgressDialog(
@@ -371,12 +724,13 @@ internal fun MainActivity.startEditArchive(src: File, format: String, pwd: Strin
                 .toList()
             runOnUiThread {
                 prog.dismiss()
-                if (cancelled) { toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
-                if (!o.counts.ok) { toast(friendlyExtractError(act, o.error)); return@runOnUiThread }
-                if (scripts.isEmpty()) { toast(getString(R.string.edit_no_scripts)); return@runOnUiThread }
-                showEditScriptList(src, format, editDir, scripts)
+                if (cancelled) { OpenArchiveRegistry.unregister(openKey); toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
+                if (!o.counts.ok) { OpenArchiveRegistry.unregister(openKey); toast(friendlyExtractError(act, o.error)); return@runOnUiThread }
+                if (scripts.isEmpty()) { OpenArchiveRegistry.unregister(openKey); toast(getString(R.string.edit_no_scripts)); return@runOnUiThread }
+                showEditScriptList(src, format, editDir, scripts, openKey)
             }
         } catch (e: Exception) {
+            OpenArchiveRegistry.unregister(openKey)
             runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
             OperationLock.release()
@@ -384,7 +738,7 @@ internal fun MainActivity.startEditArchive(src: File, format: String, pwd: Strin
     }
 }
 
-private fun MainActivity.showEditScriptList(src: File, format: String, editDir: File, scripts: List<File>) {
+private fun MainActivity.showEditScriptList(src: File, format: String, editDir: File, scripts: List<File>, openKey: String) {
     val list = ListView(this).apply {
         adapter = object : BaseAdapter() {
             override fun getCount() = scripts.size
@@ -418,8 +772,10 @@ private fun MainActivity.showEditScriptList(src: File, format: String, editDir: 
         globalSearch(editDir)
     }
     dlg = builder.create()
+    dlg.setOnDismissListener { OpenArchiveRegistry.unregister(openKey) }
     val metrics = resources.displayMetrics
-    dlg.window?.setLayout((metrics.widthPixels * 0.92).toInt(), (metrics.heightPixels * 0.8).toInt())
+    val (pw, ph) = cappedDialogSize(0.92f, 0.8f)
+    dlg.window?.setLayout(pw, ph)
     dlg.show()
 }
 
@@ -465,7 +821,7 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
     }
 }
 
-internal fun MainActivity.extractSelected(src: File, out: File, paths: List<String>, format: String) {
+internal fun MainActivity.extractSelected(src: File, out: File, paths: List<String>, format: String, ownerTab: TabState = activeTab) {
         val selStr = paths.joinToString("\n")
         if (selStr.isEmpty()) { toast(getString(R.string.msg_select_one)); return }
         val existedBefore = out.exists()
@@ -476,7 +832,7 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
                     toast(getString(R.string.msg_cancelled))
                 }
             ) { o ->
-                if (o.counts.ok) { showExtractSuccess(src.name, out.name, o.counts); nav(currentDir) }
+                if (o.counts.ok) { showExtractSuccess(src.name, out.name, o.counts); navTab(ownerTab, ownerTab.currentDir) }
                 else toast(friendlyExtractError(this, o.error))
             }
             return
@@ -518,7 +874,7 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
                 runOnUiThread {
                     prog.dismiss()
                     if (cancelled) { cleanupCancelledOutput(out, existedBefore); toast(getString(R.string.msg_cancelled)) }
-                    else if (ok) { showExtractSuccess(src.name, out.name, result.counts); nav(currentDir) }
+                    else if (ok) { showExtractSuccess(src.name, out.name, result.counts); navTab(ownerTab, ownerTab.currentDir) }
                     else {
                         cleanupCancelledOutput(out, existedBefore)
                         val inp = EditText(this).apply {
@@ -545,7 +901,7 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
                                     try {
                                         val o2 = doSel(p2)
                                         runOnUiThread {
-                                            if (o2.counts.ok) { showExtractSuccess(src.name, out.name, o2.counts); nav(currentDir) }
+                                            if (o2.counts.ok) { showExtractSuccess(src.name, out.name, o2.counts); navTab(ownerTab, ownerTab.currentDir) }
                                             else toast(friendlyExtractError(this, o2.error))
                                         }
                                     } finally {
@@ -565,6 +921,20 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
 
 internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, format: String, pwd: String = "") {
         val ext = entry.path.substringAfterLast('.').lowercase()
+        // Nested archive inside the current one (e.g. a .zip living inside an
+        // .xp3): offer to open it in a NEW window so the outer preview is kept.
+        val nestedFmt = formatOfName(entry.path)
+        if (nestedFmt != null && nestedFmt in setOf("zip", "7z", "rar", "xp3", "pfs", "nsa", "iso", "ypf")) {
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.nested_archive_title))
+                .setMessage(getString(R.string.nested_archive_msg, entry.path, archive.name))
+                .setPositiveButton(getString(R.string.nested_archive_open)) { _, _ ->
+                    openNestedArchive(archive, entry, format, pwd, nestedFmt)
+                }
+                .setNegativeButton(getString(R.string.action_cancel), null)
+                .show()
+            return
+        }
         if (ext !in PREVIEW_EXTS) {
                         toast(getString(R.string.err_preview_unsupported, ".$ext"))
             return
@@ -576,8 +946,8 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
             runOnUiThread {
                 when (ext) {
                     "jpg", "jpeg", "png", "gif", "webp", "bmp" -> showImagePreview(this, extracted)
-                    "mp3", "ogg" -> playAudio(this, extracted)
-                    "mp4" -> playVideo(this, extracted)
+                    "mp3", "ogg", "wav", "aac", "flac", "aif", "aiff", "m4a" -> playAudio(this, extracted)
+                    "mp4", "mkv", "avi", "mov", "webm" -> playVideo(this, extracted)
                     // ZIP entries can be edited in place (zipModify replaces just
                     // that entry); split-volume zips can't (zipModify needs a
                     // single seekable archive and can't re-split), so no 编辑.
@@ -599,20 +969,80 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
                 runOnUiThread {
                     if (needsPw && pwd.isEmpty()) {
                         // No password yet (archive opened via a path that didn't prompt) — ask first.
-                        showPasswordDialog(this, format, archive.path, cacheDir.path, entry.path, showProgress = false) { o ->
+                        showPasswordDialog(this, format, archive.path, cacheDir.path, entry.path, showProgress = true) { o ->
                             if (o.counts.ok) openPreview() else toast(friendlyExtractError(this, o.error))
                         }
                     } else {
-                        tryExtractWithPassword(this, format, archive.path, cacheDir.path, entry.path, prefs, showProgress = false, initialPassword = pwd) { o ->
+                        tryExtractWithPassword(this, format, archive.path, cacheDir.path, entry.path, prefs, showProgress = true, initialPassword = pwd) { o ->
                             if (o.counts.ok) openPreview() else toast(friendlyExtractError(this, o.error))
                         }
                     }
                 }
             }
         } else {
-            tryExtractWithPassword(this, format, archive.path, cacheDir.path, entry.path, prefs, showProgress = false, initialPassword = pwd) { o ->
+            tryExtractWithPassword(this, format, archive.path, cacheDir.path, entry.path, prefs, showProgress = true, initialPassword = pwd) { o ->
                 if (o.counts.ok) openPreview() else toast(friendlyExtractError(this, o.error))
             }
+        }
+    }
+
+    /**
+     * Lists an archive's entries for the in-tab preview, mirroring the dispatch
+     * used when first opening an archive. Returns null when the archive can't be
+     * read (wrong format / encrypted without password).
+     */
+    internal fun MainActivity.listPreviewEntries(format: String, src: File, pwd: String): List<ArchiveEntry>? {
+        val json = try { when (format) {
+            "xp3" -> Xp3Core.xp3ListEntries(src.absolutePath)
+            "pfs" -> PfsCore.pfsListEntries(src.absolutePath)
+            "nsa" -> NsaCore.nsaListEntries(src.absolutePath)
+            "iso" -> IsoCore.isoListEntries(src.absolutePath)
+            "ypf" -> YpfCore.ypfListEntries(src.absolutePath)
+            "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8")
+                val vols = resolveZipVolumes(src)
+                if (vols.size > 1) ZipCore.zipListEntriesVolumes(volumeJoin(vols)) else ZipCore.zipListEntries(src.absolutePath) }
+            "7z" -> { val vols = resolveSevenZVolumes(src)
+                if (vols.size > 1) (if (pwd.isNotEmpty()) SevenZCore.szListEntriesVolumesWithPassword(volumeJoin(vols), pwd) else SevenZCore.szListEntriesVolumes(volumeJoin(vols)))
+                else if (pwd.isNotEmpty()) SevenZCore.szListEntriesWithPassword(src.absolutePath, pwd) else SevenZCore.szListEntries(src.absolutePath) }
+            "rar" -> { val vols = resolveRarVolumes(src)
+                if (vols.size > 1) (if (pwd.isNotEmpty()) RarCore.rarListEntriesVolumesWithPassword(volumeJoin(vols), pwd) else RarCore.rarListEntriesVolumes(volumeJoin(vols)))
+                else if (pwd.isNotEmpty()) RarCore.rarListEntriesWithPassword(src.absolutePath, pwd) else RarCore.rarListEntries(src.absolutePath) }
+            else -> null
+        } } catch (_: Exception) { null }
+        if (json == null || json == "[]") return null
+        return parseEntries(json)
+    }
+
+    /**
+     * Extracts a nested archive entry out of its parent and opens it for preview
+     * in a brand-new window (new tab), auto-jumping to that window. The outer
+     * preview stays intact so the user can swipe back to it.
+     */
+    internal fun MainActivity.openNestedArchive(
+        archive: File, entry: ArchiveEntry, parentFmt: String, parentPwd: String, nestedFmt: String
+    ) {
+        val outDir = File(cacheDir, "nested/${archive.nameWithoutExtension}_${entry.path.hashCode().toString(16)}")
+        outDir.mkdirs()
+        val extracted = File(outDir, entry.path)
+        val openKey = "nested:" + extracted.absolutePath
+        tryExtractWithPassword(this, parentFmt, archive.path, outDir.path, entry.path, prefs,
+            showProgress = true, initialPassword = parentPwd) { o ->
+            if (!o.counts.ok) { toast(friendlyExtractError(this, o.error)); return@tryExtractWithPassword }
+            if (!extracted.exists()) {
+                toast(getString(R.string.err_preview_unsupported, ""))
+                return@tryExtractWithPassword
+            }
+            val entries = listPreviewEntries(nestedFmt, extracted, "")
+            if (entries.isNullOrEmpty()) {
+                toast(getString(R.string.err_cannot_read_maybe_pwd))
+                return@tryExtractWithPassword
+            }
+            val before = tabs.size
+            addTab()
+            if (tabs.size == before) return@tryExtractWithPassword  // max tabs reached
+            val newTab = tabs.last()
+            OpenArchiveRegistry.register(openKey, newTab)
+            renderPreview(newTab, extracted, entries, nestedFmt, "", openKey)
         }
     }
 
@@ -648,7 +1078,7 @@ internal fun MainActivity.cleanupZipModifyArtifacts(archive: File) {
  * written as a `name-cn.zip` copy (uniqueFile dedupes to `name-cn (1).zip`),
  * never overwriting the original archive — a failed edit can't corrupt it.
  */
-internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, newContent: File, pwd: String = "") {
+internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, newContent: File, pwd: String = "", ownerTab: TabState = activeTab) {
     if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
     if (!tryStartOperation(this)) return
     val parent = archive.parentFile ?: cacheDir
@@ -664,7 +1094,7 @@ internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, ne
                     java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING)
                     toast(getString(R.string.edit_done, outF.name))
-                    nav(currentDir)
+                    navTab(ownerTab, ownerTab.currentDir)
                 } else {
                     cleanupZipModifyArtifacts(archive)
                     toast(getString(R.string.title_compress_failed))
@@ -684,7 +1114,7 @@ internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, ne
  * (`delete|path` per line), writing a `name-cn.zip` copy (original untouched).
  * Split-volume zips are excluded by the caller.
  */
-internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, pwd: String = "") {
+internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, pwd: String = "", ownerTab: TabState = activeTab) {
     if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
     if (paths.isEmpty()) { toast(getString(R.string.msg_select_one)); return }
     if (!tryStartOperation(this)) return
@@ -700,7 +1130,7 @@ internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, p
                     java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING)
                     toast(getString(R.string.edit_done, outF.name))
-                    nav(currentDir)
+                    navTab(ownerTab, ownerTab.currentDir)
                 } else {
                     cleanupZipModifyArtifacts(archive)
                     toast(getString(R.string.title_compress_failed))
@@ -719,7 +1149,7 @@ internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, p
  * Adds one entry to a ZIP archive from a local file, via the Rust zipModify
  * `add|name|srcPath` path, writing a `name-cn.zip` copy (original untouched).
  */
-internal fun MainActivity.zipAddEntry(archive: File, entryName: String, srcFile: File, pwd: String = "") {
+internal fun MainActivity.zipAddEntry(archive: File, entryName: String, srcFile: File, pwd: String = "", ownerTab: TabState = activeTab) {
     if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
     if (!tryStartOperation(this)) return
     val parent = archive.parentFile ?: cacheDir
@@ -735,7 +1165,7 @@ internal fun MainActivity.zipAddEntry(archive: File, entryName: String, srcFile:
                     java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING)
                     toast(getString(R.string.edit_done, outF.name))
-                    nav(currentDir)
+                    navTab(ownerTab, ownerTab.currentDir)
                 } else {
                     cleanupZipModifyArtifacts(archive)
                     toast(getString(R.string.title_compress_failed))

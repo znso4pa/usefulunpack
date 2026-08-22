@@ -14,7 +14,13 @@
     <string name="msg_editor_too_large">File too large to edit in-app (>2MB)</string>
     <string name="msg_tjs_compiled">Compiled TJS script (binary TJS2), can\'t preview as text</string>
     <string name="edit_archive">Edit</string>
-    <string name="edit_only_pack">Only packable formats support this (XP3/PFS/ISO/NSA)</string>
+    <string name="action_more">More</string>
+    <string name="edit_only_pack">Only packable formats support this (XP3/PFS/ISO/NSA/7Z/YPF)</string>
+    <string name="zip_manage_only_zip">Only ZIP archives support entry management</string>
+    <string name="convert_only_iso">Only ISO images support CSO conversion</string>
+    <string name="nested_archive_title">Nested archive</string>
+    <string name="nested_archive_msg">Found a nested archive %1$s inside %2$s. Open it in a new window?</string>
+    <string name="nested_archive_open">Open</string>
     <string name="edit_archive_title">Edit scripts</string>
     <string name="edit_repack">Repack</string>
     <string name="edit_no_scripts">No editable scripts found</string>
@@ -27,6 +33,36 @@
     <string name="action_delete">🗑️ Delete</string>
     <string name="action_move">✂️ Move</string>
     <string name="action_copy_path">📋 Copy path</string>
+    <string name="action_copy">📄 Copy</string>
+    <string name="msg_copy_result">Copied: %1$d ok, %2$d failed</string>
+    <string name="action_choose_dir">📁 Choose directory</string>
+    <string name="editor_unsaved_changes">Unsaved changes</string>
+    <string name="editor_restore_prompt">Found unsaved edits, restore?</string>
+    <string name="editor_restore">Restore</string>
+    <string name="editor_discard">Discard</string>
+    <string name="editor_no_save">Don\'t save</string>
+    <string name="editor_undo">Undo</string>
+    <string name="search_regex">Regex</string>
+    <string name="search_case_sensitive">Case sensitive</string>
+    <string name="search_file_filter">File filter (e.g. .txt,.md)</string>
+    <string name="search_export">Export results</string>
+    <string name="editor_redo">Redo</string>
+    <string name="msg_calc_counting">Counting: %1$d files…</string>
+    <string name="terminal_exec_timeout">Command timed out (30s)</string>
+    <string name="settings_sort">Sort</string>
+    <string name="settings_picker_mode">Path/file picker</string>
+    <string name="settings_other">⚙️ Other settings</string>
+    <string name="restore_session">Restore last session</string>
+    <string name="restore_session_desc">On launch, reopen the previous windows and folders (up to 3)</string>
+    <string name="action_share">📤 Share</string>
+    <string name="msg_share_folder">Folders can\'t be shared</string>
+    <string name="picker_mode_dialog">Open path picker dialog</string>
+    <string name="picker_mode_tab">Pick in a new window</string>
+    <string name="sort_by_name">Name</string>
+    <string name="sort_by_size">Size</string>
+    <string name="sort_by_date">Date</string>
+    <string name="sort_ascending">Ascending</string>
+    <string name="sort_descending">Descending</string>
     <string name="action_file_info">ℹ️ Info</string>
     <string name="action_convert_cso">Convert to CSO (.cso)</string>
     <string name="action_convert_iso">Convert to ISO (.iso)</string>
@@ -191,12 +227,26 @@
     <string name="msg_move_result">Move complete: %1$d success, %2$d failed</string>
     <string name="confirm_delete_file_msg">Delete %1$s?\nThis cannot be undone!</string>
     <string name="confirm_delete_batch_msg">Delete %1$d items? This cannot be undone!</string>
+    <string name="confirm_recycle_file_msg">Move %1$s to recycle bin?</string>
+    <string name="confirm_recycle_batch_msg">Move %1$d items to recycle bin?</string>
     <string name="msg_calc_dir_size_prompt">%1$s\nContains %2$d items\n\nRecursively calculating folder size requires scanning each file. Large folders may take %3$d~%4$d seconds. Continue?</string>
     <string name="msg_read_all_fail">Cannot read archive, it may be encrypted</string>
     <string name="err_file_error">File operation failed</string>
     <string name="msg_permission_storage">Please grant \"All files access\" permission and reopen</string>
     <string name="msg_hash_copied">Hash copied</string>
     <string name="err_audio_playback">Cannot play audio: %1$s</string>
+    <string name="err_invalid_regex">Invalid regular expression: %1$s</string>
+    <string name="msg_max_tabs">最多可打开 3 个窗口</string>
+    <string name="msg_archive_open_in_tab">This archive is already open in &quot;%1$s&quot;</string>
+    <string name="msg_archive_open_skipped">Skipped %1$d archives open in another window</string>
+    <string name="merge_into_archive">Merge into archive...</string>
+    <string name="merge_no_target">No archive in this folder to merge into</string>
+    <string name="merge_select_target">Select target archive</string>
+    <string name="merge_target_unsupported">This archive format cannot be repacked</string>
+    <string name="merge_title">Merging into %1$s</string>
+    <string name="merge_done">Merged, saved as %1$s</string>
+    <string name="tab_rename">✏️ Rename window</string>
+    <string name="tab_rename_prompt">Window name</string>
     <string name="err_video_playback">Cannot play video: %1$s</string>
     <string name="msg_encoding_selected">Encoding: %1$s</string>
     <string name="msg_renamed_to">Renamed to %1$s</string>
@@ -213,9 +263,25 @@
     <string name="msg_compressing_file">Compressing — %1$s</string>
     <string name="msg_extracting_file">Extracting — %1$s</string>
     <string name="msg_delete_progress">Deleting</string>
+    <string name="msg_move_to_recycle">Moving to recycle bin</string>
     <string name="msg_deleting_file">Deleting — %1$s</string>
     <string name="msg_delete_counting">Counting files…</string>
     <string name="msg_delete_result">Deleted: %1$d ok, %2$d failed</string>
+    <string name="msg_moved_to_recycle">Moved to recycle bin</string>
+    <string name="msg_restore_failed">Restore failed: %1$d</string>
+    <string name="title_recycle_bin">♻️ Recycle bin</string>
+    <string name="action_restore">♻️ Restore</string>
+    <string name="recycle_loading">Loading recycle bin…</string>
+    <string name="recycle_empty">Recycle bin is empty</string>
+    <string name="recycle_items">%1$d items (%2$s)</string>
+    <string name="recycle_permanent_delete">⚠️ Permanently delete</string>
+    <string name="recycle_empty_now">Empty recycle bin</string>
+    <string name="recycle_empty_confirm">Permanently delete all items in the recycle bin?\nThis cannot be undone!</string>
+    <string name="recycle_days_format">%1$d days</string>
+    <string name="recycle_disabled_message">Recycle bin is disabled in settings</string>
+    <string name="recycle_enable">Enable recycle bin</string>
+    <string name="recycle_auto_clean">Auto-clean after</string>
+    <string name="recycle_auto_clean_never">Never</string>
     <string name="msg_multivolume">%1$d volumes</string>
     <string name="msg_both_files_previewable">Both files can be previewed</string>
     <string name="msg_same_size">Same size: %1$s</string>
@@ -230,7 +296,9 @@
     <string name="format_group_single">Single-file Compression</string>
     <string name="msg_single_file_compress">Single-file compression only supports a single file</string>
     <string name="msg_ksd_need_txt">KSD packing only supports .txt text files</string>
-    <string name="settings_compress_generic">Generic (gzip/bzip2/xz/zstd/lzma/lz4/tar)</string>
+    <string name="settings_parallel_threads">Parallel decode threads (rar/zip)</string>
+    <string name="parallel_auto">Auto</string>
+    <string name="settings_compress_generic">Generic (gzip/bzip2/xz/zstd/lzma/lz4/brotli/tar)</string>
     <string name="split_title">Split volumes (zip/7z)</string>
     <string name="split_none">No split</string>
     <string name="split_custom">Custom</string>
@@ -320,6 +388,7 @@
         <item>LZMA (.lzma) — Extract &amp; Pack\nNote: preview list does not show decompressed size (alone header has no size)</item>
         <item>TAR — Extract &amp; Pack\n.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
         <item>KSD (.ksd) — Extract &amp; Pack\nKirikiri2 save; packing accepts .txt only</item>
+        <item>BROTLI (.br) — Extract &amp; Pack\nGoogle Brotli compression; levels 0-11 (default 6); widely used for web content</item>
     </string-array>
         <string-array name="help_tutorials">
         <item>Compression settings\nSettings → Compression: levels (zip/7z/generic), split size (zip/7z), ZIP encoding, password; "OK" saves everything at once; the work mode (archive/compress) updates the title bar</item>
@@ -336,6 +405,7 @@
         <item>Edit ZIP entries in place\nIn a ZIP preview, tap "Entries": delete selected entries (with confirmation) or add a new entry from a local file (pick a file, name it, added as deflate). Untouched entries keep their exact bytes. Split-volume ZIPs cannot be edited</item>
         <item>Encoding &amp; garbled text\nEvery preview/editor shows an encoding row — tap it to switch UTF-8/Shift-JIS/GBK/UTF-16 and the text re-renders instantly. UTF-16/UTF-8 files with a byte-order mark open with the right encoding automatically; a "looks like UTF-8" hint appears when a file was read with a wrong non-UTF-8 encoding</item>
         <item>Scrolling &amp; refresh\nLong lists have an always-visible draggable handle on the right (grab and drag to jump); the text preview/editor have a draggable scrollbar too. The file list refreshes automatically when the current folder changes (rename/move/delete/extract/compress or external changes such as USB)</item>
+        <item>Recycle bin\nDelete moves files to the recycle bin instead of permanently deleting them (configurable). Tap the recycle bin icon in the toolbar to view, restore, or permanently delete items. Auto-clean removes items after a configurable period (7/14/30/60/90 days or never). Files in the recycle bin count against storage space. Note: the recycle bin is stored in app internal storage and is cleared when the app is uninstalled</item>
     </string-array>
 
 
@@ -400,4 +470,32 @@
         <item>100MB</item>
         <item>1GB</item>
     </string-array>
+
+    <!-- Image editor -->
+    <string name="img_edit_title">Image Editor</string>
+    <string name="img_edit_brush">Brush</string>
+    <string name="img_edit_crop">Crop</string>
+    <string name="img_edit_eyedrop">Pick</string>
+    <string name="img_edit_stretch_16">16:9</string>
+    <string name="img_edit_stretch_34">3:4</string>
+    <string name="img_edit_stretch">Stretch</string>
+    <string name="img_edit_undo">Undo</string>
+    <string name="img_edit_reset">Reset</string>
+    <string name="img_edit_save">Save</string>
+    <string name="img_edit_opacity">Opacity</string>
+    <string name="img_edit_width">Width</string>
+    <string name="img_edit_saved">Saved %1$s</string>
+    <string name="img_edit_failed">Save failed</string>
+    <string name="img_edit_restore_title">Unsaved edits</string>
+    <string name="img_edit_restore_msg">Recover the previous edits?</string>
+    <string name="img_edit_pick_hint">Tap a pixel to sample its color</string>
+    <string name="img_edit_crop_hint">Drag to select an area, then tap Crop again to confirm</string>
+    <string name="img_edit_tap_copy">tap to copy</string>
+    <string name="color_copied">Copied %1$s</string>
+    <string name="msg_loading">Loading…</string>
+
+    <!-- Image convert -->
+    <string name="img_convert_title">Convert Format</string>
+    <string name="img_convert_menu">Convert format</string>
+    <string name="img_convert_choose">Choose target format</string>
 </resources>

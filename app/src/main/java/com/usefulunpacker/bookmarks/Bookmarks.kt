@@ -9,11 +9,11 @@ import java.io.File
 internal fun MainActivity.loadBookmarks() {
         val s = prefs.getStringSet("paths", emptySet()) ?: emptySet()
         bookmarks.clear(); bookmarks.addAll(s)
-        val items = bookmarks.map { getString(R.string.bookmark_item, File(it).name) }
+        val items = bookmarks.map { "📌 " + getString(R.string.bookmark_item, File(it).name) }
         listBookmarks.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, items) {
             override fun getView(pos: Int, v: View?, p: ViewGroup): View {
                 val view = super.getView(pos, v, p)
-                (view.findViewById<TextView>(android.R.id.text1)).apply { setTextColor(C["secondary"]!!); textSize = 13f }
+                (view.findViewById<TextView>(android.R.id.text1)).apply { setTextColor(C["primary"]!!); textSize = 13f }
                 return view
             }
         }

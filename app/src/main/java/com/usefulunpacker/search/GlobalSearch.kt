@@ -49,6 +49,9 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         val seenFiles = java.util.Collections.synchronizedSet(mutableSetOf<String>())
         var queryText = ""
         var currentMaxFileSize = Long.MAX_VALUE
+        var useRegex = false
+        var caseSensitive = false
+        var fileFilter = ""
 
         // ─── XML-based UI ───
         val view = layoutInflater.inflate(R.layout.dialog_global_search, null)
@@ -59,11 +62,14 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         val etQuery = view.findViewById<EditText>(R.id.etQuery)
         val btnClear = view.findViewById<ImageButton>(R.id.btnClear)
         val btnSearch = view.findViewById<Button>(R.id.btnSearch)
-        val searchProgress = view.findViewById<ProgressBar>(R.id.searchProgress)
+        val searchProgress = view.findViewById<IndeterminateBar>(R.id.searchProgress)
         val tvStats = view.findViewById<TextView>(R.id.tvStats)
         val btnContinue = view.findViewById<Button>(R.id.btnContinue)
         val btnClose = view.findViewById<Button>(R.id.btnClose)
         val listResults = view.findViewById<ListView>(R.id.listResults)
+        val cbRegex = view.findViewById<CheckBox>(R.id.cbRegex)
+        val cbCaseSensitive = view.findViewById<CheckBox>(R.id.cbCaseSensitive)
+        val etFileFilter = view.findViewById<EditText>(R.id.etFileFilter)
 
         tvDir.text = getString(R.string.search_scope, searchDir.path)
         btnChangeDir.text = getString(R.string.action_change)
@@ -173,12 +179,19 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
             .setView(view)
             .create()
         btnClose.setOnClickListener { searchDialog.dismiss() }
+        searchDialog.setOnDismissListener {
+            searchThread?.interrupt()
+            searchThread = null
+            searchProgress.stopAnim()
+        }
         // Size the window BEFORE show so the first layout pass is already the
         // final size — setting it in onShow resizes after the enter animation
         // starts, causing a flash/jump and an empty-results bottom bar that
-        // isn't pinned to the window bottom.
+        // isn't pinned to the window bottom. Capped so tablets/landscape don't
+        // stretch edge-to-edge.
         val metrics = this.resources.displayMetrics
-        searchDialog.window?.setLayout((metrics.widthPixels * 0.94).toInt(), (metrics.heightPixels * 0.85).toInt())
+        val (gw, gh) = cappedDialogSize(0.94f, 0.85f)
+        searchDialog.window?.setLayout(gw, gh)
         searchDialog.show()
 
         // Launch search
@@ -186,21 +199,31 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
             searchThread?.interrupt()
             if (query.isEmpty()) { toast(getString(R.string.msg_enter_keyword)); return }
             currentMaxFileSize = maxFileSize
+            useRegex = cbRegex.isChecked
+            caseSensitive = cbCaseSensitive.isChecked
+            fileFilter = etFileFilter.text.toString().trim()
             if (!isContinue) { synchronized(results) { results.clear() }; synchronized(seenFiles) { seenFiles.clear() }; currentLimit = 200 }
             else currentLimit += 200
             resultAdapter.refresh()
             searchProgress.visibility = View.VISIBLE
+            searchProgress.startAnim()
             btnContinue.visibility = View.GONE
             tvStats.text = if (isContinue) getString(R.string.continue_scan) else getString(R.string.search_scanning)
             val scanned = intArrayOf(0)
             searchThread = thread {
                 val t = Thread.currentThread()
-                walkSearch(query.lowercase(), searchDir, mode, results, currentLimit, maxFileSize, scanned, seenFiles)
+                // Only lowercase a PLAIN-TEXT query for case-insensitive matching.
+                // A regex pattern must be kept verbatim (lowercasing it corrupts
+                // \p{Lu}, [A-Z], character classes, etc.); IGNORE_CASE is applied
+                // separately when compiling the regex.
+                val searchQuery = if (caseSensitive || useRegex) query else query.lowercase()
+                walkSearch(searchQuery, searchDir, mode, results, currentLimit, maxFileSize, scanned, seenFiles, useRegex, caseSensitive, fileFilter)
                 runOnUiThread {
                     // A newer search may have started while this one was
                     // interrupted — only publish results if we're still the
                     // current search thread.
                     if (searchThread !== t) return@runOnUiThread
+                    searchProgress.stopAnim()
                     searchProgress.visibility = View.GONE
                     val hasMore = results.size >= currentLimit && results.size < 10000
                     btnContinue.visibility = if (hasMore) View.VISIBLE else View.GONE
@@ -217,7 +240,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
             thread {
                 var lastScanned = 0
                 while (watched?.isAlive == true) {
-                    Thread.sleep(200)
+                    Thread.sleep(SEARCH_POLL_INTERVAL_MS)
                     val cur = scanned[0]
                     if (cur != lastScanned) {
                         lastScanned = cur
@@ -321,11 +344,24 @@ internal fun MainActivity.previewClickedFile(r: SearchResult, highlightQuery: St
 
 internal fun MainActivity.walkSearch(
         query: String, startDir: File, mode: Int, results: MutableList<SearchResult>, limit: Int,
-        maxFileSize: Long, scanned: IntArray, seenFiles: MutableSet<String>
+        maxFileSize: Long, scanned: IntArray, seenFiles: MutableSet<String>,
+        useRegex: Boolean = false, caseSensitive: Boolean = false, fileFilter: String = ""
     ) {
         // Iterative DFS — deeply nested trees can't overflow the call stack.
         val stack = ArrayDeque<File>()
         stack.add(startDir)
+        val filterExtensions = if (fileFilter.isNotEmpty()) {
+            fileFilter.split(",").map { it.trim().lowercase().removePrefix(".") }.toSet()
+        } else emptySet()
+        val regex = if (useRegex) {
+            try {
+                if (caseSensitive) Regex(query) else Regex(query, RegexOption.IGNORE_CASE)
+            } catch (e: Exception) {
+                runOnUiThread { toast(getString(R.string.err_invalid_regex, e.message ?: "")) }
+                null
+            }
+        } else null
+        
         while (stack.isNotEmpty() && results.size < limit && !Thread.currentThread().isInterrupted) {
             val dir = stack.removeLast()
             val children = dir.listFiles() ?: continue
@@ -333,12 +369,21 @@ internal fun MainActivity.walkSearch(
                 if (results.size >= limit || Thread.currentThread().isInterrupted) return
                 try {
                     if (child.isFile) {
+                        // File filter check
+                        if (filterExtensions.isNotEmpty() && child.extension.lowercase() !in filterExtensions) continue
+                        
                         scanned[0]++
                         val absPath = child.absolutePath
                         if (seenFiles.contains(absPath)) continue
                         if (mode == 0) {
                             // Filename search
-                            if (child.name.lowercase().contains(query)) {
+                            val fileName = if (caseSensitive) child.name else child.name.lowercase()
+                            val matches = if (regex != null) {
+                                regex.containsMatchIn(fileName)
+                            } else {
+                                fileName.contains(query)
+                            }
+                            if (matches) {
                                 seenFiles.add(absPath)
                                 results.add(SearchResult(child))
                             }
@@ -364,7 +409,13 @@ internal fun MainActivity.walkSearch(
                                     text.lines().forEach { line ->
                                             if (Thread.currentThread().isInterrupted) return@forEach
                                             lineNum++
-                                            if (line.lowercase().contains(query)) {
+                                            val lineToSearch = if (caseSensitive) line else line.lowercase()
+                                            val matches = if (regex != null) {
+                                                regex.containsMatchIn(lineToSearch)
+                                            } else {
+                                                lineToSearch.contains(query)
+                                            }
+                                            if (matches) {
                                                 matchCount++
                                                 if (firstLine == 0) {
                                                     firstLine = lineNum

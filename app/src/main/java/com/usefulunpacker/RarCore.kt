@@ -21,4 +21,5 @@ object RarCore {
     external fun rarExtractProgressFileTotal(): Long
     external fun rarExtractProgressName(): String?
     external fun rarExtractCancel()
+    external fun setParallelThreads(threads: Int)
 }

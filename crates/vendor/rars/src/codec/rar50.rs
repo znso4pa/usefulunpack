@@ -1720,8 +1720,14 @@ impl Unpack50Decoder {
         }
 
         if output.len() == output_size {
-            let history_output = if mode.applies_filters() && !filters.is_empty() {
-                Some(output.clone())
+            // The LZ window for the next (solid) member must hold the RAW
+            // pre-filter bytes, so save them before `apply_filters` rewrites
+            // `output` in place. Only the last `dictionary_size` bytes survive
+            // the trim below, so clone just that tail — cloning the whole
+            // output doubled peak RAM on large filtered members.
+            let history_tail = if mode.applies_filters() && !filters.is_empty() {
+                let keep = output.len().min(dictionary_size);
+                Some(output[output.len() - keep..].to_vec())
             } else {
                 None
             };
@@ -1729,7 +1735,7 @@ impl Unpack50Decoder {
                 apply_filters(&mut output, &filters)?;
             }
             self.history
-                .extend_from_slice(history_output.as_deref().unwrap_or(&output));
+                .extend_from_slice(history_tail.as_deref().unwrap_or(&output));
             if self.history.len() > dictionary_size {
                 let discard = self.history.len() - dictionary_size;
                 self.history.drain(..discard);
@@ -1889,15 +1895,28 @@ impl Unpack50Decoder {
         {
             return Err(Error::InvalidData("RAR 5 match exceeds output limit"));
         }
-        for _ in 0..length {
-            if distance <= output.len() {
-                let index = output.len() - distance;
-                output.push(output[index]);
-            } else {
-                let history_distance = distance - output.len();
-                let index = self.history.len() - history_distance;
-                output.push(self.history[index]);
-            }
+        // Bulk copy instead of a per-byte loop. The match source is the last
+        // `distance` produced bytes (history tail, then output tail), repeated
+        // with period `distance` when length exceeds the window.
+        let mut remaining = length;
+        // Phase 1: bytes whose source is still in `history` (only when the
+        // match reaches further back than the output produced so far).
+        if distance > output.len() {
+            let history_distance = distance - output.len();
+            let h_start = self.history.len() - history_distance;
+            let take = remaining.min(history_distance);
+            output.extend_from_slice(&self.history[h_start..h_start + take]);
+            remaining -= take;
+        }
+        // Phase 2: the whole period now lives in `output`. Append chunks of at
+        // most `distance` bytes — `extend_from_within` panics if the range
+        // end exceeds the current length, so we never ask for more than one
+        // period at a time (RLE overlap is handled by re-walking the window).
+        while remaining > 0 {
+            let take = remaining.min(distance);
+            let start = output.len() - distance;
+            output.extend_from_within(start..start + take);
+            remaining -= take;
         }
         Ok(())
     }
@@ -2050,9 +2069,57 @@ impl StreamingOutput {
             let byte = self.byte_at_distance(1)?;
             return self.push_repeated(byte, length, sink);
         }
-        for _ in 0..length {
-            let byte = self.byte_at_distance(distance)?;
-            self.push(byte, sink)?;
+        // Bulk copy in chunks of at most `distance` bytes (one window period
+        // per chunk). Each chunk is materialised from the live window
+        // (history + pending) into a scratch buffer first, because appending a
+        // chunk may flush pending to history mid-copy — re-reading the window
+        // per chunk stays correct since the source index advances with the
+        // produced length. All-zero matches take the push_zeroes fast path
+        // above, so reaching here means the window holds real data.
+        let mut scratch: Vec<u8> = Vec::with_capacity(distance.min(STREAM_FLUSH_THRESHOLD));
+        let mut remaining = length;
+        while remaining > 0 {
+            let take = remaining.min(distance);
+            scratch.clear();
+            self.window_bytes_into(distance, take, &mut scratch)?;
+            self.pending.extend_from_slice(&scratch);
+            self.written += take;
+            remaining -= take;
+            if self.pending.len() >= STREAM_FLUSH_THRESHOLD {
+                self.flush(sink)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads `take` bytes of the match source (the `distance` bytes behind the
+    /// current end of the produced output) into `out`, as bulk slices from the
+    /// history deque and the pending buffer.
+    fn window_bytes_into(&self, distance: usize, take: usize, out: &mut Vec<u8>) -> Result<()> {
+        let h_len = self.history.len();
+        let p_len = self.pending.len();
+        let window_end = h_len + p_len;
+        let start = window_end - distance;
+        if start < h_len {
+            let take_h = take.min(h_len - start);
+            let (a, b) = self.history.as_slices();
+            let a_len = a.len();
+            if start < a_len {
+                let n = take_h.min(a_len - start);
+                out.extend_from_slice(&a[start..start + n]);
+                let rest = take_h - n;
+                if rest > 0 {
+                    out.extend_from_slice(&b[..rest]);
+                }
+            } else {
+                let j = start - a_len;
+                out.extend_from_slice(&b[j..j + take_h]);
+            }
+            if take > take_h {
+                out.extend_from_slice(&self.pending[..take - take_h]);
+            }
+        } else {
+            out.extend_from_slice(&self.pending[start - h_len..start - h_len + take]);
         }
         Ok(())
     }
@@ -2673,16 +2740,42 @@ impl HuffmanTable {
 struct BitReader<'a> {
     input: &'a [u8],
     bit_pos: usize,
+    /// MSB-first 64-bit window of upcoming bits (big-endian input). The next
+    /// unread bit is always at position 63; [Self::nbits] counts how many valid
+    /// bits remain. Refilled lazily from `input` at `bit_pos`.
+    buf: u64,
+    nbits: u32,
 }
 
 impl<'a> BitReader<'a> {
     fn new(input: &'a [u8]) -> Self {
-        Self { input, bit_pos: 0 }
+        Self { input, bit_pos: 0, buf: 0, nbits: 0 }
     }
 
+    /// Loads a fresh 64-bit window starting at `bit_pos` (MSB first), padding
+    /// with zeros past the end of the slice. The caller's length check decides
+    /// whether a read is actually in bounds, so padding is only ever consulted
+    /// for bits that are real.
+    #[inline(always)]
+    fn refill(&mut self) {
+        let byte_pos = self.bit_pos / 8;
+        let bit_off = (self.bit_pos % 8) as u32;
+        let avail = self.input.len().saturating_sub(byte_pos).min(8);
+        let mut b: u64 = 0;
+        for k in 0..avail {
+            b |= u64::from(self.input[byte_pos + k]) << (56 - 8 * k);
+        }
+        self.buf = b << bit_off;
+        self.nbits = 64 - bit_off;
+    }
+
+    #[inline(always)]
     fn read_bits(&mut self, count: u8) -> Result<u32> {
         if count > 32 {
             return Err(Error::InvalidData("RAR 5 bit read is too wide"));
+        }
+        if count == 0 {
+            return Ok(0);
         }
         let end = self
             .bit_pos
@@ -2691,36 +2784,39 @@ impl<'a> BitReader<'a> {
         if end > self.input.len() * 8 {
             return Err(Error::NeedMoreInput);
         }
-
-        let mut value = 0u32;
-        let mut remaining = usize::from(count);
-        while remaining != 0 {
-            let byte = self.input[self.bit_pos / 8];
-            let bit_offset = self.bit_pos % 8;
-            let available = 8 - bit_offset;
-            let take = available.min(remaining);
-            let shift = available - take;
-            let mask = ((1u16 << take) - 1) as u8;
-            let chunk = (byte >> shift) & mask;
-            value = (value << take) | u32::from(chunk);
-            self.bit_pos += take;
-            remaining -= take;
+        if self.nbits < u32::from(count) {
+            self.refill();
         }
-
+        let value = (self.buf >> (64 - count)) as u32;
+        self.buf <<= count;
+        self.nbits -= u32::from(count);
+        self.bit_pos = end;
         Ok(value)
     }
 
     /// Reads [count] bits without advancing the position (for lookahead
     /// Huffman-table decodes, which peek a branch then skip the consumed code).
+    #[inline(always)]
     fn peek_bits(&mut self, count: u8) -> Result<u32> {
-        let saved = self.bit_pos;
-        let value = self.read_bits(count);
-        self.bit_pos = saved;
-        value
+        if count == 0 {
+            return Ok(0);
+        }
+        let end = self
+            .bit_pos
+            .checked_add(usize::from(count))
+            .ok_or(Error::NeedMoreInput)?;
+        if end > self.input.len() * 8 {
+            return Err(Error::NeedMoreInput);
+        }
+        if self.nbits < u32::from(count) {
+            self.refill();
+        }
+        Ok((self.buf >> (64 - count)) as u32)
     }
 
     /// Advances the bit position by [count] without reading (pairs with
     /// [Self::peek_bits] once a peeked Huffman code is resolved).
+    #[inline(always)]
     fn skip_bits(&mut self, count: u8) -> Result<()> {
         self.bit_pos = self
             .bit_pos
@@ -2729,6 +2825,11 @@ impl<'a> BitReader<'a> {
         if self.bit_pos > self.input.len() * 8 {
             return Err(Error::NeedMoreInput);
         }
+        if self.nbits < u32::from(count) {
+            self.refill();
+        }
+        self.buf <<= count;
+        self.nbits -= u32::from(count);
         Ok(())
     }
 }
@@ -3696,10 +3797,8 @@ mod tests {
         let block = parse_compressed_block(&input).unwrap();
         let (lengths, table_bits) = read_table_lengths(&input[block.payload.clone()], 0).unwrap();
         let tables = DecodeTables::from_lengths(&lengths).unwrap();
-        let mut bits = BitReader {
-            input: &input[block.payload],
-            bit_pos: table_bits,
-        };
+        let mut bits = BitReader::new(&input[block.payload]);
+        bits.bit_pos = table_bits;
         assert_eq!(tables.main.decode(&mut bits).unwrap(), 256);
         let first = read_filter(&mut bits, 0).unwrap();
         assert_eq!(tables.main.decode(&mut bits).unwrap(), 256);

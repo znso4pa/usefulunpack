@@ -120,7 +120,7 @@ fn extract_xp3(input: &str, output: &str) -> Result<(u32, u32), String> {
         };
         let size = archive.entries()[i].size;
         let mut out_stream = SyncIo(ProgressWriter::extract(BufWriter::new(out_file)));
-        let mut xf = match oneshot_async(archive.by_index(i)) {
+        let xf = match oneshot_async(archive.by_index(i)) {
             Some(Ok(f)) => f,
             _ => { fail += 1; continue; }
         };
@@ -210,7 +210,7 @@ fn extract_xp3_selected(input: &str, output: &str, selected: &str) -> Result<(u3
         };
         let size = archive.entries()[i].size;
         let mut out_stream = SyncIo(ProgressWriter::extract(BufWriter::new(out_file)));
-        let mut xf = match oneshot_async(archive.by_index(i)) {
+        let xf = match oneshot_async(archive.by_index(i)) {
             Some(Ok(f)) => f,
             _ => { fail += 1; continue; }
         };

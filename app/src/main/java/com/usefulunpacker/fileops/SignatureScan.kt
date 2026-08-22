@@ -15,6 +15,9 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import kotlin.concurrent.thread
 
+private fun MainActivity.dp(id: Int) = resources.getDimensionPixelSize(id)
+private fun MainActivity.spx(id: Int) = resources.getDimension(id) / resources.displayMetrics.scaledDensity
+
 /** One detected signature: file offset + a technical format label, plus
  *  optional parsed metadata (ZIP EOCD validation gives size + file count). */
 data class ScanHit(val offset: Long, val label: String, val size: Long? = null, val fileCount: Int? = null)
@@ -124,11 +127,11 @@ fun carveToFile(src: File, offset: Long, length: Long?, dest: File, onProgress: 
 }
 
 /** Signature / magic-pattern counts reported by the Rust scan-core (kept in
- *  sync with validators.rs: 22 signatures, 68 magic patterns — bzip2 has 9
+ *  sync with validators.rs: 31 signatures, 77 magic patterns — bzip2 has 9
  *  variants, gif 2, jpeg 3, lzma 36 (4 props × 9 dict prefixes), iso 1,
- *  everything else 1). */
-private const val SCAN_SIG_COUNT = 22
-private const val SCAN_PATTERN_COUNT = 68
+ *  ypf 1, pf6/pf8 2, ksd 2, ogg 1, mp3 4, flac 1, bmp 1, everything else 1). */
+private const val SCAN_SIG_COUNT = 31
+private const val SCAN_PATTERN_COUNT = 77
 
 /** binwalk-style scan dialog (Rust scan-core + byte-level progress bar). */
 internal fun MainActivity.showSignatureScan(f: File) {
@@ -188,16 +191,16 @@ private fun MainActivity.showScanResultDialog(f: File, hits: List<ScanHit>, elap
     val tvHeader = TextView(this).apply {
         text = header
         setTypeface(Typeface.MONOSPACE)
-        textSize = 12f
+        textSize = spx(R.dimen.text_sm)
         setTextColor(C["primary"]!!)
-        setPadding(20, 16, 20, 0)
+        setPadding(dp(R.dimen.space_lg), dp(R.dimen.space_lg), dp(R.dimen.space_lg), 0)
     }
     val tvFooter = TextView(this).apply {
         text = footer
         setTypeface(Typeface.MONOSPACE)
-        textSize = 12f
+        textSize = spx(R.dimen.text_sm)
         setTextColor(C["primary"]!!)
-        setPadding(20, 0, 20, 16)
+        setPadding(dp(R.dimen.space_lg), 0, dp(R.dimen.space_lg), dp(R.dimen.space_lg))
     }
 
     val adapter = object : BaseAdapter() {
@@ -242,7 +245,8 @@ private fun MainActivity.showScanResultDialog(f: File, hits: List<ScanHit>, elap
         .setNegativeButton(getString(R.string.action_close), null)
         .create()
     val metrics = this.resources.displayMetrics
-    dlg.window?.setLayout((metrics.widthPixels * 0.94).toInt(), (metrics.heightPixels * 0.85).toInt())
+    val (sw, sh) = cappedDialogSize(0.94f, 0.85f)
+    dlg.window?.setLayout(sw, sh)
     dlg.show()
 }
 
@@ -323,8 +327,8 @@ private fun MainActivity.showSeparateDestDialog(f: File, hit: ScanHit, extract: 
     fun optionRow(text: String, color: Int, onClick: () -> Unit) = TextView(this).apply {
         this.text = text
         setTextColor(color)
-        textSize = 15f
-        setPadding(24, 16, 24, 16)
+        textSize = spx(R.dimen.text_xl)
+        setPadding(dp(R.dimen.space_lg), dp(R.dimen.space_lg), dp(R.dimen.space_lg), dp(R.dimen.space_lg))
         background = android.graphics.drawable.ColorDrawable(0x00000000)
         setOnClickListener { onClick() }
     }
@@ -335,8 +339,8 @@ private fun MainActivity.showSeparateDestDialog(f: File, hit: ScanHit, extract: 
             addView(TextView(this@showSeparateDestDialog).apply {
                 text = message
                 setTextColor(C["secondary"]!!)
-                textSize = 13f
-                setPadding(24, 16, 24, 12)
+                textSize = spx(R.dimen.text_md)
+                setPadding(dp(R.dimen.space_lg), dp(R.dimen.space_lg), dp(R.dimen.space_lg), dp(R.dimen.space_md))
             })
         }
         addView(optionRow(getString(R.string.separate_new_folder, newFolder.name), C["accent"]!!) {

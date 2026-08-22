@@ -20,10 +20,13 @@ fn extract_zst(input: &str, output: &str) -> Result<u32, String> {
     let name = output_name(input);
     let dest = Path::new(output).join(&name);
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
-    let mut dec = ruzstd::decoding::StreamingDecoder::new(File::open(input).map_err(|e| format!("zstd: {e}"))?)
-        .map_err(|e| format!("zstd: {e}"))?;
-    // Frame header may carry a content size, but the streaming decoder doesn't
-    // expose it pre-decode → bound output with the shared hard cap.
+
+    // Multi-frame zstd: StreamingDecoder only handles a single frame. After the
+    // first frame ends (decoder returns0 bytes), we recreate the decoder for the
+    // next frame. Each concatenated frame starts with the zstd magic number.
+    let all_bytes = fs::read(input).map_err(|e| format!("zstd: {e}"))?;
+    let mut cursor = std::io::Cursor::new(&all_bytes);
+
     let mut writer = ProgressWriter::extract(
         archive_common::BoundedWriter::new(
             File::create(&dest).map_err(|e| format!("{e}"))?,
@@ -32,10 +35,24 @@ fn extract_zst(input: &str, output: &str) -> Result<u32, String> {
     extract_progress::reset(0);
     extract_progress::set_name(&name);
     extract_progress::set_file(0);
-    if let Err(e) = io::copy(&mut dec, &mut writer) {
-        let _ = fs::remove_file(&dest);
-        return Err(format!("zstd: {e}"));
+
+    // Decode first frame
+    let mut dec = ruzstd::decoding::StreamingDecoder::new(&mut cursor)
+        .map_err(|e| format!("zstd: {e}"))?;
+    io::copy(&mut dec, &mut writer).map_err(|e| format!("zstd: {e}"))?;
+
+    // Try additional frames (multi-frame concatenation)
+    while (cursor.position() as usize) < all_bytes.len() {
+        match ruzstd::decoding::StreamingDecoder::new(&mut cursor) {
+            Ok(mut dec2) => {
+                if io::copy(&mut dec2, &mut writer).map_err(|e| format!("zstd: {e}"))? == 0 {
+                    break; // empty frame, no more data
+                }
+            }
+            Err(_) => break, // not a valid frame header, done
+        }
     }
+
     Ok(0)
 }
 
@@ -61,6 +78,14 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
             .unwrap_or("unknown panic");
         Err(format!("panic: {msg}"))
     })
+}
+
+/// Host-side (non-JNI) extraction entry point for examples/tests/benchmarks.
+/// Delegates to the same path the app uses. Returns the count of successfully
+/// decompressed files.
+#[doc(hidden)]
+pub fn extract_zstd_host(input: &str, output: &str) -> Result<u32, String> {
+    extract_zst(input, output)
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZstdCore_zstListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {

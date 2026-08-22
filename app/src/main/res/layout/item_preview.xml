@@ -2,43 +2,43 @@
 <!-- Preview archive entry row: CheckBox + icon + name + size -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="48dp"
+    android:layout_height="@dimen/row_preview"
     android:orientation="horizontal"
     android:gravity="center_vertical"
-    android:paddingStart="4dp"
-    android:paddingEnd="8dp"
+    android:paddingStart="@dimen/space_sm"
+    android:paddingEnd="@dimen/space_md"
     android:background="?attr/selectableItemBackground">
 
     <CheckBox
         android:id="@+id/checkbox"
         android:layout_width="32dp"
         android:layout_height="32dp"
-        android:buttonTint="@color/ui_base" />
+        android:buttonTint="@color/accent" />
 
     <ImageView
         android:id="@+id/icon"
-        android:layout_width="32dp"
-        android:layout_height="32dp"
+        android:layout_width="@dimen/icon_list"
+        android:layout_height="@dimen/icon_list"
         android:scaleType="centerInside"
-        android:padding="2dp" />
+        android:padding="@dimen/space_xs" />
 
     <TextView
         android:id="@+id/label"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="1"
-        android:textSize="14sp"
+        android:textSize="@dimen/text_xl"
         android:textColor="@color/text_file_list"
         android:singleLine="true"
         android:ellipsize="middle"
-        android:layout_marginStart="4dp" />
+        android:layout_marginStart="@dimen/space_sm" />
 
     <TextView
         android:id="@+id/info_size"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:textSize="11sp"
+        android:textSize="@dimen/text_sm"
         android:textColor="@color/text_file_sub"
-        android:layout_marginStart="6dp" />
+        android:layout_marginStart="@dimen/space_sm" />
 
 </LinearLayout>

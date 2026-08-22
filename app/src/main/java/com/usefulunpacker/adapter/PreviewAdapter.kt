@@ -46,10 +46,12 @@ class PreviewAdapter(
         visible = entries.filter { isVisible(it) }
     }
 
-    override fun getCount(): Int {
+    override fun notifyDataSetChanged() {
         rebuildVisible()
-        return visible.size
+        super.notifyDataSetChanged()
     }
+
+    override fun getCount() = visible.size
 
     override fun getItem(pos: Int) = visible.getOrNull(pos)
     override fun getItemId(pos: Int) = pos.toLong()

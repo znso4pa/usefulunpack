@@ -32,8 +32,11 @@ fn decompress_lz4_inner(input: &str, output: &str) -> Result<u32, String> {
     // Cap output at the frame's declared content size (when present) so a
     // crafted ~800K× bomb can't exhaust disk.
     let declared = lz4_content_size(input)?.unwrap_or(0);
-    let mut writer = ProgressWriter::extract(
-        archive_common::BoundedWriter::new(out_file, if declared > 0 { declared } else { u64::MAX }));
+    // Cap output: when the frame declares a content size, honor it; otherwise
+    // fall back to the hard cap so a crafted frame without the flag can't
+    // expand to fill disk (same policy as xz/bzip2/zstd).
+    let cap = if declared > 0 { declared } else { archive_common::DEFAULT_EXTRACT_CAP };
+    let mut writer = ProgressWriter::extract(archive_common::BoundedWriter::new(out_file, cap));
 
     extract_progress::reset(declared);
     extract_progress::set_name(&name);
@@ -108,6 +111,14 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
             .unwrap_or("unknown panic");
         Err(format!("panic: {msg}"))
     })
+}
+
+/// Host-side (non-JNI) extraction entry point for examples/tests/benchmarks.
+/// Delegates to the same path the app uses. Returns the count of successfully
+/// decompressed files.
+#[doc(hidden)]
+pub fn extract_lz4_host(input: &str, output: &str) -> Result<u32, String> {
+    decompress_lz4_inner(input, output)
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_Lz4Core_lz4ListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {

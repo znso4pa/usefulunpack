@@ -13,32 +13,77 @@ import java.io.File
 import java.io.FileInputStream
 import kotlin.concurrent.thread
 
-internal fun MainActivity.nav(dir: File) {
+/** Shares a file with another app via ACTION_SEND + FileProvider (no network
+ *  permission needed — the receiving app handles any transfer). Delivers the
+ *  EXACT file name via DISPLAY_NAME (FileProvider), ClipData label and
+ *  EXTRA_TITLE, so receivers keep `123.zip` instead of re-deriving a name. */
+internal fun MainActivity.shareFile(f: File) {
+    if (f.isDirectory) { toast(getString(R.string.msg_share_folder)); return }
+    val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", f)
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = mimeOf(f)
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_TITLE, f.name)
+        // ClipData label = exact name + proper read grant on every Android.
+        clipData = ClipData.newUri(contentResolver, f.name, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    startActivity(Intent.createChooser(intent, getString(R.string.action_share)))
+}
+
+/** Navigates the active tab. Kept as the entry point used by legacy code. */
+internal fun MainActivity.nav(dir: File) = navTab(activeTab, dir)
+
+internal fun MainActivity.navTab(tab: TabState, dir: File) {
+        // If this tab's fragment hasn't bound its views yet (e.g. right after
+        // startup addTab), just record the directory — the fragment re-renders
+        // on creation via viewsBound.
+        tab.currentDir = dir
+        if (!tab.viewsBound) return
+        // Leave an in-tab preview if we're navigating this tab elsewhere.
+        if (tab.previewActive) {
+            tab.previewActive = false
+            tab.previewOpenKey?.let { OpenArchiveRegistry.unregister(it) }
+            tab.previewOpenKey = null
+            tab.previewEntries = emptyList()
+            tab.previewSelected.clear()
+            tab.previewExpanded.clear()
+        }
+        tab.previewRoot.visibility = View.GONE
         // Clear any leftover multi-select when navigating away — otherwise the
         // batch bar persists and the selection mixes files from old dirs
         // (batch delete could target files the user can no longer see).
-        if (multiSelectMode) exitMultiSelect()
-        selectedFile = null
-        bottomBar.visibility = View.GONE
-        fabExtract.visibility = View.GONE
-        btnExtract.text = getString(R.string.msg_extract_title)
-        btnExtract.setOnClickListener { extract() }
-        btnFolderNext.visibility = View.GONE
-        currentDir = dir
-        restartDirObserver(dir)
-        tvPath.text = dir.absolutePath
+        if (tab.multiSelectMode) exitMultiSelect(tab)
+        tab.selectedFile = null
+        tab.bottomBar.visibility = View.GONE
+        tab.fabExtract.visibility = View.GONE
+        tab.btnExtract.text = getString(R.string.msg_extract_title)
+        tab.btnExtract.setOnClickListener { extract(tab) }
+        // btnFolderNext lives on this tab's bottom bar; only touch it when
+        // this is the active tab (its view is attached).
+        if (activeTab === tab) tab.btnFolderNext?.visibility = View.GONE
+        saveSession()
+        restartDirObserverFor(tab)
+        tab.tvPath.text = dir.absolutePath
         val isCompress = prefs.getInt("work_mode", 0) == 1
-        findViewById<TextView>(R.id.tvTitle)?.text = "UsefulUnpack" + (if (isCompress) getString(R.string.title_mode_compress) else getString(R.string.title_mode_archive))
-        tvCount.text = "…"
-        tvEmpty.visibility = View.GONE
-        listFiles.adapter = FileAdapter(this, emptyList(), bookmarks, { path -> if (bookmarks.contains(path)) bookmarks.remove(path) else bookmarks.add(0, path); saveBookmarks() }, df)
+        updateTitle()
+        tab.tvCount.text = "…"
+        tab.tvEmpty.visibility = View.GONE
+        tab.listFiles.adapter = FileAdapter(this, emptyList(), bookmarks, { path -> if (bookmarks.contains(path)) bookmarks.remove(path) else bookmarks.add(0, path); saveBookmarks() }, df)
 
         thread {
-            val raw = dir.listFiles()
+            val raw = dir.listFiles()?.filter { it.name != ".recycle" }
+            val sortMode = prefs.getString("sort_mode", "name_asc") ?: "name_asc"
             val files: List<File> = when {
-                raw != null -> raw.sortedWith(
-                    compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }
-                )
+                raw != null -> raw.sortedWith(when (sortMode) {
+                    "name_asc" -> compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }
+                    "name_desc" -> compareBy<File> { !it.isDirectory }.thenByDescending { it.name.lowercase() }
+                    "size_asc" -> compareBy<File> { !it.isDirectory }.thenBy { it.length() }
+                    "size_desc" -> compareBy<File> { !it.isDirectory }.thenByDescending { it.length() }
+                    "date_asc" -> compareBy<File> { !it.isDirectory }.thenBy { it.lastModified() }
+                    "date_desc" -> compareBy<File> { !it.isDirectory }.thenByDescending { it.lastModified() }
+                    else -> compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }
+                })
                 else -> {
                     val probed = mutableListOf<File>()
                     for (name in arrayOf("0", "self", "primary")) {
@@ -50,22 +95,23 @@ internal fun MainActivity.nav(dir: File) {
             }
             val adapter = FileAdapter(this, files, bookmarks, { path -> if (bookmarks.contains(path)) bookmarks.remove(path) else bookmarks.add(0, path); saveBookmarks() }, df)
             runOnUiThread {
-                tvCount.text = getString(R.string.selected_count, files.size)
+                // Stale-navigation guard: if the user navigated this tab to another
+                // dir while the background scan was running, don't overwrite.
+                if (tab.currentDir != dir) return@runOnUiThread
+                tab.tvCount.text = getString(R.string.selected_count, files.size)
                 if (files.isEmpty()) {
-                    tvEmpty.text = if (raw == null) getString(R.string.no_permission) else getString(R.string.empty_folder)
-                    tvEmpty.visibility = View.VISIBLE
-                } else tvEmpty.visibility = View.GONE
-                listFiles.adapter = adapter
+                    tab.tvEmpty.text = if (raw == null) getString(R.string.no_permission) else getString(R.string.empty_folder)
+                    tab.tvEmpty.visibility = View.VISIBLE
+                } else tab.tvEmpty.visibility = View.GONE
+                tab.listFiles.adapter = adapter
             }
             // Background password detection for archive files → 🔒 badge.
-            // Only paint onto the adapter this scan created — if the user has
-            // navigated elsewhere meanwhile, skip (don't stain the new folder).
             val archives = files.filter { it.isFile && (it.extension.lowercase() in ARCHIVE_EXTS || isVolumeFile(it) != null) }
             if (archives.isNotEmpty()) {
                 val pw = archives.filter { isPasswordProtected(it) }.map { it.absolutePath }.toSet()
                 if (pw.isNotEmpty()) {
                     runOnUiThread {
-                        if (listFiles.adapter === adapter) {
+                        if (tab.listFiles.adapter === adapter) {
                             adapter.passwordProtected = pw
                             adapter.notifyDataSetChanged()
                         }
@@ -75,8 +121,10 @@ internal fun MainActivity.nav(dir: File) {
         }
     }
 
-internal fun MainActivity.extract() {
-        val src = selectedFile ?: return
+internal fun MainActivity.extract() = extract(activeTab)
+
+internal fun MainActivity.extract(tab: TabState) {
+        val src = tab.selectedFile ?: return
         val ext = src.name.lowercase().substringAfterLast('.')
         // Accept magic-detected archives too — the manual format picker must
         // be reachable for extensionless / mislabeled files.
@@ -93,7 +141,9 @@ internal fun MainActivity.extract() {
         }
     }
 
-internal fun MainActivity.select(f: File) {
+internal fun MainActivity.select(f: File) = select(activeTab, f)
+
+internal fun MainActivity.select(tab: TabState, f: File) {
         val ext = f.name.lowercase().substringAfterLast('.')
         val volumeFmt = isVolumeFile(f)
 
@@ -106,7 +156,7 @@ internal fun MainActivity.select(f: File) {
                 toast(getString(R.string.msg_compress_mode_block))
                 return
             }
-            selectedFile = f
+            tab.selectedFile = f
             val vols = when {
                 volumeFmt == "rar" || ext == "rar" -> resolveRarVolumes(f)
                 volumeFmt == "7z" -> resolveSevenZVolumes(f)
@@ -114,12 +164,12 @@ internal fun MainActivity.select(f: File) {
                 else -> listOf(f)
             }
             val label = if (vols.size > 1) getString(R.string.msg_multivolume, vols.size) else ""
-            tvSelected.text = "${f.name}  |  ${fmt(fileSize(f))}" + if (label.isNotEmpty()) "  |  $label" else ""
-            fabExtract.visibility = View.VISIBLE
-            fabExtract.setOnClickListener {
-                val src = selectedFile ?: return@setOnClickListener
+            tab.tvSelected.text = "${f.name}  |  ${fmt(fileSize(f))}" + if (label.isNotEmpty()) "  |  $label" else ""
+            tab.fabExtract.visibility = View.VISIBLE
+            tab.fabExtract.setOnClickListener {
+                val src = tab.selectedFile ?: return@setOnClickListener
                 val fmt = volumeFmt ?: detectFormat(src) ?: detectFormatByMagic(src)
-                if (fmt != null) previewArchive(src, fmt) else extract()
+                if (fmt != null) previewArchive(src, fmt) else extract(tab)
             }
             return
         }
@@ -127,11 +177,11 @@ internal fun MainActivity.select(f: File) {
         // APK → show FAB; tapping it hands the file to the system installer
         // (same interaction as archives). APKs are never unpacked here.
         if (isApk) {
-            selectedFile = f
-            tvSelected.text = "${f.name}  |  ${fmt(fileSize(f))}"
-            fabExtract.visibility = View.VISIBLE
-            fabExtract.setOnClickListener {
-                val src = selectedFile ?: return@setOnClickListener
+            tab.selectedFile = f
+            tab.tvSelected.text = "${f.name}  |  ${fmt(fileSize(f))}"
+            tab.fabExtract.visibility = View.VISIBLE
+            tab.fabExtract.setOnClickListener {
+                val src = tab.selectedFile ?: return@setOnClickListener
                 installApk(src)
             }
             return
@@ -139,11 +189,11 @@ internal fun MainActivity.select(f: File) {
 
         // CSO (PSP compressed ISO) → convert back to ISO.
         if (ext == "cso" || ext == "ciso") {
-            selectedFile = f
-            tvSelected.text = "${f.name}  |  ${fmt(fileSize(f))}"
-            fabExtract.visibility = View.VISIBLE
-            fabExtract.setOnClickListener {
-                val src = selectedFile ?: return@setOnClickListener
+            tab.selectedFile = f
+            tab.tvSelected.text = "${f.name}  |  ${fmt(fileSize(f))}"
+            tab.fabExtract.visibility = View.VISIBLE
+            tab.fabExtract.setOnClickListener {
+                val src = tab.selectedFile ?: return@setOnClickListener
                 convertIso(src, toCso = false)
             }
             return
@@ -151,12 +201,12 @@ internal fun MainActivity.select(f: File) {
 
         // Compress mode: any non-archive single file → show compress FAB at bottom-right
         if (prefs.getInt("work_mode", 0) == 1) {
-            selectedFile = f
-            tvSelected.text = getString(R.string.file_selected, f.name, fmt(fileSize(f)))
-            bottomBar.visibility = View.GONE
-            btnFolderNext.visibility = View.GONE
-            fabExtract.visibility = View.VISIBLE
-            fabExtract.setOnClickListener { showCompressFormatPicker(this, f, prefs, currentDir) { nav(currentDir) } }
+            tab.selectedFile = f
+            tab.tvSelected.text = getString(R.string.file_selected, f.name, fmt(fileSize(f)))
+            tab.bottomBar.visibility = View.GONE
+            if (activeTab === tab) tab.btnFolderNext?.visibility = View.GONE
+            tab.fabExtract.visibility = View.VISIBLE
+            tab.fabExtract.setOnClickListener { showCompressFormatPicker(this, f, prefs, tab.currentDir) { navTab(tab, tab.currentDir) } }
             return
         }
 
@@ -164,8 +214,8 @@ internal fun MainActivity.select(f: File) {
         if (ext in PREVIEW_EXTS) {
             // A previously selected archive's FAB would otherwise stay visible
             // and act on the old file — reset the selection state.
-            selectedFile = null
-            fabExtract.visibility = View.GONE
+            tab.selectedFile = null
+            tab.fabExtract.visibility = View.GONE
             AlertDialog.Builder(this)
                 .setTitle(f.name)
                 .setItems(arrayOf(getString(R.string.preview), getString(R.string.action_file_info))) { _, w ->
@@ -178,8 +228,8 @@ internal fun MainActivity.select(f: File) {
         }
 
         // Neither archive nor previewable — just show info
-        selectedFile = null
-        fabExtract.visibility = View.GONE
+        tab.selectedFile = null
+        tab.fabExtract.visibility = View.GONE
                 showFileInfoDialog(f)
     }
 
@@ -203,9 +253,14 @@ internal fun MainActivity.showExtractOptions(src: File, format: String) {
 internal fun MainActivity.showDirectExtractDialog(src: File, format: String, parent: File, outDir: File) {
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.title_extract_to))
-            .setItems(arrayOf(getString(R.string.extract_new_folder, getString(R.string.title_new_folder), outDir.name), getString(R.string.action_extract))) { _, w ->
-                val out = if (w == 0) outDir else parent
-                extractAll(out, src, format)
+            .setItems(arrayOf(getString(R.string.extract_new_folder, getString(R.string.title_new_folder), outDir.name), getString(R.string.action_extract), getString(R.string.action_choose_dir))) { _, w ->
+                when (w) {
+                    0 -> extractAll(outDir, src, format)
+                    1 -> extractAll(parent, src, format)
+                    2 -> showFolderPicker(this, parent) { picked ->
+                        extractAll(picked, src, format)
+                    }
+                }
             }.setNegativeButton(getString(R.string.action_cancel), null)
             .show()
     }
@@ -331,7 +386,7 @@ private fun MainActivity.installViaPackageInstaller(f: File) {
                         try {
                             startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                                 android.net.Uri.parse("package:$packageName")))
-                        } catch (_: Exception) {}
+                        } catch (e: Exception) { android.util.Log.e("FileBrowser", "APK backup failed", e) }
                     }
                     .setNegativeButton(getString(R.string.action_cancel), null)
                     .show()

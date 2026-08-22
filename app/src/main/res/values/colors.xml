@@ -1,17 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- ═══ Accent / Brand ═══ -->
-    <color name="accent">#35acc6</color>
-    <color name="accent_dark">#00728b</color>
-
     <!-- ═══ Backgrounds — dark ═══ -->
     <color name="bg_surface">#303030</color>
     <color name="bg_surface_dim">#252525</color>
     <color name="bg_surface_dark">#1a1a1a</color>
-    <color name="bg_toolbar">#303030</color>
+    <color name="bg_surface_raised">#3a3a3a</color>
+    <color name="bg_surface_card">#383838</color>
+    <color name="bg_toolbar">#2b2b2b</color>
     <color name="bg_pathbar">#383838</color>
     <color name="bg_drawer">#252525</color>
     <color name="bg_drawer_header">#222222</color>
+
+    <!-- ═══ Accent / Brand ═══ -->
+    <color name="accent">#35acc6</color>
+    <color name="accent_dark">#00728b</color>
+    <color name="accent_soft">#2235acc6</color>
 
     <!-- ═══ Text — light on dark ═══ -->
     <color name="text_primary">#e0f9ff</color>

@@ -1,11 +1,11 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jstring, jlong, jboolean, JNI_TRUE, JNI_FALSE};
-use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json, ProgressWriter, ProgressReader, compress_progress};
+use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json, ProgressWriter, compress_progress};
 use archive_common::extract_progress;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -44,9 +44,9 @@ struct YpfEntry { name: String, _file_type: u8, compressed: bool, usize: u32, as
 
 // --- Core: open + parse entries ---
 
-fn open_ypf(input: &str) -> Result<(Vec<YpfEntry>, File, u64), String> {
-    let mut f = File::open(input).map_err(|e| format!("{e}"))?;
-    let fsize = f.metadata().map(|m| m.len()).map_err(|e| format!("{e}"))?;
+fn open_ypf(input: &str) -> Result<(Vec<YpfEntry>, BufReader<File>, u64), String> {
+    let mut f = BufReader::new(File::open(input).map_err(|e| format!("{e}"))?);
+    let fsize = f.get_ref().metadata().map(|m| m.len()).map_err(|e| format!("{e}"))?;
     let mut b = [0u8;4];
     f.read_exact(&mut b).map_err(|e| format!("{e}"))?;
     if &b != b"YPF\0" { return Err("Not a YPF file".into()); }
@@ -134,13 +134,13 @@ fn open_ypf(input: &str) -> Result<(Vec<YpfEntry>, File, u64), String> {
 
 // --- Extract ---
 
-fn ypf_extract_one(f: &mut File, e: &YpfEntry, out: &str, fsize: u64) -> Result<(), String> {
+fn ypf_extract_one(f: &mut BufReader<File>, e: &YpfEntry, out: &str, fsize: u64) -> Result<(), String> {
     if e.asize == 0 { return Ok(()); }
     if e.offset as u64 + e.asize as u64 > fsize { return Err("offset OOB".into()); }
     let d = safe_join(out, &e.name)?;
     if let Some(p) = d.parent() { std::fs::create_dir_all(p).map_err(|x| format!("{x}"))?; }
     f.seek(SeekFrom::Start(e.offset as u64)).map_err(|x| format!("{x}"))?;
-    let mut out_file = ProgressWriter::extract(std::fs::File::create(&d).map_err(|x| format!("{x}"))?);
+    let mut out_file = ProgressWriter::extract(BufWriter::with_capacity(256 * 1024, std::fs::File::create(&d).map_err(|x| format!("{x}"))?));
     let limited = (&mut *f).take(e.asize as u64);
     if e.compressed {
         let dec = ZlibDecoder::new(limited);
@@ -153,6 +153,7 @@ fn ypf_extract_one(f: &mut File, e: &YpfEntry, out: &str, fsize: u64) -> Result<
         let mut raw = limited;
         std::io::copy(&mut raw, &mut out_file).map_err(|x| format!("{x}"))?;
     }
+    out_file.flush().map_err(|x| format!("{x}"))?;
     Ok(())
 }
 
@@ -296,7 +297,10 @@ fn ypf_create_archive(input: &str, output: &str, level: i32) -> Result<u32, Stri
     if files.is_empty() { return Err("ypf pack: empty input".to_string()); }
 
     let key: u8 = 0xFF; // unpack auto-detect prefers 0xFF ties; keep it simple
-    compress_progress::reset(files.len() as u64);
+    // Progress total must match what add_bytes() feeds (bytes), not the file
+    // count — otherwise the bar overruns on large files / stalls on many small.
+    let total_bytes: u64 = files.iter().map(|(_, p)| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)).sum();
+    compress_progress::reset(total_bytes);
 
     // Build in-memory record + payload list first (offsets need the total size
     // of the records before the data area starts).
@@ -323,15 +327,23 @@ fn ypf_create_archive(input: &str, output: &str, level: i32) -> Result<u32, Stri
     // Record area size: sum of (5-byte header + name_len + 22 tail).
     let mut rec_area = 0u64;
     for r in &recs { rec_area += 5 + r.name_xor.len() as u64 + 22; }
-    // Header (0x20) + record area → data blobs start here.
+    // Header (0x20) + record area → data blobs start here. Offsets are u32 in
+    // the format — reject inputs that would overflow (silent truncation would
+    // produce a corrupt archive). Matches the NSA/PFS pack guards.
     let mut data_off = 0x20u64 + rec_area;
+    if data_off > u32::MAX as u64 {
+        return Err("ypf pack: archive too large (offset overflow)".to_string());
+    }
     for r in &mut recs {
         r.offset = data_off as u32;
         data_off += r.data.len() as u64;
+        if data_off > u32::MAX as u64 {
+            return Err("ypf pack: archive too large (offset overflow)".to_string());
+        }
     }
 
     let mut out = File::create(output).map_err(|e| format!("ypf pack create: {e}"))?;
-    let hdr_len = (0x20u32 + rec_area as u32);
+    let hdr_len = 0x20u32 + rec_area as u32;
     out.write_all(b"YPF\0").map_err(|e| format!("{e}"))?;
     out.write_all(&1u32.to_le_bytes()).map_err(|e| format!("{e}"))?; // version
     out.write_all(&(recs.len() as u32).to_le_bytes()).map_err(|e| format!("{e}"))?; // count
@@ -360,11 +372,9 @@ fn ypf_create_archive(input: &str, output: &str, level: i32) -> Result<u32, Stri
     }
 
     // Data blobs.
-    let mut written = 0u64;
-    for (i, r) in recs.iter().enumerate() {
+    for r in recs.iter() {
         if compress_progress::cancelled() { return Err("cancelled".to_string()); }
         out.write_all(&r.data).map_err(|e| format!("{e}"))?;
-        written += r.data.len() as u64;
         compress_progress::add_bytes(r.data.len() as u64);
     }
     compress_progress::set_file(0);
@@ -447,7 +457,7 @@ mod tests {
         let out = dir.join("out");
         std::fs::create_dir_all(&out).unwrap();
 
-        let mut f = File::open(&fpath).unwrap();
+        let mut f = BufReader::new(File::open(&fpath).unwrap());
         let fsize = payload.len() as u64;
         let zlib_entry = YpfEntry {
             name: "a/z.bin".into(),
@@ -488,7 +498,7 @@ mod tests {
         std::fs::write(&fpath, &compressed).unwrap();
         let out = dir.join("out");
         std::fs::create_dir_all(&out).unwrap();
-        let mut f = File::open(&fpath).unwrap();
+        let mut f = BufReader::new(File::open(&fpath).unwrap());
         let entry = YpfEntry {
             name: "clamped.bin".into(),
             _file_type: 0,

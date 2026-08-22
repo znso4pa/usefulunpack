@@ -42,12 +42,20 @@ fun showCompressOptionsDialog(
 ) {
     val isZip = fmt == "zip"
     val isSz = fmt == "7z"
-    val levelVals = if (isZip) intArrayOf(0, 3, 5, 7, 9) else if (isSz) intArrayOf(0, 3, 6, 9, 12) else intArrayOf(0, 3, 5, 7, 9)
+    val levelVals = when {
+        isZip -> intArrayOf(0, 3, 5, 7, 9)
+        isSz -> intArrayOf(0, 3, 6, 9, 12)
+        else -> intArrayOf(0, 3, 5, 7, 9)
+    }
     val levelLabels = arrayOf(
         activity.getString(R.string.level_store), activity.getString(R.string.level_low),
         activity.getString(R.string.level_medium), activity.getString(R.string.level_high),
         activity.getString(R.string.level_extreme))
-    val defaultLevel = if (isZip) prefs.getInt("zip_level", 5) else if (isSz) prefs.getInt("sz_level", 6) else prefs.getInt("generic_level", 6)
+    val defaultLevel = when {
+        isZip -> prefs.getInt("zip_level", 5)
+        isSz -> prefs.getInt("sz_level", 6)
+        else -> prefs.getInt("generic_level", 6)
+    }
     var level = levelVals.indexOf(defaultLevel).let { if (it < 0) 2 else it }
     val splitVals = longArrayOf(0L, 1024L * 1024, 100L * 1024 * 1024, 1024L * 1024 * 1024)
     // index 4 = custom size (matches the Settings dialog's 5-entry list).
@@ -256,6 +264,7 @@ fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password
             "zst" -> ZstdCore.zstCompress("", src.path, outFile.path, level.toString())
             "lzma" -> LzmaCore.lzmaCompress("", src.path, outFile.path, level.toString())
             "lz4" -> Lz4Core.lz4Compress("", src.path, outFile.path, level.toString())
+            "br" -> BrotliCore.brotliCompress("", src.path, outFile.path, level.toString())
             else -> false
         }
     } catch (_: Exception) { false }

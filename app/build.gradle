@@ -11,8 +11,8 @@ android {
         applicationId "com.usefulunpacker"
         minSdk 26
         targetSdk 34
-        versionCode 23
-        versionName "5.12.0"
+        versionCode 24
+        versionName "5.13.0"
     }
 
     signingConfigs {
@@ -85,6 +85,8 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.10.0'
     implementation 'androidx.recyclerview:recyclerview:1.3.2'
+    implementation 'androidx.viewpager2:viewpager2:1.1.0'
+    implementation 'androidx.fragment:fragment-ktx:1.6.2'
     implementation 'androidx.drawerlayout:drawerlayout:1.2.0'
     implementation 'androidx.documentfile:documentfile:1.0.1'
 }

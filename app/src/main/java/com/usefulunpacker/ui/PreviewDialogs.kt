@@ -2,6 +2,7 @@ package com.usefulunpacker
 
 import android.app.AlertDialog
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.net.Uri
@@ -12,12 +13,46 @@ import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 import kotlin.concurrent.thread
 
+/** Decodes an image as a static Bitmap capped to [maxPx] on the longest side
+ *  (sampled), safe for very large files. GIF/WebP yield their first frame.
+ *  Returns null on failure; safe off the UI thread. */
+fun decodeBitmapCapped(file: File, maxPx: Int): Bitmap? {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        try {
+            val src = android.graphics.ImageDecoder.createSource(file)
+            android.graphics.ImageDecoder.decodeBitmap(src) { decoder, info, _ ->
+                // Force a SOFTWARE bitmap: hardware bitmaps can't be drawn onto
+                // a software Canvas (editor autosave/save) nor read with
+                // getPixel() (eyedrop) — both crashed before this.
+                decoder.setAllocator(android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE)
+                val m = maxOf(info.size.width, info.size.height)
+                if (m > maxPx) decoder.setTargetSampleSize(m / maxPx + 1)
+            }
+        } catch (_: Exception) {
+            decodeBitmapSampled(file, maxPx)
+        }
+    } else decodeBitmapSampled(file, maxPx)
+}
+
+private fun decodeBitmapSampled(file: File, maxPx: Int): Bitmap? {
+    return try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, bounds)
+        if (bounds.outWidth <= 0) return null
+        var s = 1
+        while (bounds.outWidth / (s * 2) >= maxPx && bounds.outHeight / (s * 2) >= maxPx) s *= 2
+        val opt = BitmapFactory.Options().apply { inSampleSize = s }
+        BitmapFactory.decodeFile(file.path, opt)
+    } catch (_: Exception) { null }
+}
+
 fun previewLocalFile(activity: AppCompatActivity, f: File) {
-    val ext = f.name.lowercase().substringAfterLast('.')
+    val name = f.name.lowercase()
+    val ext = if (name.contains('.')) name.substringAfterLast('.') else ""
     when (ext) {
         "jpg", "jpeg", "png", "gif", "webp", "bmp" -> showImagePreview(activity, f)
-        "mp3", "ogg" -> playAudio(activity, f)
-        "mp4" -> playVideo(activity, f)
+        "mp3", "ogg", "wav", "aac", "flac", "aif", "aiff", "m4a" -> playAudio(activity, f)
+        "mp4", "mkv", "avi", "mov", "webm" -> playVideo(activity, f)
         else -> showTextPreview(activity, f)
     }
 }
@@ -28,6 +63,7 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
     val metrics = activity.resources.displayMetrics
     val screenW = metrics.widthPixels
     val screenH = (metrics.heightPixels * 0.8).toInt()
+    lateinit var d: AlertDialog
     thread {
         fun sampleFor(w: Int, h: Int): Int {
             var s = 1
@@ -73,11 +109,48 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
                 isVerticalScrollBarEnabled = false
                 isHorizontalScrollBarEnabled = false
             }
-            AlertDialog.Builder(activity)
-                .setTitle(file.name)
-                .setView(scroll)
+
+            // Top bar: filename + overflow menu (编辑 / 转换为其他格式) — keeps
+            // the bottom of the preview clean (only Close).
+            val overflowBtn = ImageButton(activity).apply {
+                setImageResource(R.drawable.ic_overflow)
+                setBackgroundColor(0x00000000)
+                setColorFilter(C["accent"]!!)
+                setPadding(10, 10, 10, 10)
+                contentDescription = activity.getString(R.string.action_more)
+                setOnClickListener { v ->
+                    PopupMenu(activity, v).apply {
+                        menu.add(0, 1, 0, activity.getString(R.string.action_edit)).setOnMenuItemClickListener { d.dismiss(); showImageEditor(activity, file); true }
+                        menu.add(0, 2, 0, activity.getString(R.string.img_convert_menu)).setOnMenuItemClickListener { d.dismiss(); showImageConvert(activity, file); true }
+                        show()
+                    }
+                }
+            }
+            val title = TextView(activity).apply {
+                text = file.name
+                setTextColor(C["primary"]!!)
+                textSize = 16f
+                setSingleLine(true)
+                ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            }
+            val topBar = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(10, 4, 8, 4)
+                addView(title, LinearLayout.LayoutParams(0, WRAP, 1f))
+                addView(overflowBtn, LinearLayout.LayoutParams((40 * activity.resources.displayMetrics.density).toInt(), (40 * activity.resources.displayMetrics.density).toInt()))
+            }
+            val root = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(topBar)
+                addView(scroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+            }
+            d = AlertDialog.Builder(activity)
+                .setView(root)
                 .setPositiveButton(activity.getString(R.string.action_close), null)
-                .show()
+                .create()
+            (activity as? MainActivity)?.resetPagerInputOnDialogDismiss(d)
+            d.show()
         }
     }
 }
@@ -120,18 +193,18 @@ fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int 
     // dialog — the classic "GBK file read as UTF-8" flow.
     val encRow = TextView(activity)
     encRow.apply {
-        text = activity.getString(R.string.settings_text_encoding) + ": " + encLabels[TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)]
+        text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)] + "  ▾"
         setTextColor(C["accent"]!!)
         textSize = 13f
-        setPadding(16, 10, 16, 10)
-        setBackgroundColor(C["surface"]!!)
+        setPadding(16, 12, 16, 12)
+        setBackgroundColor(C["surface_raised"]!!)
         isClickable = true
         setOnClickListener {
             AlertDialog.Builder(activity)
                 .setTitle(activity.getString(R.string.settings_text_encoding))
                 .setSingleChoiceItems(encLabels, TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)) { d, w ->
                     curEncoding = TEXT_ENCODINGS[w]
-                    encRow.text = activity.getString(R.string.settings_text_encoding) + ": " + encLabels[w]
+                    encRow.text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[w] + "  ▾"
                     prefs?.edit()?.putString("text_encoding", curEncoding)?.apply()
                     d.dismiss()
                     refreshContent()
@@ -336,8 +409,10 @@ fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int 
     // cache temp copy that a save wouldn't repack (the 编辑 flow handles that).
     if (showEdit) builder.setNeutralButton(activity.getString(R.string.action_edit)) { _, _ -> showTextEditor(activity, file, onSaved = onEdited) }
     val dlg = builder.create()
+    (activity as? MainActivity)?.resetPagerInputOnDialogDismiss(dlg)
     val metrics = activity.resources.displayMetrics
-    dlg.window?.setLayout((metrics.widthPixels * 0.92).toInt(), (metrics.heightPixels * 0.85).toInt())
+    val (tw, th) = activity.cappedDialogSize(0.92f, 0.85f)
+    dlg.window?.setLayout(tw, th)
     dlg.show()
 }
 
@@ -351,26 +426,80 @@ fun showTextEditor(activity: AppCompatActivity, file: File, onSaved: (() -> Unit
         Toast.makeText(activity, activity.getString(R.string.msg_editor_too_large), Toast.LENGTH_LONG).show()
         return
     }
-    val data = runCatching { file.readBytes() }.getOrNull()
-    if (data == null) {
-        Toast.makeText(activity, activity.getString(R.string.cannot_read_file, ""), Toast.LENGTH_SHORT).show()
-        return
+    
+    // 临时文件路径 - 使用文件路径哈希避免冲突
+    val tempDir = File(activity.cacheDir, "edit")
+    tempDir.mkdirs()
+    val tempFile = File(tempDir, file.absolutePath.hashCode().toString(16) + "_" + file.name)
+    
+    // 检查是否有未保存的临时文件（异常退出场景）
+    val shouldAskRestore = tempFile.exists() && 
+                           tempFile.lastModified() > file.lastModified() &&
+                           tempFile.length() > 0
+    
+    if (shouldAskRestore) {
+        AlertDialog.Builder(activity)
+            .setTitle(activity.getString(R.string.editor_unsaved_changes))
+            .setMessage(activity.getString(R.string.editor_restore_prompt))
+            .setPositiveButton(activity.getString(R.string.editor_restore)) { _, _ ->
+                val data = runCatching { file.readBytes() }.getOrNull()
+                val content = tempFile.readText()
+                val encoding = if (data != null) detectBestEncoding(data) ?: "UTF-8" else "UTF-8"
+                val bom = if (data != null) hasBom(data) else false
+                openEditorWithContent(activity, content, file, tempFile, onSaved, data ?: content.toByteArray(), encoding, bom)
+            }
+            .setNegativeButton(activity.getString(R.string.editor_discard)) { _, _ ->
+                tempFile.delete()
+                val data = runCatching { file.readBytes() }.getOrNull()
+                if (data != null) {
+                    val encoding = detectBestEncoding(data)
+                        ?: (activity as? MainActivity)?.prefs?.getString("text_encoding", "UTF-8") ?: "UTF-8"
+                    val bom = hasBom(data)
+                    openEditorWithContent(activity, decodeTextStrict(data, encoding), file, tempFile, onSaved, data, encoding, bom)
+                }
+            }
+            .setNeutralButton(activity.getString(R.string.action_cancel), null)
+            .show()
+    } else {
+        val data = runCatching { file.readBytes() }.getOrNull()
+        if (data == null) {
+            Toast.makeText(activity, activity.getString(R.string.cannot_read_file, ""), Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (isTjsBytecode(data)) {
+            Toast.makeText(activity, activity.getString(R.string.msg_tjs_compiled), Toast.LENGTH_LONG).show()
+            return
+        }
+        val encoding = detectBestEncoding(data)
+            ?: (activity as? MainActivity)?.prefs?.getString("text_encoding", "UTF-8") ?: "UTF-8"
+        val bom = hasBom(data)
+        openEditorWithContent(activity, decodeTextStrict(data, encoding), file, tempFile, onSaved, data, encoding, bom)
     }
-    if (isTjsBytecode(data)) {
-        Toast.makeText(activity, activity.getString(R.string.msg_tjs_compiled), Toast.LENGTH_LONG).show()
-        return
-    }
-    val encoding = detectBestEncoding(data)
-        ?: (activity as? MainActivity)?.prefs?.getString("text_encoding", "UTF-8") ?: "UTF-8"
-    val bom = hasBom(data)
-    var initialText = decodeTextStrict(data, encoding)
+}
+
+private fun openEditorWithContent(
+    activity: AppCompatActivity,
+    content: String,
+    originalFile: File,
+    tempFile: File,
+    onSaved: (() -> Unit)?,
+    rawData: ByteArray,
+    encoding: String,
+    bom: Boolean
+) {
+    val editHistory = EditHistory(maxSteps = 30)
+    editHistory.pushState(content)
+    var curEncoding = encoding
+    
     val encLabels = arrayOf(
         activity.getString(R.string.encoding_utf8), activity.getString(R.string.encoding_sjis),
         activity.getString(R.string.encoding_gbk), activity.getString(R.string.encoding_utf16))
-    var curEncoding = encoding
-
+    
+    // 用于抑制程序化setText触发的TextWatcher
+    var suppressWatcher = false
+    
     val et = EditText(activity).apply {
-        setText(initialText)
+        setText(content)
         setTextColor(C["primary"]!!)
         setHintTextColor(C["hint"]!!)
         textSize = 14f
@@ -379,43 +508,103 @@ fun showTextEditor(activity: AppCompatActivity, file: File, onSaved: (() -> Unit
         gravity = android.view.Gravity.TOP or android.view.Gravity.START
         typeface = android.graphics.Typeface.MONOSPACE
         setHorizontallyScrolling(false)
-        // Honor/EMUI NPEs drawing scrollbars on custom views — disable both
-        // (the EditText still scrolls natively on touch).
         isVerticalScrollBarEnabled = false
         isHorizontalScrollBarEnabled = false
     }
+    
+    // 文本变化监听 - 自动保存 + 编辑历史
+    et.addTextChangedListener(object : android.text.TextWatcher {
+        private var previousText = content
+        
+        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
+            previousText = s?.toString() ?: ""
+        }
+        
+        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        
+        override fun afterTextChanged(s: android.text.Editable?) {
+            if (suppressWatcher) return
+            val currentText = s?.toString() ?: ""
+            if (currentText != previousText) {
+                editHistory.pushState(currentText)
+                // 自动保存到临时文件
+                try {
+                    tempFile.writeText(currentText)
+                } catch (_: Exception) {}
+            }
+        }
+    })
+    
     val encRow = TextView(activity)
     encRow.apply {
-        text = activity.getString(R.string.settings_text_encoding) + ": " + encLabels[TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)]
+        text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)] + "  ▾"
         setTextColor(C["accent"]!!)
         textSize = 14f
         setPadding(16, 12, 16, 12)
-        setBackgroundColor(C["surface"]!!)
+        setBackgroundColor(C["surface_raised"]!!)
         isClickable = true
         setOnClickListener {
             AlertDialog.Builder(activity)
                 .setTitle(activity.getString(R.string.settings_text_encoding))
                 .setSingleChoiceItems(encLabels, TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)) { d, w ->
                     curEncoding = TEXT_ENCODINGS[w]
-                    encRow.text = activity.getString(R.string.settings_text_encoding) + ": " + encLabels[w]
-                    // Re-decode the ORIGINAL bytes with the new encoding so the
-                    // displayed text updates instantly (previously it only
-                    // changed on the next open).
-                    initialText = decodeTextStrict(data, curEncoding)
-                    et.setText(initialText)
+                    encRow.text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[w] + "  ▾"
                     d.dismiss()
                 }
                 .setNegativeButton(activity.getString(R.string.action_cancel), null)
                 .show()
         }
     }
-
+    
+    // 撤销/重做按钮
+    val undoRedoRow = LinearLayout(activity).apply {
+        orientation = LinearLayout.HORIZONTAL
+        setPadding(16, 8, 16, 8)
+        setBackgroundColor(C["surface"]!!)
+    }
+    val btnUndo = Button(activity).apply {
+        text = activity.getString(R.string.editor_undo)
+        setTextColor(C["accent"]!!)
+        background = null
+        textSize = 12f
+        isEnabled = false
+    }
+    val btnRedo = Button(activity).apply {
+        text = activity.getString(R.string.editor_redo)
+        setTextColor(C["accent"]!!)
+        background = null
+        textSize = 12f
+        isEnabled = false
+    }
+    undoRedoRow.addView(btnUndo)
+    undoRedoRow.addView(btnRedo)
+    
+    fun updateUndoRedoButtons() {
+        btnUndo.isEnabled = editHistory.canUndo()
+        btnRedo.isEnabled = editHistory.canRedo()
+    }
+    
+    btnUndo.setOnClickListener {
+        suppressWatcher = true
+        editHistory.undo()?.let { et.setText(it) }
+        suppressWatcher = false
+        updateUndoRedoButtons()
+    }
+    
+    btnRedo.setOnClickListener {
+        suppressWatcher = true
+        editHistory.redo()?.let { et.setText(it) }
+        suppressWatcher = false
+        updateUndoRedoButtons()
+    }
+    
+    editHistory.setOnChangeListener { updateUndoRedoButtons() }
+    
     val body = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
         setBackgroundColor(C["surface_dark"]!!)
         addView(encRow)
-        // FrameLayout wraps the EditText with a draggable scrollbar overlay
-        // (Honor-safe; the EditText still scrolls natively on touch).
+        addView(undoRedoRow)
         val dragBar = DragScrollBar(activity).apply { attach(et) }
         val frame = FrameLayout(activity).apply {
             addView(et, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -424,38 +613,74 @@ fun showTextEditor(activity: AppCompatActivity, file: File, onSaved: (() -> Unit
         }
         addView(frame, LinearLayout.LayoutParams(MATCH, 0, 1f))
     }
+    
     val dlg = AlertDialog.Builder(activity)
         .setTitle(activity.getString(R.string.title_text_editor))
         .setView(body)
         .setPositiveButton(activity.getString(R.string.action_save)) { _, _ ->
             val bytes = encodeText(et.text.toString(), curEncoding, bom)
             try {
-                file.writeBytes(bytes)
+                originalFile.writeBytes(bytes)
+                tempFile.delete()  // 正常保存，删除临时文件
                 Toast.makeText(activity, activity.getString(R.string.msg_saved), Toast.LENGTH_SHORT).show()
                 onSaved?.invoke()
             } catch (e: Exception) {
+                // 保存失败时 KEEP 临时文件 — 它是自动保存的恢复副本；删掉会丢掉
+                // 用户的所有未保存编辑，使其无法恢复。
                 Toast.makeText(activity, activity.getString(R.string.err_extract_io, e.message ?: ""), Toast.LENGTH_LONG).show()
             }
         }
-        .setNegativeButton(activity.getString(R.string.action_cancel), null)
+        .setNegativeButton(activity.getString(R.string.editor_no_save)) { _, _ ->
+            tempFile.delete()  // 不保存，也删除临时文件
+        }
         .create()
+    // Back键退出时清理孤立的临时文件。编辑器不需要 pager touch-state reset
+    // (那是归档预览列表的 Honor workaround) — 挂上反而可能在 Honor 上触发
+    // ViewPager relayout 把对话框挤掉，造成"编辑脚本窗口自动退出"。
+    dlg.setOnDismissListener {
+        if (tempFile.exists()) tempFile.delete()
+    }
     val metrics = activity.resources.displayMetrics
-    dlg.window?.setLayout((metrics.widthPixels * 0.92).toInt(), (metrics.heightPixels * 0.85).toInt())
+    val (tw, th) = activity.cappedDialogSize(0.92f, 0.85f)
+    dlg.window?.setLayout(tw, th)
     dlg.show()
 }
 
 fun playAudio(activity: AppCompatActivity, file: File) {
     try {
+        // 释放之前的MediaPlayer
+        (activity as? MainActivity)?.currentMediaPlayer?.release()
+        
         val mp = MediaPlayer().apply {
+            setAudioAttributes(android.media.AudioAttributes.Builder()
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                .build())
             setDataSource(file.path)
             prepare()
             start()
         }
+        
+        // 保存引用到Activity
+        (activity as? MainActivity)?.currentMediaPlayer = mp
+        
+        var released = false
+        val safeRelease = {
+            if (!released) {
+                released = true
+                mp.release()
+                (activity as? MainActivity)?.currentMediaPlayer = null
+            }
+        }
+        
+        // 播放完成时释放MediaPlayer
+        mp.setOnCompletionListener { safeRelease() }
+        
         AlertDialog.Builder(activity)
             .setTitle(activity.getString(R.string.title_audio_player, file.name))
             .setMessage(activity.getString(R.string.msg_audio_playing))
-            .setPositiveButton(activity.getString(R.string.action_stop)) { _, _ -> mp.release() }
-            .setOnDismissListener { mp.release() }
+            .setPositiveButton(activity.getString(R.string.action_stop)) { _, _ -> safeRelease() }
+            .setOnDismissListener { safeRelease() }
             .show()
     } catch (e: Exception) {
         Toast.makeText(activity, activity.getString(R.string.err_audio_playback, e.message ?: ""), Toast.LENGTH_SHORT).show()
@@ -469,7 +694,7 @@ fun playVideo(activity: AppCompatActivity, file: File) {
         val uri = androidx.core.content.FileProvider.getUriForFile(
             activity, "${activity.packageName}.fileprovider", file)
         activity.startActivity(Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "video/mp4")
+            setDataAndType(uri, "video/*")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         })

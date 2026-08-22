@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tablets / large screens: enable master-detail (file list + preview). -->
+    <bool name="is_wide">true</bool>
+</resources>

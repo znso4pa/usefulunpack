@@ -3,9 +3,13 @@ name = "archive_zip_core"
 version.workspace = true
 edition.workspace = true
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 [dependencies]
 archive_common = { path = "../common" }
 jni = "0.21"
-zip = "3"
+zip = { version = "3", features = ["lzma"] }
 encoding_rs = { version = "0.8", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+serde_json = "1"
+sha2 = "0.10"

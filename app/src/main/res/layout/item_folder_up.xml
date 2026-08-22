@@ -2,18 +2,19 @@
 <!-- "Parent directory" row shown at the top of the folder picker -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="48dp"
+    android:layout_height="@dimen/row_setting"
     android:orientation="horizontal"
     android:gravity="center_vertical"
     android:background="?attr/selectableItemBackground"
-    android:paddingStart="12dp"
-    android:paddingEnd="12dp">
+    android:paddingStart="@dimen/space_lg"
+    android:paddingEnd="@dimen/space_lg">
 
     <ImageView
-        android:layout_width="28dp"
-        android:layout_height="28dp"
+        android:layout_width="@dimen/icon_list"
+        android:layout_height="@dimen/icon_list"
         android:src="@drawable/ic_back"
         android:tint="@color/text_secondary"
+        android:scaleType="centerInside"
         android:importantForAccessibility="no" />
 
     <TextView
@@ -21,8 +22,8 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="1"
-        android:layout_marginStart="8dp"
-        android:textSize="15sp"
+        android:layout_marginStart="@dimen/space_sm"
+        android:textSize="@dimen/text_xl"
         android:textColor="@color/text_secondary" />
 
 </LinearLayout>

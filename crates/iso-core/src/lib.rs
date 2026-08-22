@@ -17,6 +17,12 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
     })
 }
 
+/// Host-side (non-JNI) extraction entry point.
+#[doc(hidden)]
+pub fn extract_iso_host(input: &str, output: &str) -> Result<(u32, u32), String> {
+    extract_iso_all(input, output)
+}
+
 // ─── ISO 9660 ────────────────────────────────
 
 // Iterative DFS — deeply nested ISO trees can't overflow the stack.
@@ -51,8 +57,12 @@ fn extract_iso_one(file: &mut std::fs::File, node: &isomage::TreeNode, output: &
     let dest = safe_join(output, rel_path)?;
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
     let mut out = ProgressWriter::extract(std::fs::File::create(&dest).map_err(|e| format!("{e}"))?);
-    isomage::cat_node(file, node, &mut out).map_err(|e| format!("{e}"))?;
-    Ok(())
+    let r = isomage::cat_node(file, node, &mut out).map_err(|e| format!("{e}"));
+    if r.is_err() {
+        // Don't leave a half-written file on disk.
+        let _ = fs::remove_file(&dest);
+    }
+    r
 }
 
 fn extract_iso_all(input: &str, output: &str) -> Result<(u32, u32), String> {
@@ -80,6 +90,9 @@ fn extract_iso_selected(input: &str, output: &str, selected: &str) -> Result<(u3
     let mut file = std::fs::File::open(input).map_err(|e| format!("{e}"))?;
     let root = isomage::detect_and_parse_filesystem(&mut file, input).map_err(|e| format!("ISO: {e}"))?;
     let map = iso_map(&root);
+    // O(1) lookups instead of a linear scan per expanded path.
+    let by_path: std::collections::HashMap<&str, &isomage::TreeNode> =
+        map.iter().map(|(p, n)| (p.as_str(), *n)).collect();
     let mut expanded = HashSet::new();
     for s in &sel_set {
         let key = s.trim_start_matches('/');
@@ -87,12 +100,12 @@ fn extract_iso_selected(input: &str, output: &str, selected: &str) -> Result<(u3
         let prefix = format!("{key}/");
         for (p, _) in &map { if p.starts_with(&prefix) { expanded.insert(p.clone()); } }
     }
-    extract_progress::reset(expanded.iter().filter(|p| map.iter().any(|(mp, n)| mp == *p && !n.is_directory)).map(|p| map.iter().find(|(mp, n)| mp == p && !n.is_directory).map(|(_, n)| n.size).unwrap_or(0)).sum());
+    extract_progress::reset(expanded.iter().filter_map(|p| by_path.get(p.as_str())).filter(|n| !n.is_directory).map(|n| n.size).sum());
     let mut fail = 0u32;
     for p in &expanded {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
-        match map.iter().find(|(mp, _)| mp == p) {
-            Some((_, node)) => {
+        match by_path.get(p.as_str()) {
+            Some(node) => {
                 if node.is_directory { continue; }
                 extract_progress::set_name(p);
                 extract_progress::set_file(node.size);
@@ -396,6 +409,9 @@ fn write_iso(root: &IsoDir, output: &str) -> Result<(), String> {
             let mut src = fs::File::open(&f.src).map_err(|e| format!("ISO open {}: {e}", f.src.display()))?;
             src.read_exact(&mut img[start..start + f.size as usize])
                 .map_err(|e| format!("ISO read {}: {e}", f.src.display()))?;
+            compress_progress::add_bytes(f.size);
+            compress_progress::set_name(&f.src.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+            compress_progress::set_file(f.size);
         }
         for d in &dir.dirs { write_node(img, d, dir.sector)?; }
         Ok(())

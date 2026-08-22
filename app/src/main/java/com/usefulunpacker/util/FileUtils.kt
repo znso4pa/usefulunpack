@@ -270,6 +270,17 @@ fun copyToClipboard(context: Context, text: String) {
         .setPrimaryClip(ClipData.newPlainText("", text))
 }
 
+/** Best-effort MIME type for sharing a file (known map + extension table). */
+fun mimeOf(f: File): String {
+    val ext = f.extension.lowercase()
+    android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)?.let { return it }
+    return when (ext) {
+        "txt", "ks", "tjs", "md", "json", "csv", "log", "ini", "cfg", "xml", "yaml", "yml", "toml",
+        "html", "css", "js", "py", "lua", "sh", "java", "kt", "rs" -> "text/plain"
+        else -> "application/octet-stream"
+    }
+}
+
 // ─── Multi-volume detection ───
 
 private val PART_RAR_RE = Regex("""^(.+)\.part(\d+)\.rar$""", RegexOption.IGNORE_CASE)
@@ -431,14 +442,23 @@ fun resolveZipVolumes(f: File): List<File> {
     return listOf(f)
 }
 
-fun volumePathList(src: File, fmt: String): List<File> = when (fmt) {
-    "rar" -> resolveRarVolumes(src)
-    "7z" -> resolveSevenZVolumes(src)
-    "zip" -> resolveZipVolumes(src)
-    else -> listOf(src)
-}
-
 fun volumeJoin(vols: List<File>): String = vols.joinToString("\n") { it.path }
+
+/**
+ * Canonical identity of an archive for the open-registry. Split-volume sets
+ * (`name.zip.001/.002`, `name.7z.001`, `name.part1.rar`, PKWARE `.z01/.z02`)
+ * are normalized to their FIRST part, so every member shares one key — opening
+ * any part while another tab holds the set counts as the same archive.
+ */
+fun archiveKey(src: File): String {
+    val vols = when {
+        isRarVolumeName(src.name) || src.name.lowercase().endsWith(".rar") -> resolveRarVolumes(src)
+        isSevenZVolumeName(src.name) || src.name.lowercase().endsWith(".7z") -> resolveSevenZVolumes(src)
+        isZipVolumeName(src.name) || src.name.lowercase().endsWith(".zip") -> resolveZipVolumes(src)
+        else -> listOf(src)
+    }
+    return (vols.firstOrNull() ?: src).canonicalPath
+}
 
 private fun passwordFormatOf(f: File): String? {
     val n = f.name.lowercase()

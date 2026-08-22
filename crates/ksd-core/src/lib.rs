@@ -83,7 +83,7 @@ fn decompress_mode2(data: &[u8]) -> Result<(Vec<u8>, u64), String> {
     }
     // compressed_len includes the 2-byte zlib header — skip it, then raw deflate
     let deflate_data = &data[16 + 2..16 + compressed_len];
-    let mut dec = DeflateDecoder::new(deflate_data);
+    let dec = DeflateDecoder::new(deflate_data);
     // Cap the DECODED output at the declared size too: a malicious file can
     // declare a small uncompressed_len while carrying a stream that inflates
     // far larger (bomb). Read::take truncates silently to the declared size,

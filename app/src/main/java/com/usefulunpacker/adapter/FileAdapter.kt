@@ -36,7 +36,7 @@ class FileAdapter(
         if (multiSelected_.isNotEmpty()) {
             cb.visibility = View.VISIBLE; cb.isChecked = f in multiSelected_
             cb.isClickable = false; cb.isFocusable = false
-            if (f in multiSelected_) view.setBackgroundColor(0x4035acc6.toInt())
+            if (f in multiSelected_) view.setBackgroundColor(0x3335acc6.toInt())
             else view.setBackgroundColor(0x00000000.toInt())
         } else {
             cb.visibility = View.GONE

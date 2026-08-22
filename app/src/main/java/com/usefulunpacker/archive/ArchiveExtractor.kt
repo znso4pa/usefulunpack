@@ -135,10 +135,6 @@ fun zipVolumesNeedsPassword(src: String): Boolean {
     return if (vols.size > 1) ZipCore.zipVolumesNeedsPassword(volumeJoin(vols)) else ZipCore.zipNeedsPassword(src)
 }
 
-fun rarVolumeList(src: String): String = volumeJoin(resolveRarVolumes(File(src)))
-fun szVolumeList(src: String): String = volumeJoin(resolveSevenZVolumes(File(src)))
-fun zipVolumeList(src: String): String = volumeJoin(resolveZipVolumes(File(src)))
-
 fun extractByFormat(
     format: String, src: String, out: String, selected: String,
     prefs: SharedPreferences, password: String = ""
@@ -165,6 +161,7 @@ fun extractByFormat(
             "zst" -> ZstdCore.zstExtract("", src, out)
             "lzma" -> LzmaCore.lzmaExtract("", src, out)
             "ksd" -> KsdCore.ksdExtract("", src, out)
+            "br" -> BrotliCore.brotliExtract("", src, out)
             "tar" -> if (selected.isEmpty()) TarCore.tarExtract("", src, out)
                      else TarCore.tarExtractSelected("", src, out, selected)
             else -> null

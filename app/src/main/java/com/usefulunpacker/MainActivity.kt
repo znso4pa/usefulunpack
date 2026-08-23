@@ -657,22 +657,36 @@ internal class TabStripAdapter(private val act: MainActivity) :
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             val pd = act.resources.getDimensionPixelSize(R.dimen.space_md)
-            setPadding(pd, pd / 2, (pd * 2 / 3), pd / 2)
+            // 占满 tabList 高度：垂直方向去掉内边距并设为 MATCH_PARENT
+            setPadding(pd, 0, (pd * 2 / 3), 0)
             setBackgroundColor(0x00000000)
+            layoutParams = androidx.recyclerview.widget.RecyclerView.LayoutParams(
+                androidx.recyclerview.widget.RecyclerView.LayoutParams.WRAP_CONTENT,
+                androidx.recyclerview.widget.RecyclerView.LayoutParams.MATCH_PARENT
+            )
         }
+        // 标签图标，颜色在 onBind 中按激活状态统一着色
+        val icon = ImageView(act).apply {
+            setImageResource(R.drawable.ic_tab_pc)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            val sz = (20 * act.resources.displayMetrics.density).toInt()
+            layoutParams = LinearLayout.LayoutParams(sz, sz).apply {
+                rightMargin = act.resources.getDimensionPixelSize(R.dimen.space_xs)
+            }
+        }
+        // 窗口标题文字：小字号（text_xs），紧挨图标
         val label = TextView(act).apply {
-            textSize = act.resources.getDimension(R.dimen.text_xl) / act.resources.displayMetrics.scaledDensity
+            textSize = act.resources.getDimension(R.dimen.text_xs) / act.resources.displayMetrics.scaledDensity
             setPadding(0, 0, act.resources.getDimensionPixelSize(R.dimen.space_sm), 0)
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
-            // Browser-tab feel: bold accent text on an active tab.
-            setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
         }
         val close = TextView(act).apply {
             text = "✕"
             textSize = act.resources.getDimension(R.dimen.text_sm) / act.resources.displayMetrics.scaledDensity
             setPadding(act.resources.getDimensionPixelSize(R.dimen.space_xs), 0, act.resources.getDimensionPixelSize(R.dimen.space_xs), 0)
         }
+        root.addView(icon)
         root.addView(label, LinearLayout.LayoutParams(WRAP, WRAP))
         root.addView(close, LinearLayout.LayoutParams(WRAP, WRAP))
         return VH(root)
@@ -684,23 +698,21 @@ internal class TabStripAdapter(private val act: MainActivity) :
             // Guard: unbind the close/root listeners so a stale holder can't
             // index tabs[position] out of bounds after a tab is removed.
             holder.root.setOnClickListener(null)
-            holder.root.getChildAt(1).setOnClickListener(null)
+            holder.root.getChildAt(2).setOnClickListener(null)
             return
         }
-        val label = holder.root.getChildAt(0) as TextView
-        val close = holder.root.getChildAt(1) as TextView
+        val icon = holder.root.getChildAt(0) as ImageView
+        val label = holder.root.getChildAt(1) as TextView
+        val close = holder.root.getChildAt(2) as TextView
         val isActive = position == act.activeTabIndex
         val thisTab = tabs[position]
+        // 图标颜色与其他图标统一：激活 accent，未激活 tertiary
+        icon.setColorFilter(if (isActive) C["accent"]!! else C["tertiary"]!!)
         label.text = act.tabTitle(thisTab)
         label.setTextColor(if (isActive) C["accent"]!! else C["tertiary"]!!)
-        // Rounded "tab" pill: active tab gets a RAISED (lighter) background so
-        // it reads as a protruding Chrome-style tab, not a sunken one.
+        // Active tab gets a RAISED (lighter) flat background — no stroke, no corner radius.
         holder.root.background = if (isActive) {
-            android.graphics.drawable.GradientDrawable().apply {
-                cornerRadius = 10f * act.resources.displayMetrics.density
-                setColor(C["surface_raised"]!!)
-                setStroke((1 * act.resources.displayMetrics.density).toInt(), C["accent"]!!)
-            }
+            android.graphics.drawable.ColorDrawable(C["surface_raised"]!!)
         } else {
             android.graphics.drawable.ColorDrawable(0x00000000)
         }

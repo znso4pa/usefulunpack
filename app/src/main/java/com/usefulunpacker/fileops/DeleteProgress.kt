@@ -1,14 +1,25 @@
 package com.usefulunpacker
 
-import android.app.ProgressDialog
 import android.content.Context
 import android.content.SharedPreferences
+import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.usefulunpacker.fileops.RecycleBin
 import java.io.File
 import kotlin.concurrent.thread
 
+/**
+ * Moves targets to the recycle bin (or deletes them) with a dual-bar style
+ * card on the shared [OpOverlay] floating layer — the same visual language as
+ * extraction/compression, replacing the old system ProgressDialog (whose
+ * spinner variant told the user nothing and whose modal window froze tabs).
+ *
+ * Bar semantics while recycling: tracks the CURRENT target's files
+ * (indeterminate during its scan/copy until a total is known); the message
+ * line carries the `[i/N]` target counter. No cancel button — a partially
+ * recycled batch can't be undone.
+ */
 fun deleteWithProgress(
     activity: AppCompatActivity,
     targets: List<File>,
@@ -16,70 +27,61 @@ fun deleteWithProgress(
     onDone: (deleted: Int, failed: Int) -> Unit
 ) {
     val recycleEnabled = RecycleBin.isEnabled(prefs)
-    val singleFile = targets.size == 1 && targets[0].isFile
-    val pd = ProgressDialog(activity).apply {
-        setTitle(activity.getString(if (recycleEnabled) R.string.msg_move_to_recycle else R.string.msg_delete_progress))
-        setMessage(activity.getString(R.string.msg_delete_counting))
-        setProgressStyle(if (singleFile) ProgressDialog.STYLE_SPINNER else ProgressDialog.STYLE_HORIZONTAL)
-        if (!singleFile) max = 100
-        setCancelable(false)
-        show()
+    val title = activity.getString(if (recycleEnabled) R.string.msg_move_to_recycle else R.string.msg_delete_progress)
+    // Card belongs to the window that started the deletion.
+    val ownerTabId = (activity as? MainActivity)?.activeTab?.tabId
+    val card = OpOverlay.addCard(activity, title, cancelLabel = null, onCancelClick = { }, ownerTabId = ownerTabId)
+    fun setMessage(text: String) {
+        activity.runOnUiThread { card?.msg?.text = text }
     }
+
     thread {
         if (!OperationLock.acquire()) {
             activity.runOnUiThread {
-                if (!activity.isFinishing) pd.dismiss()
+                card?.let { OpOverlay.removeCard(activity, it) }
                 Toast.makeText(activity, activity.getString(R.string.msg_op_in_progress), Toast.LENGTH_SHORT).show()
             }
             return@thread
         }
         try {
-            if (singleFile) {
-                val f = targets[0]
-                activity.runOnUiThread { pd.setMessage(activity.getString(R.string.msg_deleting_file, f.name)) }
-                val ok = if (recycleEnabled) {
-                    runCatching { RecycleBin.moveToRecycleBin(activity, f) }.getOrDefault(false)
-                } else {
-                    runCatching { f.delete() }.getOrDefault(false)
-                }
+            // Per-target progress: indeterminate during each target's scan,
+            // then real file counts once moveToRecycleBin knows its total.
+            val moveCb = RecycleBin.MoveProgress { done, total ->
                 activity.runOnUiThread {
-                    if (!activity.isFinishing) pd.dismiss()
-                    onDone(if (ok) 1 else 0, if (ok) 0 else 1)
-                }
-            } else {
-                val total = targets.size
-                var deleted = 0
-                var failed = 0
-                var processed = 0
-                for (t in targets) {
-                    if (!t.exists()) { failed++; processed++; continue }
-                    if (recycleEnabled) {
-                        val ok = runCatching { RecycleBin.moveToRecycleBin(activity, t) }.getOrDefault(false)
-                        if (ok) deleted++ else failed++
-                        processed++
-                        val pct = if (total > 0) (processed * 100 / total).coerceAtMost(100) else 100
-                        activity.runOnUiThread {
-                            pd.progress = pct
-                            pd.setMessage(activity.getString(R.string.msg_deleting_file, t.name.takeLast(40)))
-                        }
-                    } else {
-                        runCatching {
-                            t.walkBottomUp().forEach { f ->
-                                if (f.delete()) deleted++ else failed++
-                                processed++
-                            }
-                        }
-                        val pct = if (total > 0) (processed * 100 / total).coerceAtMost(100) else 100
-                        activity.runOnUiThread {
-                            pd.progress = pct
-                            pd.setMessage(activity.getString(R.string.msg_deleting_file, t.name.takeLast(40)))
-                        }
+                    val c = card ?: return@runOnUiThread
+                    if (total > 0) {
+                        c.overallBar.isIndeterminate = false
+                        c.overallBar.max = total
+                        c.overallBar.progress = done.coerceAtMost(total)
                     }
                 }
+            }
+            var deleted = 0
+            var failed = 0
+            var processed = 0
+            for ((idx, t) in targets.withIndex()) {
+                setMessage("[${idx + 1}/${targets.size}] ${t.name.takeLast(40)}")
                 activity.runOnUiThread {
-                    if (!activity.isFinishing) pd.dismiss()
-                    onDone(deleted, failed)
+                    val c = card ?: return@runOnUiThread
+                    c.overallBar.isIndeterminate = true
+                    c.overallBar.progress = 0
                 }
+                if (!t.exists()) { failed++; processed++; continue }
+                if (recycleEnabled) {
+                    val ok = runCatching { RecycleBin.moveToRecycleBin(activity, t, moveCb) }.getOrDefault(false)
+                    if (ok) deleted++ else failed++
+                    processed++
+                } else {
+                    // Direct delete: count per FILE (historical onDone units).
+                    runCatching {
+                        t.walkBottomUp().forEach { f -> if (f.delete()) deleted++ else failed++ }
+                    }
+                    processed++
+                }
+            }
+            activity.runOnUiThread {
+                card?.let { OpOverlay.removeCard(activity, it) }
+                onDone(deleted, failed)
             }
         } finally {
             OperationLock.release()

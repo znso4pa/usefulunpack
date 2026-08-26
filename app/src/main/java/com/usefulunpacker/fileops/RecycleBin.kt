@@ -6,6 +6,7 @@ import com.usefulunpacker.RECYCLE_BIN_CLEAN_INTERVAL_MS
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import kotlin.concurrent.thread
 import java.util.UUID
 
 data class RecycleEntry(
@@ -30,49 +31,113 @@ object RecycleBin {
     fun autoCleanDays(prefs: SharedPreferences): Int =
         prefs.getInt("recycle_bin_auto_clean_days", 30)
 
-    fun moveToRecycleBin(context: Context, file: File): Boolean {
+    /** Per-file progress for the copy fallback of [moveToRecycleBin].
+     *  done/total are files of the CURRENT target (total known after its scan). */
+    fun interface MoveProgress {
+        fun onProgress(done: Int, total: Int)
+    }
+
+    private class ScanResult(val size: Long, val fileCount: Int)
+
+    private fun scanTree(file: File): ScanResult {
+        if (file.isFile) return ScanResult(file.length(), 1)
+        if (!file.isDirectory) return ScanResult(0, 0)
+        var size = 0L
+        var count = 0
+        file.walkBottomUp().forEach { f ->
+            if (f.isFile) { size += runCatching { f.length() }.getOrDefault(0L); count++ }
+        }
+        return ScanResult(size, count)
+    }
+
+    fun moveToRecycleBin(context: Context, file: File, onProgress: MoveProgress? = null): Boolean {
         val dir = recycleDir(context)
         val id = UUID.randomUUID().toString()
         val entryDir = File(dir, id)
-        entryDir.mkdirs()
+        if (!entryDir.mkdirs() && !entryDir.isDirectory) return false
 
-        val meta = JSONObject().apply {
-            put("id", id)
-            put("originalPath", file.absolutePath)
-            put("originalName", file.name)
-            put("deletedAt", System.currentTimeMillis())
-            put("isDirectory", file.isDirectory)
-            put("size", calculateSize(file))
-        }
-        File(entryDir, "_meta.json").writeText(meta.toString(2))
-
-        val dest = File(entryDir, file.name)
-        val success = file.renameTo(dest)
-
-        if (success) {
-            // renameTo成功，直接更新manifest并返回
-            updateManifest(dir) { manifest ->
-                manifest.getJSONArray("entries").put(meta)
+        try {
+            val dest = File(entryDir, file.name)
+            fun baseMeta(): JSONObject = JSONObject().apply {
+                put("id", id)
+                put("originalPath", file.absolutePath)
+                put("originalName", file.name)
+                put("deletedAt", System.currentTimeMillis())
+                put("isDirectory", file.isDirectory)
             }
-            return true
-        }
 
-        // renameTo失败，尝试copy+delete
-        return try {
-            if (file.isDirectory) {
-                file.copyRecursively(dest, overwrite = false)
-                file.deleteRecursively()
-            } else {
-                file.copyTo(dest, overwrite = false)
-                file.delete()
+            // FAST PATH FIRST: a same-volume rename is instant — no prescan.
+            // (The old order walked the whole tree up front, which read as a
+            // multi-second "stuck" bar on big folders.) Size is backfilled in
+            // the background afterwards; the copy fallback below scans for
+            // totals because its progress bar needs them anyway.
+            if (file.renameTo(dest)) {
+                val meta = baseMeta().apply { put("size", 0L) }
+                File(entryDir, "_meta.json").writeText(meta.toString(2))
+                updateManifest(dir) { manifest ->
+                    manifest.getJSONArray("entries").put(meta)
+                }
+                thread {
+                    runCatching {
+                        val s = scanTree(dest)
+                        meta.put("size", s.size)
+                        File(entryDir, "_meta.json").writeText(meta.toString(2))
+                        updateManifest(dir) { m ->
+                            val e = m.getJSONArray("entries")
+                            for (i in 0 until e.length()) {
+                                val o = e.getJSONObject(i)
+                                if (o.optString("id") == id) { o.put("size", s.size); break }
+                            }
+                        }
+                    }
+                }
+                return true
             }
-            updateManifest(dir) { manifest ->
-                manifest.getJSONArray("entries").put(meta)
+
+            // renameTo失败（跨盘）→ copy+delete：先扫描拿总数驱动进度条。
+            // 复制失败必须抛出：吞掉错误再删原树 = 用户文件永久丢失。
+            return try {
+                val scan = scanTree(file)
+                val meta = baseMeta().apply { put("size", scan.size) }
+                File(entryDir, "_meta.json").writeText(meta.toString(2))
+
+                var copyFailed: Exception? = null
+                var done = 0
+                if (file.isDirectory) {
+                    file.walkTopDown().forEach { f ->
+                        if (copyFailed != null) return@forEach
+                        val rel = try { f.relativeTo(file) } catch (e: Exception) { return@forEach }
+                        val out = File(dest, rel.path)
+                        if (f.isDirectory) out.mkdirs()
+                        else {
+                            out.parentFile?.mkdirs()
+                            val ok = runCatching { f.copyTo(out, overwrite = false) }.isSuccess
+                            done++
+                            onProgress?.onProgress(done, scan.fileCount)
+                            if (!ok && copyFailed == null) {
+                                copyFailed = java.io.IOException("copy failed: ${f.path}")
+                            }
+                        }
+                    }
+                    if (copyFailed != null) throw copyFailed!!
+                    file.deleteRecursively()
+                } else {
+                    file.copyTo(dest, overwrite = false)
+                    onProgress?.onProgress(1, 1)
+                    file.delete()
+                }
+                updateManifest(dir) { manifest ->
+                    manifest.getJSONArray("entries").put(meta)
+                }
+                true
+            } catch (e: Exception) {
+                entryDir.deleteRecursively()
+                false
             }
-            true
         } catch (e: Exception) {
+            // Scan/meta-write failures must honor the Boolean contract too.
             entryDir.deleteRecursively()
-            false
+            return false
         }
     }
 
@@ -82,7 +147,10 @@ object RecycleBin {
         val metaFile = File(entryDir, "_meta.json")
         if (!metaFile.exists()) return false
 
-        val meta = JSONObject(metaFile.readText())
+        // A truncated/corrupted meta file must not kill the caller's worker
+        // thread (restore runs on a bare thread{} — an uncaught throw there
+        // takes down the process); report as a failed restore instead.
+        val meta = try { JSONObject(metaFile.readText()) } catch (e: Exception) { return false }
         val originalPath = File(meta.getString("originalPath"))
         val originalName = meta.getString("originalName")
 
@@ -209,22 +277,45 @@ object RecycleBin {
         }
 
         val entries = manifest.getJSONArray("entries")
-        return (0 until entries.length()).map { i ->
-            val e = entries.getJSONObject(i)
-            RecycleEntry(
-                id = e.getString("id"),
-                originalPath = File(e.getString("originalPath")),
-                originalName = e.getString("originalName"),
-                deletedAt = e.getLong("deletedAt"),
-                isDirectory = e.getBoolean("isDirectory"),
-                size = e.optLong("size", 0)
-            )
-        }.sortedByDescending { it.deletedAt }
+        return try {
+            (0 until entries.length()).map { i ->
+                val e = entries.getJSONObject(i)
+                RecycleEntry(
+                    id = e.getString("id"),
+                    originalPath = File(e.getString("originalPath")),
+                    originalName = e.getString("originalName"),
+                    deletedAt = e.getLong("deletedAt"),
+                    isDirectory = e.getBoolean("isDirectory"),
+                    size = e.optLong("size", 0)
+                )
+            }.sortedByDescending { it.deletedAt }
+        } catch (e: Exception) { emptyList() }
     }
 
     fun getUsedSize(context: Context): Long {
+        // Sum the recorded per-entry sizes instead of walking the tree — the
+        // bin regularly holds fully-extracted multi-GB packages, and a full
+        // walk read as "recycle bin stuck" in settings.
         val dir = recycleDir(context)
-        return if (dir.exists()) dir.walkBottomUp().filter { it.isFile }.sumOf { it.length() } else 0
+        if (!dir.exists()) return 0
+        val manifest = readManifest(dir)
+        if (manifest != null) {
+            val entries = manifest.getJSONArray("entries")
+            var sum = 0L
+            for (i in 0 until entries.length()) {
+                sum += entries.optJSONObject(i)?.optLong("size", 0) ?: 0L
+            }
+            return sum
+        }
+        // No manifest: fall back to per-entry meta files (still no tree walk).
+        var sum = 0L
+        dir.listFiles()?.filter { it.isDirectory && it.name != "." && it.name != ".." }?.forEach { entryDir ->
+            val metaFile = File(entryDir, "_meta.json")
+            if (metaFile.exists()) {
+                runCatching { sum += JSONObject(metaFile.readText()).optLong("size", 0) }
+            }
+        }
+        return sum
     }
 
     fun getItemCount(context: Context): Int {
@@ -233,11 +324,6 @@ object RecycleBin {
         return manifest.getJSONArray("entries").length()
     }
 
-    private fun calculateSize(file: File): Long {
-        return if (file.isFile) file.length()
-        else if (file.isDirectory) file.walkBottomUp().filter { it.isFile }.sumOf { it.length() }
-        else 0
-    }
 
     private fun uniqueFile(dir: File, name: String): File {
         var candidate = File(dir, name)

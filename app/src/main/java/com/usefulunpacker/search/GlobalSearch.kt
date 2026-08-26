@@ -146,7 +146,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                     ?: searchSourceArchive?.let { SearchExtractSource(it, relPath, cacheBase, searchSourcePassword ?: "") }
                     ?: return@OnItemClickListener
                 // Lock first, then the dual progress dialog (consistent with extractAll).
-                if (!tryStartOperation(this)) return@OnItemClickListener
+                val opH = tryStartOperation(this, fmt)
                 var cancelled = false
                 val accessors = extractAccessors(fmt)
                 val pd = PollingProgressDialog(
@@ -155,18 +155,21 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                     accessors,
                     { n, b, t -> extractProgressMessage(this, n, b, t) },
                     getString(R.string.action_cancel),
-                    { cancelled = true; accessors.cancel() }
+                    { cancelled = true; accessors.cancel() },
+                    opH
                 )
                 pd.start()
                 thread {
+                    if (!opH.await()) return@thread
                     try {
                         extractByFormat(fmt, src.archive.path, src.outDir.path, src.internalPath, prefs, src.password)
                         runOnUiThread {
                             pd.dismiss()
+                            if (isFinishing || isDestroyed) return@runOnUiThread
                             if (cancelled) toast(getString(R.string.msg_cancelled)) else previewClickedFile(r, queryText)
                         }
                     } finally {
-                        OperationLock.release()
+                        opH.release()
                     }
                 }
             } else {
@@ -196,8 +199,11 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
 
         // Launch search
         fun doSearch(query: String, mode: Int, maxFileSize: Long, isContinue: Boolean = false) {
-            searchThread?.interrupt()
+            // Validate BEFORE interrupting the running thread: an empty keyword
+            // used to kill the old search and return, leaving the spinner and
+            // "scanning" stats stuck forever.
             if (query.isEmpty()) { toast(getString(R.string.msg_enter_keyword)); return }
+            searchThread?.interrupt()
             currentMaxFileSize = maxFileSize
             useRegex = cbRegex.isChecked
             caseSensitive = cbCaseSensitive.isChecked

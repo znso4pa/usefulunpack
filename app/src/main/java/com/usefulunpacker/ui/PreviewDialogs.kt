@@ -15,7 +15,9 @@ import kotlin.concurrent.thread
 
 /** Decodes an image as a static Bitmap capped to [maxPx] on the longest side
  *  (sampled), safe for very large files. GIF/WebP yield their first frame.
- *  Returns null on failure; safe off the UI thread. */
+ *  Returns null on failure; safe off the UI thread.
+ *  EXIF orientation: the ImageDecoder branch (API 28+) rotates automatically;
+ *  the BitmapFactory fallback (API 26/27) gets an explicit re-rotation below. */
 fun decodeBitmapCapped(file: File, maxPx: Int): Bitmap? {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         try {
@@ -42,8 +44,30 @@ private fun decodeBitmapSampled(file: File, maxPx: Int): Bitmap? {
         var s = 1
         while (bounds.outWidth / (s * 2) >= maxPx && bounds.outHeight / (s * 2) >= maxPx) s *= 2
         val opt = BitmapFactory.Options().apply { inSampleSize = s }
-        BitmapFactory.decodeFile(file.path, opt)
+        BitmapFactory.decodeFile(file.path, opt)?.let { exifRotate(file, it) }
     } catch (_: Exception) { null }
+}
+
+/** Pre-API-28 BitmapFactory ignores EXIF orientation, so photos shot in
+ *  portrait render sideways. Re-apply the common camera rotations (90/180/
+ *  270; mirrored variants are vanishingly rare and left untouched). */
+private fun exifRotate(file: File, bmp: Bitmap): Bitmap {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) return bmp // ImageDecoder already rotated
+    val degrees = try {
+        when (androidx.exifinterface.media.ExifInterface(file.path).getAttributeInt(
+            androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL)) {
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+    } catch (_: Exception) { return bmp }
+    if (degrees == 0f) return bmp
+    return try {
+        val m = android.graphics.Matrix().apply { postRotate(degrees) }
+        Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+    } catch (_: Exception) { bmp }
 }
 
 fun previewLocalFile(activity: AppCompatActivity, f: File) {
@@ -75,7 +99,7 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
             BitmapFactory.decodeFile(file.path, bounds)
             if (bounds.outWidth <= 0) return null
             val opt = BitmapFactory.Options().apply { inSampleSize = sampleFor(bounds.outWidth, bounds.outHeight) }
-            return BitmapFactory.decodeFile(file.path, opt)?.let { android.graphics.drawable.BitmapDrawable(activity.resources, it) }
+            return BitmapFactory.decodeFile(file.path, opt)?.let { android.graphics.drawable.BitmapDrawable(activity.resources, exifRotate(file, it)) }
         }
         val drawable = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
@@ -90,6 +114,9 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
             decodeSampled()
         }
         activity.runOnUiThread {
+            // Large images can take seconds to decode — the activity may be
+            // gone by the time this runs (BadTokenException otherwise).
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
             if (drawable == null) {
                 Toast.makeText(activity, activity.getString(R.string.msg_cannot_decode), Toast.LENGTH_SHORT).show()
                 return@runOnUiThread
@@ -156,16 +183,38 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
 }
 
 fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int = 0, highlightQuery: String = "", showEdit: Boolean = true, onEdited: (() -> Unit)? = null) {
+    // Prefix read + encoding sniffing hit slow storage (1 MiB cap + double
+    // decode) — do them off the main thread behind a loading dialog, then
+    // build the preview UI on main. A finished activity just drops the result.
+    val pd = android.app.ProgressDialog(activity).apply {
+        setMessage(activity.getString(R.string.msg_loading)); setCancelable(false); show()
+    }
+    thread {
+        val prefs = (activity as? MainActivity)?.prefs
+        val data = runCatching { readPrefix(file, 1 shl 20) }.getOrNull()
+        activity.runOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            pd.dismiss()
+            if (data == null) {
+                Toast.makeText(activity, activity.getString(R.string.cannot_read_file, ""), Toast.LENGTH_SHORT).show()
+                return@runOnUiThread
+            }
+            // Compiled TJS2 scripts are binary bytecode, not text — a clear message
+            // beats a garbled preview.
+            if (isTjsBytecode(data)) {
+                Toast.makeText(activity, activity.getString(R.string.msg_tjs_compiled), Toast.LENGTH_LONG).show()
+                return@runOnUiThread
+            }
+            showTextPreviewLoaded(activity, file, data, highlightLine, highlightQuery, showEdit, onEdited)
+        }
+    }
+}
+
+/** Main-thread UI half of [showTextPreview], invoked once the bytes are in. */
+private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data: ByteArray, highlightLine: Int, highlightQuery: String, showEdit: Boolean, onEdited: (() -> Unit)?) {
     // Strict decode with the user-chosen global text encoding (BOM-aware
     // UTF-8/UTF-16, REPLACE for invalid bytes — see decodeTextStrict).
     val prefs = (activity as? MainActivity)?.prefs
-    val data = readPrefix(file, 1 shl 20)
-    // Compiled TJS2 scripts are binary bytecode, not text — a clear message
-    // beats a garbled preview.
-    if (isTjsBytecode(data)) {
-        Toast.makeText(activity, activity.getString(R.string.msg_tjs_compiled), Toast.LENGTH_LONG).show()
-        return
-    }
     // Auto-detect the encoding: BOM (UTF-16/UTF-8) wins, then strict UTF-8,
     // then a Shift-JIS vs GBK heuristic; fall back to the global pref when
     // nothing is confident.
@@ -442,38 +491,51 @@ fun showTextEditor(activity: AppCompatActivity, file: File, onSaved: (() -> Unit
             .setTitle(activity.getString(R.string.editor_unsaved_changes))
             .setMessage(activity.getString(R.string.editor_restore_prompt))
             .setPositiveButton(activity.getString(R.string.editor_restore)) { _, _ ->
-                val data = runCatching { file.readBytes() }.getOrNull()
-                val content = tempFile.readText()
-                val encoding = if (data != null) detectBestEncoding(data) ?: "UTF-8" else "UTF-8"
-                val bom = if (data != null) hasBom(data) else false
-                openEditorWithContent(activity, content, file, tempFile, onSaved, data ?: content.toByteArray(), encoding, bom)
+                loadAndOpenEditor(activity, file, tempFile, onSaved, useTempContent = true)
             }
             .setNegativeButton(activity.getString(R.string.editor_discard)) { _, _ ->
                 tempFile.delete()
-                val data = runCatching { file.readBytes() }.getOrNull()
-                if (data != null) {
-                    val encoding = detectBestEncoding(data)
-                        ?: (activity as? MainActivity)?.prefs?.getString("text_encoding", "UTF-8") ?: "UTF-8"
-                    val bom = hasBom(data)
-                    openEditorWithContent(activity, decodeTextStrict(data, encoding), file, tempFile, onSaved, data, encoding, bom)
-                }
+                loadAndOpenEditor(activity, file, tempFile, onSaved, useTempContent = false)
             }
             .setNeutralButton(activity.getString(R.string.action_cancel), null)
             .show()
     } else {
+        loadAndOpenEditor(activity, file, tempFile, onSaved, useTempContent = false)
+    }
+}
+
+/** Shared loader for [showTextEditor]: reads the source (and optionally the
+ *  autosave copy) off the main thread behind a loading dialog, then opens the
+ *  editor on main. Keeps the per-branch semantics of the old inline code. */
+private fun loadAndOpenEditor(activity: AppCompatActivity, file: File, tempFile: File, onSaved: (() -> Unit)?, useTempContent: Boolean) {
+    val pd = android.app.ProgressDialog(activity).apply {
+        setMessage(activity.getString(R.string.msg_loading)); setCancelable(false); show()
+    }
+    thread {
         val data = runCatching { file.readBytes() }.getOrNull()
-        if (data == null) {
-            Toast.makeText(activity, activity.getString(R.string.cannot_read_file, ""), Toast.LENGTH_SHORT).show()
-            return
+        val tempContent = if (useTempContent) runCatching { tempFile.readText() }.getOrNull() else null
+        activity.runOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            pd.dismiss()
+            if (useTempContent && tempContent != null) {
+                val encoding = if (data != null) detectBestEncoding(data) ?: "UTF-8" else "UTF-8"
+                val bom = if (data != null) hasBom(data) else false
+                openEditorWithContent(activity, tempContent, file, tempFile, onSaved, data ?: tempContent.toByteArray(), encoding, bom)
+                return@runOnUiThread
+            }
+            if (data == null) {
+                Toast.makeText(activity, activity.getString(R.string.cannot_read_file, ""), Toast.LENGTH_SHORT).show()
+                return@runOnUiThread
+            }
+            if (!useTempContent && isTjsBytecode(data)) {
+                Toast.makeText(activity, activity.getString(R.string.msg_tjs_compiled), Toast.LENGTH_LONG).show()
+                return@runOnUiThread
+            }
+            val encoding = detectBestEncoding(data)
+                ?: (activity as? MainActivity)?.prefs?.getString("text_encoding", "UTF-8") ?: "UTF-8"
+            val bom = hasBom(data)
+            openEditorWithContent(activity, decodeTextStrict(data, encoding), file, tempFile, onSaved, data, encoding, bom)
         }
-        if (isTjsBytecode(data)) {
-            Toast.makeText(activity, activity.getString(R.string.msg_tjs_compiled), Toast.LENGTH_LONG).show()
-            return
-        }
-        val encoding = detectBestEncoding(data)
-            ?: (activity as? MainActivity)?.prefs?.getString("text_encoding", "UTF-8") ?: "UTF-8"
-        val bom = hasBom(data)
-        openEditorWithContent(activity, decodeTextStrict(data, encoding), file, tempFile, onSaved, data, encoding, bom)
     }
 }
 
@@ -512,6 +574,16 @@ private fun openEditorWithContent(
         isHorizontalScrollBarEnabled = false
     }
     
+    // 自动保存防抖：停止输入 500ms 后才落盘（后台线程），避免每个按键都
+    // 在 UI 线程同步写文件造成卡顿。保存/放弃前必须 cancelPendingAutosave()，
+    // 否则挂起的写入会把刚删掉的临时文件又"复活"成过期副本。
+    val autosaveHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    var autosavePending: Runnable? = null
+    fun cancelPendingAutosave() {
+        autosavePending?.let { autosaveHandler.removeCallbacks(it) }
+        autosavePending = null
+    }
+    
     // 文本变化监听 - 自动保存 + 编辑历史
     et.addTextChangedListener(object : android.text.TextWatcher {
         private var previousText = content
@@ -527,10 +599,14 @@ private fun openEditorWithContent(
             val currentText = s?.toString() ?: ""
             if (currentText != previousText) {
                 editHistory.pushState(currentText)
-                // 自动保存到临时文件
-                try {
-                    tempFile.writeText(currentText)
-                } catch (_: Exception) {}
+                // 自动保存到临时文件（防抖 + 后台写）
+                cancelPendingAutosave()
+                val snapshot = currentText
+                val r = Runnable {
+                    thread { try { tempFile.writeText(snapshot) } catch (_: Exception) {} }
+                }
+                autosavePending = r
+                autosaveHandler.postDelayed(r, 500)
             }
         }
     })
@@ -621,6 +697,7 @@ private fun openEditorWithContent(
             val bytes = encodeText(et.text.toString(), curEncoding, bom)
             try {
                 originalFile.writeBytes(bytes)
+                cancelPendingAutosave()
                 tempFile.delete()  // 正常保存，删除临时文件
                 Toast.makeText(activity, activity.getString(R.string.msg_saved), Toast.LENGTH_SHORT).show()
                 onSaved?.invoke()
@@ -631,15 +708,13 @@ private fun openEditorWithContent(
             }
         }
         .setNegativeButton(activity.getString(R.string.editor_no_save)) { _, _ ->
-            tempFile.delete()  // 不保存，也删除临时文件
+            cancelPendingAutosave()
+            tempFile.delete()  // 明确不保存，删除临时文件
         }
         .create()
-    // Back键退出时清理孤立的临时文件。编辑器不需要 pager touch-state reset
-    // (那是归档预览列表的 Honor workaround) — 挂上反而可能在 Honor 上触发
-    // ViewPager relayout 把对话框挤掉，造成"编辑脚本窗口自动退出"。
-    dlg.setOnDismissListener {
-        if (tempFile.exists()) tempFile.delete()
-    }
+    // back 键退出时【不】清理临时文件：它是自动保存的恢复副本，下次打开同一
+    // 文件时会弹「恢复上次编辑」引导（用户可选恢复或放弃，那里负责真正清理）。
+    // 此前这里无条件删除，保存失败后对话框一关恢复副本就没了。
     val metrics = activity.resources.displayMetrics
     val (tw, th) = activity.cappedDialogSize(0.92f, 0.85f)
     dlg.window?.setLayout(tw, th)
@@ -647,43 +722,53 @@ private fun openEditorWithContent(
 }
 
 fun playAudio(activity: AppCompatActivity, file: File) {
-    try {
-        // 释放之前的MediaPlayer
-        (activity as? MainActivity)?.currentMediaPlayer?.release()
-        
-        val mp = MediaPlayer().apply {
-            setAudioAttributes(android.media.AudioAttributes.Builder()
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
-                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                .build())
-            setDataSource(file.path)
-            prepare()
-            start()
+    val m = activity as? MainActivity
+    // 释放之前的MediaPlayer
+    m?.currentMediaPlayer?.let { old -> m.currentMediaPlayer = null; old.release() }
+
+    // prepare() 可能阻塞数百毫秒到数秒（大文件/慢存储）——必须离开主线程，
+    // 否则输入事件堆积有 ANR 风险。对话框先弹，就绪后才开始计数。
+    val dlg = AlertDialog.Builder(activity)
+        .setTitle(activity.getString(R.string.title_audio_player, file.name))
+        .setMessage(activity.getString(R.string.msg_audio_playing))
+        .setPositiveButton(activity.getString(R.string.action_stop), null)
+        .setOnDismissListener {
+            // 停止/返回键/手动 dismiss 统一在这里释放（按引用比对，防止
+            // 与 OnCompletionListener 双重释放）。
+            m?.currentMediaPlayer?.let { cur -> m.currentMediaPlayer = null; cur.release() }
         }
-        
-        // 保存引用到Activity
-        (activity as? MainActivity)?.currentMediaPlayer = mp
-        
-        var released = false
-        val safeRelease = {
-            if (!released) {
-                released = true
-                mp.release()
-                (activity as? MainActivity)?.currentMediaPlayer = null
+        .show()
+
+    thread {
+        try {
+            val mp = MediaPlayer().apply {
+                setAudioAttributes(android.media.AudioAttributes.Builder()
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .build())
+                setDataSource(file.path)
+                prepare()
+                start()
+            }
+            activity.runOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed || !dlg.isShowing) {
+                    mp.release(); return@runOnUiThread
+                }
+                m?.currentMediaPlayer = mp
+                mp.setOnCompletionListener { done ->
+                    if (m?.currentMediaPlayer === done) {
+                        m.currentMediaPlayer = null
+                        done.release()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            activity.runOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                dlg.dismiss()
+                Toast.makeText(activity, activity.getString(R.string.err_audio_playback, e.message ?: ""), Toast.LENGTH_SHORT).show()
             }
         }
-        
-        // 播放完成时释放MediaPlayer
-        mp.setOnCompletionListener { safeRelease() }
-        
-        AlertDialog.Builder(activity)
-            .setTitle(activity.getString(R.string.title_audio_player, file.name))
-            .setMessage(activity.getString(R.string.msg_audio_playing))
-            .setPositiveButton(activity.getString(R.string.action_stop)) { _, _ -> safeRelease() }
-            .setOnDismissListener { safeRelease() }
-            .show()
-    } catch (e: Exception) {
-        Toast.makeText(activity, activity.getString(R.string.err_audio_playback, e.message ?: ""), Toast.LENGTH_SHORT).show()
     }
 }
 

@@ -1,12 +1,19 @@
 package com.usefulunpacker
 
 import android.app.Dialog
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.usefulunpacker.archive.OpScheduler
+import com.usefulunpacker.archive.etaLabel
 import kotlin.concurrent.thread
 
 class ProgressAccessors(
@@ -60,15 +67,183 @@ fun compressAccessors(fmt: String): ProgressAccessors = when (fmt) {
 }
 
 /**
- * Dual progress dialog driven by polling the per-format JNI statics,
- * shared by both extraction and compression flows.
+ * In-window floating layer hosting operation progress cards.
  *
- * Top bar = overall (全量) progress; bottom bar = current file progress,
- * shown only when the current member is large enough (or indeterminate when
- * its size is unknown) to avoid flicker on many small files.
+ * Why not a Dialog: a dialog window covers the whole screen, which used to
+ * freeze tab switching during extraction/compression. This layer lives INSIDE
+ * the activity's view tree:
  *
- * `onCancel` is invoked when the user taps cancel (the dialog stays up until
- * the worker thread finishes and calls [dismiss]).
+ *   ┌────────────────────────┐
+ *   │ toolbar                │ ← everything EXCEPT the progress card passes
+ *   │ tab strip [1][2][+]    │   touches fall through to the real widgets
+ *   ├────────────────────────┤
+ *   │ ░░ scrim ░░░░░░░░░░░░  │  (clickable: blocks the content underneath)
+ *   │ ░░ ┌────────────┐ ░░░  │
+ *   │ ░░ │ dual bars  │ ░░░  │  centered within the REMAINING area
+ *   │ ░░ └────────────┘ ░░░  │  ("不算标签栏的居中")
+ *   │ ░░ ┌────────────┐ ░░░  │
+ *   │ ░░ │ queued op  │ ░░░  │  concurrent ops stack vertically
+ *   │ ░░ └────────────┘ ░░░  │
+ *   └────────────────────────┘
+ */
+object OpOverlay {
+    class Card(
+        val root: View,
+        val msg: TextView,
+        val overallBar: ProgressBar,
+        val overallText: TextView,
+        val fileBar: ProgressBar,
+        val fileText: TextView,
+        /** Owning window's tabId — null means "global" (visible on every tab). */
+        val ownerTabId: Int?
+    )
+
+    private const val SCRIM_COLOR = 0x66000000.toInt()
+
+    private fun dp(activity: AppCompatActivity, v: Int): Int =
+        (v * activity.resources.displayMetrics.density).toInt()
+
+    /** Pass-through height = everything above the pager (status+toolbar+tabs). */
+    private fun topInset(activity: AppCompatActivity): Int {
+        val pager = activity.findViewById<View>(R.id.viewPager)
+        if (pager != null && pager.top > 0) return pager.top
+        // Fallback before first layout: status bar + toolbar(56dp) + tabs(50dp)
+        val sb = activity.resources.getIdentifier("status_bar_height", "dimen", "android")
+        val status = if (sb > 0) activity.resources.getDimensionPixelSize(sb) else dp(activity, 24)
+        return status + dp(activity, 106)
+    }
+
+    private fun ensureHost(activity: AppCompatActivity): ViewGroup? {
+        if (activity.isFinishing || activity.isDestroyed) return null
+        val content = activity.findViewById<ViewGroup>(android.R.id.content) ?: return null
+        var host = content.findViewById<ViewGroup>(R.id.op_overlay_host)
+        if (host == null) {
+            val ctx = activity
+            val vertical = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                id = R.id.op_overlay_host
+                isClickable = false
+                isFocusable = false
+            }
+            val spacer = View(ctx).apply { isClickable = false }
+            val scrim = FrameLayout(ctx).apply {
+                // Visual dim only — NOT clickable, so touches fall through and the
+                // user can keep operating OTHER windows (and this one) mid-op.
+                // Only the progress card itself intercepts input.
+                isClickable = false
+                setBackgroundColor(SCRIM_COLOR)
+            }
+            vertical.addView(spacer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, topInset(ctx)))
+            vertical.addView(scrim, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            content.addView(vertical, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            host = vertical
+        }
+        return host
+    }
+
+    /** Adds a dual-bar card; returns null when the activity can't host it. */
+    fun addCard(
+        activity: AppCompatActivity,
+        title: String,
+        cancelLabel: String?,
+        onCancelClick: () -> Unit,
+        ownerTabId: Int? = null
+    ): Card? {
+        val host = ensureHost(activity) ?: return null
+        val scrim = host.getChildAt(1) as? FrameLayout ?: return null
+        var cards = scrim.findViewById<LinearLayout?>(R.id.op_overlay_cards)
+        if (cards == null) {
+            cards = LinearLayout(activity).apply {
+                id = R.id.op_overlay_cards
+                orientation = LinearLayout.VERTICAL
+                gravity = android.view.Gravity.CENTER_HORIZONTAL
+            }
+            scrim.addView(cards, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+
+        val density = activity.resources.displayMetrics.density
+        val wrap = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(activity, 12), dp(activity, 6), dp(activity, 12), dp(activity, 6))
+        }
+        val inner = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(C["surface"] ?: Color.parseColor("#FF2A2A2A"))
+                cornerRadius = 14f * density
+            }
+            setPadding(dp(activity, 18), dp(activity, 14), dp(activity, 18), dp(activity, 10))
+        }
+        LayoutInflater.from(activity).inflate(R.layout.dialog_progress_dual, inner, true)
+        val msg = inner.findViewById<TextView>(R.id.progress_msg)
+        msg.text = title
+        val cancelBtn = inner.findViewById<Button>(R.id.progress_cancel)
+        if (cancelLabel != null) {
+            cancelBtn.visibility = View.VISIBLE
+            cancelBtn.text = cancelLabel
+            cancelBtn.setOnClickListener { onCancelClick() }
+        } else {
+            cancelBtn.visibility = View.GONE
+        }
+        wrap.addView(inner, LinearLayout.LayoutParams(
+            activity.resources.getDimensionPixelSize(R.dimen.dialog_max_width),
+            ViewGroup.LayoutParams.WRAP_CONTENT))
+        // Tag carries the owner for per-tab visibility switches.
+        wrap.tag = ownerTabId
+        cards.addView(wrap)
+        return Card(
+            root = wrap,
+            msg = msg,
+            overallBar = inner.findViewById(R.id.progress_overall),
+            overallText = inner.findViewById(R.id.progress_overall_text),
+            fileBar = inner.findViewById(R.id.progress_file),
+            fileText = inner.findViewById(R.id.progress_file_text),
+            ownerTabId = ownerTabId
+        )
+    }
+
+    /**
+     * Per-tab card scoping: show a card only while its owning window is the
+     * active one (the user asked for "progress goes to background when I
+     * switch tabs"). Cards whose owner tab no longer exists stay VISIBLE so
+     * their cancel affordance can't become unreachable.
+     */
+    fun onActiveTabChanged(activity: AppCompatActivity, activeTabId: Int, liveTabIds: Set<Int>) {
+        activity.runOnUiThread {
+            val host = activity.findViewById<ViewGroup>(R.id.op_overlay_host) ?: return@runOnUiThread
+            val scrim = host.getChildAt(1) as? FrameLayout ?: return@runOnUiThread
+            val cards = scrim.findViewById<LinearLayout>(R.id.op_overlay_cards) ?: return@runOnUiThread
+            for (i in 0 until cards.childCount) {
+                val child = cards.getChildAt(i)
+                val owner = child.tag as? Int
+                child.visibility = if (owner == null || owner == activeTabId || owner !in liveTabIds)
+                    View.VISIBLE else View.GONE
+            }
+        }
+    }
+
+    fun removeCard(activity: AppCompatActivity, card: Card) {
+        val content = activity.findViewById<ViewGroup>(android.R.id.content) ?: return
+        (card.root.parent as? ViewGroup)?.removeView(card.root)
+        val host = content.findViewById<ViewGroup>(R.id.op_overlay_host) ?: return
+        val scrim = host.getChildAt(1) as? FrameLayout
+        val cards = scrim?.findViewById<LinearLayout?>(R.id.op_overlay_cards)
+        if (cards == null || cards.childCount == 0) {
+            content.removeView(host)
+        }
+    }
+}
+
+/**
+ * Operation progress card on the [OpOverlay] floating layer, driven by polling
+ * the per-format JNI statics — shared by extraction and compression flows.
+ *
+ * The original dual-bar look: top bar = overall progress, bottom bar = current
+ * file progress (indeterminate when its size is unknown, hidden while queued).
+ *
+ * Cancel fires ONLY from the explicit 取消 control (touch-outside/back can't).
+ * Queued operations render "⏳ 排队中 第N位" instead of polling foreign statics.
  */
 class PollingProgressDialog(
     private val activity: AppCompatActivity,
@@ -76,55 +251,63 @@ class PollingProgressDialog(
     private val accessors: ProgressAccessors,
     private val messageFn: (name: String, bytes: Long, total: Long) -> String,
     private val cancelLabel: String? = null,
-    private val onCancel: () -> Unit = {}
+    private val onCancel: () -> Unit = {},
+    private val queuedHandle: OpScheduler.OpHandle? = null,
+    /** Card scoping: show only while this window is the active tab (null=global). */
+    private val ownerTab: TabState? = null
 ) {
-    @Volatile private var stopped = false
-    private var dialog: Dialog? = null
-    private lateinit var msgText: TextView
-    private lateinit var overallBar: ProgressBar
-    private lateinit var overallText: TextView
-    private lateinit var fileBar: ProgressBar
-    private lateinit var fileText: TextView
+    /** Kept in the signature for call-site compatibility; the overlay itself
+     *  renders queue position via [queuedLabelText] set by poll ticks. */
+    @Volatile internal var stopped = false
+    private var card: OpOverlay.Card? = null
     private val titleText = title
+    private var handleRef: OpScheduler.OpHandle? = queuedHandle
+
+    /** Routes a UI update onto the card (no-op when headless/gone). */
+    private fun postUi(update: (OpOverlay.Card) -> Unit) {
+        activity.runOnUiThread {
+            if (stopped) return@runOnUiThread
+            val c = card ?: return@runOnUiThread
+            update(c)
+        }
+    }
 
     fun start() {
-        val view = LayoutInflater.from(activity).inflate(R.layout.dialog_progress_dual, null)
-        msgText = view.findViewById(R.id.progress_msg)
-        overallBar = view.findViewById(R.id.progress_overall)
-        overallText = view.findViewById(R.id.progress_overall_text)
-        fileBar = view.findViewById(R.id.progress_file)
-        fileText = view.findViewById(R.id.progress_file_text)
-        msgText.text = titleText
-
-        val d = Dialog(activity, R.style.Theme_UsefulUnpack_Dialog)
-        d.setContentView(view)
-        d.setCancelable(true)
-        // On cancel: signal the worker AND dismiss immediately so the dialog
-        // never appears stuck while the (now-cancelled) operation winds down in
-        // the background and releases the operation lock. dismiss() is a no-op
-        // if the worker already dismissed.
-        d.setOnCancelListener {
+        card = OpOverlay.addCard(activity, titleText, cancelLabel, {
             stopped = true
-            onCancel()
+            cancelQueuedThenNotify()
             dismiss()
-        }
-        if (cancelLabel != null) {
-            val cancelBtn = view.findViewById<Button>(R.id.progress_cancel)
-            cancelBtn.visibility = View.VISIBLE
-            cancelBtn.text = cancelLabel
-            cancelBtn.setOnClickListener {
-                stopped = true
-                onCancel()
-                dismiss()
-            }
-        }
-        dialog = d
-        d.show()
-
+        }, ownerTab?.tabId)
         thread {
             var last = 0L
+            var lastQueueLabel: String? = null
             while (!stopped) {
                 Thread.sleep(200)
+                // Queued phase: the format statics belong to whoever ran last —
+                // show live position/ETA until this op actually starts.
+                val q = handleRef
+                if (q != null && !q.isRunning) {
+                    val label = queuedLabelText(q)
+                    if (label != lastQueueLabel || last != -1L) {
+                        lastQueueLabel = label
+                        last = -1L
+                        postUi { c ->
+                            c.overallBar.isIndeterminate = true
+                            c.overallText.text = ""
+                            c.fileBar.visibility = View.GONE
+                            c.fileText.visibility = View.GONE
+                            c.msg.text = label
+                        }
+                    }
+                    continue
+                }
+                if (last == -1L) {
+                    // Just left the queued phase — restore both bars.
+                    postUi { c ->
+                        c.fileBar.visibility = View.VISIBLE
+                        c.fileText.visibility = View.VISIBLE
+                    }
+                }
                 val cur = accessors.getCount()
                 val tot = accessors.getTotal()
                 val fc = accessors.getFileCount()
@@ -133,41 +316,68 @@ class PollingProgressDialog(
                 if (cur < last) last = 0
                 if (cur != last) {
                     last = cur
-                    activity.runOnUiThread {
-                        val dlg = dialog
-                        if (dlg == null || !dlg.isShowing) return@runOnUiThread
-                        overallBar.max = 100
-                        overallBar.isIndeterminate = tot <= 0
-                        overallBar.progress = if (tot > 0) (cur * 100 / tot).coerceAtMost(100).toInt() else 0
-                        overallText.text = if (tot > 0) "${fmt(cur)} / ${fmt(tot)}" else fmt(cur)
-                        msgText.text = if (name.isNotEmpty()) messageFn(name, cur, tot) else titleText
-                        updateFileBar(fc, ft, name)
+                    postUi { c ->
+                        c.overallBar.max = 100
+                        c.overallBar.isIndeterminate = tot <= 0
+                        c.overallBar.progress = if (tot > 0) (cur * 100 / tot).coerceAtMost(100).toInt() else 0
+                        c.overallText.text = if (tot > 0) "${fmt(cur)} / ${fmt(tot)}" else fmt(cur)
+                        c.msg.text = if (name.isNotEmpty()) messageFn(name, cur, tot) else titleText
+                        updateFileBar(c, fc, ft, name)
                     }
                 }
             }
         }
     }
 
-    private fun updateFileBar(fc: Long, ft: Long, name: String) {
+    /**
+     * Shared cancel path. Ordering matters: dequeue FIRST, and only fire
+     * [onCancel] (which sets the format-global Rust CANCEL flag) when this
+     * operation actually holds the slot — cancelling a merely-QUEUED op must
+     * never kill an unrelated RUNNING same-format op in another window.
+     */
+    private fun cancelQueuedThenNotify() {
+        val q = handleRef
+        if (q == null) {
+            onCancel()
+            return
+        }
+        val wasRunning = q.isRunning
+        q.requestCancel() // no-op once running; dequeues while queued
+        // Promotion may land between the read and the dequeue attempt.
+        if (wasRunning || q.isRunning) onCancel()
+    }
+
+    /** "⏳ 排队中 第N位" (+ ETA when duration history exists for this format). */
+    private fun queuedLabelText(q: OpScheduler.OpHandle): String {
+        val pos = q.position()
+        val eta = q.etaSeconds()
+        return if (eta != null && pos > 0)
+            activity.getString(R.string.msg_op_queued_eta, pos, etaLabel(eta))
+        else
+            activity.getString(R.string.msg_op_queued, pos.coerceAtLeast(1))
+    }
+
+    private fun updateFileBar(c: OpOverlay.Card, fc: Long, ft: Long, name: String) {
         if (ft > 0) {
-            fileBar.visibility = View.VISIBLE
-            fileText.visibility = View.VISIBLE
-            fileBar.isIndeterminate = false
-            fileBar.max = 100
-            fileBar.progress = (fc * 100 / ft).coerceAtMost(100).toInt()
-            fileText.text = "${fmt(fc)} / ${fmt(ft)}"
+            c.fileBar.visibility = View.VISIBLE
+            c.fileText.visibility = View.VISIBLE
+            c.fileBar.isIndeterminate = false
+            c.fileBar.max = 100
+            c.fileBar.progress = (fc * 100 / ft).coerceAtMost(100).toInt()
+            c.fileText.text = "${fmt(fc)} / ${fmt(ft)}"
         } else {
-            // current-file size unknown — show an indeterminate spinner
-            fileBar.visibility = View.VISIBLE
-            fileText.visibility = View.VISIBLE
-            fileBar.isIndeterminate = true
-            fileText.text = name.takeLast(40)
+            // current-file size unknown — indeterminate spinner + name
+            c.fileBar.visibility = View.VISIBLE
+            c.fileText.visibility = View.VISIBLE
+            c.fileBar.isIndeterminate = true
+            c.fileText.text = name.takeLast(40)
         }
     }
 
     fun dismiss() {
         stopped = true
-        val d = dialog
-        if (d != null && d.isShowing) d.dismiss()
+        val c = card
+        card = null
+        if (c != null) OpOverlay.removeCard(activity, c)
     }
 }

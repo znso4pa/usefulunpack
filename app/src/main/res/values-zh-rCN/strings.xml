@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">UsefulUnpack</string>
-    <string name="action_extract">解压</string>
+    <string name="action_extract">📂 解压</string>
     <string name="action_compress">压缩</string>
-    <string name="action_preview">预览</string>
+    <string name="action_preview">🔍 预览</string>
     <string name="action_confirm">确定</string>
     <string name="action_cancel">取消</string>
     <string name="action_edit">编辑</string>
@@ -13,7 +13,7 @@
     <string name="preview_looks_utf8_hint">该文件看起来是 UTF-8 编码——若文字不对,请在 设置→文本编码 切换到 UTF-8</string>
     <string name="msg_editor_too_large">文件过大,无法在应用内编辑(&gt;2MB)</string>
     <string name="msg_tjs_compiled">编译后的 TJS 脚本（TJS2 二进制）,无法按文本预览</string>
-    <string name="edit_archive">编辑</string>
+    <string name="edit_archive">✏️ 编辑</string>
     <string name="action_more">更多</string>
     <string name="edit_only_pack">仅支持可封包的格式（XP3/PFS/ISO/NSA/7Z/YPF）</string>
     <string name="zip_manage_only_zip">仅 ZIP 归档支持条目管理</string>
@@ -53,17 +53,20 @@
     <string name="settings_picker_mode">选择路径/文件方式</string>
     <string name="picker_mode_dialog">直接打开路径界面</string>
     <string name="picker_mode_tab">在新窗口中打开选择</string>
+    <string name="settings_show_memory">显示内存</string>
+    <string name="mem_system">系统</string>
+    <string name="mem_uu">UU</string>
     <string name="sort_by_name">按名称</string>
     <string name="sort_by_size">按大小</string>
     <string name="sort_by_date">按日期</string>
     <string name="sort_ascending">升序</string>
     <string name="sort_descending">降序</string>
     <string name="action_file_info">ℹ️ 文件信息</string>
-    <string name="action_convert_cso">转换为 CSO (.cso)</string>
+    <string name="action_convert_cso">🔄 转换为 CSO (.cso)</string>
     <string name="action_convert_iso">转换为 ISO (.iso)</string>
     <string name="zip_manage">🗂️ 条目</string>
-    <string name="zip_manage_delete">删除选中条目</string>
-    <string name="zip_manage_add">从本地文件新增条目</string>
+    <string name="zip_manage_delete">🗑️ 删除选中条目</string>
+    <string name="zip_manage_add">➕ 从本地文件新增条目</string>
     <string name="zip_add_title">新增条目</string>
     <string name="zip_add_pick">选择本地文件</string>
     <string name="zip_add_name">条目名（留空 = 用文件名）</string>
@@ -99,6 +102,8 @@
     <string name="msg_created">已创建</string>
     <string name="msg_cancelled">已取消</string>
     <string name="msg_op_in_progress">已有操作进行中，请等待</string>
+    <string name="msg_op_queued">⏳ 排队中：第 %1$d 位</string>
+    <string name="msg_op_queued_eta">⏳ 排队中：第 %1$d 位 · 约 %2$s 后开始</string>
     <string name="msg_no_results">未找到匹配结果</string>
     <string name="msg_enter_keyword">请输入关键词</string>
     <string name="msg_select_one">请至少选择一项</string>
@@ -231,10 +236,10 @@
     <string name="msg_hash_copied">哈希已复制</string>
     <string name="err_audio_playback">无法播放音频：%1$s</string>
     <string name="err_invalid_regex">正则表达式无效：%1$s</string>
-    <string name="msg_max_tabs">最多可打开 3 个窗口</string>
+    <string name="msg_max_tabs">最多可打开 4 个窗口</string>
     <string name="msg_archive_open_in_tab">该归档已在「%1$s」打开</string>
     <string name="msg_archive_open_skipped">已跳过 %1$d 个在其他窗口打开的归档</string>
-    <string name="merge_into_archive">合并到其他归档…</string>
+    <string name="merge_into_archive">📦 合并到其他归档…</string>
     <string name="merge_no_target">当前文件夹没有可合并的归档</string>
     <string name="merge_select_target">选择目标归档</string>
     <string name="merge_target_unsupported">该归档格式无法重新封包</string>
@@ -491,7 +496,14 @@
     <string name="img_edit_stretch">拉伸</string>
     <string name="settings_other">⚙️ 其余设置</string>
     <string name="restore_session">恢复上次会话</string>
-    <string name="restore_session_desc">启动时恢复上次的窗口和目录（最多 3 个）</string>
+    <string name="restore_session_desc">启动时恢复上次的窗口和目录（最多 4 个）</string>
     <string name="action_share">📤 分享</string>
     <string name="msg_share_folder">文件夹不支持分享</string>
+
+    <!-- Lint MissingTranslation fixes -->
+    <string name="search_continue">继续扫描</string>
+    <string name="confirm">确定</string>
+    <string name="scanned_items">项</string>
+    <string name="error_not_supported_ext">不支持</string>
+    <string name="search_hint">搜索文件名…</string>
 </resources>

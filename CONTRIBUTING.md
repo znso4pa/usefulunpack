@@ -2,6 +2,9 @@
 
 [**English**](CONTRIBUTING.md) | [**中文**](CONTRIBUTING-zh.md)
 
+> **TL;DR** — `bash build.sh` to build, `cargo test --workspace` + `./gradlew lintDebug` before every PR,
+> conventional-commit prefixes on titles, and **read the [Multi-window & Concurrency](#multi-window--concurrency-architecture-must-read) section once** — v5.14 introduced real parallelism and there are contracts you must not break.
+
 ## PR / Issue Format
 
 Use conventional commit prefixes in your PR titles and issue titles:
@@ -27,6 +30,7 @@ When submitting a PR that adds a new archive format, you **must** test all of th
 - [ ] **Multi-select extraction** — long-press select multiple files and extract
 - [ ] **Selective extraction** — preview the archive, check specific files, and extract only those
 - [ ] **Preview** — tap individual files (text/image/audio) in the archive preview to verify inline preview works
+- [ ] **Parallel smoke** — while an op on ANOTHER format is running, your format's op runs concurrently (and vice versa: two ops on YOUR format queue up instead of racing)
 
 Please include screenshots or a brief note confirming each item in the PR description.
 
@@ -35,32 +39,71 @@ Please include screenshots or a brief note confirming each item in the PR descri
 ```
 usefulunpack/
 ├── app/src/main/java/com/usefulunpacker/   # Android app (Kotlin)
-│   ├── MainActivity.kt                     # Activity shell — lifecycle + wiring; the logic
-│   │                                       #   was split out below (MainActivity is ~360 lines)
-│   ├── browse/                             # nav()/select()/extract flow, multi-select
-│   ├── batch/                              # batch extract / compress / preview
-│   ├── extract/                            # extract-all / extract-selected, preview flow, edit+repack
-│   ├── search/                             # global search, in-archive search, search-source resolution
-│   ├── ui/                                 # dialogs: settings, help, folder picker, text preview/editor, format picker
-│   ├── fileops/                            # signature scan, carve, delete-with-progress, rename/move
+│   ├── MainActivity.kt                     # Activity shell (~840 lines): lifecycle, wiring,
+│   │                                       #   tab strip adapter, rename dialog, memory badge
+│   ├── archive/                            # OpScheduler (concurrency), ExtractProgress
+│   │                                       #   (OpOverlay progress UI), ArchivePreview, JNI helpers
+│   │                                       #   ⚠ two files here declare the ROOT package — see Traps
+│   ├── browse/                             # nav()/select()/extract flow, TabState, FolderFragment,
+│   │                                       #   multi-select bar, FileBrowser dispatch
+│   ├── batch/                              # batch extract / compress / batch preview window
+│   ├── extract/                            # extract-all / extract-selected, PreviewFlow (the biggest
+│   │                                       #   file — merge, edit+repack, nested archives, zip manage)
 │   ├── compression/                        # compress dispatch + inline compress options
-│   ├── archive/                            # extractor helpers + PollingProgressDialog accessors
-│   ├── util/                               # constants, file utils, text encoding auto-detection
-│   ├── Xp3Core.kt / ZipCore.kt / ...       # Per-format JNI bridge objects
-│   └── ArchiveCore.kt                      # Shared helpers
-├── crates/                                  # Rust native libraries
-│   ├── common/                              # Shared utilities (json_escape, safe_join, progress statics, BoundedWriter, etc.)
-│   ├── xp3-core/ / pfs-core/ / nsa-core/ / ypf-core/ / iso-core/   # Per-format cdylib crates
-│   ├── zip-core/ / sevenz-core/ / rar-core/ / tar-core/ / ksd-core/
-│   ├── lz4-core/ / gzip-core/ / bzip2-core/ / xz-core/ / zstd-core/ / lzma-core/
-│   ├── scan-core/                           # Signature scan engine (binwalk-style, no deps)
-│   └── vendor/                              # Vendored forks (rars, sevenz-rust, isomage) + [patch.crates-io]
-├── build.sh                                 # One-command: Rust cross-compile + Gradle APK
-├── Cargo.toml                               # Workspace root
-└── build.gradle                             # Gradle project config
+│   ├── fileops/                            # signature scan/carve, recycle bin + dialog,
+│   │                                       #   delete-with-progress, rename/compare, CSO convert
+│   ├── search/                             # global search + search-source resolution
+│   ├── ui/                                 # settings, pickers, text/image editors & previews, folder picker
+│   ├── model/                              # ArchiveEntry / ExtractCounts / SearchResult
+│   ├── adapter/                            # FileAdapter / PreviewAdapter
+│   ├── bookmarks/ terminal/ util/          # misc (constants, FileUtils, encoding detection…)
+│   └── <X>Core.kt                          # Per-format JNI bridge objects
+├── crates/                                 # Rust native libraries (one cdylib per format family)
+│   ├── common/                             # shared: json_escape, safe_join, BoundedWriter,
+│   │                                       #   progress_store! (per-format GLOBAL progress/CANCEL slots)
+│   ├── <fmt>-core/ …                       # xp3 pfs nsa iso ypf zip sevenz rar tar ksd lz4 gzip
+│   │                                       #   bzip2 xz zstd lzma brotli cso scan-core
+│   └── vendor/                             # vendored forks (rars, sevenz-rust, isomage, zip) + patches
+├── build.sh                                # One command: Rust cross-compile (3 ABIs) + Gradle APK
+└── .github/workflows/ci.yml                # cargo test --workspace + clippy (non-fatal)
 ```
 
-Each format is an independent `.so` loaded via `System.loadLibrary`. Kotlin `*Core.kt` objects declare `external fun` declarations matched by `#[no_mangle]` JNI functions in the corresponding crate.
+Each format is an independent `.so` loaded via `System.loadLibrary`. Kotlin `<X>Core.kt` objects declare `external fun` matched by `#[no_mangle]` JNI functions in the corresponding crate.
+
+## Multi-window & Concurrency Architecture (MUST READ)
+
+Since v5.14 the app runs up to **3 operations truly in parallel**, with a hard platform constraint: **the Rust side keeps exactly ONE global progress/CANCEL slot per format crate** (`progress_store!` in `crates/common`). Two concurrent operations on the SAME format would trample each other's progress bars and cancel flags. Everything below exists because of that sentence.
+
+### The contract for any new operation
+
+```kotlin
+val opH = tryStartOperation(activity, fmtKey)     // NEVER blocks, NEVER refuses
+…
+thread {
+    if (!opH.await()) return@thread               // cancelled while queued → abort silently
+    try { /* real work */ }
+    finally { opH.release() }                     // token release, safe from any thread
+}
+```
+
+- `fmtKey` = the format string (`"zip"`, `"xp3"`, …). Same-key ops serialize; different keys share the 3 global slots.
+- Composite flows that drive TWO formats use pseudo-keys: `"merge"` (merge-into-archive), zip entry edits use `"zip"`.
+- **Password prompts happen BEFORE `tryStartOperation`** — a modal can block ~30 s and must never hold a slot or a format lock.
+- Cancellation: the progress card's explicit ✕ calls `cancelQueuedThenNotify()` — a merely-QUEUED op is dequeued without touching the Rust CANCEL flag (setting it would kill an unrelated running same-format op in another window). Only RUNNING cancellations fire `accessors.cancel()`.
+- Deliberate exceptions: delete/recycle (pure FS work) and signature scan (Rust `SCAN_LOCK` already serializes it) stay on the legacy `OperationLock`. Don't migrate them without revisiting that rationale.
+- Every new JNI operation entry must call `clear_cancel()` first — otherwise the previous op's cancel poisons yours.
+
+### Progress UI
+
+Always go through `PollingProgressDialog` — since v5.14 it renders onto a shared **OpOverlay** floating layer inside the activity (everything EXCEPT the progress cards passes touches through, so tab switching AND other windows stay fully operable mid-operation; cards stack vertically; centered within the content area). It is intentionally not cancelable by touch-outside/back — the explicit button is the only cancel path. Queued ops render `⏳ position · ETA` instead of polling foreign statics.
+
+## Historic Traps (read before touching these files)
+
+- ⚠️ **Package/directory mismatch**: `archive/ArchiveExtractor.kt` and `archive/ExtractProgress.kt` sit in the `archive/` directory but declare the **root package** `com.usefulunpacker`. Cross-package references to their symbols need explicit imports — this has bitten maintainers twice and once looked like a compiler bug for an hour.
+- **Batch-bar buttons**: visibility is driven by semantic `tag`s (`"extract"` / `"preview"` / `"compress"`) set in `buildBatchBar`, matched in `syncMultiBar`. Never match on display text — strings embed emojis that changed across releases and text matching once hid EXTRACT in extract mode. Emojis live ONLY in string resources, never concatenated in code.
+- `viewPager.offscreenPageLimit = MAX_TABS - 1` keeps every tab's fragment attached so inline state survives switching. Don't lower it.
+- **Honor/EMUI ROM**: custom ScrollViews/TextViews/EditTexts must NOT enable native scrollbars (ROM NPEs in `onDrawScrollBars`); lists use the draggable fast-scroll handle instead.
+- Any `runOnUiThread { ...show Dialog... }` completing async work needs an `isFinishing || isDestroyed` guard — this class of BadTokenException has been exterminated twice; keep it extinct.
 
 ## Setup
 
@@ -86,62 +129,67 @@ This cross-compiles all Rust workspace crates for `arm64-v8a`, `armeabi-v7a`, `x
 
 1. Create `crates/<name>-core/` with a `cdylib` crate depending on `archive_common`
 2. Implement:
-   - `list_<name>_inner(input) -> Result<String, String>` — returns JSON array of entries `[{"n":"...","s":...,"d":...,"e":...}]`
+   - `list_<name>_inner(input) -> Result<String, String>` — JSON array of entries `[{"n":"...","s":...,"d":...,"e":...}]`
    - `extract_<name>_inner(input, output, selected?, password?)` — extracts files
-   - If encryption is supported: `needs_password_inner(input)` — detects whether password is required
+   - If encrypted: `needs_password_inner(input)` — detects whether a password is required
    - JNI `#[no_mangle]` exports matching the Kotlin declarations
 3. Create `app/src/main/java/com/usefulunpacker/<Name>Core.kt` with `external fun` declarations and `System.loadLibrary`
-4. Register the format in `MainActivity.kt`:
-   - `extractByFormat()` — add `when` branch
-   - `previewArchive()` — add listing case
-   - `EXT_FORMAT_MAP` — add file extension mapping (if any)
-   - `tryExtractWithPassword()` / `showPasswordDialog()` — add password branches if encryption is supported
-5. Add the crate to `Cargo.toml` workspace members and `build.sh` `CRATES` array
-6. Report byte-level progress: call `extract_progress::reset/set_file/add_bytes` (and `compress_progress::*` for packing) so the shared dual-bar dialog works, and register the format in Kotlin `extractAccessors()`/`compressAccessors()`. For formats with a whole-member buffered decode (rar's ≤64MB path), keep the top bar fed by the **write** (`ProgressWriter::extract`, or `extract_top` + `add_top_bytes` when the bottom bar is driven separately by a decode watcher) so the total stays exact — never feed the top bar from a polled decode counter (it under-counts members decoded between polls).
-7. Add string resources for error messages in `res/values/strings.xml`
+4. Register the format in Kotlin:
+   - `extractByFormat()` (`ArchiveExtractor.kt`) — add the `when` branch
+   - `formatOfName()` (`util/Constants.kt`) — extension mapping
+   - `previewArchive()` listing case, and password branches in `tryExtractWithPassword()` / `showPasswordDialog()` if applicable
+   - `extractAccessors()` / `compressAccessors()` (`ExtractProgress.kt`) — wire progress getters + cancel
+5. Add the crate to the `Cargo.toml` workspace members and `build.sh`'s `CRATES` array
+6. Report byte-level progress via `extract_progress::reset/set_file/add_bytes` (`compress_progress::*` for packing). For whole-member buffered decodes (rar ≤64 MB path), feed the top bar from the WRITE side (`ProgressWriter::extract`) so totals stay exact — never from a polled decode counter.
+7. Add error-message strings to `res/values/strings.xml` (all four locales: `values/`, `-zh-rCN/`, `-zh-rTW/`, `-ja/`)
+8. Nothing else: the scheduler picks up your format automatically (the fmt key IS the format string)
 
 ## Code Conventions
 
-- **Rust**: Match the existing compact single-line JNI function style. Use `guarded()` to catch panics crossing JNI boundaries. Reuse `archive_common::{s, json_escape, safe_join}`.
-- **Kotlin**: Follow existing patterns in `MainActivity.kt`. Use `when` expressions for format dispatch. Run extraction in background threads with `runOnUiThread` for UI updates.
-- **Format JSON**: Entry objects must have `"n"` (name string), `"s"` (size as integer), `"d"` (is directory boolean), `"e"` (is encrypted boolean).
-- **Password support**: Formats supporting encryption need three variants:
-  - Base `extractWithPassword(tool, input, output, password)`
-  - `extractSelectedWithPassword(tool, input, output, selected, password)` (selective extraction)
-  - `needsPassword(input) -> Boolean` (detection before prompting)
-- **Selective extraction**: Accept a newline-separated string of paths. Use `HashSet` for O(1) lookups. Match both exact paths and prefix matches (for directory children).
+- **Rust**: compact single-line JNI function style; wrap bodies with `guarded()` so panics can't cross JNI; reuse `archive_common::{s, json_escape, safe_join}`.
+- **Kotlin**: background threads for anything touching disk/network; `runOnUiThread` for UI, guarded per above; `when` expressions for format dispatch.
+- **Format JSON**: entries carry `"n"` (name), `"s"` (size int), `"d"` (is-dir bool), `"e"` (encrypted bool).
+- **Password formats**: three variants — base `extractWithPassword(...)`, `extractSelectedWithPassword(tool, input, output, selected, password)`, and `needsPassword(input) -> Boolean`.
+- **Selective extraction**: newline-separated path list; `HashSet` lookups; exact-path AND directory-prefix matching.
+- **Async completion dialogs**: guard `isFinishing || isDestroyed` before showing anything.
+- **Version discipline**: one narrative commit per release (`feat(vX.Y.Z): …`), a dedicated TODO.md section per release, and bump `versionCode`/`versionName` in `app/build.gradle`.
 
 ## Testing
 
-Rust unit tests + manual APK smoke tests. CI runs the full workspace suite; run it locally before opening a PR:
+CI runs `cargo test --workspace` (+ clippy, non-fatal). Run locally before opening a PR:
+
 ```bash
-cargo test --workspace
+cargo test --workspace          # Rust suite (see below)
+./gradlew lintDebug             # baseline: 0 errors / ~268 warnings — do not add errors
+bash build.sh                   # full APK (needs NDK); Kotlin-only: :app:assembleRelease
 ```
 
-What the Rust tests cover (so you know what to keep green):
-- **Round-trips / real corpus** — each `*_core` crate packs then extracts, and checks byte equality. A real-world corpus (`files4testing` ~423 vectors + 13 injected faults across 14 formats) is used for compatibility: valid archives must extract with matching hashes, and the injected faults (truncated / corrupted / wrong password / missing volume) must be cleanly rejected.
-- **Security / malicious headers** — unit tests assert that crafted inputs are rejected without abort: decompression bombs (output capped via `BoundedWriter`/declared sizes), huge header quantities (7z num_files/coders, ISO directory sizes), negative/overflowing lengths (KSD, PFS offsets), path traversal (`safe_join`), and stack-depth limits (ISO directories).
-- **Signature scan** — scan-core ships real-compressed-sample vectors (gzip/bzip2/xz/zstd/lz4/lzma) so byte-order / bitfield regressions are caught.
-- **Real-archive rar probes** — `rar-core` ships two env-gated tests for on-disk archives: `probe_real_archive_progress` (`UU_RAR_PROBE`) extracts a whole rar while asserting the top bar reaches the exact total (no under/over-count), and `probe_selected_fast` (`UU_RAR_SEL_PROBE`) verifies the non-solid random-access path extracts a late member without decoding the preceding ones. Run them with e.g. `UU_RAR_PROBE=/path/to/big.rar cargo test -p archive_rar_core probe_real_archive_progress -- --nocapture`.
+What the Rust tests cover (keep it green):
 
-Kotlin changes are smoke-tested by building the APK:
-```bash
-bash build.sh   # or: ./gradlew :app:assembleRelease  (Kotlin-only changes)
-```
+- **Round-trips / real corpus** — each `*_core` packs then extracts with byte equality; a real-world corpus (`files4testing`, ~423 vectors + 13 injected faults across 14 formats) validates compatibility: valid archives extract with matching hashes, injected faults (truncated / corrupted / wrong password / missing volume) reject cleanly.
+- **Security / malicious headers** — crafted inputs rejected without abort: decompression bombs (`BoundedWriter` caps), huge header counts (7z num_files/coders, ISO dir sizes), negative/overflowing lengths (KSD, PFS offsets), path traversal (`safe_join`), stack-depth limits.
+- **Signature scan** — real-compressed-sample vectors (gzip/bzip2/xz/zstd/lz4/lzma) catch byte-order/bitfield regressions. Historically validated against binwalk 3.1 (201 semantic differences, all favorable).
+- **Real-archive rar probes** — env-gated on-disk tests: `UU_RAR_PROBE=/path/to/big.rar cargo test -p archive_rar_core probe_real_archive_progress -- --nocapture` asserts exact top-bar totals; `UU_RAR_SEL_PROBE` verifies non-solid random-access extraction of a late member.
 
-Real-device points to check before merging UI/ROM-sensitive changes:
-- Honor/EMUI: custom ScrollViews/TextViews/EditTexts must NOT enable native scrollbars (the ROM NPEs in `onDrawScrollBars`); lists use the draggable fast-scroll handle instead.
-- Cancel mid-extraction into a fresh folder must delete the whole output; a cancelled carve must not hand a partial file to the extractor.
-- Text preview/editor: UTF-16/UTF-8 BOM auto-detection, encoding inline switch, and the "looks like UTF-8" hint on garbled reads.
+Real-device points before merging UI/ROM-sensitive changes:
+
+- Honor/EMUI scrollbar NPE avoidance (see Traps).
+- Cancel mid-extraction into a fresh folder deletes the whole output; a cancelled carve never hands a partial file onward.
+- Text preview/editor: BOM auto-detection, inline encoding switch, garbled-read hint.
+- Parallel regression (v5.14+): two ops on different formats overlap; two on the same format queue; queued-cancel doesn't disturb the running twin.
 
 ## Before Submitting a PR
 
-1. Ensure `cargo check` passes for all crates
-2. Verify `build.sh` completes without errors (requires NDK)
-3. Update `TODO.md` if addressing known issues
-4. Keep changes focused — one feature/bugfix per PR
-5. Match the existing code style (no reformatting of unrelated code)
-6. For new format PRs: verify the 4 test items listed in [New Format PR Requirements](#new-format-pr-requirements)
+1. `cargo check` clean for all crates; `cargo test --workspace` green
+2. `./gradlew lintDebug` introduces no new errors
+3. `build.sh` completes (requires NDK)
+4. Update `TODO.md` if you addressed a listed issue; add a bullet under the current dev section
+5. One feature/bugfix per PR; no unrelated reformatting
+6. New format PRs: tick all five items in [New Format PR Requirements](#new-format-pr-requirements)
+
+## Where Help Is Wanted
+
+The top of [TODO.md](TODO.md) tracks live plans — good entry points include the **preview long-press menu** (share / info / extract-this for archive entries), **preview sorting**, and items under 已知限制. Bigger design-ready tracks (preview workspace tabs, CLI revival) are documented there too — claim one by opening an issue.
 
 ## License
 

@@ -166,7 +166,7 @@ class FolderFragment : Fragment() {
                     tab.bottomBar.visibility = View.VISIBLE
                     tab.fabExtract.visibility = View.GONE
                     tab.btnExtract.text = act.getString(R.string.msg_compress_title)
-                    tab.btnExtract.setOnClickListener { showCompressFormatPicker(act, f, act.prefs, tab.currentDir) { act.navTab(tab, tab.currentDir) } }
+                    tab.btnExtract.setOnClickListener { showCompressFormatPicker(act, f, act.prefs, tab.currentDir, tab) { act.navTab(tab, tab.currentDir) } }
                     if (act.activeTab === tab) tab.btnFolderNext?.visibility = View.VISIBLE
                     tab.progress.visibility = View.GONE
                 } else {
@@ -287,12 +287,17 @@ class FolderFragment : Fragment() {
         }
         val tvBatchCount = TextView(requireContext()).apply { setTextColor(C["primary"]!!); textSize = 12f }
         fun b(text: String, color: Int) = Button(requireContext()).apply { this.text = text; setTextColor(color); background = null; textSize = 12f; isAllCaps = false; setPadding(6, 0, 6, 0) }
-        val btnBatchExtract = b("📦 " + act.getString(R.string.batch_extract), C["accent"]!!).apply { setOnClickListener { activate(); act.startBatchExtract() } }
-        val btnBatchPreview = b("📂 " + act.getString(R.string.action_preview), C["accent"]!!).apply { setOnClickListener { activate(); act.startBatchPreviewOnly() } }
-        val btnBatchCompress = b("🗜️ " + act.getString(R.string.batch_compress), C["accent"]!!).apply { setOnClickListener { activate(); act.startBatchCompress() } }
-        val btnBatchCopy = b("📋 " + act.getString(R.string.action_copy), C["accent"]!!).apply { setOnClickListener { activate(); act.startBatchCopy() } }
-        val btnBatchMove = b("➡️ " + act.getString(R.string.action_move), C["accent"]!!).apply { setOnClickListener { activate(); act.startBatchMove() } }
-        val btnBatchDelete = b("🗑️ " + act.getString(R.string.action_delete), C["error"]!!).apply { setOnClickListener { activate(); act.confirmBatchDelete() } }
+        // Emoji lives in the string resource (one leading glyph per item) — never
+        // concatenate another here or the button shows doubled icons. The tag
+        // drives mode-based visibility in syncMultiBar (text matching broke when
+        // v5.13.0 prefixed extra emojis: the extract button started with 📦 and
+        // was hidden in extract mode).
+        val btnBatchExtract = b(act.getString(R.string.batch_extract), C["accent"]!!).apply { tag = "extract"; setOnClickListener { activate(); act.startBatchExtract() } }
+        val btnBatchPreview = b(act.getString(R.string.action_preview), C["accent"]!!).apply { tag = "preview"; setOnClickListener { activate(); act.startBatchPreviewOnly() } }
+        val btnBatchCompress = b(act.getString(R.string.batch_compress), C["accent"]!!).apply { tag = "compress"; setOnClickListener { activate(); act.startBatchCompress() } }
+        val btnBatchCopy = b(act.getString(R.string.action_copy), C["accent"]!!).apply { setOnClickListener { activate(); act.startBatchCopy() } }
+        val btnBatchMove = b(act.getString(R.string.action_move), C["accent"]!!).apply { setOnClickListener { activate(); act.startBatchMove() } }
+        val btnBatchDelete = b(act.getString(R.string.action_delete), C["error"]!!).apply { setOnClickListener { activate(); act.confirmBatchDelete() } }
         val btnBatchCancel = b("✕ " + act.getString(R.string.action_cancel), C["tertiary"]!!).apply { setOnClickListener { act.exitMultiSelect() } }
         val batchScroll = HorizontalScrollView(requireContext()).apply {
             isHorizontalScrollBarEnabled = false
@@ -338,6 +343,12 @@ class FolderFragment : Fragment() {
         // auto-refreshing; it's re-registered anyway on onResume/nav.
         val act = activity as? MainActivity
         if (act == null || !act.tabs.contains(tab)) tab.stopObserver()
+        // Views are gone — clear the bound flag so a debounce refresh firing
+        // in the rebind window can't write into the detached ListView/TextViews
+        // (onCreateView sets it back once the new views exist). Also drop the
+        // opStrip refs: a running inline controller must not keep writing into
+        // (or retaining) a detached view tree; it goes headless until rebind.
+        tab.viewsBound = false
         super.onDestroyView()
     }
 

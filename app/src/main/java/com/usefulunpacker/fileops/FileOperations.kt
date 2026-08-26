@@ -28,13 +28,19 @@ fun showRenameDialog(activity: AppCompatActivity, f: File, currentDir: File, boo
                 return@setPositiveButton
             }
             val dst = File(f.parentFile ?: return@setPositiveButton, newName)
-            if (!dst.exists()) { f.renameTo(dst); Toast.makeText(activity, activity.getString(R.string.action_rename), Toast.LENGTH_SHORT).show(); onSaved(); return@setPositiveButton }
+            // renameTo can fail (cross-device, permission, race) — never fake success.
+            if (!dst.exists()) {
+                val ok = f.renameTo(dst)
+                Toast.makeText(activity, activity.getString(if (ok) R.string.action_rename else R.string.err_file_error), Toast.LENGTH_SHORT).show()
+                if (ok) onSaved()
+                return@setPositiveButton
+            }
             AlertDialog.Builder(activity)
                 .setTitle(activity.getString(R.string.msg_target_exists))
                 .setItems(arrayOf(activity.getString(R.string.action_replace), activity.getString(R.string.action_keep_both), activity.getString(R.string.action_compare))) { _, which ->
                     when (which) {
-                        0 -> { dst.delete(); f.renameTo(dst); Toast.makeText(activity, activity.getString(R.string.action_replace), Toast.LENGTH_SHORT).show(); onSaved() }
-                        1 -> { val u = uniqueFile(f.parentFile!!, newName); f.renameTo(u); Toast.makeText(activity, activity.getString(R.string.msg_renamed_to, u.name), Toast.LENGTH_SHORT).show(); onSaved() }
+                        0 -> { dst.delete(); val ok = f.renameTo(dst); Toast.makeText(activity, activity.getString(if (ok) R.string.action_rename else R.string.err_file_error), Toast.LENGTH_SHORT).show(); if (ok) onSaved() }
+                        1 -> { val u = uniqueFile(f.parentFile!!, newName); val ok = f.renameTo(u); Toast.makeText(activity, if (ok) activity.getString(R.string.msg_renamed_to, u.name) else activity.getString(R.string.err_file_error), Toast.LENGTH_SHORT).show(); if (ok) onSaved() }
                         2 -> { compareFiles(activity, f, dst, bookmarks, currentDir, onSaved) }
                     }
                 }.setNegativeButton(activity.getString(R.string.action_cancel), null).show()
@@ -79,7 +85,8 @@ fun calcDirSize(activity: AppCompatActivity, dir: File) {
             }
         }
         activity.runOnUiThread {
-            if (!activity.isFinishing) pd.dismiss()
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            pd.dismiss()
             AlertDialog.Builder(activity)
                 .setTitle(dir.name)
                 .setMessage(activity.getString(R.string.msg_calc_result, fmt(total), processed))

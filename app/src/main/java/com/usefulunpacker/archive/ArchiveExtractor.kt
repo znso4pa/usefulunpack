@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import kotlin.concurrent.thread
 import java.io.File
+import com.usefulunpacker.archive.OpScheduler
 
 /**
  * Single-operation lock. The app drives one long-running extract/compress at a
@@ -29,14 +30,13 @@ object OperationLock {
     }
 }
 
-/** Acquires the operation lock or toasts "busy" and returns false. */
-fun tryStartOperation(activity: AppCompatActivity): Boolean {
-    if (!OperationLock.acquire()) {
-        Toast.makeText(activity, activity.getString(R.string.msg_op_in_progress), Toast.LENGTH_SHORT).show()
-        return false
-    }
-    return true
-}
+/** Acquires a scheduler slot for [fmtKey] (never refuses — busy operations are
+ *  QUEUED with live position/ETA shown in the progress dialog). The worker
+ *  thread must call `handle.await()` before touching the format layer and
+ *  `handle.release()` in its finally. Delete/scan flows intentionally stay on
+ *  the legacy OperationLock (see OpScheduler docs). */
+fun tryStartOperation(activity: AppCompatActivity, fmtKey: String): OpScheduler.OpHandle =
+    OpScheduler.obtain(fmtKey)
 
 /** Maps the raw JNI error message to a user-facing string. */
 fun friendlyExtractError(activity: AppCompatActivity, error: String?): String {
@@ -233,7 +233,8 @@ fun showPasswordDialog(
     sel: String = "",
     showProgress: Boolean = true,
     onCancel: () -> Unit = {},
-    onResult: (ExtractOutcome) -> Unit
+    onResult: (ExtractOutcome) -> Unit,
+    ownerTab: TabState? = null
 ) {
     val inp = EditText(activity).apply {
         hint = activity.getString(R.string.prompt_password)
@@ -245,10 +246,9 @@ fun showPasswordDialog(
         .setTitle(activity.getString(R.string.title_password))
         .setView(inp)
         .setPositiveButton(activity.getString(R.string.retry)) { _, _ ->
-            // Acquire the lock BEFORE showing the progress dialog — otherwise a
-            // busy lock leaves the dialog spinning forever with the work silently
-            // dropped.
-            if (!tryStartOperation(activity)) return@setPositiveButton
+            // Acquire a scheduler slot BEFORE showing the progress dialog —
+            // queued ops surface their position/ETA in that dialog.
+            val opH = tryStartOperation(activity, fmt)
             val pwd = inp.text.toString()
             var cancelled = false
             val accessors = extractAccessors(fmt)
@@ -258,10 +258,15 @@ fun showPasswordDialog(
                 accessors,
                 { n, b, t -> extractProgressMessage(activity, n, b, t) },
                 activity.getString(R.string.action_cancel),
-                { cancelled = true; accessors.cancel() }
+                { cancelled = true; accessors.cancel() },
+                opH,
+                ownerTab
             ) else null
             prog?.start()
             thread {
+                // Queued ops block here until a slot+format frees up; a cancel
+                // while queued aborts silently (nothing was started).
+                if (!opH.await()) return@thread
                 try {
                     var err: String? = null
                     val json = runCatching {
@@ -279,7 +284,7 @@ fun showPasswordDialog(
                         else onResult(outcome)
                     }
                 } finally {
-                    OperationLock.release()
+                    opH.release()
                 }
             }
         }
@@ -294,11 +299,12 @@ fun tryExtractWithPassword(
     showProgress: Boolean = true,
     initialPassword: String = "",
     onCancel: () -> Unit = {},
-    onResult: (ExtractOutcome) -> Unit
+    onResult: (ExtractOutcome) -> Unit,
+    ownerTab: TabState? = null
 ) {
-    // Acquire the lock BEFORE showing the progress dialog — otherwise a busy
-    // lock leaves the dialog spinning forever with the work silently dropped.
-    if (!tryStartOperation(activity)) return
+    // Acquire a scheduler slot BEFORE showing the progress dialog — a queued
+    // op surfaces position/ETA in that dialog instead of being refused.
+    val opH = tryStartOperation(activity, fmt)
     var cancelled = false
     val accessors = extractAccessors(fmt)
     val prog = if (showProgress) PollingProgressDialog(
@@ -307,7 +313,9 @@ fun tryExtractWithPassword(
         accessors,
         { n, b, t -> extractProgressMessage(activity, n, b, t) },
         activity.getString(R.string.action_cancel),
-        { cancelled = true; accessors.cancel() }
+        { cancelled = true; accessors.cancel() },
+        opH,
+        ownerTab
     ) else null
     prog?.start()
 
@@ -322,10 +330,11 @@ fun tryExtractWithPassword(
         }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
     }
     thread {
-        // The lock is released on EVERY exit below — including the password
-        // retry dialog, which is shown AFTER release so the retry can acquire
-        // the lock cleanly (an acquire inside the retry while this thread still
-        // held the lock was the "already in progress" deadlock).
+        // The handle is released on EVERY exit below — including the password
+        // retry dialog, which is shown AFTER release so the retry can enqueue
+        // cleanly (an acquire inside the retry while this thread still held
+        // the lock was the "already in progress" deadlock).
+        if (!opH.await()) return@thread
         var result: ExtractOutcome? = null
         try {
             result = if (fmt in setOf("zip", "7z", "rar") && sel.isNotEmpty()) {
@@ -339,11 +348,14 @@ fun tryExtractWithPassword(
                 }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
             } else doExtract(initialPassword)
         } finally {
-            OperationLock.release()
+            opH.release()
         }
         val finalResult = result
         activity.runOnUiThread {
             prog?.dismiss()
+            // Activity died while the extraction ran (rotate/back) — showing
+            // dialogs on a dead window token would crash (BadTokenException).
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
             if (cancelled) { onCancel(); return@runOnUiThread }
             val ok = finalResult?.counts?.ok ?: false
             if (ok) { onResult(finalResult!!) }
@@ -360,7 +372,7 @@ fun tryExtractWithPassword(
                     .setTitle(activity.getString(R.string.title_password))
                     .setView(inp)
                     .setPositiveButton(activity.getString(R.string.retry)) { _, _ ->
-                        if (!tryStartOperation(activity)) return@setPositiveButton
+                        val opH2 = tryStartOperation(activity, fmt)
                         val pwd = inp.text.toString()
                         var cancelled2 = false
                         val accessors2 = extractAccessors(fmt)
@@ -370,10 +382,13 @@ fun tryExtractWithPassword(
                             accessors2,
                             { n, b, t -> extractProgressMessage(activity, n, b, t) },
                             activity.getString(R.string.action_cancel),
-                            { cancelled2 = true; accessors2.cancel() }
+                            { cancelled2 = true; accessors2.cancel() },
+                            opH2,
+                            ownerTab
                         ) else null
                         prog2?.start()
                         thread {
+                            if (!opH2.await()) return@thread
                             try {
                                 val outcome2 = runCatching {
                                     when (fmt) {
@@ -385,11 +400,12 @@ fun tryExtractWithPassword(
                                 }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
                                 activity.runOnUiThread {
                                     prog2?.dismiss()
+                                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                                     if (cancelled2) onCancel()
                                     else onResult(outcome2)
                                 }
                             } finally {
-                                OperationLock.release()
+                                opH2.release()
                             }
                         }
                     }

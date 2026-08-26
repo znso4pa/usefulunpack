@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Floating operation-progress layer (OpOverlay) -->
+    <item name="op_overlay_host" type="id" />
+    <item name="op_overlay_cards" type="id" />
+</resources>

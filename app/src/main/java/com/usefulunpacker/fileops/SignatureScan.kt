@@ -168,7 +168,9 @@ internal fun MainActivity.showSignatureScan(f: File) {
         val hits = parseScanHits(json)
         poller.interrupt()
         runOnUiThread {
-            if (!pd.isShowing) return@runOnUiThread
+            // pd.isShowing alone can't catch a finished activity — the result
+            // dialog would still crash with BadTokenException.
+            if (isFinishing || isDestroyed || !pd.isShowing) return@runOnUiThread
             pd.dismiss()
             showScanResultDialog(f, hits, elapsed)
         }
@@ -283,32 +285,44 @@ internal fun MainActivity.extractHit(f: File, hit: ScanHit) {
         return
     }
     if (fmt == "iso") {
-        val json = try { IsoCore.isoListEntries(f.path) } catch (_: Exception) { null }
-        if (json != null && json != "[]") {
-            showPreviewDialog(f, parseEntries(json), fmt, "")
-            return
+        // JNI listing can take seconds on large images — keep it off the UI
+        // thread (this handler runs on it).
+        thread {
+            val json = try { IsoCore.isoListEntries(f.path) } catch (_: Exception) { null }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (json != null && json != "[]") {
+                    showPreviewDialog(f, parseEntries(json), fmt, "")
+                    return@runOnUiThread
+                }
+                showSeparateDestDialog(f, hit, extract = true, message = getString(R.string.msg_separate_iso_invalid))
+            }
         }
-        showSeparateDestDialog(f, hit, extract = true, message = getString(R.string.msg_separate_iso_invalid))
         return
     }
     // ZIP at offset 0 and RAR (≤8MiB) can be previewed/extracted directly.
-    val json = try {
-        when (fmt) {
-            "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); ZipCore.zipListEntries(f.path) }
-            else -> RarCore.rarListEntries(f.path)
+    thread {
+        val json = try {
+            when (fmt) {
+                "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); ZipCore.zipListEntries(f.path) }
+                else -> RarCore.rarListEntries(f.path)
+            }
+        } catch (_: Exception) { null }
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            if (json != null && json != "[]") {
+                showPreviewDialog(f, parseEntries(json), fmt, "")
+                return@runOnUiThread
+            }
+            val needsPw = fmt == "rar" && runCatching { RarCore.rarNeedsPassword(f.path) }.getOrDefault(false)
+            val msg = when {
+                needsPw -> getString(R.string.msg_separate_rar_encrypted)
+                fmt == "rar" -> getString(R.string.msg_separate_rar_invalid)
+                else -> getString(R.string.msg_separate_zip_invalid)
+            }
+            showSeparateDestDialog(f, hit, extract = true, message = msg)
         }
-    } catch (_: Exception) { null }
-    if (json != null && json != "[]") {
-        showPreviewDialog(f, parseEntries(json), fmt, "")
-        return
     }
-    val needsPw = fmt == "rar" && runCatching { RarCore.rarNeedsPassword(f.path) }.getOrDefault(false)
-    val msg = when {
-        needsPw -> getString(R.string.msg_separate_rar_encrypted)
-        fmt == "rar" -> getString(R.string.msg_separate_rar_invalid)
-        else -> getString(R.string.msg_separate_zip_invalid)
-    }
-    showSeparateDestDialog(f, hit, extract = true, message = msg)
 }
 
 /** "Carve" entry: every hit — raw dd of [offset..EOF] into a standalone file,
@@ -440,6 +454,7 @@ private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File
                 return@thread
             }
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 pd.dismiss()
                 // extractAll acquires its own lock (we released ours on carve).
                 extractAll(destDir, temp, fmt)

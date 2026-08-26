@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">UsefulUnpack</string>
-    <string name="action_extract">解凍</string>
+    <string name="action_extract">📂 解凍</string>
     <string name="action_compress">圧縮</string>
-    <string name="action_preview">プレビュー</string>
+    <string name="action_preview">🔍 プレビュー</string>
     <string name="action_confirm">決定</string>
     <string name="action_cancel">キャンセル</string>
     <string name="action_edit">編集</string>
@@ -13,7 +13,7 @@
     <string name="preview_looks_utf8_hint">このファイルは UTF-8 のように見えます——文字がおかしい場合は 設定→テキストエンコーディング で UTF-8 に切り替えてください</string>
     <string name="msg_editor_too_large">ファイルが大きすぎてアプリ内で編集できません(&gt;2MB)</string>
     <string name="msg_tjs_compiled">コンパイル済み TJS スクリプト（TJS2 バイナリ）のため、テキストとしてプレビューできません</string>
-    <string name="edit_archive">編集</string>
+    <string name="edit_archive">✏️ 編集</string>
     <string name="action_more">More</string>
     <string name="edit_only_pack">対応するのはパック可能な形式のみです（XP3/PFS/ISO/NSA/7Z/YPF）</string>
     <string name="zip_manage_only_zip">エントリ管理に対応しているのは ZIP のみです</string>
@@ -53,17 +53,20 @@
     <string name="settings_picker_mode">パス/ファイルの選択方法</string>
     <string name="picker_mode_dialog">パス選択ダイアログを開く</string>
     <string name="picker_mode_tab">新しいウィンドウで選択</string>
+    <string name="settings_show_memory">メモリ表示</string>
+    <string name="mem_system">システム</string>
+    <string name="mem_uu">UU</string>
     <string name="sort_by_name">名前順</string>
     <string name="sort_by_size">サイズ順</string>
     <string name="sort_by_date">日付順</string>
     <string name="sort_ascending">昇順</string>
     <string name="sort_descending">降順</string>
     <string name="action_file_info">ℹ️ ファイル情報</string>
-    <string name="action_convert_cso">CSO (.cso) に変換</string>
+    <string name="action_convert_cso">🔄 CSO (.cso) に変換</string>
     <string name="action_convert_iso">ISO (.iso) に変換</string>
     <string name="zip_manage">🗂️ エントリ</string>
-    <string name="zip_manage_delete">選択したエントリを削除</string>
-    <string name="zip_manage_add">ローカルファイルからエントリを追加</string>
+    <string name="zip_manage_delete">🗑️ 選択したエントリを削除</string>
+    <string name="zip_manage_add">➕ ローカルファイルからエントリを追加</string>
     <string name="zip_add_title">エントリ追加</string>
     <string name="zip_add_pick">ローカルファイルを選択</string>
     <string name="zip_add_name">エントリ名（空欄=ファイル名）</string>
@@ -96,6 +99,8 @@
     <string name="msg_created">作成しました</string>
     <string name="msg_cancelled">キャンセルしました</string>
     <string name="msg_op_in_progress">別の操作が進行中です</string>
+    <string name="msg_op_queued">⏳ 待機中：%1$d 番目</string>
+    <string name="msg_op_queued_eta">⏳ 待機中：%1$d 番目 · 約 %2$s 後に開始</string>
     <string name="msg_no_results">結果が見つかりません</string>
     <string name="msg_enter_keyword">キーワードを入力</string>
     <string name="msg_select_one">少なくとも1つ選択</string>
@@ -174,7 +179,7 @@
     <string name="filename_search">📄 ファイル名検索</string>
     <string name="content_search">📝 内容検索</string>
     <string name="search_button">🔍 検索</string>
-    <string name="preview">🔍 预览</string>
+    <string name="preview">🔍 プレビュー</string>
     <string name="extract_selected">解凍所选</string>
     <string name="extract_all">すべて解凍</string>
     <string name="reading">読込中…</string>
@@ -198,7 +203,7 @@
     <string name="err_not_archive">対応していないアーカイブ形式です</string>
     <string name="err_pwd_wrong">パスワードが間違っています、解凍失敗</string>
     <string name="err_cannot_read_maybe_pwd">アーカイブを読み取れません、パスワードがあるかもしれません</string>
-    <string name="err_preview_unsupported">.％1$s ファイルのプレビューは非対応です</string>
+    <string name="err_preview_unsupported">.%1$s ファイルのプレビューは非対応です</string>
     <string name="err_file_open_failed">ファイルを開けません：%1$s</string>
     <string name="err_extract_io">解凍失敗：%1$s</string>
     <string name="err_large_member">アーカイブにバッファリングが必要な巨大ファイルが含まれており、端末のメモリが不足する可能性があります</string>
@@ -219,10 +224,10 @@
     <string name="msg_hash_copied">ハッシュをコピーしました</string>
     <string name="err_audio_playback">音声を再生できません：%1$s</string>
     <string name="err_invalid_regex">正規表現が無効です：%1$s</string>
-    <string name="msg_max_tabs">最大3つのウィンドウを開けます</string>
+    <string name="msg_max_tabs">最大4つのウィンドウを開けます</string>
     <string name="msg_archive_open_in_tab">このアーカイブは「%1$s」で開かれています</string>
     <string name="msg_archive_open_skipped">他のウィンドウで開いている %1$d 個のアーカイブをスキップしました</string>
-    <string name="merge_into_archive">他のアーカイブに統合…</string>
+    <string name="merge_into_archive">📦 他のアーカイブに統合…</string>
     <string name="merge_no_target">このフォルダに統合先のアーカイブがありません</string>
     <string name="merge_select_target">統合先アーカイブを選択</string>
     <string name="merge_target_unsupported">このアーカイブ形式は再パックできません</string>
@@ -478,7 +483,21 @@
     <string name="img_edit_stretch">引き伸ばし</string>
     <string name="settings_other">⚙️ その他の設定</string>
     <string name="restore_session">前回のセッションを復元</string>
-    <string name="restore_session_desc">起動時に前回のウィンドウとフォルダを再開（最大 3 つ）</string>
+    <string name="restore_session_desc">起動時に前回のウィンドウとフォルダを再開（最大 4 つ）</string>
     <string name="action_share">📤 共有</string>
     <string name="msg_share_folder">フォルダは共有できません</string>
+
+    <!-- Lint MissingTranslation fixes -->
+    <string name="msg_not_supported">非対応です</string>
+    <string name="title_new_folder">新規フォルダー</string>
+    <string name="title_select_format">形式を選択</string>
+    <string name="title_extract_to">解凍先...</string>
+    <string name="prompt_search_hint">ファイル名を検索...</string>
+    <string name="hint_password">パスワードは今後の圧縮にも使用されます</string>
+    <string name="continue_scan">スキャンを続行</string>
+    <string name="search_continue">スキャンを続行</string>
+    <string name="confirm">決定</string>
+    <string name="scanned_items">項目</string>
+    <string name="error_not_supported_ext">非対応</string>
+    <string name="search_hint">ファイル名を検索…</string>
 </resources>

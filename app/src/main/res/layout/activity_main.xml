@@ -42,7 +42,7 @@
                 android:layout_height="36dp"
                 android:src="@drawable/ic_add_tab"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:tint="@color/accent"
+                app:tint="@color/accent"
                 android:contentDescription="新建窗口" />
         </LinearLayout>
 
@@ -86,7 +86,7 @@
                 android:layout_height="44dp"
                 android:src="@drawable/ic_drawer"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:tint="@color/ui_icon_tint" />
+                app:tint="@color/ui_icon_tint" />
 
             <ImageButton
                 android:id="@+id/btnRecycle"
@@ -94,7 +94,7 @@
                 android:layout_height="44dp"
                 android:src="@drawable/ic_recycle"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:tint="@color/ui_icon_tint"
+                app:tint="@color/ui_icon_tint"
                 android:contentDescription="@string/title_recycle_bin" />
 
             <ImageButton
@@ -103,7 +103,7 @@
                 android:layout_height="44dp"
                 android:src="@drawable/ic_home"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:tint="@color/ui_icon_tint"
+                app:tint="@color/ui_icon_tint"
                 android:contentDescription="回到根目录" />
 
             <TextView
@@ -126,7 +126,7 @@
                 android:src="@drawable/ic_overflow"
                 android:scaleType="centerInside"
                 android:padding="10dp"
-                android:tint="@color/accent"
+                app:tint="@color/accent"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="@string/action_more" />
         </LinearLayout>

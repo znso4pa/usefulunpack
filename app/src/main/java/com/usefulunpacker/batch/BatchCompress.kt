@@ -48,8 +48,8 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                         val safeName = name.replace(Regex("[/\\\\:*?\"<>|]"), "_")
                         val tmpDir = File(cacheDir, "batch_compress/$safeName")
                         // Lock first, then the progress dialog (see extractAll);
-                        // clean the staging dir when the operation is refused.
-                        if (!tryStartOperation(this)) { tmpDir.deleteRecursively(); return@showCompressOptionsDialog false }
+                        // busy just queues — position/ETA show in the dialog.
+                        val opH = tryStartOperation(this, fmt)
                         var cancelled = false
                         val accessors = compressAccessors(fmt)
                         val pd = PollingProgressDialog(
@@ -58,10 +58,13 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                             accessors,
                             { n, b, t -> compressProgressMessage(this, n, b, t) },
                             getString(R.string.action_cancel),
-                            { cancelled = true; accessors.cancel() }
+                            { cancelled = true; accessors.cancel() },
+                            opH,
+                            activeTab
                         )
                         pd.start()
                         thread {
+                            if (!opH.await()) return@thread
                             try {
                                 // Copy off the UI thread — large batches would
                                 // ANR the main thread here. Clear any stale staging
@@ -81,13 +84,16 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                 tmpDir.deleteRecursively()
                                 runOnUiThread {
                                     pd.dismiss()
-                                if (cancelled) toast(getString(R.string.msg_cancelled))
-                                else if (ok) {
-                                    val shown = if (chosenSplit > 0 && fmt in setOf("zip", "7z")) "${outF.name}.001" else outF.name
-                                    toast("${getString(R.string.msg_extract_complete)} $shown")
-                                }
-                                else toast(getString(R.string.title_compress_failed))
-                                    exitMultiSelect(); nav(currentDir)
+                                    if (cancelled) {
+                                        toast(getString(R.string.msg_cancelled))
+                                    } else if (ok) {
+                                        val shown = if (chosenSplit > 0 && fmt in setOf("zip", "7z")) "${outF.name}.001" else outF.name
+                                        toast("${getString(R.string.msg_extract_complete)} $shown")
+                                        // Leave multi-select only on success — on
+                                        // cancel/failure keep the selection so the
+                                        // user can retry without re-picking files.
+                                        exitMultiSelect(); nav(currentDir)
+                                    } else toast(getString(R.string.title_compress_failed))
                                 }
                             } catch (e: Exception) {
                                 // Uncaught I/O here used to crash the app and leave
@@ -98,7 +104,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                 }
                             } finally {
                                 tmpDir.deleteRecursively()
-                                OperationLock.release()
+                                opH.release()
                             }
                         }
                         true
@@ -124,7 +130,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                 val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                 val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
                 // Lock first, then the progress dialog (see extractAll).
-                if (!tryStartOperation(this)) return@showCompressOptionsDialog false
+                val opH = tryStartOperation(this, fmt)
                 var cancelled = false
                 val accessors = compressAccessors(fmt)
                 val pd = PollingProgressDialog(
@@ -133,10 +139,13 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                     accessors,
                     { n, b, t -> compressProgressMessage(this, n, b, t) },
                     getString(R.string.action_cancel),
-                    { cancelled = true; accessors.cancel() }
+                    { cancelled = true; accessors.cancel() },
+                    opH,
+                    activeTab
                 )
                 pd.start()
                 thread {
+                    if (!opH.await()) return@thread
                     try {
                         var ok = true
                         for (f in items) {
@@ -166,7 +175,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                     } catch (e: Exception) {
                         runOnUiThread { pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                     } finally {
-                        OperationLock.release()
+                        opH.release()
                     }
                 }
                 true

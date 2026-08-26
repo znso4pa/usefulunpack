@@ -206,7 +206,7 @@ internal fun MainActivity.select(tab: TabState, f: File) {
             tab.bottomBar.visibility = View.GONE
             if (activeTab === tab) tab.btnFolderNext?.visibility = View.GONE
             tab.fabExtract.visibility = View.VISIBLE
-            tab.fabExtract.setOnClickListener { showCompressFormatPicker(this, f, prefs, tab.currentDir) { navTab(tab, tab.currentDir) } }
+            tab.fabExtract.setOnClickListener { showCompressFormatPicker(this, f, prefs, tab.currentDir, tab) { navTab(tab, tab.currentDir) } }
             return
         }
 
@@ -230,7 +230,7 @@ internal fun MainActivity.select(tab: TabState, f: File) {
         // Neither archive nor previewable — just show info
         tab.selectedFile = null
         tab.fabExtract.visibility = View.GONE
-                showFileInfoDialog(f)
+        showFileInfoDialog(f)
     }
 
 internal fun MainActivity.showExtractOptions(src: File, format: String) {
@@ -378,6 +378,7 @@ private fun MainActivity.installViaPackageInstaller(f: File) {
         } catch (e: SecurityException) {
             // REQUEST_INSTALL_PACKAGES not granted — guide the user to settings.
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 pd.dismiss()
                 AlertDialog.Builder(this)
                     .setTitle(getString(R.string.title_install_failed))
@@ -393,6 +394,7 @@ private fun MainActivity.installViaPackageInstaller(f: File) {
             }
         } catch (e: Exception) {
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 pd.dismiss()
                 AlertDialog.Builder(this)
                     .setTitle(getString(R.string.title_install_failed))

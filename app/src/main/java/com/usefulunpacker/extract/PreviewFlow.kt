@@ -62,6 +62,7 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
             if (json == null || json == "[]") {
                 val msg = if (format in setOf("zip", "7z", "rar")) getString(R.string.err_cannot_read_maybe_pwd) else getString(R.string.msg_cannot_read)
                 runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
                     // Auto-detection can be wrong (e.g. a mislabeled extension) —
                     // offer the manual format picker as an escape hatch.
                     AlertDialog.Builder(this)
@@ -80,6 +81,7 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
             if (!OpenArchiveRegistry.register(openKey, activeTab)) {
                 val winner = OpenArchiveRegistry.owner(openKey)
                 runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
                     if (winner != null && winner !== activeTab) {
                         toast(getString(R.string.msg_archive_open_in_tab, tabTitle(winner)))
                         val idx = tabs.indexOf(winner)
@@ -88,7 +90,10 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
                 }
                 return@thread
             }
-            runOnUiThread { renderPreview(activeTab, src, entries, format, pwd, openKey) }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                renderPreview(activeTab, src, entries, format, pwd, openKey)
+            }
         }
     }
 
@@ -192,6 +197,7 @@ internal fun MainActivity.previewSearch(tab: TabState) {
                 }
             }
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 prog.dismiss()
                 if (cancelled) { toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
                 // Keep the in-tab preview alive: search opens on top, and closing
@@ -200,7 +206,7 @@ internal fun MainActivity.previewSearch(tab: TabState) {
                 globalSearch(cacheDir, tempDir = cacheDir)
             }
         } catch (e: Exception) {
-            runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
             opH.release()
         }
@@ -402,13 +408,14 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                             }
                         }
                         runOnUiThread {
+                            if (isFinishing || isDestroyed) return@runOnUiThread
                             prog.dismiss()
                             if (cancelled) { toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
                             dlg.dismiss()
                             globalSearch(cacheDir, tempDir = cacheDir)
                         }
                     } catch (e: Exception) {
-                        runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                        runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                     } finally {
                         opH.release()
                     }
@@ -654,7 +661,7 @@ internal fun MainActivity.mergeIntoArchive(
         // operations with bogus "busy" toasts.
         var tgtPwd = ""
         if (targetFmt in setOf("zip", "7z", "rar") && runCatching { isPasswordProtected(target) }.getOrDefault(false)) {
-            tgtPwd = promptPasswordSync(this) ?: run { toast(getString(R.string.msg_cancelled)); return@thread }
+            tgtPwd = promptPasswordSync(this) ?: run { runOnUiThread { toast(getString(R.string.msg_cancelled)) }; return@thread }
         }
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
@@ -847,6 +854,7 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
                 else -> PfsCore.pfsCreateArchive("", editDir.path, outF.path) != null
             }
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 prog.dismiss()
                 if (cancelled) toast(getString(R.string.msg_cancelled))
                 else if (ok) { toast(getString(R.string.edit_done, outF.name)); nav(currentDir) }
@@ -892,7 +900,7 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
             if (runCatching { isPasswordProtected(src) }.getOrDefault(false)) {
                 val entered = promptPasswordSync(this)
                 if (entered == null) {
-                    toast(getString(R.string.msg_cancelled))
+                    runOnUiThread { toast(getString(R.string.msg_cancelled)) }
                     return@thread
                 }
                 pwd = entered
@@ -1152,6 +1160,7 @@ internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, ne
             val ok = ZipCore.zipModify("", archive.path, tmp.path,
                 "replace|${entry.path}|${newContent.path}", pwd)
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 if (ok) {
                     // Move the temp to the -cn output; the original stays put.
                     java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
@@ -1165,7 +1174,7 @@ internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, ne
             }
         } catch (e: Exception) {
             cleanupZipModifyArtifacts(archive)
-            runOnUiThread { toast(getString(R.string.err_extract_io, e.message ?: "")) }
+            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; toast(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
             opH.release()
         }
@@ -1190,6 +1199,7 @@ internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, p
         try {
             val ok = ZipCore.zipModify("", archive.path, tmp.path, ops, pwd)
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 if (ok) {
                     java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING)
@@ -1202,7 +1212,7 @@ internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, p
             }
         } catch (e: Exception) {
             cleanupZipModifyArtifacts(archive)
-            runOnUiThread { toast(getString(R.string.err_extract_io, e.message ?: "")) }
+            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; toast(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
             opH.release()
         }
@@ -1226,6 +1236,7 @@ internal fun MainActivity.zipAddEntry(archive: File, entryName: String, srcFile:
             val ok = ZipCore.zipModify("", archive.path, tmp.path,
                 "add|$safeName|${srcFile.path}", pwd)
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 if (ok) {
                     java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING)
@@ -1238,7 +1249,7 @@ internal fun MainActivity.zipAddEntry(archive: File, entryName: String, srcFile:
             }
         } catch (e: Exception) {
             cleanupZipModifyArtifacts(archive)
-            runOnUiThread { toast(getString(R.string.err_extract_io, e.message ?: "")) }
+            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; toast(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
             opH.release()
         }

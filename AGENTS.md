@@ -28,6 +28,7 @@ cargo test --workspace             # Rust suite — must stay green
 2. **Password prompts BEFORE `tryStartOperation`** — modals block ~30 s and must never hold a slot/format lock.
 3. Every new JNI operation entry calls `clear_cancel()` first, or the previous op's cancel poisons it.
 4. Cancel isolation: queued-cancel must NOT set the format-global CANCEL flag (it would kill an unrelated running same-format op). Use `PollingProgressDialog.cancelQueuedThenNotify()` semantics.
+5. Every `runOnUiThread` block that touches UI (Toast, AlertDialog, Progress.dismiss, etc.) MUST start with `if (isFinishing || isDestroyed) return@runOnUiThread`. When a `prog.dismiss()` appears in the same block, place it AFTER the guard to avoid dismissing on a destroyed Activity.
 5. Deliberate legacy exceptions — do NOT migrate without revisiting rationale: delete/recycle flows and signature scan stay on old `OperationLock`.
 6. `viewPager.offscreenPageLimit = MAX_TABS - 1` keeps all fragments alive; don't lower it.
 
@@ -64,4 +65,5 @@ cargo test --workspace             # Rust suite — must stay green
 1. `cargo test --workspace` green (if Rust touched)
 2. `./gradlew lintDebug` — no new errors (if Kotlin/resources touched)
 3. `bash build.sh` completes (if JNI surface changed)
+4. Behavioral checklist for UI-sensitive changes: rotation survival, cancel mid-op cleanup, parallel smoke (different formats overlap; same format queues; queued-cancel isolates), Honor scrollbar avoidance
 4. Behavioral checklist for UI-sensitive changes: rotation survival, cancel mid-op cleanup, parallel smoke (different formats overlap; same format queues; queued-cancel isolates), Honor scrollbar avoidance

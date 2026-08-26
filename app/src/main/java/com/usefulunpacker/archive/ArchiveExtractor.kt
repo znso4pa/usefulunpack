@@ -279,6 +279,7 @@ fun showPasswordDialog(
                     }.onFailure { err = it.message }.getOrNull()
                     val outcome = ExtractOutcome(ExtractCounts.fromJson(json), err)
                     activity.runOnUiThread {
+                        if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                         prog?.dismiss()
                         if (cancelled) onCancel()
                         else onResult(outcome)

@@ -433,7 +433,7 @@ private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File
     }
     carveThread = thread {
         if (!OperationLock.acquire()) {
-            runOnUiThread { pd.dismiss(); toast(getString(R.string.msg_op_in_progress)) }
+            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.msg_op_in_progress)) }
             return@thread
         }
         try {
@@ -450,7 +450,7 @@ private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File
                 }
             }
             if (Thread.currentThread().isInterrupted) {
-                runOnUiThread { pd.dismiss(); toast(getString(R.string.msg_cancelled)) }
+                runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.msg_cancelled)) }
                 return@thread
             }
             runOnUiThread {
@@ -460,7 +460,7 @@ private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File
                 extractAll(destDir, temp, fmt)
             }
         } catch (e: Exception) {
-            runOnUiThread { pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
             OperationLock.release()
         }
@@ -497,12 +497,13 @@ private fun MainActivity.separateToFile(f: File, hit: ScanHit, destDir: File) {
                 }
             }
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 pd.dismiss()
                 toast(getString(R.string.msg_separate_done, out.name))
                 nav(currentDir)
             }
         } catch (e: Exception) {
-            runOnUiThread { pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
         }
     }
 }

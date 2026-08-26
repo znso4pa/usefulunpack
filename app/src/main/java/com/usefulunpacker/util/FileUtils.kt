@@ -216,7 +216,7 @@ fun fileSize(f: File): Long = try {
 } catch (e: Exception) {
     runCatching {
         ProcessBuilder("stat", "-c%s", f.absolutePath).redirectErrorStream(true).start()
-            .let { String(it.inputStream.readBytes()).trim().toLongOrNull() ?: 0L }
+            .let { p -> val result = String(p.inputStream.readBytes()).trim().toLongOrNull() ?: 0L; p.waitFor(); result }
     }.getOrDefault(0L)
 }
 

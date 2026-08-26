@@ -24,6 +24,10 @@ fn extract_zst(input: &str, output: &str) -> Result<u32, String> {
     // Multi-frame zstd: StreamingDecoder only handles a single frame. After the
     // first frame ends (decoder returns0 bytes), we recreate the decoder for the
     // next frame. Each concatenated frame starts with the zstd magic number.
+    let meta = fs::metadata(input).map_err(|e| format!("zstd: {e}"))?;
+    if meta.len() > 512 * 1024 * 1024 {
+        return Err("zstd: file too large (>512MB), streaming not supported".to_string());
+    }
     let all_bytes = fs::read(input).map_err(|e| format!("zstd: {e}"))?;
     let mut cursor = std::io::Cursor::new(&all_bytes);
 

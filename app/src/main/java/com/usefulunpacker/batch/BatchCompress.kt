@@ -83,6 +83,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                 val ok = if (cancelled) false else compressDispatch(tmpDir, outF, fmt, level, password, prefs, chosenSplit)
                                 tmpDir.deleteRecursively()
                                 runOnUiThread {
+                                    if (isFinishing || isDestroyed) return@runOnUiThread
                                     pd.dismiss()
                                     if (cancelled) {
                                         toast(getString(R.string.msg_cancelled))
@@ -99,6 +100,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                 // Uncaught I/O here used to crash the app and leave
                                 // the progress dialog + poller thread dangling.
                                 runOnUiThread {
+                                    if (isFinishing || isDestroyed) return@runOnUiThread
                                     pd.dismiss()
                                     toast(getString(R.string.err_extract_io, e.message ?: ""))
                                 }
@@ -166,6 +168,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                             if (!ok2) { ok = false; break }
                         }
                         runOnUiThread {
+                            if (isFinishing || isDestroyed) return@runOnUiThread
                             pd.dismiss()
                             if (cancelled) toast(getString(R.string.msg_cancelled))
                             else if (ok) toast(getString(R.string.msg_batch_compress_done))
@@ -173,7 +176,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                             exitMultiSelect(); nav(currentDir)
                         }
                     } catch (e: Exception) {
-                        runOnUiThread { pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                        runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                     } finally {
                         opH.release()
                     }

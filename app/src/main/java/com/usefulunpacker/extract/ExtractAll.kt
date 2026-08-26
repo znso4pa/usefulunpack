@@ -68,8 +68,8 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                     }
                     val finalResult = result
                     runOnUiThread {
-                        prog.dismiss()
                         if (isFinishing || isDestroyed) return@runOnUiThread
+                        prog.dismiss()
                         if (cancelled) {
                             cleanupCancelledOutput(destFile, existedBefore)
                             toast(getString(R.string.msg_cancelled))
@@ -111,8 +111,8 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                                         try {
                                             val result2 = doExtract(pwd2)
                                             runOnUiThread {
-                                                prog2.dismiss()
                                                 if (isFinishing || isDestroyed) return@runOnUiThread
+                                                prog2.dismiss()
                                                 if (cancelled2) {
                                                     cleanupCancelledOutput(destFile, existedBefore)
                                                     toast(getString(R.string.msg_cancelled))

@@ -43,6 +43,7 @@ private fun convertImage(activity: AppCompatActivity, file: File, targetFmt: Str
                 val opaque = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
                 opaque.eraseColor(0xFFFFFFFF.toInt())
                 android.graphics.Canvas(opaque).drawBitmap(bmp, 0f, 0f, null)
+                bmp.recycle()
                 bmp = opaque
             }
             val format = when (targetFmt) {
@@ -68,7 +69,9 @@ private fun convertImage(activity: AppCompatActivity, file: File, targetFmt: Str
                         java.io.FileOutputStream(outF).use { bmp.compress(format, quality, it) }
                         true
                     }.getOrDefault(false)
+                    bmp.recycle()
                     activity.runOnUiThread {
+                        if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                         if (ok) Toast.makeText(activity, activity.getString(R.string.img_edit_saved, outF.name), Toast.LENGTH_LONG).show()
                         else Toast.makeText(activity, activity.getString(R.string.img_edit_failed), Toast.LENGTH_SHORT).show()
                     }

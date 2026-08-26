@@ -1,5 +1,39 @@
 # TODO
 
+## v5.15.0 Debug Pass（已完成）
+
+### Round 1：`runOnUiThread` 防护守卫（BadTokenException 修复）
+全量审计 9 个文件，为所有 `runOnUiThread` 回调补充 `if (isFinishing || isDestroyed) return@runOnUiThread` 守卫，防止旋转/退出 Activity 期间异步回调触发窗口崩溃：
+
+| 文件 | 修复数 | 说明 |
+|------|--------|------|
+| `extract/PreviewFlow.kt` | 12 守卫 + 2 后台 toast | 最大文件，搜索/编辑/密码/压缩全覆盖 |
+| `batch/BatchExtract.kt` | 6 守卫 | 批量解压 |
+| `batch/BatchCompress.kt` | 6 守卫 | 批量压缩（合并/分离） |
+| `fileops/SignatureScan.kt` | 5 守卫 | 签名扫描 |
+| `fileops/CsoConvert.kt` | 2 守卫 | CSO↔ISO |
+| `archive/ArchiveExtractor.kt` | 1 守卫 | 密码输入框 EditText |
+| `ui/ImageEditorDialog.kt` | 1 守卫 | 保存回调 |
+| `ui/ImageConvertDialog.kt` | 1 守卫 | 转换回调 |
+| `browse/MultiSelect.kt` | 1 守卫 | 批量复制 |
+
+- **prog.dismiss() 顺序修正**：`ExtractAll.kt` 两处将 `prog.dismiss()` 移至守卫之后，避免已销毁 Activity 上 dismiss 抛异常。
+- **后台 Toast 规范**：PreviewFlow 中 `mergeIntoArchive` / `extractSelected` 的 `toast()` 调用包裹 `runOnUiThread`，遵守后台线程不能直接 Toast 的约束。
+
+### Round 2：资源泄漏修复
+| 文件 | 修复 | 说明 |
+|------|------|------|
+| `ui/ImageConvertDialog.kt` | Bitmap recycle | 合成 opaque 后立即回收原始 bmp；compress 完成后回收最终 bmp |
+| `util/FileUtils.kt` | Process waitFor | `fileSize` 的 `ProcessBuilder` 补充 `process.waitFor()`，防止僵尸进程 |
+
+### Round 3：Rust 侧修复
+| 文件 | 修复 | 说明 |
+|------|------|------|
+| `crates/zstd-core/src/lib.rs` | fs::read OOM 保护 | 大于 512MB 的文件拒绝全量读入，返回明确错误 |
+| `crates/zip-core/src/lib.rs` | zipModify clear_cancel | JNI 入口补充 `clear_cancel()`，防止前一次操作残留的 cancel 标记污染当前操作 |
+
+---
+
 ## 预览工作区（v5.14 待做 · 设计已定稿）
 
 > 归档预览 ⋮ 加「在窗口中打开」：把包内容实体化成一个专属 tab 的普通浏览目录，多选/复制/移动/分享/重命名/详情/排序等 FS 能力全部免费获得。此方案吸收并取代原 Tier1+2 统一化计划的主体价值。

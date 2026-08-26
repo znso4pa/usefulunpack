@@ -37,6 +37,7 @@ internal fun MainActivity.convertIso(src: File, toCso: Boolean, ownerTab: TabSta
             val ok = if (toCso) CsoCore.isoToCso("", src.path, outFile.path, "2048")
                      else CsoCore.csoToIso("", src.path, outFile.path)
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 prog.dismiss()
                 if (cancelled) {
                     outFile.delete()
@@ -52,6 +53,7 @@ internal fun MainActivity.convertIso(src: File, toCso: Boolean, ownerTab: TabSta
         } catch (e: Exception) {
             outFile.delete()
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 prog.dismiss()
                 toast(getString(R.string.title_convert_failed))
             }

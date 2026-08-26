@@ -101,6 +101,7 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
                                     ok = o.counts.ok; if (!ok) { err = o.error; break }
                                 }
                                 runOnUiThread {
+                                    if (isFinishing || isDestroyed) return@runOnUiThread
                                     prog.dismiss()
                                     if (cancelled) toast(getString(R.string.msg_cancelled))
                                     else if (ok) toast(getString(R.string.msg_batch_done))
@@ -108,7 +109,7 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
                                     exitMultiSelect(); nav(currentDir)
                                 }
                             } catch (e: Exception) {
-                                runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                                runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                             } finally {
                                 opH.release()
                             }
@@ -255,7 +256,7 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                 else toast(friendlyExtractError(this@showBatchPreviewDialog, o.error))
                             }
                         } catch (e: Exception) {
-                            runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                         } finally {
                             opH.release()
                         }
@@ -361,7 +362,7 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                     globalSearch(cacheDir, tempDir = cacheDir)
                                 }
                             } catch (e: Exception) {
-                                runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                                runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                             } finally {
                                 opH.release()
                             }
@@ -422,6 +423,7 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                     if (!o.counts.ok) { ok2 = false; err = o.error; break }
                                 }
                                 runOnUiThread {
+                                    if (isFinishing || isDestroyed) return@runOnUiThread
                                     pd2.dismiss()
                                     when {
                                         ok2 -> toast(getString(R.string.msg_batch_done))
@@ -430,7 +432,7 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                     exitMultiSelect(); nav(currentDir)
                                 }
                             } catch (e: Exception) {
-                                runOnUiThread { pd2.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                                runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd2.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                             } finally {
                                 opH.release()
                             }

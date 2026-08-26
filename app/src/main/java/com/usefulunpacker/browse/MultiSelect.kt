@@ -129,6 +129,7 @@ internal fun MainActivity.startBatchCopy() {
                 }
             }
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 if (failed > 0) toast(getString(R.string.msg_copy_result, copied, failed)) else toast(getString(R.string.msg_copied))
                 exitMultiSelect(tab)
                 navTab(tab, tab.currentDir)

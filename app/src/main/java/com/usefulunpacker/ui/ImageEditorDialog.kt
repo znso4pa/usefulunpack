@@ -267,6 +267,7 @@ private fun saveEdited(act: AppCompatActivity, file: File, view: ImageEditorView
                 true
             }.getOrDefault(false)
             act.runOnUiThread {
+                if (act.isFinishing || act.isDestroyed) return@runOnUiThread
                 if (ok) {
                     // Only drop the recovery copy once we actually saved — a
                     // failed save keeps it so rotation can still offer restore.

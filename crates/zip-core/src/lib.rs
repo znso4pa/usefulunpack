@@ -796,6 +796,7 @@ fn zip_modify(input: &str, output: &str, ops: &str, password: &str) -> Result<u3
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_ZipCore_zipModify(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, ops: JString, pw: JString) -> jboolean {
+    extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let op_str = s(&mut e, &ops); let pwd = s(&mut e, &pw);
     match guarded(move || zip_modify(&inp, &out, &op_str, &pwd)) {
         Ok(_) => JNI_TRUE,

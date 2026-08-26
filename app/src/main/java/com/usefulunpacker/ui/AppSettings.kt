@@ -332,6 +332,28 @@ internal fun MainActivity.showGeneralSettings() {
                     .show()
             }
             addView(pickerRow)
+            addView(divider())
+            // Live memory badge toggle: applies immediately so the overlay can
+            // appear/disappear while the dialog stays open.
+            val memSwitch = androidx.appcompat.widget.SwitchCompat(this@showGeneralSettings).apply {
+                isChecked = prefs.getBoolean("show_mem", false)
+                setTextColor(C["primary"]!!)
+                setOnCheckedChangeListener { _, checked ->
+                    prefs.edit().putBoolean("show_mem", checked).apply()
+                    applyMemoryBadge()
+                }
+            }
+            addView(LinearLayout(this@showGeneralSettings).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                addView(TextView(this@showGeneralSettings).apply {
+                    text = getString(R.string.settings_show_memory)
+                    setTextColor(C["primary"]!!)
+                    textSize = spx(R.dimen.text_xl)
+                    layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+                })
+                addView(memSwitch)
+            })
         }
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.settings_general))
@@ -408,8 +430,6 @@ internal fun MainActivity.showOtherSettings() {
 internal fun MainActivity.showRecycleBinSettings() {
     val recycleEnabled = com.usefulunpacker.fileops.RecycleBin.isEnabled(prefs)
     var autoCleanDays = com.usefulunpacker.fileops.RecycleBin.autoCleanDays(prefs)
-    val itemCount = com.usefulunpacker.fileops.RecycleBin.getItemCount(this)
-    val usedSize = com.usefulunpacker.fileops.RecycleBin.getUsedSize(this)
 
     val switchEnabled = androidx.appcompat.widget.SwitchCompat(this).apply {
         isChecked = recycleEnabled
@@ -417,14 +437,19 @@ internal fun MainActivity.showRecycleBinSettings() {
     }
 
     val tvInfo = TextView(this).apply {
-        text = getString(R.string.recycle_items, itemCount, fmt(usedSize))
+        // Filled in by the background stat pass below (walking a large bin
+        // synchronously would freeze this dialog).
+        text = getString(R.string.recycle_loading)
         setTextColor(C["tertiary_light"]!!)
         textSize = spx(R.dimen.text_sm)
         setPadding(0, dp(R.dimen.space_sm), 0, 0)
     }
 
     val tvAutoClean = TextView(this).apply {
-        text = getString(R.string.recycle_auto_clean, if (autoCleanDays == 0) getString(R.string.recycle_auto_clean_never) else getString(R.string.recycle_days_format, autoCleanDays))
+        // recycle_auto_clean has no format specifier (it doubles as the plain
+        // dialog title below) — compose the value here instead of passing args.
+        val autoVal = if (autoCleanDays == 0) getString(R.string.recycle_auto_clean_never) else getString(R.string.recycle_days_format, autoCleanDays)
+        text = "${getString(R.string.recycle_auto_clean)} $autoVal"
         setTextColor(C["primary"]!!)
         textSize = spx(R.dimen.text_lg)
     }
@@ -434,7 +459,18 @@ internal fun MainActivity.showRecycleBinSettings() {
         setTextColor(C["error"]!!)
         background = null
         textSize = spx(R.dimen.text_md)
-        isEnabled = itemCount > 0
+        isEnabled = false  // enabled once the async stat pass finds entries
+    }
+
+    // Stat pass off the main thread: count + size walk the whole bin.
+    thread(start = true) {
+        val itemCount = com.usefulunpacker.fileops.RecycleBin.getItemCount(this)
+        val usedSize = com.usefulunpacker.fileops.RecycleBin.getUsedSize(this)
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            tvInfo.text = getString(R.string.recycle_items, itemCount, fmt(usedSize))
+            btnEmpty.isEnabled = itemCount > 0
+        }
     }
 
     val act = this
@@ -479,7 +515,7 @@ internal fun MainActivity.showRecycleBinSettings() {
             .setTitle(getString(R.string.recycle_auto_clean))
             .setSingleChoiceItems(daysLabels, currentIdx) { _, w ->
                 autoCleanDays = daysOptions[w]
-                tvAutoClean.text = getString(R.string.recycle_auto_clean, daysLabels[w])
+                tvAutoClean.text = "${getString(R.string.recycle_auto_clean)} ${daysLabels[w]}"
             }
             .setPositiveButton(getString(R.string.action_confirm), null)
             .show()
@@ -490,10 +526,17 @@ internal fun MainActivity.showRecycleBinSettings() {
             .setTitle(getString(R.string.recycle_empty_now))
             .setMessage(getString(R.string.recycle_empty_confirm))
             .setPositiveButton(getString(R.string.action_delete)) { _, _ ->
-                com.usefulunpacker.fileops.RecycleBin.emptyRecycleBin(this)
-                toast(getString(R.string.recycle_empty))
-                nav(currentDir)
-                showRecycleBinSettings()
+                // deleteRecursively over a big bin — offload it; the dialog
+                // closes instantly and the refresh happens when done.
+                thread(start = true) {
+                    com.usefulunpacker.fileops.RecycleBin.emptyRecycleBin(this)
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        toast(getString(R.string.recycle_empty))
+                        nav(currentDir)
+                        showRecycleBinSettings()
+                    }
+                }
             }
             .setNegativeButton(getString(R.string.action_cancel), null)
             .show()

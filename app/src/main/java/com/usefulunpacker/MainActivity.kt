@@ -114,6 +114,12 @@ class MainActivity : AppCompatActivity() {
     // activity root). Hidden during multi-select so it can't overlap the batch bar.
     internal var btnAddFolder: ImageButton? = null
 
+    // Live memory usage badge (设置→一般管理→显示内存). Floating overlay pinned
+    // under the toolbar divider; refreshed every second while visible.
+    internal var memBadge: TextView? = null
+    private val memPollHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+    private var memPollScheduled = false
+
     // Background watcher on the current directory: auto-refresh the file list
     // when anything in it changes (rename / move / delete / extract / compress
     // / external changes like adb push or USB), so the user never has to
@@ -216,13 +222,21 @@ class MainActivity : AppCompatActivity() {
         tabList.adapter = tabAdapter
         findViewById<ImageButton>(R.id.btnAddTab).setOnClickListener { addTab() }
 
-        // Initial tabs: start with one, let the user open up to 3.
+        // Initial tabs: start with one, up to MAX_TABS. Keeping every page
+        // offscreen-retained means tab views never cycle while switching.
         viewPager.adapter = fragAdapter
-        viewPager.offscreenPageLimit = 3
-        // 3 fragments always exist (one per slot), but only `tabs.size` are visible.
+        viewPager.offscreenPageLimit = MAX_TABS - 1
+        // All fragments stay attached (one per slot); only `tabs.size` are visible.
         viewPager.registerOnPageChangeCallback(object : androidx.viewpager2.widget.ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
                 activeTabIndex = position
+                // OpOverlay cards are scoped to their owning window — switching
+                // tabs sends the running progress "to background".
+                OpOverlay.onActiveTabChanged(
+                    this@MainActivity,
+                    tabs.getOrNull(position)?.tabId ?: -1,
+                    tabs.map { it.tabId }.toSet()
+                )
                 tabAdapter.notifyDataSetChanged()
                 updateTitle()
                 // Per-tab toolbar paste button + batch bar must be re-synced to the
@@ -296,6 +310,7 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<androidx.constraintlayout.widget.ConstraintLayout>(R.id.root)?.addView(btnAddFolder)
         this.btnAddFolder = btnAddFolder
+        applyMemoryBadge()
         // btnExtract/fabExtract click listeners are set per-tab in FolderFragment
         // (the views now live inside each tab's folder_view.xml).
         findViewById<TextView>(R.id.btnAddBookmark).setOnClickListener {
@@ -322,7 +337,13 @@ class MainActivity : AppCompatActivity() {
         saveSession()
         try { currentMediaPlayer?.release() } catch (_: Exception) {}
         currentMediaPlayer = null
-        tabs.forEach { it.dirObserver?.stopWatching() }
+        tabs.forEach {
+            it.dirObserver?.stopWatching()
+            // Also drop an already-posted debounce refresh — firing it while
+            // paused would run navTab on a possibly-torn-down view and
+            // re-register the observer we just stopped.
+            it.refreshHandler.removeCallbacks(it.refreshRunnable)
+        }
     }
 
     override fun onResume() {
@@ -355,6 +376,79 @@ class MainActivity : AppCompatActivity() {
         super.onBackPressed()
     }
 
+    // ── Memory usage badge ───────────────────────────────────────────────
+    /** Creates or removes the floating badge per the show_mem pref and
+     *  (re)starts the 1s poller. Safe to call repeatedly. */
+    internal fun applyMemoryBadge() {
+        if (prefs.getBoolean("show_mem", false)) {
+            val root = findViewById<androidx.constraintlayout.widget.ConstraintLayout>(R.id.root)
+            if (root != null && memBadge == null) {
+                memBadge = TextView(this).apply {
+                    textSize = resources.getDimension(R.dimen.text_xs) / resources.displayMetrics.scaledDensity
+                    setTextColor(C["primary"]!!)
+                    setPadding(16, 10, 16, 10)
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        cornerRadius = 8f * resources.displayMetrics.density
+                        setColor(0xCC2A2A2A.toInt())
+                    }
+                    layoutParams = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        topToBottom = R.id.dividerToolbar
+                        endToEnd = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+                        topMargin = 12
+                        marginEnd = 12
+                    }
+                }
+                root.addView(memBadge)
+            }
+            updateMemBadgeText()
+            scheduleMemPoll()
+        } else {
+            memBadge?.let { (it.parent as? ViewGroup)?.removeView(it) }
+            memBadge = null
+        }
+    }
+
+    private fun scheduleMemPoll() {
+        // Single self-rescheduling tick: exits on its own once the badge is
+        // gone (toggle off / view removed), no separate stop call needed.
+        if (memPollScheduled) return
+        memPollScheduled = true
+        memPollHandler.postDelayed(object : Runnable {
+            override fun run() {
+                memPollScheduled = false
+                if (memBadge == null || isFinishing || isDestroyed) return
+                try { updateMemBadgeText() } catch (_: Exception) {}
+                scheduleMemPoll()
+            }
+        }, 1000)
+    }
+
+    private fun updateMemBadgeText() {
+        val tv = memBadge ?: return
+        val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
+        val mi = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+        val dm = android.os.Debug.MemoryInfo()
+        android.os.Debug.getMemoryInfo(dm)
+        val uuBytes = dm.totalPss * 1024L
+        val usedBytes = (mi.totalMem - mi.availMem).coerceAtLeast(0)
+        val sysBytes = (usedBytes - uuBytes).coerceAtLeast(0)
+        tv.text = "${giB(usedBytes)}/${giB(mi.totalMem)}\n" +
+            getString(R.string.mem_system) + ": " + memFmt(sysBytes) + "\n" +
+            getString(R.string.mem_uu) + ": " + memFmt(uuBytes)
+    }
+
+    /** "12.4g" style — one decimal, trailing ".0" trimmed. */
+    private fun giB(bytes: Long): String {
+        val g = bytes / GIB_F
+        val s = String.format(java.util.Locale.US, "%.1f", g)
+        return if (s.endsWith(".0")) s.dropLast(2) + "g" else s + "g"
+    }
+
+    /** <1GiB → megabytes ("356m"), otherwise one decimal gigabytes. */
+    private fun memFmt(bytes: Long): String =
+        if (bytes < GIB_F) "${(bytes / MIB_F).toInt()}m" else giB(bytes)
+
     override fun onDestroy() {
         try { currentMediaPlayer?.release() } catch (_: Exception) {}
         currentMediaPlayer = null
@@ -367,7 +461,11 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (_: Exception) {}
         tabs.forEach { it.stopObserver() }
-        OpenArchiveRegistry.clearAll()
+        // Only drop archive registrations owned by THIS instance's tabs — on
+        // rotation the new activity may have already re-registered its previews,
+        // and a blanket clearAll() would silently kill the same-archive mutex.
+        OpenArchiveRegistry.clearFor(tabs)
+        memPollHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
 
@@ -482,11 +580,14 @@ class MainActivity : AppCompatActivity() {
 
     /** Renames the given tab (long-press its label in the strip). Empty input
      *  resets to the default "窗口 N". The custom name is also what the
-     *  same-archive conflict toast shows, so the user can tell windows apart. */
+     *  same-archive conflict toast shows, so the user can tell windows apart.
+     *  Names are hard-capped at 8 characters — the strip is a shared horizontal
+     *  bar and an unbounded name would push every other tab off-screen. */
     internal fun showTabRenameDialog(tab: TabState) {
         val inp = EditText(this).apply {
             setText(tab.title)
             selectAll()
+            filters = arrayOf(android.text.InputFilter.LengthFilter(8))
             setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
             setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
             hint = getString(R.string.tab_rename_prompt)
@@ -587,7 +688,8 @@ class MainActivity : AppCompatActivity() {
                 else f.copyTo(dest, overwrite = false)
                 runOnUiThread { toast(getString(R.string.msg_copied)); refreshTab(tab) }
             } catch (e: Exception) {
-                runOnUiThread { toast(getString(R.string.msg_copied)) }
+                // A failed copy must not claim success.
+                runOnUiThread { toast(getString(R.string.err_file_error)) }
             }
         }
     }
@@ -638,7 +740,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        const val MAX_TABS = 3
+        const val MAX_TABS = 4
+        private const val GIB_F = 1024f * 1024f * 1024f
+        private const val MIB_F = 1024f * 1024f
     }
 }
 
@@ -674,11 +778,14 @@ internal class TabStripAdapter(private val act: MainActivity) :
                 rightMargin = act.resources.getDimensionPixelSize(R.dimen.space_xs)
             }
         }
-        // 窗口标题文字：小字号（text_xs），紧挨图标
+        // 窗口标题文字：小字号（text_xs），紧挨图标。WRAP_CONTENT 宽度配合
+        // maxWidth：超宽名字（历史数据等）在 96dp 处截断省略，不会把其他
+        // 标签挤出屏幕。
         val label = TextView(act).apply {
             textSize = act.resources.getDimension(R.dimen.text_xs) / act.resources.displayMetrics.scaledDensity
             setPadding(0, 0, act.resources.getDimensionPixelSize(R.dimen.space_sm), 0)
             maxLines = 1
+            maxWidth = (96 * act.resources.displayMetrics.density).toInt()
             ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
         }
         val close = TextView(act).apply {
@@ -731,7 +838,7 @@ internal class TabStripAdapter(private val act: MainActivity) :
     }
 }
 
-/** ViewPager2 adapter hosting one FolderFragment per tab slot (max 3). */
+/** ViewPager2 adapter hosting one FolderFragment per tab slot (up to MAX_TABS). */
 internal class TabPagerAdapter(private val act: MainActivity) :
     androidx.viewpager2.adapter.FragmentStateAdapter(act) {
     override fun getItemCount(): Int = act.tabs.size

@@ -58,6 +58,7 @@ class TabState(val tabId: Int) {
     lateinit var btnPreviewSearch: ImageButton
     lateinit var btnPreviewOverflow: ImageButton
 
+
     // In-tab archive preview state (FAB preview renders INSIDE this tab, so the
     // ViewPager stays swipeable — no modal dialog on top).
     var previewActive: Boolean = false

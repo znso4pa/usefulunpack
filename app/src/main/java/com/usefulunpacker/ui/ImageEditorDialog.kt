@@ -35,6 +35,7 @@ fun showImageEditor(activity: AppCompatActivity, file: File) {
         thread {
             val bmp = decodeBitmapCapped(file, IMG_EDIT_MAX_PX)
             activity.runOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                 pd.dismiss()
                 if (bmp == null) {
                     Toast.makeText(activity, activity.getString(R.string.msg_cannot_decode), Toast.LENGTH_SHORT).show()

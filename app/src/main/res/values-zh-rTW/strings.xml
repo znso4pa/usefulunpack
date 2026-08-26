@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">UsefulUnpack</string>
-    <string name="action_extract">解壓</string>
+    <string name="action_extract">📂 解壓</string>
     <string name="action_compress">壓縮</string>
-    <string name="action_preview">預覽</string>
+    <string name="action_preview">🔍 預覽</string>
     <string name="action_confirm">確定</string>
     <string name="action_cancel">取消</string>
     <string name="action_edit">編輯</string>
@@ -13,7 +13,7 @@
     <string name="preview_looks_utf8_hint">此檔案看起來是 UTF-8 編碼——若文字不對,請在 設定→文字編碼 切換到 UTF-8</string>
     <string name="msg_editor_too_large">檔案過大,無法在應用程式內編輯(&gt;2MB)</string>
     <string name="msg_tjs_compiled">編譯後的 TJS 腳本（TJS2 二進位）,無法以文字預覽</string>
-    <string name="edit_archive">編輯</string>
+    <string name="edit_archive">✏️ 編輯</string>
     <string name="action_more">更多</string>
     <string name="edit_only_pack">僅支援可封包的格式（XP3/PFS/ISO/NSA/7Z/YPF）</string>
     <string name="zip_manage_only_zip">僅 ZIP 封存支援條目管理</string>
@@ -53,17 +53,20 @@
     <string name="settings_picker_mode">選擇路徑/檔案方式</string>
     <string name="picker_mode_dialog">直接開啟路徑介面</string>
     <string name="picker_mode_tab">在新視窗中開啟選擇</string>
+    <string name="settings_show_memory">顯示記憶體</string>
+    <string name="mem_system">系統</string>
+    <string name="mem_uu">UU</string>
     <string name="sort_by_name">按名稱</string>
     <string name="sort_by_size">按大小</string>
     <string name="sort_by_date">按日期</string>
     <string name="sort_ascending">升冪</string>
     <string name="sort_descending">降冪</string>
     <string name="action_file_info">ℹ️ 檔案資訊</string>
-    <string name="action_convert_cso">轉換為 CSO (.cso)</string>
+    <string name="action_convert_cso">🔄 轉換為 CSO (.cso)</string>
     <string name="action_convert_iso">轉換為 ISO (.iso)</string>
     <string name="zip_manage">🗂️ 條目</string>
-    <string name="zip_manage_delete">刪除選中條目</string>
-    <string name="zip_manage_add">從本機檔案新增條目</string>
+    <string name="zip_manage_delete">🗑️ 刪除選中條目</string>
+    <string name="zip_manage_add">➕ 從本機檔案新增條目</string>
     <string name="zip_add_title">新增條目</string>
     <string name="zip_add_pick">選擇本機檔案</string>
     <string name="zip_add_name">條目名（留空 = 用檔名）</string>
@@ -96,6 +99,8 @@
     <string name="msg_created">已建立</string>
     <string name="msg_cancelled">已取消</string>
     <string name="msg_op_in_progress">其他操作執行中，請稍候</string>
+    <string name="msg_op_queued">⏳ 排隊中：第 %1$d 位</string>
+    <string name="msg_op_queued_eta">⏳ 排隊中：第 %1$d 位 · 約 %2$s 後開始</string>
     <string name="msg_no_results">未找到符合結果</string>
     <string name="msg_enter_keyword">請輸入關鍵詞</string>
     <string name="msg_select_one">請至少選擇一項</string>
@@ -174,7 +179,7 @@
     <string name="filename_search">📄 檔案名搜尋</string>
     <string name="content_search">📝 内容搜尋</string>
     <string name="search_button">🔍 搜尋</string>
-    <string name="preview">🔍 预览</string>
+    <string name="preview">🔍 預覽</string>
     <string name="extract_selected">解壓所选</string>
     <string name="extract_all">解壓全部</string>
     <string name="reading">读取中…</string>
@@ -219,10 +224,10 @@
     <string name="msg_hash_copied">雜湊已複製</string>
     <string name="err_audio_playback">無法播放音訊：%1$s</string>
     <string name="err_invalid_regex">正規表示式無效：%1$s</string>
-    <string name="msg_max_tabs">最多可開啟 3 個視窗</string>
+    <string name="msg_max_tabs">最多可開啟 4 個視窗</string>
     <string name="msg_archive_open_in_tab">此歸檔已在「%1$s」開啟</string>
     <string name="msg_archive_open_skipped">已跳過 %1$d 個在其他視窗開啟的歸檔</string>
-    <string name="merge_into_archive">合併到其他歸檔…</string>
+    <string name="merge_into_archive">📦 合併到其他歸檔…</string>
     <string name="merge_no_target">目前資料夾沒有可合併的歸檔</string>
     <string name="merge_select_target">選擇目標歸檔</string>
     <string name="merge_target_unsupported">該歸檔格式無法重新封包</string>
@@ -478,7 +483,14 @@
     <string name="img_edit_stretch">拉伸</string>
     <string name="settings_other">⚙️ 其餘設定</string>
     <string name="restore_session">還原上次工作階段</string>
-    <string name="restore_session_desc">啟動時還原上次的視窗和目錄（最多 3 個）</string>
+    <string name="restore_session_desc">啟動時還原上次的視窗和目錄（最多 4 個）</string>
     <string name="action_share">📤 分享</string>
     <string name="msg_share_folder">資料夾不支援分享</string>
+
+    <!-- Lint MissingTranslation fixes -->
+    <string name="search_continue">繼續掃描</string>
+    <string name="confirm">確定</string>
+    <string name="scanned_items">項</string>
+    <string name="error_not_supported_ext">不支援</string>
+    <string name="search_hint">搜尋檔名…</string>
 </resources>

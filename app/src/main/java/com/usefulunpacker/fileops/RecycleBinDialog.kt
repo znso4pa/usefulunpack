@@ -5,9 +5,9 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
-import android.widget.ImageButton
 import android.widget.ListView
 import android.widget.TextView
+import android.widget.Button
 import android.widget.Toast
 import com.usefulunpacker.C
 import com.usefulunpacker.MainActivity
@@ -51,17 +51,21 @@ private class RecycleEntryAdapter(
         view.findViewById<TextView>(R.id.recycle_date).text = dateFormat.format(Date(entry.deletedAt))
         view.findViewById<TextView>(R.id.recycle_size).text = fmt(entry.size)
 
-        view.findViewById<ImageButton>(R.id.btnRestore).setOnClickListener {
+        view.findViewById<Button>(R.id.btnRestore).setOnClickListener {
             thread {
                 val success = RecycleBin.restore(activity, entry.id)
+                // Re-listing reads every _meta.json — do it on the worker, not
+                // the UI thread; then guard the follow-up UI against a dead
+                // activity (empty-bin dialog would crash with BadTokenException).
+                val updatedEntries = RecycleBin.listEntries(activity)
                 activity.runOnUiThread {
+                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                     if (success) {
                         Toast.makeText(activity, activity.getString(R.string.action_restore), Toast.LENGTH_SHORT).show()
                         activity.nav(activity.currentDir)
                     } else {
                         Toast.makeText(activity, activity.getString(R.string.msg_restore_failed, 1), Toast.LENGTH_SHORT).show()
                     }
-                    val updatedEntries = RecycleBin.listEntries(activity)
                     updateEntries(updatedEntries)
                     if (updatedEntries.isEmpty()) {
                         AlertDialog.Builder(activity)
@@ -74,7 +78,7 @@ private class RecycleEntryAdapter(
             }
         }
 
-        view.findViewById<ImageButton>(R.id.btnPermanentDelete).setOnClickListener {
+        view.findViewById<Button>(R.id.btnPermanentDelete).setOnClickListener {
             AlertDialog.Builder(activity)
                 .setTitle(activity.getString(R.string.recycle_permanent_delete))
                 .setMessage(entry.originalName)
@@ -83,8 +87,9 @@ private class RecycleEntryAdapter(
                         val dir = RecycleBin.recycleDir(activity)
                         java.io.File(dir, entry.id).deleteRecursively()
                         RecycleBin.removeFromManifest(activity, entry.id)
+                        val updatedEntries = RecycleBin.listEntries(activity)
                         activity.runOnUiThread {
-                            val updatedEntries = RecycleBin.listEntries(activity)
+                            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                             updateEntries(updatedEntries)
                             if (updatedEntries.isEmpty()) {
                                 AlertDialog.Builder(activity)

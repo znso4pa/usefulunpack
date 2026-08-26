@@ -29,7 +29,7 @@
             android:layout_height="32dp"
             android:src="@drawable/ic_back"
             android:background="?attr/selectableItemBackgroundBorderless"
-            android:tint="@color/ui_icon_tint" />
+            app:tint="@color/ui_icon_tint" />
 
         <TextView
             android:id="@+id/tvPath"
@@ -188,7 +188,7 @@
                 android:layout_height="@dimen/icon_action"
                 android:src="@drawable/ic_back"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:tint="@color/ui_icon_tint"
+                app:tint="@color/ui_icon_tint"
                 android:contentDescription="返回" />
 
             <TextView
@@ -210,7 +210,7 @@
                 android:layout_height="@dimen/icon_action"
                 android:src="@drawable/ic_search"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:tint="@color/accent"
+                app:tint="@color/accent"
                 android:contentDescription="搜索" />
 
             <ImageButton
@@ -219,7 +219,7 @@
                 android:layout_height="@dimen/icon_action"
                 android:src="@drawable/ic_overflow"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:tint="@color/accent"
+                app:tint="@color/accent"
                 android:contentDescription="更多操作" />
         </LinearLayout>
 

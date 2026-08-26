@@ -26,6 +26,17 @@ object OpenArchiveRegistry {
         return true
     }
 
+    /**
+     * Takeover variant for session restore: on rotation the dying activity's
+     * tab may still own the entry when the new instance restores its preview.
+     * The restoring tab is authoritative, so overwrite unconditionally —
+     * combined with onDestroy's clearFor(dyingTabs) the registry converges to
+     * the new owner regardless of which side runs first.
+     */
+    fun forceRegister(canonical: String, tab: TabState) {
+        map[canonical] = tab
+    }
+
     /** Drops the registration for [canonical] (dialog dismissed / edit finished). */
     fun unregister(canonical: String) {
         map.remove(canonical)
@@ -42,5 +53,17 @@ object OpenArchiveRegistry {
     /** Drops every registration (activity destroyed). */
     fun clearAll() {
         map.clear()
+    }
+
+    /**
+     * Drops registrations owned by the given tabs only. Used on activity
+     * destroy: a rotation destroys the old activity AFTER the new one has
+     * started restoring previews, so a blanket clearAll() would wipe the new
+     * instance's freshly-registered archives and silently kill the same-
+     * archive mutex. TabState instances are per-activity, so ownership is a
+     * precise generation marker.
+     */
+    fun clearFor(tabs: Collection<TabState>) {
+        map.entries.removeAll { entry -> tabs.any { it === entry.value } }
     }
 }

@@ -35,8 +35,16 @@ private fun convertImage(activity: AppCompatActivity, file: File, targetFmt: Str
     pd.setMessage(activity.getString(R.string.msg_loading)); pd.setCancelable(false); pd.show()
     thread {
         val triple = runCatching {
-            val bmp = decodeBitmapCapped(file, IMG_CONVERT_MAX_PX)
+            var bmp = decodeBitmapCapped(file, IMG_CONVERT_MAX_PX)
                 ?: return@runCatching Triple<Bitmap?, Bitmap.CompressFormat, Int>(null, Bitmap.CompressFormat.PNG, 100)
+            // JPEG has no alpha: composite onto white so transparent PNG/WebP
+            // areas don't turn black in the converted copy.
+            if (targetFmt == "jpg" && bmp.hasAlpha()) {
+                val opaque = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
+                opaque.eraseColor(0xFFFFFFFF.toInt())
+                android.graphics.Canvas(opaque).drawBitmap(bmp, 0f, 0f, null)
+                bmp = opaque
+            }
             val format = when (targetFmt) {
                 "jpg" -> Bitmap.CompressFormat.JPEG
                 "png" -> Bitmap.CompressFormat.PNG
@@ -47,6 +55,7 @@ private fun convertImage(activity: AppCompatActivity, file: File, targetFmt: Str
         }.getOrDefault(Triple(null, Bitmap.CompressFormat.PNG, 100))
         val bmp = triple.first; val format = triple.second; val quality = triple.third
         activity.runOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
             pd.dismiss()
             if (bmp == null) {
                 Toast.makeText(activity, activity.getString(R.string.msg_cannot_decode), Toast.LENGTH_SHORT).show()

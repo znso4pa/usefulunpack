@@ -31,7 +31,20 @@ internal fun MainActivity.syncMultiBar(tab: TabState) {
         } else {
             tab.listFiles.setPadding(tab.listFiles.paddingLeft, tab.listFiles.paddingTop, tab.listFiles.paddingRight, 0)
         }
-        tab.bottomBar.visibility = if (tab.multiSelectMode) View.GONE else tab.bottomBar.visibility
+        // bottomBar (compress-mode selection bar) shares the bottom edge too —
+        // same save/restore dance as the FAB, otherwise leaving multi-select
+        // leaves it GONE forever (it was hidden on entry and nothing reset it).
+        if (tab.multiSelectMode) {
+            if (tab.bottomBar.tag == null) tab.bottomBar.tag = tab.bottomBar.visibility
+            tab.bottomBar.visibility = View.GONE
+        } else {
+            val priorBar = tab.bottomBar.tag
+            if (priorBar is Int) tab.bottomBar.visibility = priorBar
+            tab.bottomBar.tag = null
+        }
+        // Global add-folder button also floats at the bottom — hide it during
+        // multi-select so it can't overlap the batch bar on the active tab.
+        btnAddFolder?.visibility = if (tab === activeTab && tab.multiSelectMode) View.GONE else View.VISIBLE
         // The FAB floats at the same bottom edge as the batch bar — hide it in
         // multi-select mode so it doesn't overlap the cancel/delete buttons, and
         // restore its prior visibility when leaving the mode.
@@ -43,18 +56,19 @@ internal fun MainActivity.syncMultiBar(tab: TabState) {
             if (prior is Int) tab.fabExtract.visibility = prior
             tab.fabExtract.tag = null
         }
-        // Global add-folder button also floats at the bottom — hide it during
-        // multi-select so it can't overlap the batch bar on the active tab.
-        btnAddFolder?.visibility = if (tab === activeTab && tab.multiSelectMode) View.GONE else View.VISIBLE
         // Sync adapter selection state and force full redraw
         (tab.listFiles.adapter as? FileAdapter)?.multiSelected_ = if (tab.multiSelectMode) tab.multiSelected else emptySet()
         tab.listFiles.invalidateViews()
-        // Show/hide extract/compress based on mode (use startsWith for emoji safety).
+        // Show/hide extract/preview/compress based on work mode. Buttons carry a
+        // semantic tag set in buildBatchBar — never match on display text: the
+        // strings embed emojis that changed across releases and the old
+        // startsWith matching ended up hiding EXTRACT in extract mode.
         fun walk(v: View) {
             if (v is Button) {
-                val t = v.text.toString()
-                if (t.startsWith("📂")) v.visibility = if (isCompress) View.GONE else View.VISIBLE
-                if (t.startsWith("📦")) v.visibility = if (isCompress) View.VISIBLE else View.GONE
+                when (v.tag) {
+                    "extract", "preview" -> v.visibility = if (isCompress) View.GONE else View.VISIBLE
+                    "compress" -> v.visibility = if (isCompress) View.VISIBLE else View.GONE
+                }
             } else if (v is ViewGroup) {
                 for (i in 0 until v.childCount) walk(v.getChildAt(i))
             }
@@ -69,7 +83,7 @@ internal fun MainActivity.confirmBatchDelete() {
         val tab = activeTab
         val sel = tab.multiSelected.toList(); if (sel.isEmpty()) return
         val recycleEnabled = com.usefulunpacker.fileops.RecycleBin.isEnabled(prefs)
-                AlertDialog.Builder(this).setTitle(getString(R.string.title_batch_delete)).setMessage(getString(if (recycleEnabled) R.string.confirm_recycle_batch_msg else R.string.confirm_delete_batch_msg, sel.size))
+        AlertDialog.Builder(this).setTitle(getString(R.string.title_batch_delete)).setMessage(getString(if (recycleEnabled) R.string.confirm_recycle_batch_msg else R.string.confirm_delete_batch_msg, sel.size))
             .setPositiveButton(getString(R.string.action_delete)) { _, _ ->
                 deleteWithProgress(this, sel, prefs) { del, fail ->
                     if (fail > 0) toast(getString(R.string.msg_delete_result, del, fail)) else toast(getString(if (recycleEnabled) R.string.msg_moved_to_recycle else R.string.msg_deleted))

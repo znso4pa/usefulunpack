@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Folder picker row: folder icon + name -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="@dimen/row_setting"
     android:orientation="horizontal"
@@ -13,7 +14,7 @@
         android:layout_width="@dimen/icon_list"
         android:layout_height="@dimen/icon_list"
         android:src="@drawable/ic_folder"
-        android:tint="@color/state_warning"
+        app:tint="@color/state_warning"
         android:scaleType="centerInside"
         android:importantForAccessibility="no" />
 

@@ -62,49 +62,57 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
         val labels = arrayOf(getString(R.string.extract_separate_dirs, outDirs.map { it.name }.joinToString(", ")), getString(R.string.action_extract))
         AlertDialog.Builder(this).setTitle(getString(R.string.title_extract_to))
             .setItems(labels) { _, w ->
-                // Lock first, then the progress dialog (see extractAll).
-                if (!tryStartOperation(this)) return@setItems
-                var cancelled = false
-                val accessors = extractAccessors(fmt)
-                val prog = PollingProgressDialog(
-                    this,
-                    getString(R.string.msg_batch_extract_title, fmt),
-                    accessors,
-                    { n, b, t -> extractProgressMessage(this, n, b, t) },
-                    getString(R.string.action_cancel),
-                    { cancelled = true; accessors.cancel() }
-                )
-                prog.start()
                 thread {
-                    try {
-                        // Ask for the password once and reuse it for every archive.
-                        var pwd: String? = null
-                        if (archives.any { isPasswordProtected(it) }) {
-                            pwd = promptPasswordSync(this)
-                            if (pwd == null) {
-                                runOnUiThread { prog.dismiss(); toast(getString(R.string.msg_cancelled)); exitMultiSelect(); nav(currentDir) }
-                                return@thread
+                    // Resolve the password BEFORE taking a scheduler slot — the
+                    // modal can block ~30s and must not hog a slot + format lock.
+                    var pwd: String? = null
+                    if (archives.any { isPasswordProtected(it) }) {
+                        pwd = promptPasswordSync(this)
+                        if (pwd == null) {
+                            runOnUiThread { toast(getString(R.string.msg_cancelled)); exitMultiSelect(); nav(currentDir) }
+                            return@thread
+                        }
+                    }
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        // Lock first, then the progress dialog (see extractAll).
+                        val opH = tryStartOperation(this, fmt)
+                        var cancelled = false
+                        val accessors = extractAccessors(fmt)
+                        val prog = PollingProgressDialog(
+                            this,
+                            getString(R.string.msg_batch_extract_title, fmt),
+                            accessors,
+                            { n, b, t -> extractProgressMessage(this, n, b, t) },
+                            getString(R.string.action_cancel),
+                            { cancelled = true; accessors.cancel() },
+                            opH
+                        )
+                        prog.start()
+                        thread {
+                            if (!opH.await()) return@thread
+                            try {
+                                var ok = true
+                                var err: String? = null
+                                for (i in archives.indices) {
+                                    if (cancelled) { ok = false; break }
+                                    val out = if (w == 0) outDirs[i] else parent
+                                    val o = extractByFormat(fmt, archives[i].path, out.path, "", prefs, pwd ?: "")
+                                    ok = o.counts.ok; if (!ok) { err = o.error; break }
+                                }
+                                runOnUiThread {
+                                    prog.dismiss()
+                                    if (cancelled) toast(getString(R.string.msg_cancelled))
+                                    else if (ok) toast(getString(R.string.msg_batch_done))
+                                    else toast(friendlyExtractError(this, err))
+                                    exitMultiSelect(); nav(currentDir)
+                                }
+                            } catch (e: Exception) {
+                                runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                            } finally {
+                                opH.release()
                             }
                         }
-                        var ok = true
-                        var err: String? = null
-                        for (i in archives.indices) {
-                            if (cancelled) { ok = false; break }
-                            val out = if (w == 0) outDirs[i] else parent
-                            val o = extractByFormat(fmt, archives[i].path, out.path, "", prefs, pwd ?: "")
-                            ok = o.counts.ok; if (!ok) { err = o.error; break }
-                        }
-                        runOnUiThread {
-                            prog.dismiss()
-                            if (cancelled) toast(getString(R.string.msg_cancelled))
-                            else if (ok) toast(getString(R.string.msg_batch_done))
-                            else toast(friendlyExtractError(this, err))
-                            exitMultiSelect(); nav(currentDir)
-                        }
-                    } catch (e: Exception) {
-                        runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
-                    } finally {
-                        OperationLock.release()
                     }
                 }
             }.setNegativeButton(getString(R.string.action_cancel), null).show()
@@ -156,7 +164,10 @@ internal fun MainActivity.batchPreview(archives: List<File>, fmt: String) {
                 if (json != null) all.add(src to parseEntries(json))
                 if (pwdCancelled) break
             }
-            runOnUiThread { pd.dismiss(); if (all.isEmpty()) toast(getString(R.string.msg_cannot_read)); else { if (conflictNames.isNotEmpty()) toast(getString(R.string.msg_archive_open_skipped, conflictNames.size)); showBatchPreviewDialog(all, fmt, batchPwd, pwdCancelled) } }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                pd.dismiss(); if (all.isEmpty()) toast(getString(R.string.msg_cannot_read)); else { if (conflictNames.isNotEmpty()) toast(getString(R.string.msg_archive_open_skipped, conflictNames.size)); showBatchPreviewDialog(all, fmt, batchPwd, pwdCancelled) }
+            }
         }
     }
 
@@ -211,34 +222,44 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
             if (entry.isDirectory) return
             val (arc, origPath) = resolveBatchPath(entry.path) ?: return
             val cacheDir = File(cacheDir, "batch_preview/${arc.nameWithoutExtension}")
-            // Lock first, then the dual progress dialog (see extractAll).
-            if (!tryStartOperation(this)) return
-            var cancelled = false
-            val accessors = extractAccessors(fmt)
-            val prog = PollingProgressDialog(
-                this,
-                getString(R.string.msg_extracting),
-                accessors,
-                { n, b, t -> extractProgressMessage(this, n, b, t) },
-                getString(R.string.action_cancel),
-                { cancelled = true; accessors.cancel() }
-            )
-            prog.start()
             thread {
-                try {
-                    val p = resolveBatchPwd(arc)
-                    if (p == null) { runOnUiThread { prog.dismiss() }; return@thread }
-                    val o = extractByFormat(fmt, arc.path, cacheDir.path, origPath, prefs, p)
-                    runOnUiThread {
-                        prog.dismiss()
-                        if (cancelled) toast(getString(R.string.msg_cancelled))
-                        else if (o.counts.ok) previewLocalFile(this, File(cacheDir, origPath))
-                        else toast(friendlyExtractError(this, o.error))
+                // Resolve the password BEFORE taking a scheduler slot — the
+                // modal can block ~30s and must not hog a slot + format lock.
+                val p0 = resolveBatchPwd(arc)
+                if (p0 == null) return@thread // cancelled; batchPwdCancelled gates later attempts
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    // Lock first, then the dual progress dialog (see extractAll).
+                    val opH = tryStartOperation(this, fmt)
+                    var cancelled = false
+                    val accessors = extractAccessors(fmt)
+                    val prog = PollingProgressDialog(
+                        this,
+                        getString(R.string.msg_extracting),
+                        accessors,
+                        { n, b, t -> extractProgressMessage(this, n, b, t) },
+                        getString(R.string.action_cancel),
+                        { cancelled = true; accessors.cancel() },
+                        opH
+                    )
+                    prog.start()
+                    thread {
+                        if (!opH.await()) return@thread
+                        try {
+                            val o = extractByFormat(fmt, arc.path, cacheDir.path, origPath, prefs, p0)
+                            runOnUiThread {
+                                if (isFinishing || isDestroyed) return@runOnUiThread
+                                prog.dismiss()
+                                if (cancelled) toast(getString(R.string.msg_cancelled))
+                                else if (o.counts.ok) previewLocalFile(this@showBatchPreviewDialog, File(cacheDir, origPath))
+                                else toast(friendlyExtractError(this@showBatchPreviewDialog, o.error))
+                            }
+                        } catch (e: Exception) {
+                            runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                        } finally {
+                            opH.release()
+                        }
                     }
-                } catch (e: Exception) {
-                    runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
-                } finally {
-                    OperationLock.release()
                 }
             }
         }
@@ -265,67 +286,86 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
             scaleType = ImageView.ScaleType.FIT_XY; layoutParams = LinearLayout.LayoutParams(52, 40)
             setOnClickListener {
                 val cacheDir = File(cacheDir, "archive_search/batch_${all.map{it.first.nameWithoutExtension}.joinToString("_").take(50)}")
-                // Lock first, then the dual progress dialog (the text-extraction
-                // phase reports byte progress); the work dir is cleared INSIDE
-                // the lock so a refused second search can't nuke a running one.
-                if (!tryStartOperation(act)) return@setOnClickListener
-                var cancelled = false
-                val accessors = extractAccessors(fmt)
-                val prog = PollingProgressDialog(
-                    act,
-                    getString(R.string.preparing_search),
-                    accessors,
-                    { n, b, t -> extractProgressMessage(act, n, b, t) },
-                    getString(R.string.action_cancel),
-                    { cancelled = true; accessors.cancel() }
-                )
-                prog.start()
                 thread {
-                    try {
-                        cacheDir.deleteRecursively(); cacheDir.mkdirs()
-                        searchSourceArchive = null; searchSourceFormat = fmt; searchSourceCacheBase = cacheDir
-                        searchSourcePassword = null
-                        // Each archive gets its own subdir so same-named entries
-                        // from different archives never collide; a resolver maps
-                        // every cached path back to (archive, password, out dir).
-                        val resolver = mutableMapOf<String, SearchExtractSource>()
-                        val textExts = TEXT_SEARCH_EXTS
-                        for ((src, _) in all) {
-                            if (cancelled) break
-                            val pwd = resolveBatchPwd(src) ?: run { runOnUiThread { prog.dismiss(); toast(getString(R.string.msg_cancelled)) }; return@thread }
-                            val sub = File(cacheDir, src.name)
-                            sub.mkdirs()
-                            for (e in merged.filter { !it.isDirectory && it.path.startsWith("📦 ${src.name}/") }) {
-                                val rp = resolveBatchPath(e.path)?.second ?: continue
-                                // Same rules as the Rust safe_join (reject
-                                // ../, absolute, drive letters) + a canonical
-                                // containment check before touching disk.
-                                val rel = sanitizeEntryPath(rp) ?: continue
-                                val ph = File(sub, rel)
-                                if (!ph.canonicalPath.startsWith(sub.canonicalPath + "/")) continue
-                                val archiveRel = "$rel"
-                                val keyRel = "${src.name}/$rel"
-                                resolver[keyRel] = SearchExtractSource(src, archiveRel, sub, pwd)
-                                // Phase 1: touch placeholder files for ALL entries (filename search).
-                                ph.parentFile?.mkdirs()
-                                try { ph.createNewFile() } catch (_: Exception) {}
-                                // Phase 2: extract only text files (overwrites placeholder).
-                                if (e.name.substringAfterLast('.').lowercase() in textExts) {
-                                    extractByFormat(fmt, src.path, sub.path, archiveRel, prefs, pwd)
+                    // Pre-collect every archive's password BEFORE taking a
+                    // scheduler slot — the modals can block ~30s each and must
+                    // not sit on a slot + format lock.
+                    val pwds = HashMap<File, String>()
+                    for ((src, _) in all) {
+                        val p = resolveBatchPwd(src) ?: run {
+                            runOnUiThread { toast(getString(R.string.msg_cancelled)) }
+                            return@thread
+                        }
+                        pwds[src] = p
+                    }
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        // Lock first, then the dual progress dialog (the text-extraction
+                        // phase reports byte progress); the work dir is cleared INSIDE
+                        // the lock so a queued second search can't nuke a running one.
+                        val opH = tryStartOperation(act, fmt)
+                        var cancelled = false
+                        val accessors = extractAccessors(fmt)
+                        val prog = PollingProgressDialog(
+                            act,
+                            getString(R.string.preparing_search),
+                            accessors,
+                            { n, b, t -> extractProgressMessage(act, n, b, t) },
+                            getString(R.string.action_cancel),
+                            { cancelled = true; accessors.cancel() },
+                            opH
+                        )
+                        prog.start()
+                        thread {
+                            if (!opH.await()) return@thread
+                            try {
+                                cacheDir.deleteRecursively(); cacheDir.mkdirs()
+                                searchSourceArchive = null; searchSourceFormat = fmt; searchSourceCacheBase = cacheDir
+                                searchSourcePassword = null
+                                // Each archive gets its own subdir so same-named entries
+                                // from different archives never collide; a resolver maps
+                                // every cached path back to (archive, password, out dir).
+                                val resolver = mutableMapOf<String, SearchExtractSource>()
+                                val textExts = TEXT_SEARCH_EXTS
+                                for ((src, _) in all) {
+                                    if (cancelled) break
+                                    val pwd = pwds[src] ?: continue
+                                    val sub = File(cacheDir, src.name)
+                                    sub.mkdirs()
+                                    for (e in merged.filter { !it.isDirectory && it.path.startsWith("📦 ${src.name}/") }) {
+                                        val rp = resolveBatchPath(e.path)?.second ?: continue
+                                        // Same rules as the Rust safe_join (reject
+                                        // ../, absolute, drive letters) + a canonical
+                                        // containment check before touching disk.
+                                        val rel = sanitizeEntryPath(rp) ?: continue
+                                        val ph = File(sub, rel)
+                                        if (!ph.canonicalPath.startsWith(sub.canonicalPath + "/")) continue
+                                        val archiveRel = "$rel"
+                                        val keyRel = "${src.name}/$rel"
+                                        resolver[keyRel] = SearchExtractSource(src, archiveRel, sub, pwd)
+                                        // Phase 1: touch placeholder files for ALL entries (filename search).
+                                        ph.parentFile?.mkdirs()
+                                        try { ph.createNewFile() } catch (_: Exception) {}
+                                        // Phase 2: extract only text files (overwrites placeholder).
+                                        if (e.name.substringAfterLast('.').lowercase() in textExts) {
+                                            extractByFormat(fmt, src.path, sub.path, archiveRel, prefs, pwd)
+                                        }
+                                    }
                                 }
+                                searchSourceResolver = resolver
+                                runOnUiThread {
+                                    if (isFinishing || isDestroyed) return@runOnUiThread
+                                    prog.dismiss()
+                                    if (cancelled) { toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
+                                    dlg.dismiss()
+                                    globalSearch(cacheDir, tempDir = cacheDir)
+                                }
+                            } catch (e: Exception) {
+                                runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                            } finally {
+                                opH.release()
                             }
                         }
-                        searchSourceResolver = resolver
-                        runOnUiThread {
-                            prog.dismiss()
-                            if (cancelled) { toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
-                            dlg.dismiss()
-                            globalSearch(cacheDir, tempDir = cacheDir)
-                        }
-                    } catch (e: Exception) {
-                        runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
-                    } finally {
-                        OperationLock.release()
                     }
                 }
             }
@@ -336,49 +376,65 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
             .setPositiveButton(getString(R.string.extract_selected)) { _, _ ->
                 val sel = selectedPaths.filter { p -> selectedPaths.none { o -> o != p && o.startsWith(p + "/") } }
                 if (sel.isEmpty()) { toast(getString(R.string.msg_select_one)); return@setPositiveButton }
-                // Lock first, then the spinner dialog (see extractAll).
-                if (!tryStartOperation(this)) return@setPositiveButton
                 val byArchive = mutableMapOf<File, MutableList<String>>()
                 for (p in sel) {
                     val r = resolveBatchPath(p) ?: continue
                     byArchive.getOrPut(r.first) { mutableListOf() }.add(r.second)
                 }
-                var cancelled = false
-                val accessors2 = extractAccessors(fmt)
-                val pd2 = PollingProgressDialog(
-                    this,
-                    getString(R.string.title_batch_extract),
-                    accessors2,
-                    { n, b, t -> extractProgressMessage(this, n, b, t) },
-                    getString(R.string.action_cancel),
-                    { cancelled = true; accessors2.cancel() }
-                )
-                pd2.start()
                 thread {
-                    try {
-                        var ok2 = true
-                        var err: String? = null
-                        var pwdCancelled2 = false
-                        for ((src, paths) in byArchive) {
-                            if (cancelled) { pwdCancelled2 = true; break }
-                            val pwd = resolveBatchPwd(src)
-                            if (pwd == null) { pwdCancelled2 = true; break }
-                            val o = extractByFormat(fmt, src.path, uniqueFile(src.parentFile ?: currentDir, src.nameWithoutExtension).path, paths.joinToString("\n"), prefs, pwd)
-                            if (!o.counts.ok) { ok2 = false; err = o.error; break }
+                    // Pre-collect every archive's password BEFORE taking a
+                    // scheduler slot — modals must not sit on a slot + lock.
+                    val pwds = HashMap<File, String>()
+                    var pwdCancelled2 = false
+                    for ((src, _) in byArchive) {
+                        val p = resolveBatchPwd(src)
+                        if (p == null) { pwdCancelled2 = true; break }
+                        pwds[src] = p
+                    }
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed || pwdCancelled2) {
+                            if (pwdCancelled2 && !(isFinishing || isDestroyed)) toast(getString(R.string.msg_cancelled))
+                            return@runOnUiThread
                         }
-                        runOnUiThread {
-                            pd2.dismiss()
-                            when {
-                                pwdCancelled2 -> toast(getString(R.string.msg_cancelled))
-                                ok2 -> toast(getString(R.string.msg_batch_done))
-                                else -> toast(friendlyExtractError(this, err))
+                        // Lock first, then the spinner dialog (see extractAll).
+                        val opH = tryStartOperation(this, fmt)
+                        var cancelled = false
+                        val accessors2 = extractAccessors(fmt)
+                        val pd2 = PollingProgressDialog(
+                            this,
+                            getString(R.string.title_batch_extract),
+                            accessors2,
+                            { n, b, t -> extractProgressMessage(this, n, b, t) },
+                            getString(R.string.action_cancel),
+                            { cancelled = true; accessors2.cancel() },
+                            opH
+                        )
+                        pd2.start()
+                        thread {
+                            if (!opH.await()) return@thread
+                            try {
+                                var ok2 = true
+                                var err: String? = null
+                                for ((src, paths) in byArchive) {
+                                    if (cancelled) break
+                                    val pwd = pwds[src] ?: continue
+                                    val o = extractByFormat(fmt, src.path, uniqueFile(src.parentFile ?: currentDir, src.nameWithoutExtension).path, paths.joinToString("\n"), prefs, pwd)
+                                    if (!o.counts.ok) { ok2 = false; err = o.error; break }
+                                }
+                                runOnUiThread {
+                                    pd2.dismiss()
+                                    when {
+                                        ok2 -> toast(getString(R.string.msg_batch_done))
+                                        else -> toast(friendlyExtractError(this, err))
+                                    }
+                                    exitMultiSelect(); nav(currentDir)
+                                }
+                            } catch (e: Exception) {
+                                runOnUiThread { pd2.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                            } finally {
+                                opH.release()
                             }
-                            exitMultiSelect(); nav(currentDir)
                         }
-                    } catch (e: Exception) {
-                        runOnUiThread { pd2.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
-                    } finally {
-                        OperationLock.release()
                     }
                 }
             }

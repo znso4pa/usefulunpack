@@ -20,6 +20,8 @@ internal fun MainActivity.saveSession() {
     for (tab in tabs) {
         val o = JSONObject()
         o.put("dir", tab.currentDir.absolutePath)
+        // Custom window names survive restarts too (blank = default "窗口 N").
+        if (tab.title.isNotBlank()) o.put("title", tab.title)
         if (tab.previewActive && tab.previewSrc != null && tab.previewFormat != null) {
             o.put("preview", 1)
             o.put("src", tab.previewSrc!!.absolutePath)
@@ -67,6 +69,9 @@ internal fun MainActivity.restoreSession() {
     for (i in dirs.indices) {
         val tab = TabState(i)
         tab.currentDir = dirs[i]
+        // Same 8-char cap the rename dialog enforces, so a hand-edited or
+        // older-session JSON can't smuggle in an oversized name.
+        tab.title = savedTabs.optJSONObject(i)?.optString("title", "")?.take(8) ?: ""
         tabs.add(tab)
     }
     activeTabIndex = root.optInt("active", 0).coerceIn(0, tabs.size - 1)
@@ -105,7 +110,9 @@ private fun MainActivity.restorePreviews(previews: Array<PendingPreview?>) {
                 if (entries.isNullOrEmpty()) return@runOnUiThread
                 if (tab.previewActive) return@runOnUiThread
                 val openKey = archiveKey(pending.src)
-                if (!OpenArchiveRegistry.register(openKey, tab)) return@runOnUiThread
+                // Force-takeover: the dying activity's tab may still own the
+                // key during the rotation window; the restoring tab wins.
+                OpenArchiveRegistry.forceRegister(openKey, tab)
                 renderPreview(tab, pending.src, entries, pending.fmt, pending.pwd, openKey)
             }
         }

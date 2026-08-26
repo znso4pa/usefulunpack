@@ -146,7 +146,7 @@ internal fun MainActivity.previewSearch(tab: TabState) {
     val format = tab.previewFormat
     val pwd = tab.previewPwd
     val entries = tab.previewEntries
-    if (!tryStartOperation(this)) return
+    val opH = tryStartOperation(this, format)
     var cancelled = false
     val accessors = extractAccessors(format)
     val prog = PollingProgressDialog(
@@ -155,10 +155,13 @@ internal fun MainActivity.previewSearch(tab: TabState) {
         accessors,
         { n, b, t -> extractProgressMessage(this, n, b, t) },
         getString(R.string.action_cancel),
-        { cancelled = true; accessors.cancel() }
+        { cancelled = true; accessors.cancel() },
+        opH,
+        tab
     )
     prog.start()
     thread {
+        if (!opH.await()) return@thread
         try {
             val cacheDir = File(cacheDir, "archive_search/${src.nameWithoutExtension}")
             cacheDir.deleteRecursively()
@@ -199,7 +202,7 @@ internal fun MainActivity.previewSearch(tab: TabState) {
         } catch (e: Exception) {
             runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
-            OperationLock.release()
+            opH.release()
         }
     }
 }
@@ -265,7 +268,7 @@ internal fun MainActivity.syncPreview(tab: TabState) {
     val src = tab.previewSrc ?: return
     tab.previewRoot.visibility = View.VISIBLE
     val adapter = PreviewAdapter(this, tab.previewEntries, tab.previewSelected, tab.previewExpanded,
-        { entry -> previewFileEntry(src, entry, tab.previewFormat, tab.previewPwd) },
+        { entry -> previewFileEntry(src, entry, tab.previewFormat, tab.previewPwd, tab) },
         { updatePreviewStats(tab) })
     adapter.searchQuery = tab.previewSearchQuery
     tab.previewList.adapter = adapter
@@ -277,7 +280,7 @@ internal fun MainActivity.updatePreviewStats(tab: TabState) {
     val totalFiles = tab.previewEntries.count { !it.isDirectory }
     val totalSize = tab.previewEntries.filter { !it.isDirectory }.sumOf { it.size }
     tab.tvPreviewStats.text = getString(R.string.preview_stats, totalFiles, fmt(totalSize), selFiles,
-        sel.sumOf { p -> tab.previewEntries.find { e -> e.path == p }?.size ?: 0L })
+        fmt(sel.sumOf { p -> tab.previewEntries.find { e -> e.path == p }?.size ?: 0L }))
 }
 
 internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntry>, format: String, pwd: String = "", openKey: String? = null, ownerTab: TabState = activeTab) {
@@ -295,7 +298,7 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
         }
 
         val adapter = PreviewAdapter(this, entries, selectedPaths, expandedPaths, { entry ->
-            previewFileEntry(src, entry, format, pwd)
+            previewFileEntry(src, entry, format, pwd, ownerTab)
         }, {
             val sel = selectedPaths.filter { p -> selectedPaths.none { o -> o != p && o.startsWith(p + "/") } }
             val selFiles = sel.count { p -> entries.find { e -> e.path == p }?.isDirectory == false }
@@ -346,8 +349,8 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                 val cacheDir = File(cacheDir, "archive_search/${src.nameWithoutExtension}")
                 // Lock first, then the dual progress dialog (the text-extraction
                 // phase reports byte progress); the work dir is cleared INSIDE
-                // the lock so a refused second search can't nuke a running one.
-                if (!tryStartOperation(act)) return@setOnClickListener
+                // the lock so a queued second search can't nuke a running one.
+                val opH = tryStartOperation(act, format)
                 var cancelled = false
                 val accessors = extractAccessors(format)
                 val prog = PollingProgressDialog(
@@ -356,10 +359,13 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                     accessors,
                     { n, b, t -> extractProgressMessage(act, n, b, t) },
                     getString(R.string.action_cancel),
-                    { cancelled = true; accessors.cancel() }
+                    { cancelled = true; accessors.cancel() },
+                    opH,
+                    ownerTab
                 )
                 prog.start()
                 thread {
+                    if (!opH.await()) return@thread
                     try {
                         cacheDir.deleteRecursively()
                         cacheDir.mkdirs()
@@ -404,7 +410,7 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                     } catch (e: Exception) {
                         runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                     } finally {
-                        OperationLock.release()
+                        opH.release()
                     }
                 }
             }
@@ -456,7 +462,7 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                                         .setMessage(getString(R.string.zip_confirm_delete))
                                         .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                                             dlg.dismiss()
-                                            zipDeleteEntries(src, sel, pwd)
+                                            zipDeleteEntries(src, sel, pwd, ownerTab)
                                         }
                                         .setNegativeButton(getString(R.string.action_cancel), null)
                                         .show()
@@ -479,7 +485,7 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                                             .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                                                 val name = inp.text.toString().trim().ifEmpty { baseName }
                                                 dlg.dismiss()
-                                                zipAddEntry(src, name, picked, pwd)
+                                                zipAddEntry(src, name, picked, pwd, ownerTab)
                                             }
                                             .setNegativeButton(getString(R.string.action_cancel), null)
                                             .show()
@@ -617,66 +623,88 @@ internal fun MainActivity.showMergeTargetPicker(src: File, selectedPaths: List<S
 /**
  * Extracts the source preview's selected entries, unpacks the target archive,
  * overlays them into one staging dir, and repacks into `目标-cn.ext`. Runs under
- * OperationLock with the dual progress dialog; source/target are both held by
- * OpenArchiveRegistry so a second window can't race the same archives.
+ * the OpScheduler ("merge" key) with the dual progress dialog; source/target are
+ * both held by OpenArchiveRegistry so a second window can't race the same archives.
  */
 internal fun MainActivity.mergeIntoArchive(
     src: File, selectedPaths: List<String>, format: String, pwd: String,
     target: File, targetFmt: String, ownerTab: TabState = activeTab
 ) {
     // Same-archive mutex on the TARGET: another window holding it must not
-    // repack a stale copy under it.
+    // repack a stale copy under it. Compare against the ORIGIN tab, not the
+    // transiently-active one — the dialog is activity-level and the user can
+    // switch windows before tapping.
     val targetKey = archiveKey(target)
     val targetOwner = OpenArchiveRegistry.owner(targetKey)
-    if (targetOwner != null && targetOwner !== activeTab) {
+    if (targetOwner != null && targetOwner !== ownerTab) {
         toast(getString(R.string.msg_archive_open_in_tab, tabTitle(targetOwner)))
         return
     }
-    if (!tryStartOperation(this)) return
     val parent = target.parentFile ?: ownerTab.currentDir
     val outF = uniqueFile(parent, "${target.nameWithoutExtension}-cn.${target.extension.ifEmpty { targetFmt }}")
     val stageDir = File(cacheDir, "merge/${target.nameWithoutExtension}")
     var cancelled = false
     val accessors = extractAccessors(targetFmt)
-    val prog = PollingProgressDialog(
-        this,
-        getString(R.string.merge_title, target.name),
-        accessors,
-        { n, b, t -> extractProgressMessage(this, n, b, t) },
-        getString(R.string.action_cancel),
-        { cancelled = true; accessors.cancel() }
-    )
-    prog.start()
+    // Built once a scheduler handle exists (see runOnUiThread below) so the
+    // dialog can render its queued state.
+    lateinit var prog: PollingProgressDialog
     thread {
-        try {
-            stageDir.deleteRecursively(); stageDir.mkdirs()
-            // 1. Extract source's selected entries.
-            val selStr = selectedPaths.joinToString("\n")
-            val srcOutcome = if (selStr.isEmpty()) ExtractOutcome(ExtractCounts(0, 0, 0), null)
-                else extractByFormat(format, src.path, stageDir.path, selStr, prefs, pwd)
-            if (cancelled) return@thread
-            // 2. Unpack the target archive into the same staging dir (its
-            //    existing entries stay; source entries with a matching path
-            //    overwrite them — merge intent). Encrypted targets ask once.
-            var tgtPwd = ""
-            if (targetFmt in setOf("zip", "7z", "rar") && isPasswordProtected(target)) {
-                tgtPwd = promptPasswordSync(this) ?: run { runOnUiThread { prog.dismiss(); toast(getString(R.string.msg_cancelled)) }; return@thread }
+        // Encrypted targets ask once — BEFORE the lock is taken: the modal
+        // prompt can block up to 30s and would freeze every other window's
+        // operations with bogus "busy" toasts.
+        var tgtPwd = ""
+        if (targetFmt in setOf("zip", "7z", "rar") && runCatching { isPasswordProtected(target) }.getOrDefault(false)) {
+            tgtPwd = promptPasswordSync(this) ?: run { toast(getString(R.string.msg_cancelled)); return@thread }
+        }
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            // Pseudo-key "merge": this flow drives TWO formats' Rust statics
+            // (source extract + target extract + repack), so merges serialize
+            // among themselves; brief display crosstalk with a concurrent
+            // same-fmt extraction is cosmetic (cancel flags are cleared at
+            // every Rust entry).
+            val opH = tryStartOperation(this, "merge")
+            prog = PollingProgressDialog(
+                this,
+                getString(R.string.merge_title, target.name),
+                accessors,
+                { n, b, t -> extractProgressMessage(this, n, b, t) },
+                getString(R.string.action_cancel),
+                { cancelled = true; accessors.cancel() },
+                opH,
+                ownerTab
+            )
+            prog.start()
+            thread {
+                if (!opH.await()) return@thread
+                try {
+                    stageDir.deleteRecursively(); stageDir.mkdirs()
+                    // 1. Extract source's selected entries.
+                    val selStr = selectedPaths.joinToString("\n")
+                    val srcOutcome = if (selStr.isEmpty()) ExtractOutcome(ExtractCounts(0, 0, 0), null)
+                        else extractByFormat(format, src.path, stageDir.path, selStr, prefs, pwd)
+                    if (cancelled) return@thread
+                    // 2. Unpack the target archive into the same staging dir (its
+                    //    existing entries stay; source entries with a matching path
+                    //    overwrite them — merge intent).
+                    val tgtOutcome = extractByFormat(targetFmt, target.path, stageDir.path, "", prefs, tgtPwd)
+                    if (cancelled) return@thread
+                    // 3. Repack into a -cn copy (never overwrite the original target).
+                    val ok = compressDispatch(stageDir, outF, targetFmt, prefs.getInt("generic_level", 6), "", prefs)
+                    runOnUiThread {
+                        prog.dismiss()
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        if (cancelled) toast(getString(R.string.msg_cancelled))
+                        else if (ok) toast(getString(R.string.merge_done, outF.name))
+                        else toast(getString(R.string.title_compress_failed))
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread { prog.dismiss(); if (!(isFinishing || isDestroyed)) toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                } finally {
+                    stageDir.deleteRecursively()
+                    opH.release()
+                }
             }
-            val tgtOutcome = extractByFormat(targetFmt, target.path, stageDir.path, "", prefs, tgtPwd)
-            if (cancelled) return@thread
-            // 3. Repack into a -cn copy (never overwrite the original target).
-            val ok = compressDispatch(stageDir, outF, targetFmt, prefs.getInt("generic_level", 6), "", prefs)
-            runOnUiThread {
-                prog.dismiss()
-                if (cancelled) toast(getString(R.string.msg_cancelled))
-                else if (ok) toast(getString(R.string.merge_done, outF.name))
-                else toast(getString(R.string.title_compress_failed))
-            }
-        } catch (e: Exception) {
-            runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
-        } finally {
-            stageDir.deleteRecursively()
-            OperationLock.release()
         }
     }
 }
@@ -685,7 +713,7 @@ internal fun MainActivity.mergeIntoArchive(
  *  edit (showTextEditor) → repack into a new "…-cn.xp3/pfs" alongside the
  *  original. The working dir persists while the script list is open, so edits
  *  accumulate until the user taps 封回; re-entering 编辑 re-extracts fresh. */
-internal fun MainActivity.startEditArchive(src: File, format: String, pwd: String) {
+internal fun MainActivity.startEditArchive(src: File, format: String, pwd: String, ownerTab: TabState = activeTab) {
     val act = this
     // Same-archive mutex: never let two windows edit the same archive (each
     // would write its own -cn copy / repack from the same source).
@@ -699,8 +727,8 @@ internal fun MainActivity.startEditArchive(src: File, format: String, pwd: Strin
     }
     val editDir = File(cacheDir, "edit/${src.nameWithoutExtension}")
     // Lock first, then the dual progress dialog (see extractAll); the work dir
-    // is cleared INSIDE the lock so a refused re-edit can't destroy an active one.
-    if (!tryStartOperation(this)) return
+    // is cleared INSIDE the lock so a queued re-edit can't destroy an active one.
+    val opH = tryStartOperation(this, format)
     OpenArchiveRegistry.register(openKey, activeTab)
     var cancelled = false
     val accessors = extractAccessors(format)
@@ -710,10 +738,15 @@ internal fun MainActivity.startEditArchive(src: File, format: String, pwd: Strin
         accessors,
         { n, b, t -> extractProgressMessage(this, n, b, t) },
         getString(R.string.action_cancel),
-        { cancelled = true; accessors.cancel() }
+        { cancelled = true; accessors.cancel() },
+        opH,
+        ownerTab
     )
     prog.start()
     thread {
+        // A queued-cancel must release the registry entry too — it was taken
+        // eagerly at enqueue time and no other exit path runs below.
+        if (!opH.await()) { OpenArchiveRegistry.unregister(openKey); return@thread }
         try {
             editDir.deleteRecursively()
             editDir.mkdirs()
@@ -724,6 +757,7 @@ internal fun MainActivity.startEditArchive(src: File, format: String, pwd: Strin
                 .toList()
             runOnUiThread {
                 prog.dismiss()
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 if (cancelled) { OpenArchiveRegistry.unregister(openKey); toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
                 if (!o.counts.ok) { OpenArchiveRegistry.unregister(openKey); toast(friendlyExtractError(act, o.error)); return@runOnUiThread }
                 if (scripts.isEmpty()) { OpenArchiveRegistry.unregister(openKey); toast(getString(R.string.edit_no_scripts)); return@runOnUiThread }
@@ -731,9 +765,9 @@ internal fun MainActivity.startEditArchive(src: File, format: String, pwd: Strin
             }
         } catch (e: Exception) {
             OpenArchiveRegistry.unregister(openKey)
-            runOnUiThread { prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+            runOnUiThread { prog.dismiss(); if (!(isFinishing || isDestroyed)) toast(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
-            OperationLock.release()
+            opH.release()
         }
     }
 }
@@ -779,11 +813,11 @@ private fun MainActivity.showEditScriptList(src: File, format: String, editDir: 
     dlg.show()
 }
 
-private fun MainActivity.repackEditedArchive(src: File, format: String, editDir: File) {
+private fun MainActivity.repackEditedArchive(src: File, format: String, editDir: File, ownerTab: TabState = activeTab) {
     val parent = src.parentFile ?: return
     val ext = src.extension.ifEmpty { format }
     val outF = uniqueFile(parent, "${src.nameWithoutExtension}-cn.$ext")
-    if (!tryStartOperation(this)) return
+    val opH = tryStartOperation(this, format)
     var cancelled = false
     val accessors = compressAccessors(format)
     val prog = PollingProgressDialog(
@@ -792,10 +826,13 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
         accessors,
         { n, b, t -> compressProgressMessage(this, n, b, t) },
         getString(R.string.action_cancel),
-        { cancelled = true; accessors.cancel() }
+        { cancelled = true; accessors.cancel() },
+        opH,
+        ownerTab
     )
     prog.start()
     thread {
+        if (!opH.await()) return@thread
         try {
             val ok = when (format) {
                 "xp3" -> Xp3Core.xp3CreateArchive("", editDir.path, outF.path, prefs.getInt("generic_level", 6).toString()) != null
@@ -816,7 +853,7 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
                 else toast(getString(R.string.title_compress_failed))
             }
         } finally {
-            OperationLock.release()
+            opH.release()
         }
     }
 }
@@ -830,27 +867,16 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
                 onCancel = {
                     cleanupCancelledOutput(out, existedBefore)
                     toast(getString(R.string.msg_cancelled))
-                }
-            ) { o ->
-                if (o.counts.ok) { showExtractSuccess(src.name, out.name, o.counts); navTab(ownerTab, ownerTab.currentDir) }
-                else toast(friendlyExtractError(this, o.error))
-            }
+                },
+                onResult = { o ->
+                    if (o.counts.ok) { showExtractSuccess(src.name, out.name, o.counts); navTab(ownerTab, ownerTab.currentDir) }
+                    else toast(friendlyExtractError(this, o.error))
+                },
+                ownerTab = ownerTab
+            )
             return
         }
         // zip/7z/rar: prompt for the password up front, and on failure offer a retry dialog.
-        // Lock first, then the progress dialog (see extractAll).
-        if (!tryStartOperation(this)) return
-        var cancelled = false
-        val accessors = extractAccessors(format)
-        val prog = PollingProgressDialog(
-            this,
-            "${src.name} → ${out.name}",
-            accessors,
-            { n, b, t -> extractProgressMessage(this, n, b, t) },
-            getString(R.string.action_cancel),
-            { cancelled = true; accessors.cancel() }
-        )
-        prog.start()
         fun doSel(p: String): ExtractOutcome = runCatching {
             when (format) {
                 "zip" -> ExtractOutcome(ExtractCounts.fromJson(zipExtractDispatch(src.path, out.path, selStr, p)), null)
@@ -859,67 +885,91 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
             }
         }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
         thread {
-            try {
-                var pwd = ""
-                if (isPasswordProtected(src)) {
-                    val entered = promptPasswordSync(this)
-                    if (entered == null) {
-                        runOnUiThread { prog.dismiss(); toast(getString(R.string.msg_cancelled)) }
-                        return@thread
-                    }
-                    pwd = entered
+            // Password is resolved BEFORE the lock is taken — the modal prompt
+            // blocks up to 30s and would freeze all other windows with bogus
+            // "busy" toasts while it waits.
+            var pwd = ""
+            if (runCatching { isPasswordProtected(src) }.getOrDefault(false)) {
+                val entered = promptPasswordSync(this)
+                if (entered == null) {
+                    toast(getString(R.string.msg_cancelled))
+                    return@thread
                 }
-                val result = doSel(pwd)
-                val ok = result.counts.ok
-                runOnUiThread {
-                    prog.dismiss()
-                    if (cancelled) { cleanupCancelledOutput(out, existedBefore); toast(getString(R.string.msg_cancelled)) }
-                    else if (ok) { showExtractSuccess(src.name, out.name, result.counts); navTab(ownerTab, ownerTab.currentDir) }
-                    else {
-                        cleanupCancelledOutput(out, existedBefore)
-                        val inp = EditText(this).apply {
-                            hint = getString(R.string.prompt_password)
-                            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                            setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
-                            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-                        }
-                        AlertDialog.Builder(this)
-                            .setTitle(getString(R.string.title_password))
-                            .setMessage(getString(R.string.retry))
-                            .setView(inp)
-                            .setPositiveButton(getString(R.string.retry)) { _, _ ->
-                                val p2 = inp.text.toString()
-                                // Worker-side plain acquire; when another
-                                // operation holds the lock, surface the busy
-                                // toast on the UI thread (never silently
-                                // swallow the tap).
-                                thread {
-                                    if (!OperationLock.acquire()) {
-                                        runOnUiThread { toast(getString(R.string.msg_op_in_progress)) }
-                                        return@thread
-                                    }
-                                    try {
-                                        val o2 = doSel(p2)
-                                        runOnUiThread {
-                                            if (o2.counts.ok) { showExtractSuccess(src.name, out.name, o2.counts); navTab(ownerTab, ownerTab.currentDir) }
-                                            else toast(friendlyExtractError(this, o2.error))
-                                        }
-                                    } finally {
-                                        OperationLock.release()
-                                    }
+                pwd = entered
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                // Lock first, then the progress dialog (see extractAll).
+                val opH = tryStartOperation(this, format)
+                var cancelled = false
+                val accessors = extractAccessors(format)
+                val prog = PollingProgressDialog(
+                    this,
+                    "${src.name} → ${out.name}",
+                    accessors,
+                    { n, b, t -> extractProgressMessage(this, n, b, t) },
+                    getString(R.string.action_cancel),
+                    { cancelled = true; accessors.cancel() },
+                    opH,
+                    ownerTab
+                )
+                prog.start()
+                thread {
+                    if (!opH.await()) return@thread
+                    try {
+                        val result = doSel(pwd)
+                        val ok = result.counts.ok
+                        runOnUiThread {
+                            prog.dismiss()
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            if (cancelled) { cleanupCancelledOutput(out, existedBefore); toast(getString(R.string.msg_cancelled)) }
+                            else if (ok) { showExtractSuccess(src.name, out.name, result.counts); navTab(ownerTab, ownerTab.currentDir) }
+                            else {
+                                cleanupCancelledOutput(out, existedBefore)
+                                val inp = EditText(this).apply {
+                                    hint = getString(R.string.prompt_password)
+                                    setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
+                                    setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
+                                    inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
                                 }
+                                AlertDialog.Builder(this)
+                                    .setTitle(getString(R.string.title_password))
+                                    .setMessage(getString(R.string.retry))
+                                    .setView(inp)
+                                    .setPositiveButton(getString(R.string.retry)) { _, _ ->
+                                        val p2 = inp.text.toString()
+                                        // Scheduler handle instead of the old raw
+                                        // acquire: busy now means queued, never a
+                                        // silent swallow of the tap. No dialog here,
+                                        // so the op simply starts when its turn comes.
+                                        val opH2 = tryStartOperation(this, format)
+                                        thread {
+                                            if (!opH2.await()) return@thread
+                                            try {
+                                                val o2 = doSel(p2)
+                                                runOnUiThread {
+                                                    if (isFinishing || isDestroyed) return@runOnUiThread
+                                                    if (o2.counts.ok) { showExtractSuccess(src.name, out.name, o2.counts); navTab(ownerTab, ownerTab.currentDir) }
+                                                    else toast(friendlyExtractError(this, o2.error))
+                                                }
+                                            } finally {
+                                                opH2.release()
+                                            }
+                                        }
+                                    }
+                                    .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> cleanupCancelledOutput(out, existedBefore) }
+                                    .show()
                             }
-                            .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> cleanupCancelledOutput(out, existedBefore) }
-                            .show()
+                        }
+                    } finally {
+                        opH.release()
                     }
                 }
-            } finally {
-                OperationLock.release()
             }
         }
     }
 
-internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, format: String, pwd: String = "") {
+internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, format: String, pwd: String = "", ownerTab: TabState = activeTab) {
         val ext = entry.path.substringAfterLast('.').lowercase()
         // Nested archive inside the current one (e.g. a .zip living inside an
         // .xp3): offer to open it in a NEW window so the outer preview is kept.
@@ -936,7 +986,7 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
             return
         }
         if (ext !in PREVIEW_EXTS) {
-                        toast(getString(R.string.err_preview_unsupported, ".$ext"))
+            toast(getString(R.string.err_preview_unsupported, ".$ext"))
             return
         }
 
@@ -944,6 +994,7 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
         fun openPreview() {
             val extracted = File(cacheDir, entry.path)
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 when (ext) {
                     "jpg", "jpeg", "png", "gif", "webp", "bmp" -> showImagePreview(this, extracted)
                     "mp3", "ogg", "wav", "aac", "flac", "aif", "aiff", "m4a" -> playAudio(this, extracted)
@@ -956,7 +1007,7 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
                             (isVolumeFile(archive) == "zip" || isZipVolumeName(archive.name))
                         val canEditZip = format == "zip" && entry.path.isNotEmpty() && !isSplitZip
                         showTextPreview(this, extracted, showEdit = canEditZip,
-                            onEdited = if (canEditZip) { { zipReplaceEntry(archive, entry, extracted, pwd) } } else { null })
+                            onEdited = if (canEditZip) { { zipReplaceEntry(archive, entry, extracted, pwd, ownerTab) } } else { null })
                     }
                 }
             }
@@ -969,20 +1020,22 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
                 runOnUiThread {
                     if (needsPw && pwd.isEmpty()) {
                         // No password yet (archive opened via a path that didn't prompt) — ask first.
-                        showPasswordDialog(this, format, archive.path, cacheDir.path, entry.path, showProgress = true) { o ->
-                            if (o.counts.ok) openPreview() else toast(friendlyExtractError(this, o.error))
-                        }
+                        showPasswordDialog(this, format, archive.path, cacheDir.path, entry.path, showProgress = true,
+                            onResult = { o -> if (o.counts.ok) openPreview() else toast(friendlyExtractError(this, o.error)) },
+                            ownerTab = ownerTab
+                        )
                     } else {
-                        tryExtractWithPassword(this, format, archive.path, cacheDir.path, entry.path, prefs, showProgress = true, initialPassword = pwd) { o ->
-                            if (o.counts.ok) openPreview() else toast(friendlyExtractError(this, o.error))
-                        }
+                        tryExtractWithPassword(this, format, archive.path, cacheDir.path, entry.path, prefs, showProgress = true, initialPassword = pwd,
+                            onResult = { o -> if (o.counts.ok) openPreview() else toast(friendlyExtractError(this, o.error)) },
+                            ownerTab = ownerTab
+                        )
                     }
                 }
             }
         } else {
-            tryExtractWithPassword(this, format, archive.path, cacheDir.path, entry.path, prefs, showProgress = true, initialPassword = pwd) { o ->
-                if (o.counts.ok) openPreview() else toast(friendlyExtractError(this, o.error))
-            }
+            tryExtractWithPassword(this, format, archive.path, cacheDir.path, entry.path, prefs, showProgress = true, initialPassword = pwd,
+                onResult = { o -> if (o.counts.ok) openPreview() else toast(friendlyExtractError(this, o.error)) }
+            )
         }
     }
 
@@ -1026,24 +1079,33 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
         val extracted = File(outDir, entry.path)
         val openKey = "nested:" + extracted.absolutePath
         tryExtractWithPassword(this, parentFmt, archive.path, outDir.path, entry.path, prefs,
-            showProgress = true, initialPassword = parentPwd) { o ->
+            showProgress = true, initialPassword = parentPwd,
+            onResult = { o ->
             if (!o.counts.ok) { toast(friendlyExtractError(this, o.error)); return@tryExtractWithPassword }
             if (!extracted.exists()) {
                 toast(getString(R.string.err_preview_unsupported, ""))
                 return@tryExtractWithPassword
             }
-            val entries = listPreviewEntries(nestedFmt, extracted, "")
-            if (entries.isNullOrEmpty()) {
-                toast(getString(R.string.err_cannot_read_maybe_pwd))
-                return@tryExtractWithPassword
+            // Listing a multi-GB nested archive is a slow JNI call — keep it
+            // off the UI thread (this callback runs on it).
+            thread {
+                val entries = listPreviewEntries(nestedFmt, extracted, "")
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (entries.isNullOrEmpty()) {
+                        toast(getString(R.string.err_cannot_read_maybe_pwd))
+                        return@runOnUiThread
+                    }
+                    val before = tabs.size
+                    addTab()
+                    if (tabs.size == before) return@runOnUiThread  // max tabs reached
+                    val newTab = tabs.last()
+                    OpenArchiveRegistry.register(openKey, newTab)
+                    renderPreview(newTab, extracted, entries, nestedFmt, "", openKey)
+                }
             }
-            val before = tabs.size
-            addTab()
-            if (tabs.size == before) return@tryExtractWithPassword  // max tabs reached
-            val newTab = tabs.last()
-            OpenArchiveRegistry.register(openKey, newTab)
-            renderPreview(newTab, extracted, entries, nestedFmt, "", openKey)
-        }
+            }
+        )
     }
 
 /**
@@ -1080,11 +1142,12 @@ internal fun MainActivity.cleanupZipModifyArtifacts(archive: File) {
  */
 internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, newContent: File, pwd: String = "", ownerTab: TabState = activeTab) {
     if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
-    if (!tryStartOperation(this)) return
+    val opH = tryStartOperation(this, "zip")
     val parent = archive.parentFile ?: cacheDir
     val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
     val tmp = File(parent, "${archive.nameWithoutExtension}.mod.zip")
     thread {
+        if (!opH.await()) return@thread
         try {
             val ok = ZipCore.zipModify("", archive.path, tmp.path,
                 "replace|${entry.path}|${newContent.path}", pwd)
@@ -1104,7 +1167,7 @@ internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, ne
             cleanupZipModifyArtifacts(archive)
             runOnUiThread { toast(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
-            OperationLock.release()
+            opH.release()
         }
     }
 }
@@ -1117,12 +1180,13 @@ internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, ne
 internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, pwd: String = "", ownerTab: TabState = activeTab) {
     if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
     if (paths.isEmpty()) { toast(getString(R.string.msg_select_one)); return }
-    if (!tryStartOperation(this)) return
+    val opH = tryStartOperation(this, "zip")
     val parent = archive.parentFile ?: cacheDir
     val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
     val tmp = File(parent, "${archive.nameWithoutExtension}.del.zip")
     val ops = paths.joinToString("\n") { "delete|$it" }
     thread {
+        if (!opH.await()) return@thread
         try {
             val ok = ZipCore.zipModify("", archive.path, tmp.path, ops, pwd)
             runOnUiThread {
@@ -1140,7 +1204,7 @@ internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, p
             cleanupZipModifyArtifacts(archive)
             runOnUiThread { toast(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
-            OperationLock.release()
+            opH.release()
         }
     }
 }
@@ -1151,12 +1215,13 @@ internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, p
  */
 internal fun MainActivity.zipAddEntry(archive: File, entryName: String, srcFile: File, pwd: String = "", ownerTab: TabState = activeTab) {
     if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
-    if (!tryStartOperation(this)) return
+    val opH = tryStartOperation(this, "zip")
     val parent = archive.parentFile ?: cacheDir
     val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
     val tmp = File(parent, "${archive.nameWithoutExtension}.add.zip")
     val safeName = entryName.replace('\\', '/').trim('/')
     thread {
+        if (!opH.await()) return@thread
         try {
             val ok = ZipCore.zipModify("", archive.path, tmp.path,
                 "add|$safeName|${srcFile.path}", pwd)
@@ -1175,7 +1240,7 @@ internal fun MainActivity.zipAddEntry(archive: File, entryName: String, srcFile:
             cleanupZipModifyArtifacts(archive)
             runOnUiThread { toast(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
-            OperationLock.release()
+            opH.release()
         }
     }
 }

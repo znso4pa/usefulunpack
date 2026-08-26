@@ -6,7 +6,11 @@ import androidx.appcompat.app.AppCompatActivity
 import kotlin.concurrent.thread
 import java.io.File
 
-fun showCompressFormatPicker(activity: AppCompatActivity, dir: File, prefs: SharedPreferences, currentDir: File, onComplete: () -> Unit) {
+fun showCompressFormatPicker(
+    activity: AppCompatActivity, dir: File, prefs: SharedPreferences, currentDir: File,
+    ownerTab: TabState? = (activity as? MainActivity)?.activeTab,
+    onComplete: () -> Unit
+) {
     showFormatPicker(activity, "${activity.getString(R.string.msg_compress_title)} ${dir.name}",
         onPick = { fmt ->
             // 单文件压缩格式不能压缩文件夹
@@ -20,7 +24,7 @@ fun showCompressFormatPicker(activity: AppCompatActivity, dir: File, prefs: Shar
                 return@showFormatPicker
             }
             showCompressOptionsDialog(activity, prefs, fmt) { level, split ->
-                runCompress(activity, dir, currentDir, prefs, fmt, level, split, onComplete)
+                runCompress(activity, dir, currentDir, prefs, fmt, level, split, onComplete, ownerTab)
                 true
             }
         },
@@ -190,7 +194,8 @@ fun showCompressOptionsDialog(
 
 private fun runCompress(
     activity: AppCompatActivity, dir: File, currentDir: File, prefs: SharedPreferences,
-    fmt: String, level: Int, splitSize: Long, onComplete: () -> Unit
+    fmt: String, level: Int, splitSize: Long, onComplete: () -> Unit,
+    ownerTab: TabState? = null
 ) {
     val ext = COMPRESS_EXT[fmt] ?: fmt
     // KSD 输出替换源扩展名（save.txt → save.ksd），其余格式保留源扩展名（save.txt → save.txt.gz）
@@ -199,9 +204,9 @@ private fun runCompress(
     val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
     val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
     val splitEnabled = splitSize > 0 && fmt in setOf("zip", "7z")
-    // Acquire the lock BEFORE showing the progress dialog — otherwise a busy
-    // lock leaves the dialog spinning forever with the work silently dropped.
-    if (!tryStartOperation(activity)) return
+    // Acquire a scheduler slot BEFORE showing the progress dialog — a queued
+    // op surfaces position/ETA in that dialog instead of being refused.
+    val opH = tryStartOperation(activity, fmt)
     var cancelled = false
     val accessors = compressAccessors(fmt)
     val prog = PollingProgressDialog(
@@ -210,10 +215,13 @@ private fun runCompress(
         accessors,
         { n, b, t -> compressProgressMessage(activity, n, b, t) },
         activity.getString(R.string.action_cancel),
-        { cancelled = true; accessors.cancel() }
+        { cancelled = true; accessors.cancel() },
+        opH,
+        ownerTab
     )
     prog.start()
     thread {
+        if (!opH.await()) return@thread
         try {
             var ok = compressDispatch(dir, outFile, fmt, level, password, prefs, splitSize)
             if (cancelled || !ok) {
@@ -237,7 +245,7 @@ private fun runCompress(
                 else Toast.makeText(activity, activity.getString(R.string.title_compress_failed), Toast.LENGTH_SHORT).show()
             }
         } finally {
-            OperationLock.release()
+            opH.release()
         }
     }
 }

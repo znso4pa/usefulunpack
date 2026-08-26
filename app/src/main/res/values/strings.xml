@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">UsefulUnpack</string>
-    <string name="action_extract">Extract</string>
+    <string name="action_extract">📂 Extract</string>
     <string name="action_compress">Compress</string>
-    <string name="action_preview">Preview</string>
+    <string name="action_preview">🔍 Preview</string>
     <string name="action_confirm">OK</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_edit">Edit</string>
@@ -13,7 +13,7 @@
     <string name="preview_looks_utf8_hint">This file looks like UTF-8 — switch Text encoding to UTF-8 if the text is wrong</string>
     <string name="msg_editor_too_large">File too large to edit in-app (>2MB)</string>
     <string name="msg_tjs_compiled">Compiled TJS script (binary TJS2), can\'t preview as text</string>
-    <string name="edit_archive">Edit</string>
+    <string name="edit_archive">✏️ Edit</string>
     <string name="action_more">More</string>
     <string name="edit_only_pack">Only packable formats support this (XP3/PFS/ISO/NSA/7Z/YPF)</string>
     <string name="zip_manage_only_zip">Only ZIP archives support entry management</string>
@@ -53,22 +53,25 @@
     <string name="settings_picker_mode">Path/file picker</string>
     <string name="settings_other">⚙️ Other settings</string>
     <string name="restore_session">Restore last session</string>
-    <string name="restore_session_desc">On launch, reopen the previous windows and folders (up to 3)</string>
+    <string name="restore_session_desc">On launch, reopen the previous windows and folders (up to 4)</string>
     <string name="action_share">📤 Share</string>
     <string name="msg_share_folder">Folders can\'t be shared</string>
     <string name="picker_mode_dialog">Open path picker dialog</string>
     <string name="picker_mode_tab">Pick in a new window</string>
+    <string name="settings_show_memory">Show memory usage</string>
+    <string name="mem_system">System</string>
+    <string name="mem_uu">UU</string>
     <string name="sort_by_name">Name</string>
     <string name="sort_by_size">Size</string>
     <string name="sort_by_date">Date</string>
     <string name="sort_ascending">Ascending</string>
     <string name="sort_descending">Descending</string>
     <string name="action_file_info">ℹ️ Info</string>
-    <string name="action_convert_cso">Convert to CSO (.cso)</string>
+    <string name="action_convert_cso">🔄 Convert to CSO (.cso)</string>
     <string name="action_convert_iso">Convert to ISO (.iso)</string>
     <string name="zip_manage">🗂️ Entries</string>
-    <string name="zip_manage_delete">Delete selected entries</string>
-    <string name="zip_manage_add">Add entry from a local file</string>
+    <string name="zip_manage_delete">🗑️ Delete selected entries</string>
+    <string name="zip_manage_add">➕ Add entry from a local file</string>
     <string name="zip_add_title">Add entry</string>
     <string name="zip_add_pick">Pick a local file</string>
     <string name="zip_add_name">Entry name (empty = file name)</string>
@@ -101,6 +104,8 @@
     <string name="msg_created">Created</string>
     <string name="msg_cancelled">Cancelled</string>
     <string name="msg_op_in_progress">Another operation is in progress</string>
+    <string name="msg_op_queued">⏳ Queued: #%1$d in line</string>
+    <string name="msg_op_queued_eta">⏳ Queued: #%1$d · starts in ~%2$s</string>
     <string name="msg_no_results">No results found</string>
     <string name="msg_enter_keyword">Enter a keyword</string>
     <string name="msg_select_one">Select at least one</string>
@@ -236,10 +241,10 @@
     <string name="msg_hash_copied">Hash copied</string>
     <string name="err_audio_playback">Cannot play audio: %1$s</string>
     <string name="err_invalid_regex">Invalid regular expression: %1$s</string>
-    <string name="msg_max_tabs">最多可打开 3 个窗口</string>
+    <string name="msg_max_tabs">Up to 4 windows</string>
     <string name="msg_archive_open_in_tab">This archive is already open in &quot;%1$s&quot;</string>
     <string name="msg_archive_open_skipped">Skipped %1$d archives open in another window</string>
-    <string name="merge_into_archive">Merge into archive...</string>
+    <string name="merge_into_archive">📦 Merge into archive...</string>
     <string name="merge_no_target">No archive in this folder to merge into</string>
     <string name="merge_select_target">Select target archive</string>
     <string name="merge_target_unsupported">This archive format cannot be repacked</string>

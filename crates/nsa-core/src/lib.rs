@@ -651,6 +651,11 @@ mod tests {
 #[cfg(test)]
 mod security_tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    /// Serialise tests that touch the global compress_progress statics to
+    /// prevent parallel interference on the atomic counters.
+    static PROGRESS_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     /// A malicious NSA header declaring a 3GB csize must be rejected cleanly
     /// (no OOM allocation, no crash) before any buffer is allocated.
@@ -685,6 +690,7 @@ mod security_tests {
     /// create_nsa (stored + LZSS) → extract round-trips byte-identically.
     #[test]
     fn create_then_extract_round_trip() {
+        let _lock = PROGRESS_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("uu_nsa_create_{}", std::process::id()));
         std::fs::create_dir_all(dir.join("src/sub")).unwrap();
         let a = dir.join("src/hello.txt");
@@ -712,6 +718,7 @@ mod security_tests {
     /// raw (no whole-file RAM buffering) and still round-trip.
     #[test]
     fn create_nsa_streams_large_file() {
+        let _lock = PROGRESS_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("uu_nsa_big_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // 70 MiB of zeros — far above the 64 MiB LZSS threshold → stored raw.
@@ -736,6 +743,7 @@ mod security_tests {
     /// Level 0 stores raw; verify offset math by re-parsing the header.
     #[test]
     fn level0_stores_raw_bytes() {
+        let _lock = PROGRESS_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("uu_nsa_store_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.bin");
@@ -751,6 +759,7 @@ mod security_tests {
     /// probe read doesn't count) so the bar never exceeds 100%.
     #[test]
     fn compress_progress_not_double_counted() {
+        let _lock = PROGRESS_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("uu_nsa_prog_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Random-ish data: LZSS won't shrink it → falls back to raw store.

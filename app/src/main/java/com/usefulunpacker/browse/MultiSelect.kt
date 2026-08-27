@@ -9,7 +9,16 @@ import kotlin.concurrent.thread
 
 internal fun MainActivity.enterMultiSelect(f: File) = enterMultiSelect(activeTab, f)
 internal fun MainActivity.enterMultiSelect(tab: TabState, f: File) {
+        globalMultiSelectMode = true
         tab.multiSelectMode = true; tab.multiSelected.add(f); refreshMultiSelectUI(tab)
+        syncMultiBar(tab)
+        syncAllTabAdapters()
+    }
+
+/** 进入多选模式（不添加文件）：切换 tab 时用于在新 tab 上激活多选 UI。 */
+internal fun MainActivity.enterMultiSelectMode(tab: TabState) {
+        if (tab.multiSelectMode) return
+        tab.multiSelectMode = true; refreshMultiSelectUI(tab)
         syncMultiBar(tab)
         syncAllTabAdapters()
     }
@@ -22,6 +31,7 @@ internal fun MainActivity.exitMultiSelect(tab: TabState) { tab.multiSelectMode =
 
 /** 清空所有 tab 的多选状态。 */
 internal fun MainActivity.exitAllMultiSelect() {
+    globalMultiSelectMode = false
     for (t in tabs) { t.multiSelectMode = false; t.multiSelected.clear() }
     syncMultiBar()
     tabAdapter.notifyDataSetChanged()
@@ -47,8 +57,8 @@ internal fun MainActivity.syncMultiBar(tab: TabState) {
         } else {
             getString(R.string.multi_selected_count, tab.multiSelected.size)
         }
-        bar.visibility = if (tab.multiSelectMode) View.VISIBLE else View.GONE
-        if (tab.multiSelectMode) {
+        bar.visibility = if (tab.multiSelectMode && (tab === activeTab || tab.multiSelected.isNotEmpty())) View.VISIBLE else View.GONE
+        if (bar.visibility == View.VISIBLE) {
             bar.post { tab.listFiles.setPadding(tab.listFiles.paddingLeft, tab.listFiles.paddingTop, tab.listFiles.paddingRight, bar.height) }
         } else {
             tab.listFiles.setPadding(tab.listFiles.paddingLeft, tab.listFiles.paddingTop, tab.listFiles.paddingRight, 0)
@@ -138,12 +148,9 @@ internal fun MainActivity.startBatchMove() {
 
 internal fun MainActivity.startBatchCopy() {
         val tab = activeTab
-        // 跨 tab：聚合所有 tab 的选中文件
         val sel = allSelectedFiles().values.flatten().toList(); if (sel.isEmpty()) return
-        // Snapshot the destination directory: `currentDir` is UI-thread-owned and
-        // the user may navigate away mid-copy — copying into a changed directory
-        // would scatter files unpredictably.
         val targetDir = tab.currentDir
+        exitAllMultiSelect()
         thread {
             var copied = 0
             var failed = 0
@@ -164,8 +171,7 @@ internal fun MainActivity.startBatchCopy() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (failed > 0) toast(getString(R.string.msg_copy_result, copied, failed)) else toast(getString(R.string.msg_copied))
-                exitAllMultiSelect()
-                navTab(tab, tab.currentDir)
+                navTab(tab, targetDir)
             }
         }
     }

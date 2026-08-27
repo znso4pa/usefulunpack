@@ -14,7 +14,7 @@ private fun MainActivity.spx(id: Int) = resources.getDimension(id) / resources.d
 
 @Volatile internal var showBatchPreview_all: List<Pair<File, List<ArchiveEntry>>>? = null
 
-internal fun MainActivity.batchArchives(): List<File> = multiSelected.filter { it.isFile && (it.extension.lowercase() in ARCHIVE_EXTS || isVolumeFile(it) != null) }
+internal fun MainActivity.batchArchives(): List<File> = allSelectedFiles().values.flatten().filter { it.isFile && (it.extension.lowercase() in ARCHIVE_EXTS || isVolumeFile(it) != null) }
 
 internal fun MainActivity.resolveBatchPath(mergedPath: String): Pair<File, String>? {
         // mergedPath is like "📦 data.xp3/scenario/main.ks". Extract the archive name and original path.
@@ -69,7 +69,7 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
                     if (archives.any { isPasswordProtected(it) }) {
                         pwd = promptPasswordSync(this)
                         if (pwd == null) {
-                            runOnUiThread { toast(getString(R.string.msg_cancelled)); exitMultiSelect(); nav(currentDir) }
+                            runOnUiThread { toast(getString(R.string.msg_cancelled)); exitAllMultiSelect(); nav(currentDir) }
                             return@thread
                         }
                     }
@@ -106,7 +106,7 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
                                     if (cancelled) toast(getString(R.string.msg_cancelled))
                                     else if (ok) toast(getString(R.string.msg_batch_done))
                                     else toast(friendlyExtractError(this, err))
-                                    exitMultiSelect(); nav(currentDir)
+                                    exitAllMultiSelect(); nav(currentDir)
                                 }
                             } catch (e: Exception) {
                                 runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
@@ -429,7 +429,7 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                         ok2 -> toast(getString(R.string.msg_batch_done))
                                         else -> toast(friendlyExtractError(this, err))
                                     }
-                                    exitMultiSelect(); nav(currentDir)
+                                    exitAllMultiSelect(); nav(currentDir)
                                 }
                             } catch (e: Exception) {
                                 runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd2.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }

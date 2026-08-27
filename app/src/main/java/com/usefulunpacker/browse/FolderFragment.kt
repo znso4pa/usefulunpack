@@ -298,7 +298,7 @@ class FolderFragment : Fragment() {
         val btnBatchCopy = b(act.getString(R.string.action_copy), C["accent"]!!).apply { setOnClickListener { activate(); act.startBatchCopy() } }
         val btnBatchMove = b(act.getString(R.string.action_move), C["accent"]!!).apply { setOnClickListener { activate(); act.startBatchMove() } }
         val btnBatchDelete = b(act.getString(R.string.action_delete), C["error"]!!).apply { setOnClickListener { activate(); act.confirmBatchDelete() } }
-        val btnBatchCancel = b("✕ " + act.getString(R.string.action_cancel), C["tertiary"]!!).apply { setOnClickListener { act.exitMultiSelect() } }
+        val btnBatchCancel = b("✕ " + act.getString(R.string.action_cancel), C["tertiary"]!!).apply { setOnClickListener { act.exitAllMultiSelect() } }
         val batchScroll = HorizontalScrollView(requireContext()).apply {
             isHorizontalScrollBarEnabled = false
             isVerticalScrollBarEnabled = false

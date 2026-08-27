@@ -9,7 +9,8 @@ import java.io.File
 import kotlin.concurrent.thread
 
 internal fun MainActivity.startBatchCompress() {
-        val sel = multiSelected.toList(); if (sel.isEmpty()) return
+        // 跨 tab：聚合所有 tab 的选中文件
+        val sel = allSelectedFiles().values.flatten().toList(); if (sel.isEmpty()) return
         val items = sel.filter { it.isDirectory || (it.isFile && it.extension.lowercase() !in ARCHIVE_EXTS) }
         if (items.isEmpty()) { toast(getString(R.string.no_compressible)); return }
         AlertDialog.Builder(this)
@@ -93,7 +94,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                         // Leave multi-select only on success — on
                                         // cancel/failure keep the selection so the
                                         // user can retry without re-picking files.
-                                        exitMultiSelect(); nav(currentDir)
+                                        exitAllMultiSelect(); nav(currentDir)
                                     } else toast(getString(R.string.title_compress_failed))
                                 }
                             } catch (e: Exception) {
@@ -173,7 +174,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                             if (cancelled) toast(getString(R.string.msg_cancelled))
                             else if (ok) toast(getString(R.string.msg_batch_compress_done))
                             else toast(getString(R.string.title_compress_failed))
-                            exitMultiSelect(); nav(currentDir)
+                            exitAllMultiSelect(); nav(currentDir)
                         }
                     } catch (e: Exception) {
                         runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }

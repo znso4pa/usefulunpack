@@ -318,6 +318,7 @@
     <string name="calc_size">Calculate</string>
     <string name="selected_count">%1$d items</string>
     <string name="multi_selected_count">Selected: %1$d</string>
+    <string name="multi_selected_cross_tab">Selected: %1$d (across %2$d tabs)</string>
     <string name="batch_compress_merge">📦 Merge into one archive</string>
     <string name="batch_compress_separate">📦 Compress each separately</string>
     <string name="extract_separate_dirs">📁 Separate folders (%1$s)</string>

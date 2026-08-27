@@ -313,6 +313,7 @@
     <string name="calc_size">计算</string>
     <string name="selected_count">%1$d 项</string>
     <string name="multi_selected_count">已选 %1$d 项</string>
+    <string name="multi_selected_cross_tab">已选 %1$d 项（跨 %2$d 个窗口）</string>
     <string name="batch_compress_merge">📦 合并为一个压缩包</string>
     <string name="batch_compress_separate">📦 分别压缩（各一个）</string>
     <string name="extract_separate_dirs">📁 各单独文件夹（%1$s）</string>

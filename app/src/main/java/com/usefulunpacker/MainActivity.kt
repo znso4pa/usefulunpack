@@ -752,7 +752,7 @@ class MainActivity : AppCompatActivity() {
  */
 internal class TabStripAdapter(private val act: MainActivity) :
     androidx.recyclerview.widget.RecyclerView.Adapter<TabStripAdapter.VH>() {
-    class VH(val root: LinearLayout) : androidx.recyclerview.widget.RecyclerView.ViewHolder(root)
+    class VH(val root: LinearLayout, val badge: TextView) : androidx.recyclerview.widget.RecyclerView.ViewHolder(root)
 
     override fun getItemCount(): Int = act.tabs.size
 
@@ -793,10 +793,28 @@ internal class TabStripAdapter(private val act: MainActivity) :
             textSize = act.resources.getDimension(R.dimen.text_sm) / act.resources.displayMetrics.scaledDensity
             setPadding(act.resources.getDimensionPixelSize(R.dimen.space_xs), 0, act.resources.getDimensionPixelSize(R.dimen.space_xs), 0)
         }
+        // 选中项数量角标：小圆角背景 + 数字，默认隐藏
+        val badge = TextView(act).apply {
+            textSize = 9f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(
+                (4 * act.resources.displayMetrics.density).toInt(),
+                0,
+                (4 * act.resources.displayMetrics.density).toInt(),
+                0
+            )
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(C["accent"]!!)
+                cornerRadius = 8 * act.resources.displayMetrics.density
+            }
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
         root.addView(icon)
         root.addView(label, LinearLayout.LayoutParams(WRAP, WRAP))
+        root.addView(badge, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = (2 * act.resources.displayMetrics.density).toInt() })
         root.addView(close, LinearLayout.LayoutParams(WRAP, WRAP))
-        return VH(root)
+        return VH(root, badge)
     }
 
     override fun onBindViewHolder(holder: VH, position: Int) {
@@ -805,12 +823,12 @@ internal class TabStripAdapter(private val act: MainActivity) :
             // Guard: unbind the close/root listeners so a stale holder can't
             // index tabs[position] out of bounds after a tab is removed.
             holder.root.setOnClickListener(null)
-            holder.root.getChildAt(2).setOnClickListener(null)
+            holder.root.getChildAt(3).setOnClickListener(null)
             return
         }
         val icon = holder.root.getChildAt(0) as ImageView
         val label = holder.root.getChildAt(1) as TextView
-        val close = holder.root.getChildAt(2) as TextView
+        val close = holder.root.getChildAt(3) as TextView
         val isActive = position == act.activeTabIndex
         val thisTab = tabs[position]
         // 图标颜色与其他图标统一：激活 accent，未激活 tertiary
@@ -825,6 +843,10 @@ internal class TabStripAdapter(private val act: MainActivity) :
         }
         close.setTextColor(C["tertiary"]!!)
         close.visibility = if (tabs.size > 1) View.VISIBLE else View.GONE
+        // 选中项角标：仅当该 tab 有选中项时显示数字
+        val selCount = thisTab.multiSelected.size
+        holder.badge.text = selCount.toString()
+        holder.badge.visibility = if (selCount > 0) View.VISIBLE else View.GONE
         holder.root.setOnClickListener {
             act.activeTabIndex = position
             act.viewPager.currentItem = position

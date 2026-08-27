@@ -11,20 +11,42 @@ internal fun MainActivity.enterMultiSelect(f: File) = enterMultiSelect(activeTab
 internal fun MainActivity.enterMultiSelect(tab: TabState, f: File) {
         tab.multiSelectMode = true; tab.multiSelected.add(f); refreshMultiSelectUI(tab)
         syncMultiBar(tab)
+        syncAllTabAdapters()
     }
 
 internal fun MainActivity.toggleMultiSelect(f: File) = toggleMultiSelect(activeTab, f)
-internal fun MainActivity.toggleMultiSelect(tab: TabState, f: File) { if (tab.multiSelected.contains(f)) tab.multiSelected.remove(f) else tab.multiSelected.add(f); refreshMultiSelectUI(tab) }
+internal fun MainActivity.toggleMultiSelect(tab: TabState, f: File) { if (tab.multiSelected.contains(f)) tab.multiSelected.remove(f) else tab.multiSelected.add(f); refreshMultiSelectUI(tab); syncAllTabAdapters() }
 
 internal fun MainActivity.exitMultiSelect() = exitMultiSelect(activeTab)
 internal fun MainActivity.exitMultiSelect(tab: TabState) { tab.multiSelectMode = false; tab.multiSelected.clear(); syncMultiBar(tab) }
+
+/** 清空所有 tab 的多选状态。 */
+internal fun MainActivity.exitAllMultiSelect() {
+    for (t in tabs) { t.multiSelectMode = false; t.multiSelected.clear() }
+    syncMultiBar()
+    tabAdapter.notifyDataSetChanged()
+}
+
+/** 聚合所有 tab 的选中文件：Map<TabState, Set<File>>。 */
+internal fun MainActivity.allSelectedFiles(): Map<TabState, Set<File>> =
+    tabs.associateWith { it.multiSelected }.filter { it.value.isNotEmpty() }
+
+/** 全局选中文件总数。 */
+internal fun MainActivity.totalSelectedCount(): Int = tabs.sumOf { it.multiSelected.size }
 
 internal fun MainActivity.syncMultiBar() = syncMultiBar(activeTab)
 internal fun MainActivity.syncMultiBar(tab: TabState) {
         val bar = tab.batchBar ?: return
         val tv = bar.getChildAt(0) as? TextView ?: return
         val isCompress = prefs.getInt("work_mode", 0) == 1
-        tv.text = getString(R.string.multi_selected_count, tab.multiSelected.size)
+        // 跨 tab 计数：显示全局选中数（多 tab 有选中时标注跨窗口数）
+        val globalCount = totalSelectedCount()
+        val tabsWithSelection = allSelectedFiles().size
+        tv.text = if (tabsWithSelection > 1) {
+            getString(R.string.multi_selected_cross_tab, globalCount, tabsWithSelection)
+        } else {
+            getString(R.string.multi_selected_count, tab.multiSelected.size)
+        }
         bar.visibility = if (tab.multiSelectMode) View.VISIBLE else View.GONE
         if (tab.multiSelectMode) {
             bar.post { tab.listFiles.setPadding(tab.listFiles.paddingLeft, tab.listFiles.paddingTop, tab.listFiles.paddingRight, bar.height) }
@@ -56,9 +78,8 @@ internal fun MainActivity.syncMultiBar(tab: TabState) {
             if (prior is Int) tab.fabExtract.visibility = prior
             tab.fabExtract.tag = null
         }
-        // Sync adapter selection state and force full redraw
-        (tab.listFiles.adapter as? FileAdapter)?.multiSelected_ = if (tab.multiSelectMode) tab.multiSelected else emptySet()
-        tab.listFiles.invalidateViews()
+        // Sync adapter selection state for all tabs and force full redraw
+        syncAllTabAdapters()
         // Show/hide extract/preview/compress based on work mode. Buttons carry a
         // semantic tag set in buildBatchBar — never match on display text: the
         // strings embed emojis that changed across releases and the old
@@ -76,19 +97,29 @@ internal fun MainActivity.syncMultiBar(tab: TabState) {
         walk(bar)
     }
 
+/** 同步所有 tab 的 adapter 选择状态（非活跃 tab 也刷新 checkbox）。 */
+internal fun MainActivity.syncAllTabAdapters() {
+    for (t in tabs) {
+        (t.listFiles.adapter as? FileAdapter)?.multiSelected_ = if (t.multiSelectMode) t.multiSelected else emptySet()
+        t.listFiles.invalidateViews()
+    }
+    tabAdapter.notifyDataSetChanged()
+}
+
 internal fun MainActivity.refreshMultiSelectUI() = syncMultiBar()
 internal fun MainActivity.refreshMultiSelectUI(tab: TabState) = syncMultiBar(tab)
 
 internal fun MainActivity.confirmBatchDelete() {
         val tab = activeTab
-        val sel = tab.multiSelected.toList(); if (sel.isEmpty()) return
+        // 跨 tab：聚合所有 tab 的选中文件
+        val sel = allSelectedFiles().values.flatten().toList(); if (sel.isEmpty()) return
         val recycleEnabled = com.usefulunpacker.fileops.RecycleBin.isEnabled(prefs)
         AlertDialog.Builder(this).setTitle(getString(R.string.title_batch_delete)).setMessage(getString(if (recycleEnabled) R.string.confirm_recycle_batch_msg else R.string.confirm_delete_batch_msg, sel.size))
             .setPositiveButton(getString(R.string.action_delete)) { _, _ ->
                 deleteWithProgress(this, sel, prefs) { del, fail ->
                     if (fail > 0) toast(getString(R.string.msg_delete_result, del, fail)) else toast(getString(if (recycleEnabled) R.string.msg_moved_to_recycle else R.string.msg_deleted))
                     pruneBookmarksForDeleted(sel)
-                    exitMultiSelect(tab); navTab(tab, tab.currentDir)
+                    exitAllMultiSelect(); navTab(tab, tab.currentDir)
                 }
             }
             .setNegativeButton(getString(R.string.action_cancel), null).show()
@@ -96,17 +127,19 @@ internal fun MainActivity.confirmBatchDelete() {
 
 internal fun MainActivity.startBatchMove() {
         val tab = activeTab
-        val sel = tab.multiSelected.toList(); if (sel.isEmpty()) return
+        // 跨 tab：聚合所有 tab 的选中文件
+        val sel = allSelectedFiles().values.flatten().toList(); if (sel.isEmpty()) return
         // Copy all selected files to a temp list for multi-move; use first file as UI indicator
         tab.multiFiles = sel
-        tab.fileToMove = sel[0]; tab.multiSelected.clear()
-        updatePasteButton(); exitMultiSelect(tab)
+        tab.fileToMove = sel[0]; exitAllMultiSelect()
+        updatePasteButton()
                 toast(getString(R.string.msg_selected_nav_multi, sel.size))
     }
 
 internal fun MainActivity.startBatchCopy() {
         val tab = activeTab
-        val sel = tab.multiSelected.toList(); if (sel.isEmpty()) return
+        // 跨 tab：聚合所有 tab 的选中文件
+        val sel = allSelectedFiles().values.flatten().toList(); if (sel.isEmpty()) return
         // Snapshot the destination directory: `currentDir` is UI-thread-owned and
         // the user may navigate away mid-copy — copying into a changed directory
         // would scatter files unpredictably.
@@ -131,7 +164,7 @@ internal fun MainActivity.startBatchCopy() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (failed > 0) toast(getString(R.string.msg_copy_result, copied, failed)) else toast(getString(R.string.msg_copied))
-                exitMultiSelect(tab)
+                exitAllMultiSelect()
                 navTab(tab, tab.currentDir)
             }
         }

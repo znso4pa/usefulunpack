@@ -34,6 +34,30 @@
 
 ---
 
+## v5.15.0 · 跨 tab 多选操作（已完成）
+
+### 设计
+- 各 tab 独立保留选中状态：切 tab 不丢失选择，checkbox 持久化在 `TabState.multiSelected`
+- 批量操作聚合所有 tab 的选中文件：删除/复制/移动/解压/压缩均读取 `allSelectedFiles()`
+- tab 标签显示选中数量角标：`TabStripAdapter` 每个 tab 右侧小圆角 badge 数字
+- 批量操作栏显示跨 tab 计数：「已选 N 项（跨 M 个窗口）」
+- 取消按钮清空所有 tab 的选中状态（`exitAllMultiSelect()`）
+
+### 改动文件
+
+| 文件 | 改动 |
+|------|------|
+| `MainActivity.kt` `TabStripAdapter` | VH 新增 `badge: TextView`；`onCreateViewHolder` 创建角标 View；`onBindViewHolder` 绑定数字/隐藏 |
+| `MultiSelect.kt` | 新增 `allSelectedFiles()`、`totalSelectedCount()`、`exitAllMultiSelect()`、`syncAllTabAdapters()` |
+| `MultiSelect.kt` `syncMultiBar` | 跨 tab 计数文案 + 调用 `syncAllTabAdapters()` 同步所有 adapter |
+| `MultiSelect.kt` 批量操作 | `confirmBatchDelete`/`startBatchMove`/`startBatchCopy` 改读全局选中 + 操作后 `exitAllMultiSelect()` |
+| `BatchExtract.kt` | `batchArchives()` 改读全局选中；`exitMultiSelect()` → `exitAllMultiSelect()` |
+| `BatchCompress.kt` | `startBatchCompress()` 改读全局选中；`exitMultiSelect()` → `exitAllMultiSelect()` |
+| `FolderFragment.kt` | batchCancel 改调 `exitAllMultiSelect()` |
+| `strings.xml` (4 locale) | 新增 `multi_selected_cross_tab` 跨 tab 计数文案 |
+
+---
+
 ## 预览工作区（v5.14 待做 · 设计已定稿）
 
 > 归档预览 ⋮ 加「在窗口中打开」：把包内容实体化成一个专属 tab 的普通浏览目录，多选/复制/移动/分享/重命名/详情/排序等 FS 能力全部免费获得。此方案吸收并取代原 Tier1+2 统一化计划的主体价值。

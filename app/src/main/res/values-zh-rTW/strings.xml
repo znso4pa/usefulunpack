@@ -301,6 +301,7 @@
     <string name="calc_size">計算</string>
     <string name="selected_count">%1$d 項</string>
     <string name="multi_selected_count">已選 %1$d 項</string>
+    <string name="multi_selected_cross_tab">已選 %1$d 項（跨 %2$d 個窗口）</string>
     <string name="batch_compress_merge">📦 合併為一個壓縮包</string>
     <string name="batch_compress_separate">📦 分別壓縮（各一個）</string>
     <string name="extract_separate_dirs">📁 各單獨資料夾（%1$s）</string>

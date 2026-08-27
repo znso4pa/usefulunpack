@@ -301,6 +301,7 @@
     <string name="calc_size">計算</string>
     <string name="selected_count">%1$d 件</string>
     <string name="multi_selected_count">%1$d 件選択</string>
+    <string name="multi_selected_cross_tab">%1$d 件選択（%2$d ウィンドウにまたがる）</string>
     <string name="batch_compress_merge">📦 1つのアーカイブに結合</string>
     <string name="batch_compress_separate">📦 それぞれ個別に圧縮</string>
     <string name="extract_separate_dirs">📁 個別フォルダ（%1$s）</string>

@@ -36,6 +36,7 @@ cargo test --workspace             # Rust suite — must stay green
 
 - ⚠️ **Package ≠ directory**: `archive/ArchiveExtractor.kt` and `archive/ExtractProgress.kt` sit under `archive/` but declare root package `com.usefulunpacker`. Import their symbols explicitly from other packages (`com.usefulunpacker.archive.OpScheduler` style). Same class of quirk may exist elsewhere — trust `package` lines, not folders.
 - **Batch-bar buttons**: visibility matches semantic `tag`s (`"extract"`/`"preview"`/`"compress"`) from `buildBatchBar`, checked in `syncMultiBar`. NEVER match display text; emojis exist only in string resources, never concatenated in Kotlin.
+- **Cross-tab multi-select**: selections persist per-tab (`TabState.multiSelected`); batch ops aggregate via `allSelectedFiles()` / `totalSelectedCount()`. Cancel clears ALL tabs via `exitAllMultiSelect()`. Tab badges auto-refresh via `syncAllTabAdapters()` + `tabAdapter.notifyDataSetChanged()`.
 - **Async completion dialogs**: any `runOnUiThread { ... AlertDialog ... }` after background work requires `isFinishing || isDestroyed` guard (BadTokenException class — exterminated twice).
 - **Honor/EMUI ROM**: custom ScrollView/TextView/EditText must not enable native scrollbars (ROM NPE in `onDrawScrollBars`).
 - New strings go to ALL FOUR locales: `values/`, `-zh-rCN/`, `-zh-rTW/`, `-ja/`.

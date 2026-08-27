@@ -79,6 +79,10 @@ class MainActivity : AppCompatActivity() {
             if (idx >= 0) activeTabIndex = idx
         }
 
+    // Global multi-select session: stays true as long as ANY tab has selected
+    // files, enabling auto-enter on tab switch so cross-tab selection works.
+    internal var globalMultiSelectMode = false
+
     // Delegate per-tab state to the active tab.
     internal var currentDir: File
         get() = activeTab.currentDir
@@ -242,6 +246,12 @@ class MainActivity : AppCompatActivity() {
                 // Per-tab toolbar paste button + batch bar must be re-synced to the
                 // newly-active tab (fileToMove / multiSelectMode are per-tab).
                 updatePasteButton()
+                // 全局多选会话：切换到新 tab 时自动进入多选模式
+                if (globalMultiSelectMode) {
+                    enterMultiSelectMode(activeTab)
+                    // 隐藏其他 tab 的 batch bar（它们不再是活跃 tab）
+                    for (t in tabs) { if (t !== activeTab) syncMultiBar(t) }
+                }
                 syncMultiBar(activeTab)
                 // Re-render an in-tab preview when its tab becomes active again.
                 if (activeTab.previewActive) syncPreview(activeTab)

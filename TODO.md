@@ -31,6 +31,7 @@
 |------|------|------|
 | `crates/zstd-core/src/lib.rs` | fs::read OOM 保护 | 大于 512MB 的文件拒绝全量读入，返回明确错误 |
 | `crates/zip-core/src/lib.rs` | zipModify clear_cancel | JNI 入口补充 `clear_cancel()`，防止前一次操作残留的 cancel 标记污染当前操作 |
+| `crates/nsa-core/src/lib.rs` | 测试序列化 | `compress_progress_not_double_counted` 加 `LazyLock<Mutex>` 防止并行测试污染全局原子计数器 |
 
 ---
 
@@ -55,6 +56,15 @@
 | `BatchCompress.kt` | `startBatchCompress()` 改读全局选中；`exitMultiSelect()` → `exitAllMultiSelect()` |
 | `FolderFragment.kt` | batchCancel 改调 `exitAllMultiSelect()` |
 | `strings.xml` (4 locale) | 新增 `multi_selected_cross_tab` 跨 tab 计数文案 |
+
+### Debug 修复（本轮）
+
+| 问题 | 修复 | 说明 |
+|------|------|------|
+| `startBatchCopy` 竞态 | `exitAllMultiSelect()` 移至 thread 启动前 | 复制期间用户可点删除删掉正在复制的源文件 |
+| `startBatchCopy` 刷新目录 | `navTab(tab, targetDir)` 替代 `navTab(tab, tab.currentDir)` | 复制完成后刷新目标目录而非可能已变化的当前目录 |
+| 跨 tab 选择不可用 | `globalMultiSelectMode` 全局会话标记 | 切换 tab 时自动进入多选模式；之前切 tab 后点击只会导航 |
+| batch bar 非活跃 tab | `syncMultiBar` 只在活跃 tab 或有选中项的 tab 显示 | 全局模式下非活跃 tab 不显示空 batch bar |
 
 ---
 

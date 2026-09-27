@@ -3,6 +3,9 @@ object Xp3Core {
     init { System.loadLibrary("archive_xp3_core") }
     external fun xp3Extract(tool: String, input: String, output: String): String?
     external fun xp3ExtractSelected(tool: String, input: String, output: String, selected: String): String?
+    // cxdec-protected XP3 (same .so, shares the xp3 progress/cancel store)
+    external fun xp3CxdecExtract(tool: String, gameDir: String, input: String, output: String): String?
+    external fun xp3CxdecExtractSelected(tool: String, gameDir: String, input: String, output: String, selected: String): String?
     external fun xp3ListEntries(input: String): String?
     external fun xp3ExtractProgressCount(): Long
     external fun xp3ExtractProgressTotal(): Long

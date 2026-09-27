@@ -135,14 +135,49 @@ fun zipVolumesNeedsPassword(src: String): Boolean {
     return if (vols.size > 1) ZipCore.zipVolumesNeedsPassword(volumeJoin(vols)) else ZipCore.zipNeedsPassword(src)
 }
 
+/**
+ * True when the archive sits next to a cxdec filter sidecar — the game
+ * folder's xp3filter.tjs, or a .tpm/.dat carrying the control block. A .dat
+ * match is only a hint: the cxdec probe validates the scheme and the caller
+ * falls back to plain extraction when it cannot.
+ */
+fun hasCxdecFilterSidecar(src: String): Boolean {
+    val dir = File(src).parentFile ?: return false
+    return dir.listFiles()?.any {
+        it.name.equals("xp3filter.tjs", ignoreCase = true) ||
+            it.name.endsWith(".tpm", ignoreCase = true) ||
+            it.name.endsWith(".dat", ignoreCase = true)
+    } ?: false
+}
+
+/**
+ * XP3 extraction with cxdec routing: when a filter sidecar sits next to the
+ * archive, the cxdec decrypt path runs first (classic cxdec games extract as
+ * garbage through the plain path), falling back to the plain extractor when
+ * the cxdec probe finds no matching scheme.
+ */
+private fun xp3ExtractDispatch(src: String, out: String, selected: String): String? {
+    val gameDir = File(src).parent
+    if (gameDir != null && hasCxdecFilterSidecar(src)) {
+        val json = try {
+            if (selected.isEmpty()) Xp3Core.xp3CxdecExtract("", gameDir, src, out)
+            else Xp3Core.xp3CxdecExtractSelected("", gameDir, src, out, selected)
+        } catch (e: Exception) {
+            null // probe failed / not actually cxdec — fall through to plain
+        }
+        if (json != null) return json
+    }
+    return if (selected.isEmpty()) Xp3Core.xp3Extract("", src, out)
+           else Xp3Core.xp3ExtractSelected("", src, out, selected)
+}
+
 fun extractByFormat(
     format: String, src: String, out: String, selected: String,
     prefs: SharedPreferences, password: String = ""
 ): ExtractOutcome {
     return try {
         val json = when (format) {
-            "xp3" -> if (selected.isEmpty()) Xp3Core.xp3Extract("", src, out)
-                     else Xp3Core.xp3ExtractSelected("", src, out, selected)
+            "xp3" -> xp3ExtractDispatch(src, out, selected)
             "pfs" -> if (selected.isEmpty()) PfsCore.pfsExtract("", src, out)
                      else PfsCore.pfsExtractSelected("", src, out, selected)
             "iso" -> if (selected.isEmpty()) IsoCore.isoExtract("", src, out)

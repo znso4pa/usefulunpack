@@ -2,6 +2,7 @@
 members = [
     "crates/common",
     "crates/xp3-core",
+    "crates/cxdec-core",
     "crates/pfs-core",
     "crates/nsa-core",
     "crates/iso-core",

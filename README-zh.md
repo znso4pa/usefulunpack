@@ -157,6 +157,7 @@ XOR 密钥（0xFF / 0xC9）按文件首条目自动判断。
 | 格式 | 来源 / 参考 | 协议 |
 |------|-----------|------|
 | **XP3** | [xp3 crate](https://crates.io/crates/xp3) | MIT / Apache-2.0 |
+| **cxdec（XP3 内容过滤解密）** | [Cxdec_Tools](https://github.com/1F1E33-float32/Cxdec_Tools)（vendored 解密核心 + XP3 解析，MIT），游戏参数表参考 [arc_unpacker](https://github.com/vn-tools/arc_unpacker) | MIT |
 | **PFS / PF6 / PF8** | [pf8 crate](https://crates.io/crates/pf8) | 见 crates.io |
 | **NSA / SAR** | [NSA 格式规范](https://orin.page/w/index.php?title=NSA), LZSS/SPB via [GARbro](https://github.com/morkt/GARbro) / [ONScripter](https://github.com/nscripter/nscripter) | 公开规范 / MIT / GPL |
 | **YPF** | [YU-RIS 格式解析参考](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker) (Kaitai), [GARbro](https://github.com/morkt/GARbro) SwapTable, XOR + Shift-JIS, zlib | 公开规范 / MIT |

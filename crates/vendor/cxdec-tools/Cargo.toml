@@ -1,0 +1,15 @@
+[package]
+name = "cxdec-tools"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+flate2 = "1"
+indicatif = "0.18"
+pelite = "0.10.0"
+sha3 = "0.12"
+keccak = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["ansi", "env-filter"] }
+argon2 = "0.5.3"
+blake2 = "0.10.6"

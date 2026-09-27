@@ -204,7 +204,7 @@ fn find_control_block(game_dir: &Path) -> Result<ControlBlock, String> {
 /// Parses the 4096-entry byte array from an xp3filter.tjs template
 /// (`var tempBlock = [0x20, 0x45, …];`) into LE control-block words,
 /// mirroring the script's own `| <<8 <<16 <<24` build loop.
-fn tjs_control_block(text: &str) -> Option<Vec<u32>> {
+pub fn tjs_control_block(text: &str) -> Option<Vec<u32>> {
     if let Some(anchor) = text.find("tempBlock") {
         if let Some(words) = parse_int_array(&text[anchor..]) {
             return Some(words);
@@ -259,9 +259,11 @@ fn parse_int_array(text: &str) -> Option<Vec<u32>> {
 
 /// Reads the split point constants from the script's decode entry
 /// (`bondary = (hash & 0x275) + 0x380` in the feng template).
-fn tjs_scheme_params(text: &str) -> Option<(u32, u32)> {
-    let p = text.find("hash & 0x")?;
-    let rest = &text[p + "hash & 0x".len()..];
+pub fn tjs_scheme_params(text: &str) -> Option<(u32, u32)> {
+    // The decode entry reads `bondary = (hash & 0x275) + 0x380` — anchor on
+    // the parenthesized form so the VM's own `hash & 0x7f` doesn't match.
+    let p = text.find("(hash & 0x")?;
+    let rest = &text[p + "(hash & 0x".len()..];
     let mask_end = rest.find(|c: char| !c.is_ascii_hexdigit())?;
     let mask = u32::from_str_radix(&rest[..mask_end], 16).ok()?;
     let after = &rest[mask_end..];
@@ -275,13 +277,24 @@ fn tjs_scheme_params(text: &str) -> Option<(u32, u32)> {
 /// Picks the scheme whose decryption yields recognizable plaintext on the
 /// archive's first entries. Candidates: tjs-derived constants first (feng
 /// template ordering, then canonical), then the known-game table.
-fn detect_cipher(
+pub fn detect_cipher(
     game_dir: &Path,
     archive: &str,
 ) -> Result<(CxEncryption, &'static str), String> {
     let cb = find_control_block(game_dir)?;
     let tjs_text = fs::read_to_string(game_dir.join("xp3filter.tjs")).ok();
     let tjs_params = tjs_text.as_deref().and_then(tjs_scheme_params);
+
+    // The vendored VM complements each control-block word on every ECB load
+    // (MovEaxIndirect), and its TPM reader pre-complements — the two cancel
+    // out for TPM games. The TJS array holds the script's raw values, so the
+    // words handed to the VM must be inverted once for the effective table to
+    // match what the game's own filter used.
+    let words = if cb.from_tjs {
+        cb.words.iter().map(|w| !w).collect()
+    } else {
+        cb.words.clone()
+    };
 
     let mut candidates: Vec<SchemeSpec> = Vec::new();
     if let Some((mask, offset)) = tjs_params {
@@ -297,7 +310,7 @@ fn detect_cipher(
     let probe_count = arch.entries.len().min(8);
     let mut best: Option<(usize, &'static str, CxEncryption)> = None;
     for spec in candidates {
-        let mut scheme = CxScheme::base(spec.mask, spec.offset, cb.words.clone());
+        let mut scheme = CxScheme::base(spec.mask, spec.offset, words.clone());
         scheme.prolog_order = spec.prolog_order;
         scheme.even_branch_order = spec.even_branch_order;
         scheme.odd_branch_order = spec.odd_branch_order;
@@ -551,7 +564,10 @@ mod tests {
 
     /// Encrypts `plaintext` under `spec` + `words` and returns (hash, payload).
     fn encrypt_entry(spec: &SchemeSpec, words: &[u32], plaintext: &[u8]) -> (u32, Vec<u8>) {
-        let mut scheme = CxScheme::base(spec.mask, spec.offset, words.to_vec());
+        // Mirror the real flow: the VM complements at load, so hand it the
+        // inverted words for its effective table to equal the raw array.
+        let vm_words: Vec<u32> = words.iter().map(|w| !w).collect();
+        let mut scheme = CxScheme::base(spec.mask, spec.offset, vm_words);
         scheme.prolog_order = spec.prolog_order;
         scheme.even_branch_order = spec.even_branch_order;
         scheme.odd_branch_order = spec.odd_branch_order;
@@ -675,6 +691,12 @@ mod tests {
         let words: Vec<u32> = raw.chunks_exact(4)
             .map(|q| !u32::from_le_bytes([q[0], q[1], q[2], q[3]]))
             .collect();
+        // The reader yields the inverted words and the effective table must
+        // equal them; since encrypt_entry hands the VM inverted words, feed
+        // it the raw bytes' words instead (double inversion = identity).
+        let raw_words: Vec<u32> = raw.chunks_exact(4)
+            .map(|q| u32::from_le_bytes([q[0], q[1], q[2], q[3]]))
+            .collect();
         let mut tpm_bytes = raw.clone();
         tpm_bytes.extend_from_slice(&[0u8; 64]); // reader needs len > block size
         fs::write(dir.join("encryption.tpm"), &tpm_bytes).unwrap();
@@ -682,7 +704,7 @@ mod tests {
         let plain = b"OggSprotected-by-tpm".to_vec();
         let karakara = &SCHEME_TABLE[6];
         assert_eq!(karakara.name, "cxdec karakara");
-        let (hash, enc) = encrypt_entry(karakara, &words, &plain);
+        let (hash, enc) = encrypt_entry(karakara, &raw_words, &plain);
         let xp3 = dir.join("data.xp3");
         fs::write(&xp3, build_xp3(&[("bg/logo.png", hash, enc)])).unwrap();
         let (_cx, scheme_name) =

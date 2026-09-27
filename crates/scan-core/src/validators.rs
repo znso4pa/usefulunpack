@@ -1614,10 +1614,20 @@ fn validate_ypf(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
 /// The pf8 crate validates the header internally; here we just check the magic
 /// is present and the file is at least 12 bytes (header size).
 fn validate_pf6pf8(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
-    if file_len - off < 12 { return None; }
-    let mut buf = [0u8; 3];
-    if !read_at(f, off, &mut buf) { return None; }
-    if &buf != b"pf6" && &buf != b"pf8" { return None; }
+    // Header: magic "pf6"/"pf8" + index_size u32 @3 + index_count u32 @7.
+    // The index (entries + filesize-offset table) must fit inside the file,
+    // and every entry costs at least 16 bytes (name_len + padding + offset +
+    // size) — a count that can't fit in index_size is garbage, which is what
+    // filters the 3-byte magic's text collisions.
+    if file_len - off < 15 { return None; }
+    let mut h = [0u8; 15];
+    if !read_at(f, off, &mut h) { return None; }
+    if &h[0..3] != b"pf6" && &h[0..3] != b"pf8" { return None; }
+    let index_size = u32le(&h, 3) as u64;
+    let index_count = u32le(&h, 7) as u64;
+    const INDEX_DATA_START: u64 = 0x07;
+    if INDEX_DATA_START + index_size > file_len - off { return None; }
+    if index_count == 0 || index_count * 16 > index_size { return None; }
     Some(HitInfo { size: None, count: None })
 }
 

@@ -17,7 +17,15 @@
 - 格式选择器新增 PF6 项（PFS/PF8 与 PF6 并列可选）；pf6 读取/预览/解包沿用
   既有 "pfs" 通道（crate 原生支持）
 - 回归测试：PF6 打包 → pf8 crate PF6 读取 → 逐字节回环（嵌套目录 +
-  5.5MB 跨 4MiB 分块大文件 + mp4 免加密扩展名）；cargo test --workspace 全绿
+  5.5MB 跨 4MiB 分块大文件 + mp4 免加密扩展名）；**PF6 头部与 Pf8Writer
+  输出逐字节对齐**（除魔数外 header 区域完全一致，防外部工具解析漂移）
+- **全面 debug 收尾**：`compressAccessors("pf6")` 缺分支导致 PF6 封包在选择
+  格式后直接崩溃（无进度窗口的根因）；pf6 调度 key 归并到 "pfs"（PF6/PF8
+  共用同一 cdylib 的 compress_progress store，必须串行防进度互相污染）；
+  批量合并/批量分别封包路径同样接入 root.pfs 自动更名；签名扫描 PF6/PF8
+  校验强化（index_size 越界 + index_count×16 上限，过滤 3 字节魔数文本碰撞），
+  Kotlin 侧 ARCHIVE_LABELS 补 PF6/PF8 → pfs 路由 + NEEDS_CARVE 补 pfs；
+  cargo test --workspace 全绿
 
 ---
 

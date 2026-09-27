@@ -872,13 +872,23 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
                     val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
                     compressDispatch(editDir, outF, "7z", prefs.getInt("sz_level", 6), password, prefs)
                 }
+                "pf6" -> PfsCore.pfsCreateArchivePf6("", editDir.path, outF.path) != null
                 else -> PfsCore.pfsCreateArchive("", editDir.path, outF.path) != null
+            }
+            // PFS/PF6 封包产物按 Artemis 约定自动更名 root.pfs(.NNN)
+            var pfsRenamed: String? = null
+            if (ok && !cancelled && format in setOf("pfs", "pf6")) {
+                applyPfsRootNaming(outF)?.let { pfsRenamed = it.name }
             }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 prog.dismiss()
                 if (cancelled) toast(getString(R.string.msg_cancelled))
-                else if (ok) { toast(getString(R.string.edit_done, outF.name)); nav(currentDir) }
+                else if (ok) {
+                    pfsRenamed?.let { toast(getString(R.string.pfs_auto_renamed, it)) }
+                    toast(getString(R.string.edit_done, pfsRenamed ?: outF.name))
+                    nav(currentDir)
+                }
                 else toast(getString(R.string.title_compress_failed))
             }
         } finally {

@@ -126,12 +126,12 @@ val FORMAT_GROUPS = listOf(
 val COMPRESS_GROUPS = listOf(
     Pair(R.string.format_group_generic, listOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")),
     Pair(R.string.format_group_single, listOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "br", "ksd")),
-    Pair(R.string.format_group_other, listOf("xp3", "pfs", "nsa", "iso", "ypf")),
+    Pair(R.string.format_group_other, listOf("xp3", "pfs", "pf6", "nsa", "iso", "ypf")),
 )
 
 // 压缩输出扩展名（dir.name + 该扩展名）
 val COMPRESS_EXT = mapOf(
-    "xp3" to "xp3", "pfs" to "pfs", "nsa" to "nsa", "iso" to "iso", "ypf" to "ypf",
+    "xp3" to "xp3", "pfs" to "pfs", "pf6" to "pfs", "nsa" to "nsa", "iso" to "iso", "ypf" to "ypf",
     "zip" to "zip", "7z" to "7z",
     "tar" to "tar", "tgz" to "tar.gz", "tbz2" to "tar.bz2", "txz" to "tar.xz", "tzst" to "tar.zst",
     "gz" to "gz", "bz2" to "bz2", "xz" to "xz", "zst" to "zst", "lzma" to "lzma", "lz4" to "lz4",
@@ -144,12 +144,12 @@ val SINGLE_FILE_COMPRESS = setOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "br", 
 // 批量"合并为一个压缩包"可用格式（多条目归档，排除单文件格式）
 val MERGE_COMPRESS_GROUPS = listOf(
     Pair(R.string.format_group_generic, listOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")),
-    Pair(R.string.format_group_other, listOf("xp3", "pfs", "nsa", "iso", "ypf")),
+    Pair(R.string.format_group_other, listOf("xp3", "pfs", "pf6", "nsa", "iso", "ypf")),
 )
 
 // 压缩模式格式选择器：格式 key → 显示标签
 val COMPRESS_LABELS = mapOf(
-    "xp3" to "XP3 (.xp3)", "pfs" to "PFS (.pfs/.pf8)", "nsa" to "NSA (.nsa/.sar)", "iso" to "ISO (.iso)", "ypf" to "YPF (.ypf)",
+    "xp3" to "XP3 (.xp3)", "pfs" to "PFS/PF8 (.pfs)", "pf6" to "PF6 (.pfs)", "nsa" to "NSA (.nsa/.sar)", "iso" to "ISO (.iso)", "ypf" to "YPF (.ypf)",
     "zip" to "ZIP (.zip)", "7z" to "7z (.7z)",
     "tar" to "TAR (.tar)", "tgz" to "TAR.GZ (.tar.gz)", "tbz2" to "TAR.BZ2 (.tar.bz2)",
     "txz" to "TAR.XZ (.tar.xz)", "tzst" to "TAR.ZST (.tar.zst)",

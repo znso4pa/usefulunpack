@@ -8,6 +8,7 @@ use pf8::entry::Pf8Entry;
 use pf8::writer::Pf8Writer;
 use pf8::callbacks::{ArchiveHandler, ControlAction, ProgressInfo};
 use std::fs;
+use std::io::{Read, Write};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -262,6 +263,100 @@ fn create_pfs(input: &str, output: &str) -> Result<u32, String> {
     Ok(entries.len() as u32)
 }
 
+// ─── PF6 Pack (独立实现：pf8 同构索引布局、pf6 魔数、数据不加密) ─────────────
+//
+// The pf8 crate has no PF6 pack support (read-only, unencrypted), so the
+// writer below is self-contained. Layout mirrors Pf8Writer::write_header:
+//   magic 'pf6' | index_size u32 | index_count u32
+//   entries: name_len u32 | name (backslash path) | 0000 | offset u32 | size u32
+//   filesize_count u32 | filesize_offsets u64[] | 8×00 | filesize_count_offset u32
+// File data is stored raw — PF6 entries carry no SHA1-index XOR (the crate's
+// reader marks every PF6 entry unencrypted, so plain bytes round-trip).
+
+const PF6_MAGIC: &[u8] = b"pf6";
+const PF6_INDEX_DATA_START: usize = 0x07;
+const PF6_FILESIZE_OFFSETS_START: usize = 0x0F;
+
+fn create_pf6(input: &str, output: &str) -> Result<u32, String> {
+    let files = collect_files_pfs(Path::new(input))?;
+    if files.is_empty() { return Err("PFS: no files to archive".to_string()); }
+    let total: u64 = files.iter().map(|(p, _)| p.metadata().map(|m| m.len()).unwrap_or(0)).sum();
+    compress_progress::reset(total);
+
+    // pf8-style backslash paths, sorted for byte-stable output
+    let mut entries: Vec<(String, PathBuf, u64)> = Vec::new();
+    for (src, rel) in &files {
+        let size = src.metadata().map_err(|e| format!("PF6 metadata {}: {e}", src.display()))?.len();
+        if size > u32::MAX as u64 { return Err(format!("PF6 file too large: {rel}")); }
+        let pf8_path = Path::new(rel).iter().map(|c| c.to_string_lossy()).collect::<Vec<_>>().join("\\");
+        entries.push((pf8_path, src.clone(), size));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let count = entries.len() as u32;
+    let fileentry_size: usize = entries.iter().map(|(p, _, _)| p.len() + 16).sum();
+    let index_size = (4 + fileentry_size + 4 + (count as usize + 1) * 8 + 4) as u32;
+    let mut header: Vec<u8> = Vec::with_capacity(PF6_INDEX_DATA_START + index_size as usize);
+    header.extend_from_slice(PF6_MAGIC);
+    header.extend_from_slice(&index_size.to_le_bytes());
+    header.extend_from_slice(&count.to_le_bytes());
+
+    let mut file_offset: u32 = index_size + PF6_INDEX_DATA_START as u32;
+    let mut filesize_offsets: Vec<u64> = Vec::new();
+    for (name, _, size) in &entries {
+        let size = *size as u32;
+        header.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        header.extend_from_slice(name.as_bytes());
+        header.extend_from_slice(&[0x00; 4]);
+        header.extend_from_slice(&file_offset.to_le_bytes());
+        let size_pos = header.len();
+        header.extend_from_slice(&size.to_le_bytes());
+        filesize_offsets.push((size_pos - PF6_FILESIZE_OFFSETS_START) as u64);
+        file_offset = file_offset.checked_add(size)
+            .ok_or_else(|| format!("PF6 archive too large: data passes 4GB at {}", name))?;
+    }
+    header.extend_from_slice(&(count + 1).to_le_bytes());
+    let filesize_count_offset = (header.len() - 4 - PF6_INDEX_DATA_START) as u32;
+    for off in &filesize_offsets { header.extend_from_slice(&off.to_le_bytes()); }
+    header.extend_from_slice(&[0x00; 8]);
+    header.extend_from_slice(&filesize_count_offset.to_le_bytes());
+
+    let mut out = fs::File::create(output).map_err(|e| format!("PF6 create {output}: {e}"))?;
+    out.write_all(&header).map_err(|e| format!("PF6 write {output}: {e}"))?;
+
+    // File data raw (no XOR), streamed 4MiB at a time with progress + cancel.
+    let mut buf = vec![0u8; 4 * 1024 * 1024];
+    for (name, src, size) in &entries {
+        if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+        compress_progress::set_name(name);
+        compress_progress::set_file(*size);
+        let mut f = fs::File::open(src).map_err(|e| format!("PF6 open {}: {e}", src.display()))?;
+        let mut left = *size;
+        while left > 0 {
+            if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+            let want = buf.len().min(left as usize);
+            f.read_exact(&mut buf[..want]).map_err(|e| format!("PF6 read {}: {e}", src.display()))?;
+            out.write_all(&buf[..want]).map_err(|e| format!("PF6 write {}: {e}", name))?;
+            compress_progress::add_bytes(want as u64);
+            left -= want as u64;
+        }
+    }
+    if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+    Ok(entries.len() as u32)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsCreateArchivePf6(
+    mut env: JNIEnv, _: JClass, _t: JString, input: JString, output: JString,
+) -> jstring {
+    compress_progress::clear_cancel();
+    let inp = s(&mut env, &input); let out = s(&mut env, &output);
+    match guarded(move || create_pf6(&inp, &out)) {
+        Ok(total) => { let json = extract_result_json(total, total, 0); match env.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
+        Err(er) => { let _ = env.throw_new("java/io/IOException", er); std::ptr::null_mut() }
+    }
+}
+
 #[no_mangle]
 pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsCreateArchive(
     mut env: JNIEnv, _: JClass, _t: JString, input: JString, output: JString,
@@ -327,6 +422,41 @@ mod tests {
         let out_dir = out.clone();
         Pf8Archive::open(Path::new(&pfs)).unwrap().extract_all(&out_dir).unwrap();
         assert_eq!(std::fs::read(out.join("one.dat")).unwrap(), vec![7u8; 8000]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pf6_pack_round_trip() {
+        // PF6 pack (independent writer, no encryption) must be readable by the
+        // pf8 crate's PF6 path and round-trip every byte, including nested
+        // directories and a file large enough to cross the 4MiB stream chunks.
+        let dir = tmp("pf6");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("sub/bg")).unwrap();
+        std::fs::create_dir_all(dir.join("script")).unwrap();
+        std::fs::write(dir.join("script/init.tjs"), b"// pf6 test\n").unwrap();
+        let big: Vec<u8> = (0..5_500_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(dir.join("sub/bg/large.png"), &big).unwrap();
+        std::fs::write(dir.join("sub/skip_me.mp4"), b"unencrypted-extension").unwrap();
+
+        let pf6 = dir.join("root.pfs");
+        create_pf6(dir.to_str().unwrap(), pf6.to_str().unwrap()).unwrap();
+
+        // magic must be pf6
+        let magic = std::fs::read(&pf6).unwrap();
+        assert_eq!(&magic[..3], b"pf6");
+
+        let mut archive = Pf8Archive::open(Path::new(&pf6)).unwrap();
+        let paths: Vec<String> = archive.entries()
+            .map(|e| e.path().to_string_lossy().replace('\\', "/")).collect();
+        assert!(paths.contains(&"script/init.tjs".to_string()), "{paths:?}");
+        assert!(paths.contains(&"sub/bg/large.png".to_string()), "{paths:?}");
+        let out = dir.join("out");
+        let out_dir = out.clone();
+        archive.extract_all(&out_dir).unwrap();
+        assert_eq!(std::fs::read(out.join("script/init.tjs")).unwrap(), b"// pf6 test\n");
+        assert_eq!(std::fs::read(out.join("sub/bg/large.png")).unwrap(), big);
+        assert_eq!(std::fs::read(out.join("sub/skip_me.mp4")).unwrap(), b"unencrypted-extension");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

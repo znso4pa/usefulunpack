@@ -1,5 +1,26 @@
 # TODO
 
+## 已实现: PFS 大更新 — PF6 独立封包 + root.pfs 自动更名
+
+参考 [pfs-rs](https://github.com/sakarie9/pfs-rs)（其 pf8 crate 即本仓库在用的 0.1.6：PF6 仅读取且无加密、PF8 可读可写）：
+
+- **PF6 独立封包**：`pfs-core` 新增自含 `create_pf6`（crate 无 PF6 打包能力）——索引布局与
+  Pf8Writer 逐字节对齐（`pf6` 魔数 + index_size/count + name\0 + offset/size 条目 +
+  filesize_offsets u64 表 + 尾部标记），数据**不加密**（与 crate 的 PF6 读取语义一致，
+  PF6 条目一律视为明文）；4MiB 流式写入 + 进度/取消 + 4GB u32 偏移护栏 +
+  pf8 风格反斜杠路径。读取侧复用 pf8 crate 的 PF6 支持，无新 so
+  （JNI 新增 `pfsCreateArchivePf6` 挂在 PfsCore）
+- **封包产物自动更名**：PFS/PF6 封包完成后按 Artemis 分层补丁约定自动更名
+  `root.pfs`；已存在则 `root.pfs.000`、`root.pfs.001` …（三位数字递增），
+  toast 提示「已自动更名为 …」（四语言）。单目录封包与预览工作区"合并回包"
+  两条路径都生效；产物本身已是 root.pfs 时不多余更名
+- 格式选择器新增 PF6 项（PFS/PF8 与 PF6 并列可选）；pf6 读取/预览/解包沿用
+  既有 "pfs" 通道（crate 原生支持）
+- 回归测试：PF6 打包 → pf8 crate PF6 读取 → 逐字节回环（嵌套目录 +
+  5.5MB 跨 4MiB 分块大文件 + mp4 免加密扩展名）；cargo test --workspace 全绿
+
+---
+
 ## 已实现: cxdec 经典解密（XP3 内容过滤，单包拆包）
 
 经典 cxdec 保护的 XP3（feng《ちいさな彼女の小夜曲》真机样本验证目标）此前解出的是密文

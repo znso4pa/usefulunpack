@@ -494,4 +494,14 @@
     <string name="scanned_items">項</string>
     <string name="error_not_supported_ext">不支援</string>
     <string name="search_hint">搜尋檔名…</string>
+
+    <!-- 預覽工作區（在窗口中開啟） -->
+    <string name="ws_open">在窗口中開啟</string>
+    <string name="ws_open_selected">選中項開為工作區</string>
+    <string name="ws_size_confirm">該封包解壓到工作區約需 %1$s 空間，繼續？</string>
+    <string name="ws_cleanup_prompt">同時清理工作區快取？</string>
+    <string name="ws_tab_title">📦 %1$s</string>
+
+    <string name="zip_invalid_entry_name">條目名不能包含 | 字元</string>
+    <string name="msg_empty_archive">該封包為空</string>
 </resources>

@@ -507,4 +507,14 @@
     <string name="scanned_items">项</string>
     <string name="error_not_supported_ext">不支持</string>
     <string name="search_hint">搜索文件名…</string>
+
+    <!-- 预览工作区（在窗口中打开） -->
+    <string name="ws_open">在窗口中打开</string>
+    <string name="ws_open_selected">选中项开为工作区</string>
+    <string name="ws_size_confirm">该包解压到工作区约需 %1$s 空间，继续？</string>
+    <string name="ws_cleanup_prompt">同时清理工作区缓存？</string>
+    <string name="ws_tab_title">📦 %1$s</string>
+
+    <string name="zip_invalid_entry_name">条目名不能包含 | 字符</string>
+    <string name="msg_empty_archive">该归档为空</string>
 </resources>

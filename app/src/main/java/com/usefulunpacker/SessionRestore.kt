@@ -28,6 +28,12 @@ internal fun MainActivity.saveSession() {
             o.put("fmt", tab.previewFormat!!)
             o.put("pwd", tab.previewPwd)
         }
+        // 预览工作区 tab：wsRoot 单独存——用户可能在 ws 内导航深入，
+        // currentDir 不再等于工作区根目录。
+        tab.wsDir?.let { ws ->
+            o.put("ws", 1)
+            o.put("wsRoot", ws.absolutePath)
+        }
         arr.put(o)
     }
     val root = JSONObject()
@@ -50,29 +56,45 @@ internal fun MainActivity.restoreSession() {
         toast(getString(R.string.msg_max_tabs))
     }
     val count = minOf(savedTabs.length(), MainActivity.MAX_TABS)
-    val dirs = ArrayList<File>(count)
-    val previews = arrayOfNulls<PendingPreview>(count)
+    // Parse in LOCKSTEP: one skipped malformed element must not shift later
+    // previews/titles onto the wrong tab (tabs are built from this list).
+    data class SavedTab(val dir: File, val title: String, val preview: PendingPreview?, val wsRoot: String?)
+    val savedList = ArrayList<SavedTab>(count)
     for (i in 0 until count) {
         val o = savedTabs.optJSONObject(i) ?: continue
-        dirs.add(sanitizeDir(File(o.optString("dir", ""))))
+        // org.json quirk: optString on a JSON null returns the literal "null".
+        fun str(key: String): String = o.optString(key, "").takeIf { it != "null" } ?: ""
+        val dir = sanitizeDir(File(str("dir")))
+        var pending: PendingPreview? = null
         if (o.optInt("preview", 0) == 1) {
-            val src = File(o.optString("src", ""))
-            val fmt = o.optString("fmt", "")
+            val src = File(str("src"))
+            val fmt = str("fmt")
             if (src.exists() && fmt.isNotEmpty()) {
-                previews[i] = PendingPreview(src, fmt, o.optString("pwd", ""))
+                pending = PendingPreview(src, fmt, str("pwd"))
             }
         }
+        val wsRoot = str("wsRoot")
+        savedList.add(SavedTab(dir, str("title"), pending, wsRoot))
     }
-    if (dirs.isEmpty()) { addTab(); return }
+    if (savedList.isEmpty()) { addTab(); return }
+    val previews = arrayOfNulls<PendingPreview>(savedList.size)
 
     tabs.clear()
-    for (i in dirs.indices) {
+    for ((i, st) in savedList.withIndex()) {
         val tab = TabState(i)
-        tab.currentDir = dirs[i]
+        tab.currentDir = st.dir
         // Same 8-char cap the rename dialog enforces, so a hand-edited or
-        // older-session JSON can't smuggle in an oversized name.
-        tab.title = savedTabs.optJSONObject(i)?.optString("title", "")?.take(8) ?: ""
+        // older-session JSON can't smuggle in an oversized name. Workspace
+        // tabs get a wider cap: their titles are "📦 <archive name>" and the
+        // strip label ellipsizes at 96dp anyway.
+        val isWs = st.wsRoot != null
+        tab.title = st.title.take(if (isWs) 32 else 8)
+        // 工作区身份：缓存目录仍在则完整还原（📦 标题随 title 往返 +
+        // 关闭时的清理询问）；已被系统清掉则降级为普通目录 tab（sanitizeDir
+        // 已把失效路径兜底到存在的祖先目录）。
+        if (isWs && File(st.wsRoot).isDirectory) tab.wsDir = File(st.wsRoot)
         tabs.add(tab)
+        previews[i] = st.preview
     }
     activeTabIndex = root.optInt("active", 0).coerceIn(0, tabs.size - 1)
     rebuildPager()
@@ -106,7 +128,7 @@ private fun MainActivity.restorePreviews(previews: Array<PendingPreview?>) {
         thread {
             val entries = listPreviewEntries(pending.fmt, pending.src, pending.pwd)
             runOnUiThread {
-                if (isFinishing) return@runOnUiThread
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 if (entries.isNullOrEmpty()) return@runOnUiThread
                 if (tab.previewActive) return@runOnUiThread
                 val openKey = archiveKey(pending.src)

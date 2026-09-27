@@ -245,11 +245,15 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
     dlg.window?.setLayout(w, h)
 
     // Autosave edits to cache for rotation/restore (throttled by the view).
+    // 单线程执行器串行化：400ms 节流会在慢 PNG 编码期间放行第二次触发，
+    // 两个线程并发写同一 tempFile 会互相截断产出损坏的恢复副本。用后回收。
+    val autosaveExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     editorView.onAutosave = {
-        thread {
+        autosaveExecutor.execute {
             val bmp = editorView.composeResult()
             if (bmp != null) {
                 runCatching { FileOutputStream(tempFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+                bmp.recycle()
             }
         }
     }
@@ -266,6 +270,7 @@ private fun saveEdited(act: AppCompatActivity, file: File, view: ImageEditorView
                 FileOutputStream(outF).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
                 true
             }.getOrDefault(false)
+            bmp?.recycle()
             act.runOnUiThread {
                 if (act.isFinishing || act.isDestroyed) return@runOnUiThread
                 if (ok) {

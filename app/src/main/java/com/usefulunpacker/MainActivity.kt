@@ -64,6 +64,9 @@ class MainActivity : AppCompatActivity() {
     internal val bookmarks = java.util.concurrent.CopyOnWriteArrayList<String>()
     internal val df = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     internal var currentMediaPlayer: android.media.MediaPlayer? = null
+    // 正在播放的音频对话框：新音频预览开始时必须把它关掉，否则旧对话框
+    // 永远停在「播放中」状态占着屏幕（player 释放了但对话框没人 dismiss）。
+    internal var currentAudioDialog: android.app.Dialog? = null
 
     // ── Multi-window (tab) state ─────────────────────────────────────────
     // Each tab owns a TabState; the "active" tab's state is what the legacy
@@ -172,10 +175,15 @@ class MainActivity : AppCompatActivity() {
         // Android 11+ need MANAGE_EXTERNAL_STORAGE to browse all files
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             if (!android.os.Environment.isExternalStorageManager()) {
+                // 部分 ROM/模拟器没有带 data URI 的 action → 首启动即崩；
+                // 降级到无 URI 的通用 action，再不行就只提示。
                 val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
                 intent.data = android.net.Uri.parse("package:$packageName")
-                startActivity(intent)
-                                toast(getString(R.string.msg_permission_storage))
+                val launched = try { startActivity(intent); true } catch (e: Exception) {
+                    try { startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)); true } catch (_: Exception) { false }
+                }
+                toast(getString(R.string.msg_permission_storage))
+                if (!launched) return
                 finish()
                 return
             }
@@ -580,7 +588,9 @@ class MainActivity : AppCompatActivity() {
             toast(getString(R.string.msg_max_tabs))
             return
         }
-        val tab = TabState(tabs.size)
+        // tabId 单调递增：用 tabs.size 会在关掉低号 tab 后产生重复 id，
+        // OpOverlay/DeleteProgress 的卡片按 tabId 归属会张冠李戴。
+        val tab = TabState((tabs.maxOfOrNull { it.tabId } ?: -1) + 1)
         // New windows start at the external storage root, like the original app.
         tab.currentDir = android.os.Environment.getExternalStorageDirectory()
         tabs.add(tab)
@@ -627,7 +637,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val origin = activeTab
-        val picker = TabState(tabs.size)
+        val picker = TabState((tabs.maxOfOrNull { it.tabId } ?: -1) + 1) // 同 addTab：防重复 id
         picker.currentDir = startDir
         picker.pickerCallback = { picked ->
             // Pick complete: close the picker tab and return to the origin tab.
@@ -652,6 +662,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     internal fun closeTab(tab: TabState) {
+        if (tabs.size <= 1) return // keep at least one
+        // 工作区 tab：关闭前询问是否同时清理缓存目录（是=删 ws/<hash>，否=保留，
+        // 下次同一归档开工作区直接复用）。删除放后台线程——大目录同步删会卡 UI。
+        val ws = tab.wsDir
+        if (ws != null) {
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.ws_cleanup_prompt))
+                .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
+                    thread { ws.deleteRecursively() }
+                    closeTabNow(tab)
+                }
+                .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> closeTabNow(tab) }
+                .show()
+            return
+        }
+        closeTabNow(tab)
+    }
+
+    private fun closeTabNow(tab: TabState) {
         if (tabs.size <= 1) return // keep at least one
         val idx = tabs.indexOf(tab)
         if (idx < 0) return

@@ -18,6 +18,7 @@ captures/
 .idea/
 *.iml
 .vscode/
+.zcode/
 
 # macOS
 .DS_Store

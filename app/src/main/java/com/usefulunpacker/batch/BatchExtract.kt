@@ -94,16 +94,24 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
                             try {
                                 var ok = true
                                 var err: String? = null
+                                var doneUntil = 0 // 分卷目录模式下本次已完整产出的输出目录数
                                 for (i in archives.indices) {
                                     if (cancelled) { ok = false; break }
                                     val out = if (w == 0) outDirs[i] else parent
                                     val o = extractByFormat(fmt, archives[i].path, out.path, "", prefs, pwd ?: "")
                                     ok = o.counts.ok; if (!ok) { err = o.error; break }
+                                    if (w == 0) doneUntil = i + 1
                                 }
                                 runOnUiThread {
                                     if (isFinishing || isDestroyed) return@runOnUiThread
                                     prog.dismiss()
-                                    if (cancelled) toast(getString(R.string.msg_cancelled))
+                                    if (cancelled) {
+                                        // 清掉本次新建的部分输出目录（uniqueFile 预计算的
+                                        // 名字在提取前都不存在，删除是安全的）；解到父目录
+                                        // 的模式与既有文件混在一起，无法区分，不清理。
+                                        if (w == 0) thread { for (i in 0 until doneUntil) outDirs[i].deleteRecursively() }
+                                        toast(getString(R.string.msg_cancelled))
+                                    }
                                     else if (ok) toast(getString(R.string.msg_batch_done))
                                     else toast(friendlyExtractError(this, err))
                                     exitAllMultiSelect(); nav(currentDir)
@@ -321,8 +329,6 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                             if (!opH.await()) return@thread
                             try {
                                 cacheDir.deleteRecursively(); cacheDir.mkdirs()
-                                searchSourceArchive = null; searchSourceFormat = fmt; searchSourceCacheBase = cacheDir
-                                searchSourcePassword = null
                                 // Each archive gets its own subdir so same-named entries
                                 // from different archives never collide; a resolver maps
                                 // every cached path back to (archive, password, out dir).
@@ -334,6 +340,9 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                     val sub = File(cacheDir, src.name)
                                     sub.mkdirs()
                                     for (e in merged.filter { !it.isDirectory && it.path.startsWith("📦 ${src.name}/") }) {
+                                        // 取消检查必须在内层：每个新的 Rust 解压入口都会
+                                        // 重清 CANCEL 标志，不查的话取消后照样解完全部条目。
+                                        if (cancelled) break
                                         val rp = resolveBatchPath(e.path)?.second ?: continue
                                         // Same rules as the Rust safe_join (reject
                                         // ../, absolute, drive letters) + a canonical
@@ -353,11 +362,15 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                         }
                                     }
                                 }
-                                searchSourceResolver = resolver
                                 runOnUiThread {
                                     if (isFinishing || isDestroyed) return@runOnUiThread
                                     prog.dismiss()
                                     if (cancelled) { toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
+                                    // searchSource* 全局只在成功路径赋值：取消/失败时
+                                    // 不能把全局搜索的解析器指向半成品缓存。
+                                    searchSourceArchive = null; searchSourceFormat = fmt; searchSourceCacheBase = cacheDir
+                                    searchSourcePassword = null
+                                    searchSourceResolver = resolver
                                     dlg.dismiss()
                                     globalSearch(cacheDir, tempDir = cacheDir)
                                 }
@@ -426,10 +439,12 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                     if (isFinishing || isDestroyed) return@runOnUiThread
                                     pd2.dismiss()
                                     when {
-                                        ok2 -> toast(getString(R.string.msg_batch_done))
+                                        // 取消不算成功：不能弹「批量完成」，也保留选中
+                                        // 让用户可直接重试（与 compressMerged 策略一致）。
+                                        cancelled -> toast(getString(R.string.msg_cancelled))
+                                        ok2 -> { toast(getString(R.string.msg_batch_done)); exitAllMultiSelect(); nav(currentDir) }
                                         else -> toast(friendlyExtractError(this, err))
                                     }
-                                    exitAllMultiSelect(); nav(currentDir)
                                 }
                             } catch (e: Exception) {
                                 runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd2.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }

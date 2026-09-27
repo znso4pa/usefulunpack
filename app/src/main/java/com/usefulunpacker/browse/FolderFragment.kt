@@ -101,11 +101,16 @@ class FolderFragment : Fragment() {
             act.exitPreview(tab)
             act.viewPager.post { act.convertIso(src, toCso = true) }
         }
+        fun doOpenWorkspace(selectedOnly: Boolean) {
+            act.openWorkspaceFromPreview(tab, selectedOnly)
+        }
         tab.btnPreviewOverflow.setOnClickListener { v ->
             PopupMenu(act, v).apply {
                 menu.add(0, 1, 0, act.getString(R.string.edit_archive)).setOnMenuItemClickListener { doEdit(); true }
                 menu.add(0, 2, 0, act.getString(R.string.zip_manage)).setOnMenuItemClickListener { doZipManage(); true }
                 menu.add(0, 3, 0, act.getString(R.string.action_convert_cso)).setOnMenuItemClickListener { doConvertIso(); true }
+                menu.add(0, 4, 0, act.getString(R.string.ws_open)).setOnMenuItemClickListener { doOpenWorkspace(false); true }
+                menu.add(0, 5, 0, act.getString(R.string.ws_open_selected)).setOnMenuItemClickListener { doOpenWorkspace(true); true }
                 show()
             }
         }
@@ -207,12 +212,17 @@ class FolderFragment : Fragment() {
                             if (f.isDirectory) {
                                 // Count on a worker thread — a huge folder's top
                                 // level can still jank the UI thread on tap.
+                                // Capture the context up front: requireContext()
+                                // after the async gap can throw on a detached
+                                // fragment, and the guard needs isDestroyed too.
+                                val ctx = requireContext()
+                                val act2 = act
                                 thread {
                                     val fileCount = f.listFiles()?.size ?: 0
                                     val eta = fileCount / 200
-                                    activity?.runOnUiThread {
-                                        if (activity?.isFinishing == true) return@runOnUiThread
-                                        AlertDialog.Builder(requireContext())
+                                    act2.runOnUiThread {
+                                        if (act2.isFinishing || act2.isDestroyed) return@runOnUiThread
+                                        AlertDialog.Builder(ctx)
                                             .setTitle(act.getString(R.string.action_file_info))
                                             .setMessage(act.getString(R.string.msg_calc_dir_size_prompt, f.name, fileCount, eta, eta + 3))
                                             .setPositiveButton(act.getString(R.string.calc_size)) { _, _ -> calcDirSize(act, f) }
@@ -238,6 +248,9 @@ class FolderFragment : Fragment() {
             // fragment's view was recreated (swipe far / rebuildPager / rotate);
             // otherwise render the normal browser.
             if (tab.previewActive && tab.previewEntries.isNotEmpty()) {
+                // 预览分支不经过 navTab：必须手动回填路径栏，否则重建出的
+                // 视图停留在 XML 默认文本「/」（预览盖住列表，路径条却暴露）。
+                tab.tvPath.text = tab.currentDir.absolutePath
                 tab.tvPreviewTitle.text = tab.previewSrc?.name ?: ""
                 act2.syncPreview(tab)
                 act2.updatePreviewStats(tab)

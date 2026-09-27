@@ -63,6 +63,10 @@ object OpScheduler {
                 try {
                     @Suppress("PLATFORM_FUNCTION_CALL") gate.wait()
                 } catch (e: InterruptedException) {
+                    // 唤醒时可能已被提升为 RUNNING（promotion 在 wait 返回前完成）。
+                    // 此时照常开跑：返回 false 会让 worker 静默放弃，而槽位 +
+                    // 格式锁只有 release() 能释放——永久泄漏。
+                    if (state == S.RUNNING) return true
                     interruptAbort = true
                     return false
                 }

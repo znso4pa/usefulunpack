@@ -151,9 +151,17 @@ fun detectBestEncoding(data: ByteArray): String? {
  *  huge files (a .log/.csv can be hundreds of MB) without loading it whole. */
 fun readPrefix(file: File, maxBytes: Long): ByteArray {
     if (file.length() <= maxBytes) return file.readBytes()
+    val len = maxBytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     return FileInputStream(file).use { ins ->
-        val buf = ByteArray(maxBytes.toInt())
-        val n = ins.read(buf)
+        val buf = ByteArray(len)
+        // 单次 read(byte[]) 不保证填满缓冲（契约允许短读）——循环读满，
+        // 否则预览/搜索前缀被静默截断。
+        var n = 0
+        while (n < buf.size) {
+            val r = ins.read(buf, n, buf.size - n)
+            if (r < 0) break
+            n += r
+        }
         if (n < buf.size) buf.copyOf(n) else buf
     }
 }

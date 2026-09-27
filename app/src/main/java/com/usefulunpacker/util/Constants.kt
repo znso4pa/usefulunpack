@@ -175,3 +175,7 @@ val EDIT_SCRIPT_EXTS = setOf("ks", "tjs", "csv", "txt", "ini", "cfg", "json", "l
  *  "extreme" size limit never lets a file above this into content search —
  *  a multi-hundred-MB text file would OOM the device. */
 const val CONTENT_SEARCH_MAX = 50L * 1024 * 1024
+
+/** 预览工作区大包保护阈值：超过此大小的整包解压到 cacheDir 需二次确认。
+ *  暂定 200MB，写死常量（设计上可入设置，本轮不做）。 */
+const val WS_SIZE_LIMIT_BYTES = 200L * 1024 * 1024

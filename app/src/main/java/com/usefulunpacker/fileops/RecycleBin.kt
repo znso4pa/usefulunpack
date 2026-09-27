@@ -80,8 +80,12 @@ object RecycleBin {
                 thread {
                     runCatching {
                         val s = scanTree(dest)
-                        meta.put("size", s.size)
-                        File(entryDir, "_meta.json").writeText(meta.toString(2))
+                        // _meta.json 用独立副本写：meta 已被别名进 manifest（裸
+                        // HashMap），在锁外再 put 会与并发 updateManifest/listEntries
+                        // 竞态。manifest 内那份在下方 updateManifest 的锁内更新。
+                        File(entryDir, "_meta.json").writeText(
+                            JSONObject(meta.toString()).put("size", s.size).toString(2)
+                        )
                         updateManifest(dir) { m ->
                             val e = m.getJSONArray("entries")
                             for (i in 0 until e.length()) {
@@ -149,10 +153,15 @@ object RecycleBin {
 
         // A truncated/corrupted meta file must not kill the caller's worker
         // thread (restore runs on a bare thread{} — an uncaught throw there
-        // takes down the process); report as a failed restore instead.
+        // takes down the process); report as a failed restore instead. The
+        // getString reads can also throw (missing key) — same treatment.
         val meta = try { JSONObject(metaFile.readText()) } catch (e: Exception) { return false }
-        val originalPath = File(meta.getString("originalPath"))
-        val originalName = meta.getString("originalName")
+        val originalPath: File
+        val originalName: String
+        try {
+            originalPath = File(meta.getString("originalPath"))
+            originalName = meta.getString("originalName")
+        } catch (e: Exception) { return false }
 
         // Proper component-level check: a path is "inside the recycle bin" only
         // if the recycle base is a real ancestor (string startsWith would mis-flag
@@ -178,12 +187,19 @@ object RecycleBin {
 
             val success = source.renameTo(dest)
             if (!success) {
+                // 跨盘 rename 必失败（bin 在 filesDir，原目录在外部存储），目录
+                // 还原走的是这里：copyTo 对目录直接抛异常 → 文件夹永远还原不
+                // 回来。目录用 copyRecursively；失败时清掉半成品再报失败。
                 return try {
-                    source.copyTo(dest, overwrite = false)
+                    if (source.isDirectory) source.copyRecursively(dest, overwrite = false)
+                    else source.copyTo(dest, overwrite = false)
                     entryDir.deleteRecursively()
                     removeFromManifest(context, entryId)
                     true
-                } catch (e: Exception) { false }
+                } catch (e: Exception) {
+                    dest.deleteRecursively()
+                    false
+                }
             }
 
             entryDir.deleteRecursively()
@@ -216,9 +232,12 @@ object RecycleBin {
         val toRemove = mutableListOf<String>()
 
         for (i in 0 until entries.length()) {
-            val entry = entries.getJSONObject(i)
-            if (entry.getLong("deletedAt") < cutoff) {
-                val id = entry.getString("id")
+            // autoClean runs on a bare thread{} (onResume) — a malformed
+            // manifest entry must skip, not kill the process.
+            val entry = entries.optJSONObject(i) ?: continue
+            val id = runCatching { entry.getString("id") }.getOrNull() ?: continue
+            val deletedAt = runCatching { entry.getLong("deletedAt") }.getOrDefault(0L)
+            if (deletedAt < cutoff) {
                 toRemove.add(id)
                 File(dir, id).deleteRecursively()
             }

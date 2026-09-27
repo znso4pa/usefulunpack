@@ -32,12 +32,16 @@ fun deleteWithProgress(
     val ownerTabId = (activity as? MainActivity)?.activeTab?.tabId
     val card = OpOverlay.addCard(activity, title, cancelLabel = null, onCancelClick = { }, ownerTabId = ownerTabId)
     fun setMessage(text: String) {
-        activity.runOnUiThread { card?.msg?.text = text }
+        activity.runOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            card?.msg?.text = text
+        }
     }
 
     thread {
         if (!OperationLock.acquire()) {
             activity.runOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                 card?.let { OpOverlay.removeCard(activity, it) }
                 Toast.makeText(activity, activity.getString(R.string.msg_op_in_progress), Toast.LENGTH_SHORT).show()
             }
@@ -48,6 +52,7 @@ fun deleteWithProgress(
             // then real file counts once moveToRecycleBin knows its total.
             val moveCb = RecycleBin.MoveProgress { done, total ->
                 activity.runOnUiThread {
+                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                     val c = card ?: return@runOnUiThread
                     if (total > 0) {
                         c.overallBar.isIndeterminate = false
@@ -62,6 +67,7 @@ fun deleteWithProgress(
             for ((idx, t) in targets.withIndex()) {
                 setMessage("[${idx + 1}/${targets.size}] ${t.name.takeLast(40)}")
                 activity.runOnUiThread {
+                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                     val c = card ?: return@runOnUiThread
                     c.overallBar.isIndeterminate = true
                     c.overallBar.progress = 0
@@ -80,6 +86,7 @@ fun deleteWithProgress(
                 }
             }
             activity.runOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                 card?.let { OpOverlay.removeCard(activity, it) }
                 onDone(deleted, failed)
             }

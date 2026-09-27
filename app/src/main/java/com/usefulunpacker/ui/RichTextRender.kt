@@ -193,9 +193,10 @@ fun stripRtf(raw: String): CharSequence {
     // stack so nested groups restore correctly instead of leaking the style.
     val styleStack = ArrayDeque<Pair<Boolean, Boolean>>()
     fun markSpan() {
-        // Close any open style span at the current buffer position.
+        // Close any open style span at the current buffer position. Bold AND
+        // italic can be active together (bold-italic runs) — emit both spans.
         if (bold) spans.add(Triple(spanStart, sb.length, StyleSpan(Typeface.BOLD)))
-        else if (italic) spans.add(Triple(spanStart, sb.length, StyleSpan(Typeface.ITALIC)))
+        if (italic) spans.add(Triple(spanStart, sb.length, StyleSpan(Typeface.ITALIC)))
     }
     fun setStyle(b: Boolean, it: Boolean) {
         markSpan()
@@ -221,6 +222,20 @@ fun stripRtf(raw: String): CharSequence {
                 i++
             }
             c == '\\' && i + 1 < n -> {
+                // \'hh (raw hex byte) — RTF encodes ALL non-ASCII text this
+                // way. The control-word reader below only accepts letters, so
+                // it can never yield cmd=="'"; special-case it first or every
+                // CJK/accented RTF renders as literal 'xx garble.
+                if (raw[i + 1] == '\'') {
+                    if (i + 3 < n) {
+                        val hh = raw.substring(i + 2, i + 4).toIntOrNull(16)
+                        if (hh != null) {
+                            val b = hh.toByte()
+                            sb.append(if (b in 0x20..0x7e) b.toInt().toChar() else ' ')
+                        }
+                    }
+                    i += 4
+                } else {
                 val cmd = StringBuilder()
                 var j = i + 1
                 // Read the control word (letters).
@@ -233,20 +248,23 @@ fun stripRtf(raw: String): CharSequence {
                     (raw[j] == '0' || raw[j] == '1')) {
                     cmd.append(raw[j]); j++
                 }
-                // Optional signed numeric argument.
-                var minus = false
-                if (j < n && (raw[j] == '-' || raw[j] == '+')) { minus = raw[j] == '-'; j++ }
+                // Optional signed numeric argument (remember where digits start
+                // — a '+'/'-' sign consumed here must not end up inside the
+                // \uN substring, or toIntOrNull fails and the char is dropped).
+                if (j < n && (raw[j] == '-' || raw[j] == '+')) { j++ }
+                val digitsStart = j
                 while (j < n && raw[j].isDigit()) { j++ }
                 when (cmd.toString()) {
                     // Style toggles: close the previous run, flip, reopen.
-                    "b" -> setStyle(true, false)
-                    "i" -> setStyle(false, true)
+                    // \b / \i only touch their OWN flag (bold-italic coexists).
+                    "b" -> setStyle(true, italic)
+                    "i" -> setStyle(bold, true)
                     "b0" -> setStyle(false, italic)
                     "b1" -> setStyle(true, italic)
                     "i0" -> setStyle(bold, false)
                     "i1" -> setStyle(bold, true)
                     "u" -> {
-                        val num = raw.substring(if (minus) i + 3 else i + 2, j).toIntOrNull()
+                        val num = raw.substring(digitsStart, j).toIntOrNull()
                         if (num != null) {
                             val ch = (num and 0xFFFF).toChar()
                             if (ch != '\uFFFD') sb.append(ch)
@@ -255,20 +273,10 @@ fun stripRtf(raw: String): CharSequence {
                     }
                     "par", "line", "page" -> sb.append('\n')
                     "tab" -> sb.append('\t')
-                    "'" -> {
-                        // \'hh : single raw byte (hex)
-                        if (j + 2 <= n) {
-                            val hh = raw.substring(j, j + 2).toIntOrNull(16)
-                            if (hh != null) {
-                                val b = hh.toByte()
-                                sb.append(if (b in 0x20..0x7e) b.toInt().toChar() else ' ')
-                            }
-                            j += 2
-                        }
-                    }
                     else -> { /* drop other control words */ }
                 }
                 i = j
+                }
             }
             else -> { sb.append(c); i++ }
         }

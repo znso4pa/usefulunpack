@@ -501,4 +501,14 @@
     <string name="scanned_items">項目</string>
     <string name="error_not_supported_ext">非対応</string>
     <string name="search_hint">ファイル名を検索…</string>
+
+    <!-- プレビューワークスペース（ウィンドウで開く） -->
+    <string name="ws_open">ウィンドウで開く</string>
+    <string name="ws_open_selected">選択項目をワークスペースとして開く</string>
+    <string name="ws_size_confirm">このアーカイブをワークスペースに展開すると約 %1$s 必要です。続行しますか？</string>
+    <string name="ws_cleanup_prompt">ワークスペースのキャッシュも削除しますか？</string>
+    <string name="ws_tab_title">📦 %1$s</string>
+
+    <string name="zip_invalid_entry_name">項目名に「|」は使えません</string>
+    <string name="msg_empty_archive">このアーカイブは空です</string>
 </resources>

@@ -27,7 +27,13 @@ internal fun MainActivity.toggleMultiSelect(f: File) = toggleMultiSelect(activeT
 internal fun MainActivity.toggleMultiSelect(tab: TabState, f: File) { if (tab.multiSelected.contains(f)) tab.multiSelected.remove(f) else tab.multiSelected.add(f); refreshMultiSelectUI(tab); syncAllTabAdapters() }
 
 internal fun MainActivity.exitMultiSelect() = exitMultiSelect(activeTab)
-internal fun MainActivity.exitMultiSelect(tab: TabState) { tab.multiSelectMode = false; tab.multiSelected.clear(); syncMultiBar(tab) }
+internal fun MainActivity.exitMultiSelect(tab: TabState) {
+    tab.multiSelectMode = false; tab.multiSelected.clear(); syncMultiBar(tab)
+    // 契约：globalMultiSelectMode 仅在「还有任意 tab 有选中项」时保持。
+    // 导航退出本 tab 的多选后若无人再选中，必须关掉全局会话，否则切 tab
+    // 会带着空选中反复自动进入多选模式。
+    globalMultiSelectMode = tabs.any { it.multiSelected.isNotEmpty() }
+}
 
 /** 清空所有 tab 的多选状态。 */
 internal fun MainActivity.exitAllMultiSelect() {
@@ -110,6 +116,9 @@ internal fun MainActivity.syncMultiBar(tab: TabState) {
 /** 同步所有 tab 的 adapter 选择状态（非活跃 tab 也刷新 checkbox）。 */
 internal fun MainActivity.syncAllTabAdapters() {
     for (t in tabs) {
+        // viewsBound 守卫：新开 tab / picker tab 的 fragment 视图可能尚未创建，
+        // listFiles 是 lateinit——直接解引用必崩（多选中点「+」即可触发）。
+        if (!t.viewsBound) continue
         (t.listFiles.adapter as? FileAdapter)?.multiSelected_ = if (t.multiSelectMode) t.multiSelected else emptySet()
         t.listFiles.invalidateViews()
     }

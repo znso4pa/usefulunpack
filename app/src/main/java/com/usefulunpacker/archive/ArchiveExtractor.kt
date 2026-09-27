@@ -353,10 +353,11 @@ fun tryExtractWithPassword(
         }
         val finalResult = result
         activity.runOnUiThread {
-            prog?.dismiss()
             // Activity died while the extraction ran (rotate/back) — showing
             // dialogs on a dead window token would crash (BadTokenException).
+            // Guard FIRST, dismiss after (project invariant).
             if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            prog?.dismiss()
             if (cancelled) { onCancel(); return@runOnUiThread }
             val ok = finalResult?.counts?.ok ?: false
             if (ok) { onResult(finalResult!!) }
@@ -400,8 +401,8 @@ fun tryExtractWithPassword(
                                     }
                                 }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
                                 activity.runOnUiThread {
-                                    prog2?.dismiss()
                                     if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                                    prog2?.dismiss()
                                     if (cancelled2) onCancel()
                                     else onResult(outcome2)
                                 }

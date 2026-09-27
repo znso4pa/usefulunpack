@@ -50,7 +50,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                         val tmpDir = File(cacheDir, "batch_compress/$safeName")
                         // Lock first, then the progress dialog (see extractAll);
                         // busy just queues — position/ETA show in the dialog.
-                        val opH = tryStartOperation(this, fmt)
+                        val opH = tryStartOperation(this, if (fmt == "pf6") "pfs" else fmt)
                         var cancelled = false
                         val accessors = compressAccessors(fmt)
                         val pd = PollingProgressDialog(
@@ -152,7 +152,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                 val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                 val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
                 // Lock first, then the progress dialog (see extractAll).
-                val opH = tryStartOperation(this, fmt)
+                val opH = tryStartOperation(this, if (fmt == "pf6") "pfs" else fmt)
                 var cancelled = false
                 val accessors = compressAccessors(fmt)
                 val pd = PollingProgressDialog(

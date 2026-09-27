@@ -26,6 +26,12 @@
   校验强化（index_size 越界 + index_count×16 上限，过滤 3 字节魔数文本碰撞），
   Kotlin 侧 ARCHIVE_LABELS 补 PF6/PF8 → pfs 路由 + NEEDS_CARVE 补 pfs；
   cargo test --workspace 全绿
+- **二轮 debug**：调度 key 归并漏网三处补齐（BatchCompress 合并/分别 +
+  PreviewFlow 合并回包的 `tryStartOperation` 此前仍传裸 "pf6"，并行 pf8/pf6
+  封包会互相污染进度）；PF6 writer index_size u32 溢出护栏（超 4GB 索引明确
+  报错而非静默截断）+ file_offset 起点 checked_add；回环测试补日文文件名
+  （SHIFT_JIS 路径编码路径）与 0 字节条目；合并回包的 `-cn.pfs` 翻译命名
+  惯例保留不动（root.pfs 化只作用于"打包产物"，编辑回包走翻译工作流语义）
 
 ---
 

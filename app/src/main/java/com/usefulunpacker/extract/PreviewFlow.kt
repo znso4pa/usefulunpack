@@ -845,7 +845,7 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
     val parent = src.parentFile ?: return
     val ext = src.extension.ifEmpty { format }
     val outF = uniqueFile(parent, "${src.nameWithoutExtension}-cn.$ext")
-    val opH = tryStartOperation(this, format)
+    val opH = tryStartOperation(this, if (format == "pf6") "pfs" else format)
     var cancelled = false
     val accessors = compressAccessors(format)
     val prog = PollingProgressDialog(

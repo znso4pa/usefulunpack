@@ -295,13 +295,19 @@ fn create_pf6(input: &str, output: &str) -> Result<u32, String> {
 
     let count = entries.len() as u32;
     let fileentry_size: usize = entries.iter().map(|(p, _, _)| p.len() + 16).sum();
-    let index_size = (4 + fileentry_size + 4 + (count as usize + 1) * 8 + 4) as u32;
+    let index_size64 = 4 + fileentry_size + 4 + (count as usize + 1) * 8 + 4;
+    if index_size64 > u32::MAX as usize {
+        return Err(format!("PF6 index too large: {index_size64} bytes (u32 overflow)"));
+    }
+    let index_size = index_size64 as u32;
     let mut header: Vec<u8> = Vec::with_capacity(PF6_INDEX_DATA_START + index_size as usize);
     header.extend_from_slice(PF6_MAGIC);
     header.extend_from_slice(&index_size.to_le_bytes());
     header.extend_from_slice(&count.to_le_bytes());
 
-    let mut file_offset: u32 = index_size + PF6_INDEX_DATA_START as u32;
+    let mut file_offset: u32 = index_size
+        .checked_add(PF6_INDEX_DATA_START as u32)
+        .ok_or_else(|| "PF6 index too large".to_string())?;
     let mut filesize_offsets: Vec<u64> = Vec::new();
     for (name, _, size) in &entries {
         let size = *size as u32;
@@ -467,6 +473,8 @@ mod tests {
         std::fs::create_dir_all(dir.join("sub/bg")).unwrap();
         std::fs::create_dir_all(dir.join("script")).unwrap();
         std::fs::write(dir.join("script/init.tjs"), b"// pf6 test\n").unwrap();
+        std::fs::write(dir.join("script/詩音ルート.txt"), "日本語セーブデータ".as_bytes()).unwrap();
+        std::fs::write(dir.join("empty.dat"), b"").unwrap();
         let big: Vec<u8> = (0..5_500_000u32).map(|i| (i % 251) as u8).collect();
         std::fs::write(dir.join("sub/bg/large.png"), &big).unwrap();
         std::fs::write(dir.join("sub/skip_me.mp4"), b"unencrypted-extension").unwrap();
@@ -482,11 +490,15 @@ mod tests {
         let paths: Vec<String> = archive.entries()
             .map(|e| e.path().to_string_lossy().replace('\\', "/")).collect();
         assert!(paths.contains(&"script/init.tjs".to_string()), "{paths:?}");
+        assert!(paths.contains(&"script/詩音ルート.txt".to_string()), "{paths:?}");
+        assert!(paths.contains(&"empty.dat".to_string()), "{paths:?}");
         assert!(paths.contains(&"sub/bg/large.png".to_string()), "{paths:?}");
         let out = dir.join("out");
         let out_dir = out.clone();
         archive.extract_all(&out_dir).unwrap();
         assert_eq!(std::fs::read(out.join("script/init.tjs")).unwrap(), b"// pf6 test\n");
+        assert_eq!(std::fs::read(out.join("script/詩音ルート.txt")).unwrap(), "日本語セーブデータ".as_bytes());
+        assert_eq!(std::fs::read(out.join("empty.dat")).unwrap(), b"");
         assert_eq!(std::fs::read(out.join("sub/bg/large.png")).unwrap(), big);
         assert_eq!(std::fs::read(out.join("sub/skip_me.mp4")).unwrap(), b"unencrypted-extension");
         std::fs::remove_dir_all(&dir).ok();

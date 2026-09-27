@@ -38,6 +38,7 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
         // If this tab's fragment hasn't bound its views yet (e.g. right after
         // startup addTab), just record the directory — the fragment re-renders
         // on creation via viewsBound.
+        val prevDir = tab.currentDir
         tab.currentDir = dir
         if (!tab.viewsBound) return
         // Leave an in-tab preview if we're navigating this tab elsewhere.
@@ -50,10 +51,15 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
             tab.previewExpanded.clear()
         }
         tab.previewRoot.visibility = View.GONE
-        // Clear any leftover multi-select when navigating away — otherwise the
-        // batch bar persists and the selection mixes files from old dirs
-        // (batch delete could target files the user can no longer see).
-        if (tab.multiSelectMode) exitMultiSelect(tab)
+        // Clear any leftover multi-select when navigating to a DIFFERENT
+        // directory — otherwise the batch bar persists and the selection mixes
+        // files from old dirs (batch delete could target files the user can no
+        // longer see). Same-dir calls must NOT clear: onCreateView re-renders
+        // (rebuildPager from addTab/openWorkspaceTab/closeTab recreates every
+        // fragment) and FileObserver debounce refreshes both call navTab with
+        // the SAME dir — clearing there would wipe cross-tab selections on
+        // every tab open/close and every auto-refresh.
+        if (tab.multiSelectMode && prevDir != dir) exitMultiSelect(tab)
         tab.selectedFile = null
         tab.bottomBar.visibility = View.GONE
         tab.fabExtract.visibility = View.GONE
@@ -95,6 +101,7 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
             }
             val adapter = FileAdapter(this, files, bookmarks, { path -> if (bookmarks.contains(path)) bookmarks.remove(path) else bookmarks.add(0, path); saveBookmarks() }, df)
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 // Stale-navigation guard: if the user navigated this tab to another
                 // dir while the background scan was running, don't overwrite.
                 if (tab.currentDir != dir) return@runOnUiThread
@@ -111,6 +118,7 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
                 val pw = archives.filter { isPasswordProtected(it) }.map { it.absolutePath }.toSet()
                 if (pw.isNotEmpty()) {
                     runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
                         if (tab.listFiles.adapter === adapter) {
                             adapter.passwordProtected = pw
                             adapter.notifyDataSetChanged()
@@ -374,7 +382,10 @@ private fun MainActivity.installViaPackageInstaller(f: File) {
             } finally {
                 session.close()
             }
-            runOnUiThread { pd.dismiss() }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                pd.dismiss()
+            }
         } catch (e: SecurityException) {
             // REQUEST_INSTALL_PACKAGES not granted — guide the user to settings.
             runOnUiThread {

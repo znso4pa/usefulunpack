@@ -34,9 +34,10 @@ private fun convertImage(activity: AppCompatActivity, file: File, targetFmt: Str
     val pd = android.app.ProgressDialog(activity)
     pd.setMessage(activity.getString(R.string.msg_loading)); pd.setCancelable(false); pd.show()
     thread {
-        val triple = runCatching {
-            var bmp = decodeBitmapCapped(file, IMG_CONVERT_MAX_PX)
-                ?: return@runCatching Triple<Bitmap?, Bitmap.CompressFormat, Int>(null, Bitmap.CompressFormat.PNG, 100)
+        // 先在后台把成品压到缓存临时文件：目录选择可能被取消——此前取消时
+        // 解码出的位图(≤64MB)会一直滞留等 GC。现在选完目录只是搬移成品。
+        val temp: File? = runCatching {
+            var bmp = decodeBitmapCapped(file, IMG_CONVERT_MAX_PX) ?: return@runCatching null
             // JPEG has no alpha: composite onto white so transparent PNG/WebP
             // areas don't turn black in the converted copy.
             if (targetFmt == "jpg" && bmp.hasAlpha()) {
@@ -52,13 +53,15 @@ private fun convertImage(activity: AppCompatActivity, file: File, targetFmt: Str
                 else -> if (android.os.Build.VERSION.SDK_INT >= 30) Bitmap.CompressFormat.WEBP_LOSSLESS else Bitmap.CompressFormat.WEBP
             }
             val quality = if (targetFmt == "png" || targetFmt == "webp") 100 else 90
-            Triple(bmp, format, quality)
-        }.getOrDefault(Triple(null, Bitmap.CompressFormat.PNG, 100))
-        val bmp = triple.first; val format = triple.second; val quality = triple.third
+            val tmp = File(activity.cacheDir, "img_convert_${file.nameWithoutExtension}_${System.currentTimeMillis()}.$targetFmt")
+            val ok = java.io.FileOutputStream(tmp).use { bmp.compress(format, quality, it) }
+            bmp.recycle()
+            if (ok) tmp else { tmp.delete(); null }
+        }.getOrNull()
         activity.runOnUiThread {
             if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
             pd.dismiss()
-            if (bmp == null) {
+            if (temp == null) {
                 Toast.makeText(activity, activity.getString(R.string.msg_cannot_decode), Toast.LENGTH_SHORT).show()
                 return@runOnUiThread
             }
@@ -66,10 +69,9 @@ private fun convertImage(activity: AppCompatActivity, file: File, targetFmt: Str
                 val outF = uniqueFile(dir, "${file.nameWithoutExtension}.$targetFmt")
                 thread {
                     val ok = runCatching {
-                        java.io.FileOutputStream(outF).use { bmp.compress(format, quality, it) }
+                        java.nio.file.Files.move(temp.toPath(), outF.toPath())
                         true
-                    }.getOrDefault(false)
-                    bmp.recycle()
+                    }.getOrDefault(false).also { if (!it) temp.delete() }
                     activity.runOnUiThread {
                         if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                         if (ok) Toast.makeText(activity, activity.getString(R.string.img_edit_saved, outF.name), Toast.LENGTH_LONG).show()

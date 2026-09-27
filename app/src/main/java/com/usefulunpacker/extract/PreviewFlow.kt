@@ -36,7 +36,7 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
             val pwDetected = format in setOf("zip", "7z", "rar") && isPasswordProtected(src)
             if (pwDetected) {
                 val entered = promptPasswordSync(this)
-                if (entered == null) { runOnUiThread { if (!isFinishing) pd.dismiss() }; return@thread }
+                if (entered == null) { runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss() }; return@thread }
                 pwd = entered
             }
             val json = try { when(format) { "xp3" -> Xp3Core.xp3ListEntries(src.absolutePath)
@@ -58,8 +58,8 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
                 "tar" -> TarCore.tarListEntries(src.absolutePath)
                 else -> null
             } } catch (_: Exception) { null }
-            runOnUiThread { if (!isFinishing) pd.dismiss() }
-            if (json == null || json == "[]") {
+            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss() }
+            if (json == null) {
                 val msg = if (format in setOf("zip", "7z", "rar")) getString(R.string.err_cannot_read_maybe_pwd) else getString(R.string.msg_cannot_read)
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
@@ -71,6 +71,15 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
                         .setPositiveButton(getString(R.string.title_select_format)) { _, _ -> extract() }
                         .setNegativeButton(getString(R.string.action_cancel), null)
                         .show()
+                }
+                return@thread
+            }
+            if (json == "[]") {
+                // 合法但空的归档不是读取失败：不弹「无法读取/可能需要密码」，
+                // 直接提示为空，避免误导用户去试格式选择器。
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    toast(getString(R.string.msg_empty_archive))
                 }
                 return@thread
             }
@@ -168,15 +177,12 @@ internal fun MainActivity.previewSearch(tab: TabState) {
     thread {
         if (!opH.await()) return@thread
         try {
-            val cacheDir = File(cacheDir, "archive_search/${src.nameWithoutExtension}")
+            val cacheDir = File(cacheDir, "archive_search/${src.nameWithoutExtension}_${src.parentFile?.absolutePath?.hashCode()?.toString(16) ?: "root"}")
             cacheDir.deleteRecursively()
             cacheDir.mkdirs()
-            searchSourceArchive = src; searchSourceFormat = format
-            searchSourceCacheBase = cacheDir
-            searchSourcePassword = pwd
-            searchSourceResolver = null
             // Phase 1: touch placeholders for ALL entries (fast filename search).
             for (e in entries) {
+                if (cancelled) break
                 if (e.isDirectory) continue
                 val rel = sanitizeEntryPath(e.path) ?: continue
                 val f = File(cacheDir, rel)
@@ -189,6 +195,9 @@ internal fun MainActivity.previewSearch(tab: TabState) {
                 extractByFormat(format, src.path, cacheDir.path, "", prefs, pwd)
             } else {
                 for (e in entries) {
+                    // 内层必须查 cancelled：每个新的 Rust 解压入口都会重清 CANCEL
+                    // 标志，不查的话取消后照样解完剩余文本条目。
+                    if (cancelled) break
                     if (e.isDirectory) continue
                     val rel = sanitizeEntryPath(e.path) ?: continue
                     val ext = e.path.substringAfterLast('.').lowercase()
@@ -203,6 +212,10 @@ internal fun MainActivity.previewSearch(tab: TabState) {
                 // Keep the in-tab preview alive: search opens on top, and closing
                 // it returns to the preview (selection/expansion preserved on the
                 // TabState). No exitPreview here.
+                searchSourceArchive = src; searchSourceFormat = format
+                searchSourceCacheBase = cacheDir
+                searchSourcePassword = pwd
+                searchSourceResolver = null
                 globalSearch(cacheDir, tempDir = cacheDir)
             }
         } catch (e: Exception) {
@@ -352,7 +365,7 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
             scaleType = ImageView.ScaleType.FIT_XY
             layoutParams = LinearLayout.LayoutParams(64, 48)
             setOnClickListener {
-                val cacheDir = File(cacheDir, "archive_search/${src.nameWithoutExtension}")
+                val cacheDir = File(cacheDir, "archive_search/${src.nameWithoutExtension}_${src.parentFile?.absolutePath?.hashCode()?.toString(16) ?: "root"}")
                 // Lock first, then the dual progress dialog (the text-extraction
                 // phase reports byte progress); the work dir is cleared INSIDE
                 // the lock so a queued second search can't nuke a running one.
@@ -375,12 +388,9 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                     try {
                         cacheDir.deleteRecursively()
                         cacheDir.mkdirs()
-                        searchSourceArchive = src; searchSourceFormat = format
-                        searchSourceCacheBase = cacheDir
-                        searchSourcePassword = pwd
-                        searchSourceResolver = null
                         // Phase 1: touch empty placeholder files for ALL entries (fast, for filename search)
                         for (e in entries) {
+                            if (cancelled) break
                             if (e.isDirectory) continue
                             // Same rules as the Rust safe_join: reject ../
                             // absolute paths / drive letters before touching
@@ -400,6 +410,8 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                             extractByFormat(format, src.path, cacheDir.path, "", prefs, pwd)
                         } else {
                             for (e in entries) {
+                                // 内层必须查 cancelled：每个新的 Rust 入口都会重清 CANCEL 标志。
+                                if (cancelled) break
                                 if (e.isDirectory) continue
                                 val rel = sanitizeEntryPath(e.path) ?: continue
                                 val ext = e.path.substringAfterLast('.').lowercase()
@@ -411,6 +423,12 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                             if (isFinishing || isDestroyed) return@runOnUiThread
                             prog.dismiss()
                             if (cancelled) { toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
+                            // searchSource* 只在成功路径赋值：取消/失败不得污染
+                            // 全局搜索的归档源/解析器映射。
+                            searchSourceArchive = src; searchSourceFormat = format
+                            searchSourceCacheBase = cacheDir
+                            searchSourcePassword = pwd
+                            searchSourceResolver = null
                             dlg.dismiss()
                             globalSearch(cacheDir, tempDir = cacheDir)
                         }
@@ -652,6 +670,9 @@ internal fun MainActivity.mergeIntoArchive(
     val stageDir = File(cacheDir, "merge/${target.nameWithoutExtension}")
     var cancelled = false
     val accessors = extractAccessors(targetFmt)
+    // 重封包阶段由压缩进度静态驱动，取消标志是另一份——不一起点火的话，
+    // 重包期间点取消是空操作，-cn 文件照样生成却提示「已取消」。
+    val compressAcc = compressAccessors(targetFmt)
     // Built once a scheduler handle exists (see runOnUiThread below) so the
     // dialog can render its queued state.
     lateinit var prog: PollingProgressDialog
@@ -677,7 +698,7 @@ internal fun MainActivity.mergeIntoArchive(
                 accessors,
                 { n, b, t -> extractProgressMessage(this, n, b, t) },
                 getString(R.string.action_cancel),
-                { cancelled = true; accessors.cancel() },
+                { cancelled = true; accessors.cancel(); compressAcc.cancel() },
                 opH,
                 ownerTab
             )
@@ -699,14 +720,14 @@ internal fun MainActivity.mergeIntoArchive(
                     // 3. Repack into a -cn copy (never overwrite the original target).
                     val ok = compressDispatch(stageDir, outF, targetFmt, prefs.getInt("generic_level", 6), "", prefs)
                     runOnUiThread {
-                        prog.dismiss()
                         if (isFinishing || isDestroyed) return@runOnUiThread
+                        prog.dismiss()
                         if (cancelled) toast(getString(R.string.msg_cancelled))
                         else if (ok) toast(getString(R.string.merge_done, outF.name))
                         else toast(getString(R.string.title_compress_failed))
                     }
                 } catch (e: Exception) {
-                    runOnUiThread { prog.dismiss(); if (!(isFinishing || isDestroyed)) toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                    runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
                 } finally {
                     stageDir.deleteRecursively()
                     opH.release()
@@ -763,8 +784,8 @@ internal fun MainActivity.startEditArchive(src: File, format: String, pwd: Strin
                 .sortedBy { it.name.lowercase() }
                 .toList()
             runOnUiThread {
-                prog.dismiss()
                 if (isFinishing || isDestroyed) return@runOnUiThread
+                prog.dismiss()
                 if (cancelled) { OpenArchiveRegistry.unregister(openKey); toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
                 if (!o.counts.ok) { OpenArchiveRegistry.unregister(openKey); toast(friendlyExtractError(act, o.error)); return@runOnUiThread }
                 if (scripts.isEmpty()) { OpenArchiveRegistry.unregister(openKey); toast(getString(R.string.edit_no_scripts)); return@runOnUiThread }
@@ -772,7 +793,7 @@ internal fun MainActivity.startEditArchive(src: File, format: String, pwd: Strin
             }
         } catch (e: Exception) {
             OpenArchiveRegistry.unregister(openKey)
-            runOnUiThread { prog.dismiss(); if (!(isFinishing || isDestroyed)) toast(getString(R.string.err_extract_io, e.message ?: "")) }
+            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
             opH.release()
         }
@@ -877,8 +898,10 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
                     toast(getString(R.string.msg_cancelled))
                 },
                 onResult = { o ->
+                    // 失败也要清残留：zip/7z/rar 分支清了，非 zip 分支不清会让
+                    // 半成品目录留在归档旁。
                     if (o.counts.ok) { showExtractSuccess(src.name, out.name, o.counts); navTab(ownerTab, ownerTab.currentDir) }
-                    else toast(friendlyExtractError(this, o.error))
+                    else { cleanupCancelledOutput(out, existedBefore); toast(friendlyExtractError(this, o.error)) }
                 },
                 ownerTab = ownerTab
             )
@@ -928,8 +951,8 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
                         val result = doSel(pwd)
                         val ok = result.counts.ok
                         runOnUiThread {
-                            prog.dismiss()
                             if (isFinishing || isDestroyed) return@runOnUiThread
+                            prog.dismiss()
                             if (cancelled) { cleanupCancelledOutput(out, existedBefore); toast(getString(R.string.msg_cancelled)) }
                             else if (ok) { showExtractSuccess(src.name, out.name, result.counts); navTab(ownerTab, ownerTab.currentDir) }
                             else {
@@ -946,19 +969,32 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
                                     .setView(inp)
                                     .setPositiveButton(getString(R.string.retry)) { _, _ ->
                                         val p2 = inp.text.toString()
-                                        // Scheduler handle instead of the old raw
-                                        // acquire: busy now means queued, never a
-                                        // silent swallow of the tap. No dialog here,
-                                        // so the op simply starts when its turn comes.
                                         val opH2 = tryStartOperation(this, format)
+                                        // 重试也走进度卡：此前重试完全隐身且不可取消，
+                                        // 大包重试期间用户毫无反馈。
+                                        var cancelled2 = false
+                                        val accessors2 = extractAccessors(format)
+                                        val prog2 = PollingProgressDialog(
+                                            this,
+                                            "${src.name} → ${out.name}",
+                                            accessors2,
+                                            { n, b, t -> extractProgressMessage(this, n, b, t) },
+                                            getString(R.string.action_cancel),
+                                            { cancelled2 = true; accessors2.cancel() },
+                                            opH2,
+                                            ownerTab
+                                        )
+                                        prog2.start()
                                         thread {
                                             if (!opH2.await()) return@thread
                                             try {
                                                 val o2 = doSel(p2)
                                                 runOnUiThread {
                                                     if (isFinishing || isDestroyed) return@runOnUiThread
-                                                    if (o2.counts.ok) { showExtractSuccess(src.name, out.name, o2.counts); navTab(ownerTab, ownerTab.currentDir) }
-                                                    else toast(friendlyExtractError(this, o2.error))
+                                                    prog2.dismiss()
+                                                    if (cancelled2) { cleanupCancelledOutput(out, existedBefore); toast(getString(R.string.msg_cancelled)) }
+                                                    else if (o2.counts.ok) { showExtractSuccess(src.name, out.name, o2.counts); navTab(ownerTab, ownerTab.currentDir) }
+                                                    else { cleanupCancelledOutput(out, existedBefore); toast(friendlyExtractError(this, o2.error)) }
                                                 }
                                             } finally {
                                                 opH2.release()
@@ -1026,6 +1062,8 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
             thread {
                 val needsPw = isPasswordProtected(archive)
                 runOnUiThread {
+                    // 密码嗅探可达数秒，期间用户可能已退出——弹窗前必须守卫。
+                    if (isFinishing || isDestroyed) return@runOnUiThread
                     if (needsPw && pwd.isEmpty()) {
                         // No password yet (archive opened via a path that didn't prompt) — ask first.
                         showPasswordDialog(this, format, archive.path, cacheDir.path, entry.path, showProgress = true,
@@ -1042,7 +1080,8 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
             }
         } else {
             tryExtractWithPassword(this, format, archive.path, cacheDir.path, entry.path, prefs, showProgress = true, initialPassword = pwd,
-                onResult = { o -> if (o.counts.ok) openPreview() else toast(friendlyExtractError(this, o.error)) }
+                onResult = { o -> if (o.counts.ok) openPreview() else toast(friendlyExtractError(this, o.error)) },
+                ownerTab = ownerTab
             )
         }
     }
@@ -1089,8 +1128,11 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
         tryExtractWithPassword(this, parentFmt, archive.path, outDir.path, entry.path, prefs,
             showProgress = true, initialPassword = parentPwd,
             onResult = { o ->
-            if (!o.counts.ok) { toast(friendlyExtractError(this, o.error)); return@tryExtractWithPassword }
+            // 每个晚到的失败路径都要清掉已解出的嵌套包：cacheDir/nested 无任何
+            // 其他清理机制，漏删就是永久孤儿（直到系统清缓存）。
+            if (!o.counts.ok) { outDir.deleteRecursively(); toast(friendlyExtractError(this, o.error)); return@tryExtractWithPassword }
             if (!extracted.exists()) {
+                outDir.deleteRecursively()
                 toast(getString(R.string.err_preview_unsupported, ""))
                 return@tryExtractWithPassword
             }
@@ -1099,16 +1141,26 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
             thread {
                 val entries = listPreviewEntries(nestedFmt, extracted, "")
                 runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (isFinishing || isDestroyed) { outDir.deleteRecursively(); return@runOnUiThread }
                     if (entries.isNullOrEmpty()) {
+                        outDir.deleteRecursively()
                         toast(getString(R.string.err_cannot_read_maybe_pwd))
                         return@runOnUiThread
                     }
                     val before = tabs.size
                     addTab()
-                    if (tabs.size == before) return@runOnUiThread  // max tabs reached
+                    if (tabs.size == before) { outDir.deleteRecursively(); return@runOnUiThread  // max tabs reached
+                    }
                     val newTab = tabs.last()
-                    OpenArchiveRegistry.register(openKey, newTab)
+                    // 与 previewArchive 相同的注册竞态处理：抢注失败（他窗已持
+                    // 同键）则不渲染，关掉刚开的空窗并清理。
+                    if (!OpenArchiveRegistry.register(openKey, newTab)) {
+                        val winner = OpenArchiveRegistry.owner(openKey)
+                        closeTab(newTab)
+                        outDir.deleteRecursively()
+                        if (winner != null) toast(getString(R.string.msg_archive_open_in_tab, tabTitle(winner)))
+                        return@runOnUiThread
+                    }
                     renderPreview(newTab, extracted, entries, nestedFmt, "", openKey)
                 }
             }
@@ -1150,12 +1202,17 @@ internal fun MainActivity.cleanupZipModifyArtifacts(archive: File) {
  */
 internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, newContent: File, pwd: String = "", ownerTab: TabState = activeTab) {
     if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
+    // Rust 侧按 split('|') 解析操作串：条目名带 '|' 会错切路径（错删别的条目/
+    // 写入垃圾路径），必须拒绝。
+    if (entry.path.contains('|')) { toast(getString(R.string.zip_invalid_entry_name)); return }
     val opH = tryStartOperation(this, "zip")
     val parent = archive.parentFile ?: cacheDir
-    val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
-    val tmp = File(parent, "${archive.nameWithoutExtension}.mod.zip")
     thread {
         if (!opH.await()) return@thread
+        // outF/tmp 在拿到槽位后再解析：排队中的第二次编辑若在入队时解析，
+        // 会与第一次解析出同一个 -cn 输出名，后完成者覆盖先完成者（编辑丢失）。
+        val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
+        val tmp = File(parent, "${archive.nameWithoutExtension}.mod.zip")
         try {
             val ok = ZipCore.zipModify("", archive.path, tmp.path,
                 "replace|${entry.path}|${newContent.path}", pwd)
@@ -1189,13 +1246,15 @@ internal fun MainActivity.zipReplaceEntry(archive: File, entry: ArchiveEntry, ne
 internal fun MainActivity.zipDeleteEntries(archive: File, paths: List<String>, pwd: String = "", ownerTab: TabState = activeTab) {
     if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
     if (paths.isEmpty()) { toast(getString(R.string.msg_select_one)); return }
+    // '|' 会错切 delete 操作串（Rust split('|')），错删别的条目——拒绝。
+    if (paths.any { it.contains('|') }) { toast(getString(R.string.zip_invalid_entry_name)); return }
     val opH = tryStartOperation(this, "zip")
     val parent = archive.parentFile ?: cacheDir
-    val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
-    val tmp = File(parent, "${archive.nameWithoutExtension}.del.zip")
     val ops = paths.joinToString("\n") { "delete|$it" }
     thread {
         if (!opH.await()) return@thread
+        val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip") // 拿到槽位后再解析，防排队互相覆盖
+        val tmp = File(parent, "${archive.nameWithoutExtension}.del.zip")
         try {
             val ok = ZipCore.zipModify("", archive.path, tmp.path, ops, pwd)
             runOnUiThread {
@@ -1227,11 +1286,13 @@ internal fun MainActivity.zipAddEntry(archive: File, entryName: String, srcFile:
     if (isMultiDiskZipArchive(archive)) { toast(getString(R.string.zip_multi_disk_no_edit)); return }
     val opH = tryStartOperation(this, "zip")
     val parent = archive.parentFile ?: cacheDir
-    val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
-    val tmp = File(parent, "${archive.nameWithoutExtension}.add.zip")
     val safeName = entryName.replace('\\', '/').trim('/')
+    // 用户输入的新条目名带 '|' 会错切 add 操作串（路径/源路径错位）——拒绝。
+    if (safeName.contains('|')) { toast(getString(R.string.zip_invalid_entry_name)); return }
     thread {
         if (!opH.await()) return@thread
+        val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip") // 拿到槽位后再解析，防排队互相覆盖
+        val tmp = File(parent, "${archive.nameWithoutExtension}.add.zip")
         try {
             val ok = ZipCore.zipModify("", archive.path, tmp.path,
                 "add|$safeName|${srcFile.path}", pwd)

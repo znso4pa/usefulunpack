@@ -44,7 +44,9 @@ internal fun MainActivity.convertIso(src: File, toCso: Boolean, ownerTab: TabSta
                     toast(getString(R.string.msg_cancelled))
                 } else if (ok) {
                     toast(getString(R.string.msg_convert_done, outFile.name))
-                    nav(currentDir)
+                    // 刷拥有该操作的窗口，而不是瞬时的活跃窗口——长转换期间
+                    // 用户切窗后结果要出现在发起它的那个 tab 里。
+                    refreshTab(ownerTab)
                 } else {
                     outFile.delete()
                     toast(getString(R.string.title_convert_failed))

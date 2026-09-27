@@ -651,17 +651,23 @@ internal fun MainActivity.applyBackgroundImage(uri: Uri) {
                 val root = findViewById<View>(R.id.root) ?: return@thread
                 val alpha = prefs.getInt("bg_image_alpha", 20).coerceIn(1, 100)
                 runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
                     val rw = root.width; val rh = root.height
                     if (rw <= 0 || rh <= 0) return@runOnUiThread
                     val bmpW = bmp.width; val bmpH = bmp.height
                     val scale = maxOf(rw.toFloat() / bmpW, rh.toFloat() / bmpH)
                     val sw = (bmpW * scale).toInt(); val sh = (bmpH * scale).toInt()
-                    val scaled = android.graphics.Bitmap.createScaledBitmap(bmp, sw, sh, true)
-                    bmp.recycle()
+                    // createScaledBitmap/createBitmap 在尺寸恰好相等时会返回【源
+                    // 对象本身】——无脑 recycle 源图就会把正在用的位图标记回收，
+                    // 下一帧绘制即抛 recycled bitmap。按身份判断再回收。
+                    val scaled = if (sw == bmpW && sh == bmpH) bmp
+                        else android.graphics.Bitmap.createScaledBitmap(bmp, sw, sh, true)
+                    if (scaled !== bmp) bmp.recycle()
                     val x = maxOf((sw - rw) / 2, 0); val y = maxOf((sh - rh) / 2, 0)
                     val cw = minOf(rw, sw); val ch = minOf(rh, sh)
-                    val cropped = android.graphics.Bitmap.createBitmap(scaled, x, y, cw, ch)
-                    scaled.recycle()
+                    val cropped = if (x == 0 && y == 0 && cw == scaled.width && ch == scaled.height) scaled
+                        else android.graphics.Bitmap.createBitmap(scaled, x, y, cw, ch)
+                    if (cropped !== scaled) scaled.recycle()
                     val dr = android.graphics.drawable.BitmapDrawable(resources, cropped)
                     dr.alpha = (alpha * 255 / 100).coerceIn(1, 255)
                     root.background = dr

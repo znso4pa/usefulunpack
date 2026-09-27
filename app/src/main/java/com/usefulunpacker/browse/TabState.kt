@@ -87,6 +87,10 @@ class TabState(val tabId: Int) {
     var pickerAllowFiles: Boolean = false
     var pickerOriginTab: TabState? = null
 
+    // 预览工作区身份：非空 = 该 tab 浏览的是 cacheDir/ws/<hash> 下的工作区目录
+    // （由预览 ⋮「在窗口中打开」创建）。关闭 tab 时据此弹出「同时清理缓存？」。
+    var wsDir: File? = null
+
     fun stopObserver() {
         dirObserver?.stopWatching()
         dirObserver = null

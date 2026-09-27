@@ -164,8 +164,8 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                     try {
                         extractByFormat(fmt, src.archive.path, src.outDir.path, src.internalPath, prefs, src.password)
                         runOnUiThread {
-                            pd.dismiss()
                             if (isFinishing || isDestroyed) return@runOnUiThread
+                            pd.dismiss()
                             if (cancelled) toast(getString(R.string.msg_cancelled)) else previewClickedFile(r, queryText)
                         }
                     } finally {

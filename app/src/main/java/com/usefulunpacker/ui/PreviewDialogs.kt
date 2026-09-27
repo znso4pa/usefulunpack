@@ -579,6 +579,10 @@ private fun openEditorWithContent(
     // 否则挂起的写入会把刚删掉的临时文件又"复活"成过期副本。
     val autosaveHandler = android.os.Handler(android.os.Looper.getMainLooper())
     var autosavePending: Runnable? = null
+    // 代际计数：已在跑的 thread{writeText} 无法被 removeCallbacks 取消，若在
+    // 保存/放弃的 tempFile.delete() 之后完成，会把刚删的临时文件用旧内容
+    // 复活（下次打开弹「恢复上次编辑」）。写入前校验代际，过期即弃写。
+    var autosaveGen = 0
     fun cancelPendingAutosave() {
         autosavePending?.let { autosaveHandler.removeCallbacks(it) }
         autosavePending = null
@@ -601,9 +605,11 @@ private fun openEditorWithContent(
                 editHistory.pushState(currentText)
                 // 自动保存到临时文件（防抖 + 后台写）
                 cancelPendingAutosave()
+                autosaveGen++
+                val gen = autosaveGen
                 val snapshot = currentText
                 val r = Runnable {
-                    thread { try { tempFile.writeText(snapshot) } catch (_: Exception) {} }
+                    thread { try { if (gen == autosaveGen) tempFile.writeText(snapshot) } catch (_: Exception) {} }
                 }
                 autosavePending = r
                 autosaveHandler.postDelayed(r, 500)
@@ -697,6 +703,7 @@ private fun openEditorWithContent(
             val bytes = encodeText(et.text.toString(), curEncoding, bom)
             try {
                 originalFile.writeBytes(bytes)
+                autosaveGen++  // 使在途的自动保存写失效，防止复活刚删的临时文件
                 cancelPendingAutosave()
                 tempFile.delete()  // 正常保存，删除临时文件
                 Toast.makeText(activity, activity.getString(R.string.msg_saved), Toast.LENGTH_SHORT).show()
@@ -708,6 +715,7 @@ private fun openEditorWithContent(
             }
         }
         .setNegativeButton(activity.getString(R.string.editor_no_save)) { _, _ ->
+            autosaveGen++
             cancelPendingAutosave()
             tempFile.delete()  // 明确不保存，删除临时文件
         }
@@ -723,7 +731,8 @@ private fun openEditorWithContent(
 
 fun playAudio(activity: AppCompatActivity, file: File) {
     val m = activity as? MainActivity
-    // 释放之前的MediaPlayer
+    // 释放之前的MediaPlayer，并关掉它的对话框（否则旧对话框永远「播放中」）
+    m?.currentAudioDialog?.let { old -> m.currentAudioDialog = null; runCatching { old.dismiss() } }
     m?.currentMediaPlayer?.let { old -> m.currentMediaPlayer = null; old.release() }
 
     // prepare() 可能阻塞数百毫秒到数秒（大文件/慢存储）——必须离开主线程，
@@ -732,12 +741,15 @@ fun playAudio(activity: AppCompatActivity, file: File) {
         .setTitle(activity.getString(R.string.title_audio_player, file.name))
         .setMessage(activity.getString(R.string.msg_audio_playing))
         .setPositiveButton(activity.getString(R.string.action_stop), null)
-        .setOnDismissListener {
-            // 停止/返回键/手动 dismiss 统一在这里释放（按引用比对，防止
-            // 与 OnCompletionListener 双重释放）。
-            m?.currentMediaPlayer?.let { cur -> m.currentMediaPlayer = null; cur.release() }
-        }
-        .show()
+        .create()
+    dlg.setOnDismissListener {
+        // 停止/返回键/手动 dismiss 统一在这里释放（按引用比对，防止
+        // 与 OnCompletionListener 双重释放）。
+        m?.currentMediaPlayer?.let { cur -> m.currentMediaPlayer = null; cur.release() }
+        if (m?.currentAudioDialog === dlg) m.currentAudioDialog = null
+    }
+    dlg.show()
+    m?.currentAudioDialog = dlg
 
     thread {
         try {

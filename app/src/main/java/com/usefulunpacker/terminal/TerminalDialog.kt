@@ -51,23 +51,37 @@ fun showTerminal(activity: AppCompatActivity, currentDir: File, onNavigate: (Fil
                                  else if (target.startsWith("/")) File(target)
                                  else File(currentDir, target)
                     if (newDir != null && newDir.isDirectory) {
-                        activity.runOnUiThread { onNavigate(newDir) }
+                        activity.runOnUiThread {
+                            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                            onNavigate(newDir)
+                        }
                         "→ ${newDir.absolutePath}"
                     } else activity.getString(R.string.terminal_not_found, target)
                 }
                 else -> runCatching {
                     val process = ProcessBuilder("/system/bin/sh", "-c", "cd \"${currentDir.absolutePath}\" && $cmd")
                         .redirectErrorStream(true).start()
+                    // 输出必须边跑边排空：waitFor 先阻塞的话，子进程写满管道
+                    // 缓冲区（~64KB，ls -R / cat 大文件轻松超过）就永远等不到
+                    // 退出，30 秒后把健康命令误杀并丢弃全部输出。
+                    val outCollector = java.io.ByteArrayOutputStream()
+                    val pumper = thread {
+                        runCatching { process.inputStream.copyTo(outCollector) }
+                    }
                     val completed = process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
                     if (completed) {
-                        String(process.inputStream.readBytes())
+                        pumper.join(2000)
+                        outCollector.toString()
                     } else {
                         process.destroyForcibly()
                         activity.getString(R.string.terminal_exec_timeout)
                     }
                 }.getOrDefault(activity.getString(R.string.terminal_exec_failed))
             }
-            activity.runOnUiThread { out.text = r.take(TEXT_PREVIEW_MAX_CHARS) }
+            activity.runOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                out.text = r.take(TEXT_PREVIEW_MAX_CHARS)
+            }
         }
     }
 

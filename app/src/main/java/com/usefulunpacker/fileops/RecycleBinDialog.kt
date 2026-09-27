@@ -133,7 +133,7 @@ fun showRecycleBinDialog(activity: MainActivity) {
     thread {
         val entries = RecycleBin.listEntries(activity)
         activity.runOnUiThread {
-            if (activity.isFinishing) return@runOnUiThread
+            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
             pd.dismiss()
             if (entries.isEmpty()) {
                 AlertDialog.Builder(activity)
@@ -186,7 +186,7 @@ fun showRecycleBinDialog(activity: MainActivity) {
                             thread {
                                 RecycleBin.emptyRecycleBin(activity)
                                 activity.runOnUiThread {
-                                    if (activity.isFinishing) return@runOnUiThread
+                                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                                     Toast.makeText(activity, activity.getString(R.string.recycle_empty), Toast.LENGTH_SHORT).show()
                                     dialog?.dismiss()
                                     activity.nav(activity.currentDir)

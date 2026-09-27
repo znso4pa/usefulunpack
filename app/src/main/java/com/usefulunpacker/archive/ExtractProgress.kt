@@ -283,6 +283,10 @@ class PollingProgressDialog(
             var lastQueueLabel: String? = null
             while (!stopped) {
                 Thread.sleep(200)
+                // Activity 已销毁时的自救退出：调用方的完成回调按项目不变量是
+                // 「守卫在前、dismiss 在后」，守卫 return 会跳过 dismiss()——不
+                // 在这里退出的话，200ms 轮询线程会持有死 Activity 永远空转。
+                if (activity.isFinishing || activity.isDestroyed) break
                 // Queued phase: the format statics belong to whoever ran last —
                 // show live position/ETA until this op actually starts.
                 val q = handleRef

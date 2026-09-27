@@ -504,4 +504,14 @@
     <string name="img_convert_title">Convert Format</string>
     <string name="img_convert_menu">Convert format</string>
     <string name="img_convert_choose">Choose target format</string>
+
+    <!-- Preview workspace (在窗口中打开) -->
+    <string name="ws_open">Open in Window</string>
+    <string name="ws_open_selected">Open Selected as Workspace</string>
+    <string name="ws_size_confirm">Extracting this archive to the workspace needs about %1$s of storage. Continue?</string>
+    <string name="ws_cleanup_prompt">Also clean up the workspace cache?</string>
+    <string name="ws_tab_title">📦 %1$s</string>
+
+    <string name="zip_invalid_entry_name">Entry names cannot contain the | character</string>
+    <string name="msg_empty_archive">This archive is empty</string>
 </resources>

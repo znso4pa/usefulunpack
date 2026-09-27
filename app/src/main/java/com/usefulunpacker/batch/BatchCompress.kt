@@ -72,10 +72,23 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                 // dir from a previously crashed run first.
                                 tmpDir.deleteRecursively()
                                 tmpDir.mkdirs()
+                                // 跨 tab 聚合的选择常有同名文件（两个窗口各一个
+                                // readme.txt 很常见）——直接用原名拷贝会静默覆盖，
+                                // 合并产物丢文件。重名的按 `名字 (n)` 去重。
+                                val usedNames = mutableSetOf<String>()
                                 for (f in items) {
                                     if (cancelled) break
-                                    if (f.isDirectory) f.copyRecursively(File(tmpDir, f.name))
-                                    else f.copyTo(File(tmpDir, f.name), overwrite = true)
+                                    var n = f.name
+                                    var i = 1
+                                    while (n in usedNames) {
+                                        val ext = f.extension
+                                        val base = f.nameWithoutExtension
+                                        n = if (ext.isNotEmpty()) "$base ($i).$ext" else "$base ($i)"
+                                        i++
+                                    }
+                                    usedNames.add(n)
+                                    if (f.isDirectory) f.copyRecursively(File(tmpDir, n))
+                                    else f.copyTo(File(tmpDir, n), overwrite = false)
                                 }
                                 // A cancel pressed during the copy must not be
                                 // silently overwritten: the Rust compress entry
@@ -160,10 +173,16 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                                 compressDispatch(f, outF, fmt, level, password, prefs, chosenSplit)
                             } else {
                                 val tmpDir = File(cacheDir, "batch_compress/${f.nameWithoutExtension}")
-                                tmpDir.mkdirs()
-                                f.copyTo(File(tmpDir, f.name), overwrite = true)
-                                val result = compressDispatch(tmpDir, outF, fmt, level, password, prefs, chosenSplit)
+                                // 先清掉上次崩溃/失败可能留下的残留，否则旧文件会被
+                                // 打进本次产物；异常路径也要保证清理（finally 语义）。
                                 tmpDir.deleteRecursively()
+                                tmpDir.mkdirs()
+                                val result = try {
+                                    f.copyTo(File(tmpDir, f.name), overwrite = true)
+                                    compressDispatch(tmpDir, outF, fmt, level, password, prefs, chosenSplit)
+                                } finally {
+                                    tmpDir.deleteRecursively()
+                                }
                                 result
                             }
                             if (!ok2) { ok = false; break }
@@ -171,10 +190,11 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                         runOnUiThread {
                             if (isFinishing || isDestroyed) return@runOnUiThread
                             pd.dismiss()
+                            // 取消/失败保留多选（与 compressMerged 策略一致），
+                            // 只有成功才清空并刷新。
                             if (cancelled) toast(getString(R.string.msg_cancelled))
-                            else if (ok) toast(getString(R.string.msg_batch_compress_done))
+                            else if (ok) { toast(getString(R.string.msg_batch_compress_done)); exitAllMultiSelect(); nav(currentDir) }
                             else toast(getString(R.string.title_compress_failed))
-                            exitAllMultiSelect(); nav(currentDir)
                         }
                     } catch (e: Exception) {
                         runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }

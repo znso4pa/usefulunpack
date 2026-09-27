@@ -511,4 +511,5 @@
 
     <string name="zip_invalid_entry_name">項目名に「|」は使えません</string>
     <string name="msg_empty_archive">このアーカイブは空です</string>
+    <string name="pfs_auto_renamed">%1$s に自動リネームしました</string>
 </resources>

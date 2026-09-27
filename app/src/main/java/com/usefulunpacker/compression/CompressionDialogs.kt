@@ -224,6 +224,11 @@ private fun runCompress(
         if (!opH.await()) return@thread
         try {
             var ok = compressDispatch(dir, outFile, fmt, level, password, prefs, splitSize)
+            // PFS/PF6 封包按 Artemis 分层补丁约定自动更名（见 applyPfsRootNaming）
+            var pfsRenamed: String? = null
+            if (ok && !cancelled && fmt in setOf("pfs", "pf6")) {
+                applyPfsRootNaming(outFile)?.let { pfsRenamed = it.name }
+            }
             if (cancelled || !ok) {
                 // split_volumes already removed the original; remove the
                 // `.001/.002/...` parts too, not just outFile.
@@ -239,7 +244,10 @@ private fun runCompress(
                 prog.dismiss()
                 if (cancelled) { Toast.makeText(activity, activity.getString(R.string.msg_cancelled), Toast.LENGTH_SHORT).show() }
                 else if (ok) {
-                    val shown = if (splitEnabled) "${outFile.name}.001" else outFile.name
+                    pfsRenamed?.let {
+                        Toast.makeText(activity, activity.getString(R.string.pfs_auto_renamed, it), Toast.LENGTH_LONG).show()
+                    }
+                    val shown = if (splitEnabled) "${outFile.name}.001" else pfsRenamed ?: outFile.name
                     Toast.makeText(activity, "${activity.getString(R.string.msg_extract_complete)} $shown", Toast.LENGTH_SHORT).show()
                     onComplete()
                 }
@@ -251,6 +259,22 @@ private fun runCompress(
     }
 }
 
+/**
+ * PFS/PF6 封包产物按 Artemis 分层补丁约定自动更名：`root.pfs`；已存在则
+ * `root.pfs.000`、`root.pfs.001` …（三位数字递增）。返回更名后的文件；
+ * 产物本身已叫 root.pfs 或更名失败时返回 null。 */
+fun applyPfsRootNaming(outFile: File): File? {
+    if (outFile.name == "root.pfs") return null
+    val dir = outFile.parentFile ?: return null
+    var target = File(dir, "root.pfs")
+    if (target.exists()) {
+        var n = 0
+        while (File(dir, "root.pfs.%03d".format(n)).exists()) n++
+        target = File(dir, "root.pfs.%03d".format(n))
+    }
+    return if (outFile.renameTo(target)) target else null
+}
+
 /** 通用压缩派发：任何来源（单文件/目录/临时合并目录）→ 指定格式，供单文件、批量合并、批量分别共用。 */
 fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password: String, prefs: SharedPreferences, splitOverride: Long? = null): Boolean {
     // 分卷大小（字节），仅 zip/7z 支持；0 = 不分卷。inline 压缩选项可传显式值。
@@ -260,6 +284,7 @@ fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password
         when (fmt) {
             "xp3" -> Xp3Core.xp3CreateArchive("", src.path, outFile.path, level.toString()) != null
             "pfs" -> PfsCore.pfsCreateArchive("", src.path, outFile.path) != null
+            "pf6" -> PfsCore.pfsCreateArchivePf6("", src.path, outFile.path) != null
             "nsa" -> NsaCore.nsaCreateArchive("", src.path, outFile.path, if (level > 0) "2" else "0") != null
             "iso" -> IsoCore.isoCreateArchive("", src.path, outFile.path) != null
             "ypf" -> YpfCore.ypfCreateArchive("", src.path, outFile.path, level.toString()) != null

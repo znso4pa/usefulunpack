@@ -1,7 +1,7 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jstring, jlong};
-use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json};
+use archive_common::{s, json_escape, derive_dirs, safe_join, extract_result_json, DestAllocator};
 use archive_common::{extract_progress, compress_progress};
 use pf8::Pf8Archive;
 use pf8::entry::Pf8Entry;
@@ -59,12 +59,16 @@ pub extern "system" fn Java_com_usefulunpacker_PfsCore_pfsExtract(
         extract_progress::reset(to_extract.iter().map(|(_, s)| *s).sum());
         let mut fail = 0u32;
         let mut base = 0u64;
+        // Duplicate / case-only-colliding names would be last-wins truncation
+        // on /sdcard and FAT — allocate distinct dests instead.
+        let mut dests = DestAllocator::new();
         for (entry_path, _entry_size) in &to_extract {
             if extract_progress::cancelled() { return Err("cancelled".to_string()); }
             let entry_name = entry_path.to_string_lossy();
             extract_progress::set_file(*_entry_size);
             match safe_join(&out, &entry_name) {
                 Ok(dest) => {
+                    let dest = dests.allocate(dest);
                     if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
                     let mut handler = PfsProgress { base, last: base };
                     if archive.extract_file_with_progress(entry_path, &dest, &mut handler).is_err() {
@@ -151,11 +155,12 @@ fn extract_pfs_selected(input: &str, output: &str, selected: &str) -> Result<(u3
     extract_progress::reset(to_extract.iter().map(|(_, s)| *s).sum());
     let mut fail = 0u32;
     let mut base = 0u64;
+    let mut dests = DestAllocator::new();
     for (entry_path, _entry_size) in &to_extract {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
         let entry_name = entry_path.to_string_lossy();
         extract_progress::set_file(*_entry_size);
-        let dest = safe_join(output, &entry_name).map_err(|e| format!("{e}"))?;
+        let dest = dests.allocate(safe_join(output, &entry_name).map_err(|e| format!("{e}"))?);
         if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
         let mut handler = PfsProgress { base, last: base };
         if archive.extract_file_with_progress(entry_path, &dest, &mut handler).is_err() {

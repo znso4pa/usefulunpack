@@ -40,7 +40,12 @@ codegen-units = 1
 # (upstream refuses to stream filtered members over the buffered-decode limit)
 # Local fork of sevenz-rust with liblzma LZMA/LZMA2 decoding (decompression speed)
 # Local fork of zip with PKWARE multi-disk (.z01/.z02/.zip) read support
+# Local fork of xp3 with index-parsing caps (decompressed index bytes +
+# entry count) and a UTF-16 name-slice bounds check — upstream 0.4.2 lets a
+# hostile archive OOM the process inside XP3Archive::open before any entry
+# is visible to the app layer
 [patch.crates-io]
+xp3 = { path = "crates/vendor/xp3" }
 rars = { path = "crates/vendor/rars" }
 sevenz-rust = { path = "crates/vendor/sevenz-rust" }
 zip = { path = "crates/vendor/zip" }

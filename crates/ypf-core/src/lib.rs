@@ -134,13 +134,12 @@ fn open_ypf(input: &str) -> Result<(Vec<YpfEntry>, BufReader<File>, u64), String
 
 // --- Extract ---
 
-fn ypf_extract_one(f: &mut BufReader<File>, e: &YpfEntry, out: &str, fsize: u64) -> Result<(), String> {
+fn ypf_extract_one(f: &mut BufReader<File>, e: &YpfEntry, d: &std::path::Path, fsize: u64) -> Result<(), String> {
     if e.asize == 0 { return Ok(()); }
     if e.offset as u64 + e.asize as u64 > fsize { return Err("offset OOB".into()); }
-    let d = safe_join(out, &e.name)?;
     if let Some(p) = d.parent() { std::fs::create_dir_all(p).map_err(|x| format!("{x}"))?; }
     f.seek(SeekFrom::Start(e.offset as u64)).map_err(|x| format!("{x}"))?;
-    let mut out_file = ProgressWriter::extract(BufWriter::with_capacity(256 * 1024, std::fs::File::create(&d).map_err(|x| format!("{x}"))?));
+    let mut out_file = ProgressWriter::extract(BufWriter::with_capacity(256 * 1024, std::fs::File::create(d).map_err(|x| format!("{x}"))?));
     let limited = (&mut *f).take(e.asize as u64);
     if e.compressed {
         let dec = ZlibDecoder::new(limited);
@@ -189,7 +188,17 @@ fn extract_ypf_all(i: &str, o: &str) -> Result<(u32, u32), String> {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
         extract_progress::set_name(&e.name);
         extract_progress::set_file(e.usize as u64);
-        if guard_panic(|| ypf_extract_one(&mut f, e, o, fsize)).is_err() { fail += 1; }
+        // Match the "failure deletes the half-written file" semantics every
+        // other format uses instead of stranding truncated output on disk.
+        match safe_join(o, &e.name) {
+            Ok(d) => {
+                if guard_panic(|| ypf_extract_one(&mut f, e, &d, fsize)).is_err() {
+                    let _ = std::fs::remove_file(&d);
+                    fail += 1;
+                }
+            }
+            Err(_) => { fail += 1; }
+        }
     }
     Ok((total, fail))
 }
@@ -206,8 +215,16 @@ fn extract_ypf_selected(i: &str, o: &str, s: &str) -> Result<(u32, u32), String>
             selected += 1;
             extract_progress::set_name(&e.name);
             extract_progress::set_file(e.usize as u64);
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ypf_extract_one(&mut f, e, o, fsize)));
-            match r { Ok(Err(_)) | Err(_) => { fail += 1; } _ => {} }
+            match safe_join(o, &e.name) {
+                Ok(d) => {
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ypf_extract_one(&mut f, e, &d, fsize)));
+                    if matches!(r, Ok(Err(_)) | Err(_)) {
+                        let _ = std::fs::remove_file(&d);
+                        fail += 1;
+                    }
+                }
+                Err(_) => { fail += 1; }
+            }
         }
     }
     Ok((selected, fail))
@@ -476,8 +493,8 @@ mod tests {
             offset: compressed.len() as u32,
         };
 
-        ypf_extract_one(&mut f, &zlib_entry, out.to_str().unwrap(), fsize).unwrap();
-        ypf_extract_one(&mut f, &raw_entry, out.to_str().unwrap(), fsize).unwrap();
+        ypf_extract_one(&mut f, &zlib_entry, &out.join("a/z.bin"), fsize).unwrap();
+        ypf_extract_one(&mut f, &raw_entry, &out.join("b/raw.bin"), fsize).unwrap();
 
         assert_eq!(std::fs::read(out.join("a/z.bin")).unwrap(), data);
         assert_eq!(std::fs::read(out.join("b/raw.bin")).unwrap(), data);
@@ -507,7 +524,7 @@ mod tests {
             asize: compressed.len() as u32,
             offset: 0,
         };
-        ypf_extract_one(&mut f, &entry, out.to_str().unwrap(), compressed.len() as u64).unwrap();
+        ypf_extract_one(&mut f, &entry, &out.join("clamped.bin"), compressed.len() as u64).unwrap();
         let got = std::fs::read(out.join("clamped.bin")).unwrap();
         assert_eq!(got.len(), 1024, "output must be clamped to the declared size");
         std::fs::remove_dir_all(&dir).ok();

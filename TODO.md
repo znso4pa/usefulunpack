@@ -1,5 +1,34 @@
 # TODO
 
+## 已修复: XP3/PFS/KSD 移植审查反馈（Tyranor-Next 对照审查）
+
+背景：Tyranor-Next 把本仓库 `xp3-core` / `pfs-core` / `ksd-core` / `common` 移植为单 crate 时，
+用多轮自动化审计 + 真机样本（feng《娇小少女的小夜曲》cxdec 包）做了对照审查，发现的问题中
+**上游同样存在**的部分已全部落地修复。对照实现见 Tyranor-Next 仓库
+`engine/rust/src/lib.rs`（分支 `pr/archive-unpack` / PR #94，提交 978611c → 1523a57 → bb1cd71 → 51516c8）。
+
+| # | 级别 | 修复 | 落点 |
+|---|------|------|------|
+| 1 | 数据损坏 | XP3/PFS 解包**重名去重 + 大小写碰撞防护**：新增 `archive_common::DestAllocator`（key 大小写折叠，碰撞改名 `名字 (n).ext`，绝不覆盖先写的文件），xp3 全量/选择性 + pfs 全量/选择性共 4 条提取路径全部接入——此前同名条目 last-wins 截断覆盖，JSON 仍报 success | `crates/common`、`xp3-core`、`pfs-core` |
+| 2 | 数据损坏 | XP3 **宽容提取 + 炸弹护栏 + 进度自校正**：实际解出 ≠ INFO.size 时内容照写不截断（krkr2 同口径，保住劣质重打包），写盘以 `声明 size + 1GiB` 为硬上限（`AsyncReadExt::take`）封死敌意灌盘；每条解完按 `实际写字节 − 声明 size` 自校正总进度（新增 `extract_progress::adjust_total` / `calibrate_file`，饱和运算），进度条终态精确 100%（KSD 解包条目此前总进度偏大卡不满的同源问题一并解决） | `xp3-core`、`crates/common` |
+| 3 | 数据损坏 | KSD 缓冲路径 **BufWriter drop 吞错**：`copy_xp3_entry` 全部成功出口显式 flush（磁盘满/EIO 恰落在尾部 <8KiB 时不再把截断文件计为成功），失败出口不 flush 由调用方删半成品——对齐 zip-core 已有的 flush 语义 | `xp3-core` |
+| 4 | 完整性 | xp3 `by_index` 失败分支补 `remove_file`，不再留 0 字节残档（与 copy 失败分支对齐） | `xp3-core` |
+| 5 | 完整性 | ypf 解包失败即删半成品（对齐其余全部格式的一致语义） | `ypf-core` |
+| 6 | 完整性 | KSD 透传误判：`ksd_mode2_decode` 加 **UTF-16 弱校验**（严格代理对 + 拒绝非空白控制字符），魔数 5 字节碰撞的二进制条目（TGA 类）不再被"解码"成垃圾替换原文件 | `ksd-core` |
+| 7 | 资源 | **vendor xp3 0.4.2** → `crates/vendor/xp3`（`[patch.crates-io]` 本地 fork）：索引解压总量 cap 256MiB（原 `read_to_end` 放大 ~1032×，≤4GB 敌意包可在 `open` 阶段 native OOM）+ 条目数 cap 100 万 + UTF-16 name_len 边界检查（截短 INFO 段不再 panic） | `crates/vendor/xp3` |
+| 8 | 资源 | `Vec::with_capacity(size)` 预分配限幅 `min(size, 1MiB)`（声明 size 攻击者可控，N 条连发是堆放大） | `xp3-core` |
+| 9 | 资源 | KSD `MAX_MODE2_OUT` 512MiB → 16MiB（KSD 只包裹 KB 级文本条目，且与 XP3 探测窗口 `KSD_PROBE_MAX` 对齐） | `ksd-core` |
+
+- **新增回归测试**：重名/大小写碰撞端到端（`XP3Writer` 构造 `Readme.txt`+`readme.txt` 双条目 → 解包必须两文件共存且大小写折叠唯一）、KSD 探测魔数碰撞拒绝/真文本接受、`DestAllocator` 单测、`adjust_total` 饱和（不 panic 不回绕）单测；`cargo test --workspace` 全绿
+- **策略说明**：重名条目采用**改名**（常见解压器惯例）而非 Tyranor-Next 的"包内重名整体拒绝"——两者都消除静默覆盖，改名让重复条目全部落盘且无需 Kotlin 侧预检改动
+- xp3 上游（crates.io 0.4.2）建议提 issue/PR 反馈索引 cap 与 name_len 边界两处补丁
+
+### 后续（已进下版本计划）
+- cxdec 解密支持（反馈第 10 条，feng 系真包可解）
+- `DestAllocator` 推广到 zip/tar 提取循环（zip 并行路径需共享 Mutex 版分配器）
+
+---
+
 ## v5.15.0 Debug Pass（已完成）
 
 ### Round 1：`runOnUiThread` 防护守卫（BadTokenException 修复）
@@ -68,7 +97,115 @@
 
 ---
 
-## 预览工作区（v5.14 待做 · 设计已定稿）
+## v5.15.0 · 预览工作区（已完成）
+
+> 版本号 5.15.0 — versionCode 26 / versionName "5.15.0"。本版以预览工作区为主功能，随后两轮全面 debug（含真机反馈修复）稳定化。
+
+> 预览 ⋮ 加「在窗口中打开」：把包内容实体化到 `cacheDir/ws/<hash>/` 并以普通目录 tab 打开，多选/复制/移动/重命名/详情/排序/分享等 FS 能力全部免费获得。套娃递归天然支持：工作区内的子归档走现有 select → preview 流程，其 ⋮ 又能再开工作区。
+
+### 实现要点
+- **双入口**：⋮「在窗口中打开」（整包）+ ⋮「选中项开为工作区」（仅勾选的顶层条目，目录勾选=整棵子树）；窗口已满（MAX_TABS）时**前置拒绝**，不解压不留孤儿缓存。
+- **同归档防重**：ws 目录名由源归档绝对路径哈希决定；已存在同 wsDir 的工作区 tab 时直接 toast 跳转，绝不 `deleteRecursively` 别的窗口正在浏览的目录。
+- **大包保护**：条目实际大小合计 > 200MB（`WS_SIZE_LIMIT_BYTES` 常量，暂不进设置页）弹确认框显示真实大小。
+- **密码不变量**：能进预览说明密码已收集，工作区流程直接复用 `tab.previewPwd`，不弹窗不占槽。
+- **调度**：走 `tryStartOperation(format)` + PollingProgressDialog + OpOverlay，与全部归档操作同轨排队；工作目录在锁内清空重建，排队重开不会毁掉进行中那次。
+- **关闭清理**：`closeTab` 对 `wsDir != null` 的 tab 询问「同时清理工作区缓存？」；是=后台线程删 `ws/<hash>`（大目录不同步删卡 UI），否=保留供下次复用。
+- **会话恢复（原「待定」项已决策）**：会话 JSON 存 `ws:1` + `wsRoot` 绝对路径（用户可在 ws 内深入导航，currentDir ≠ 根）；恢复时目录仍在→完整还原工作区身份（📦 标题 + 关闭清理询问），已被系统清掉→降级普通目录 tab。工作区 tab 的 title 截断上限放宽到 32（普通 tab 仍 8），否则 📦 标题被砍断。
+
+### 改动文件
+
+| 文件 | 改动 |
+|------|------|
+| `extract/WorkspaceFlow.kt`（新） | `openWorkspaceFromPreview` / `startWorkspaceExtract` / `openWorkspaceTab` 全流程 |
+| `browse/TabState.kt` | 新增 `wsDir: File?` 工作区身份字段 |
+| `browse/FolderFragment.kt` | ⋮ PopupMenu 新增两个工作区入口 |
+| `MainActivity.kt` `closeTab` | 工作区 tab 关闭前清理询问；原关闭逻辑拆出 `closeTabNow` |
+| `SessionRestore.kt` | `saveSession` 存 ws 标记 + wsRoot；`restoreSession` 目录存在则还原身份 |
+| `util/Constants.kt` | `WS_SIZE_LIMIT_BYTES`（200MB） |
+| `strings.xml`（4 locale） | `ws_open` / `ws_open_selected` / `ws_size_confirm` / `ws_cleanup_prompt` / `ws_tab_title`（📦 前缀） |
+
+---
+
+## v5.15.0 · 全面 Debug（工作区后首轮，已完成）
+
+> 双路审计全 Kotlin 面（归档操作链 + 浏览/多选/会话/回收站/搜索/文件操作），27 条发现采纳 25 条修复（1 条误报剔除：「extractByFormat 缺 7z 分支」实为存在；1 条语义问题记录不修：批量解压跨目录选择统一解到第一个归档目录，待定夺）。
+
+### P1 / P2
+
+| 位置 | 问题 | 修复 |
+|------|------|------|
+| `MultiSelect.syncAllTabAdapters` | 多选中点「+」开新窗必崩：新 tab 的 `listFiles` lateinit 未绑定就被解引用 | 加 `viewsBound` 守卫跳过未绑定 tab |
+| `RecycleBin.restore` | **文件夹永远无法还原**：跨盘 rename 必失败，copy fallback 的 `copyTo` 对目录抛异常 | 目录走 `copyRecursively`，失败清半成品 |
+| `BatchExtract` 批量搜索 | 取消失效：内层 per-entry 循环不查 cancelled，且每个新 Rust 入口重清 CANCEL | 内层循环加 `if (cancelled) break` |
+| `BatchExtract` 解压所选 | 取消仍弹「批量完成」并清空多选 | 取消分支独立处理，保留选中可重试 |
+| `BatchCompress.compressMerged` | 跨 tab 同名文件在 staging 静默覆盖 → 合并产物丢文件 | staging 内重名按 `名字 (n)` 去重 |
+| `BatchCompress.compressSeparate` | staging 不预清理 + 异常不清理 → 残留打进新包 | 用前 `deleteRecursively` + `finally` 清理 |
+| `ExtractProgress` 轮询线程 | 调用方守卫跳过 dismiss() 时 200ms 轮询线程持有死 Activity 永远空转 | 循环内检测 `isFinishing/isDestroyed` 自退 |
+| `WorkspaceFlow` | 勾选大目录可绕过 200MB 确认（目录条目 size=0） | 按前缀累计整棵子树大小 |
+| `WorkspaceFlow` | 排队期间重复开 → 删掉活 tab 正浏览的目录 + 重复 tab；解压完窗口满 → 孤儿缓存 | `openWorkspaceTab` 重查同 wsDir；满窗删成果 |
+
+### P3
+
+| 位置 | 问题 | 修复 |
+|------|------|------|
+| `ArchiveExtractor.tryExtractWithPassword` ×2 | dismiss 在守卫前（违反项目不变量） | 守卫前置 |
+| `GlobalSearch` 结果点击 | 同上 | 守卫前置 |
+| `FileBrowser` | install 成功路径无守卫；`navTab` 两处 UI 回调无守卫 | 补 `isFinishing/isDestroyed` |
+| `RecycleBinDialog` ×2 | 守卫缺 `isDestroyed` → 后续 AlertDialog 可 BadTokenException | 补全 |
+| `FolderFragment` 文件信息 | 守卫缺 `isDestroyed`；`requireContext()` 异步后可抛 | 提前捕获 context + 补守卫 |
+| `SessionRestore` | 畸形 JSON 跳项后 previews 错挂到别的 tab；JSON null 还原成字面量 "null"；守卫缺 isDestroyed | 锁步解析（SavedTab 结构）+ "null" 防御 + 补守卫 |
+| `RecycleBin` | size 回填在裸线程改 manifest 内别名 JSONObject（竞态）；损坏 meta 的 `getString/getLong` 杀进程 | `_meta.json` 用独立副本；读取包 runCatching |
+| `MultiSelect.exitMultiSelect` | 导航后 `globalMultiSelectMode` 永不复位 → 空批量栏随切 tab 反复自动弹出 | 重算 `tabs.any { multiSelected.isNotEmpty() }` |
+| `MainActivity.addTab/openPickerInTab` | 关低号 tab 后 tabId 重复 → OpOverlay 卡片归属错乱 | tabId 单调递增 |
+| `CsoConvert` | 完成刷新打到瞬时活跃窗而非发起窗 | `refreshTab(ownerTab)` |
+| `FileUtils.readPrefix` | 单次 `read()` 短读静默截断预览/搜索前缀 | 循环读满 |
+| `MainActivity` 启动权限跳转 | 部分 ROM 无该 action → 首启动 ActivityNotFoundException | try/catch + 降级通用 action |
+| `OpScheduler.await` | 提升为 RUNNING 后被中断返回 false → 槽位+格式锁永久泄漏（防御性） | 中断时已 RUNNING 则照常返回 true |
+
+### 真机反馈修复（工作区首轮测试）
+
+| 位置 | 问题 | 修复 |
+|------|------|------|
+| `FileBrowser.navTab` | **多选中点「+」开新窗选中全丢**：`rebuildPager` 重建所有 fragment → 各 tab `onCreateView` → `navTab(同目录)` → 无条件 `exitMultiSelect` 清空选中并重置全局会话（FileObserver 防抖刷新同样中招） | 记录 `prevDir`，仅**目录真正变化**时才清多选；同目录重渲染/自动刷新保留选中 |
+| `FolderFragment.onCreateView` 预览恢复分支 | **预览中的 tab 重建视图后路径栏显示「/」**：分支不经过 `navTab`，`tvPath` 停留在 XML 默认文本 `/`（工作区/加窗/关窗都会触发 rebuildPager，预览 tab 必现） | 预览分支手动回填 `tvPath = currentDir` |
+
+### 深度 Debug 第二轮（预览链 + ui 杂项 + 回归自查）
+
+| 位置 | 问题 | 修复 |
+|------|------|------|
+| `extract/WorkspaceFlow.openWorkspaceTab` | **回归自查抓到**：重复分支删 wsDir 会清掉活 tab 正浏览的目录 | 重复时只跳转，不删（排队那次已重建相同内容） |
+| `PreviewFlow` 预览内搜索 ×2 | 取消失效：per-entry 循环不查 cancelled，每个新 Rust 入口重清 CANCEL | 内层循环加 `if (cancelled) break` |
+| `PreviewFlow` 搜索 ×2 | `searchSource*` 全局在提取前赋值：并发搜索互相覆盖 + 取消后残留 | 移到成功分支赋值（与批量搜索同约定） |
+| `PreviewFlow.previewFileEntry` | 密码嗅探(可达数秒)后的 `runOnUiThread` 无守卫 → BadTokenException | 补守卫 |
+| `PreviewFlow` zip 编辑 ×3 | outF/tmp 在拿槽位前解析：排队中的两次编辑解析出同一 `-cn` 输出名，后完成覆盖先完成（编辑丢失） | 移到 `await()` 之后解析 |
+| `PreviewFlow` zip 编辑 ×3 | 条目名含 `\|` 时 Rust `split('\|')` 错切操作串 → **错删别的条目** | 入口拒绝含 `\|` 的名字（新字符串 `zip_invalid_entry_name`） |
+| `PreviewFlow.openNestedArchive` | 晚期失败(列目录失败/满窗/销毁)把解出的嵌套包留在 `cacheDir/nested` 成永久孤儿；`register()` 返回值被忽略，同嵌套包可开两窗互踩注册 | 所有失败路径清 outDir；检查 register，失败关窗清理 |
+| `PreviewFlow.mergeIntoArchive` | 重包阶段点取消是空操作(压缩取消标志是另一份)，-cn 照样生成却报「已取消」 | 取消同时点火 `compressAccessors` |
+| `PreviewFlow.extractSelected` | 非 zip 分支失败残留半成品目录；密码重试完全无进度不可取消；dismiss 顺序 | 失败/取消统一清理；重试补进度卡；守卫前置 |
+| `PreviewFlow.previewArchive` | 空归档(`[]`)被当读取失败弹「可能需要密码」误导；ProgressDialog dismiss 缺 `isDestroyed` | 空归档独立提示（新字符串 `msg_empty_archive`）；守卫补全 |
+| `PreviewFlow` 搜索缓存 ×2 | 缓存目录只用文件名做键：不同目录的同名归档互踩搜索内容 | 目录名加父路径哈希 |
+| `ui/PreviewDialogs` 文本编辑 | 在途自动保存 `thread{writeText}` 可在 `tempFile.delete()` 后完成，用旧内容复活临时文件（误弹「恢复上次编辑」） | 代际计数，过期写丢弃 |
+| `ui/PreviewDialogs.playAudio` | 播第二个音频时旧对话框永远停在「播放中」 | `MainActivity.currentAudioDialog` 追踪并 dismiss |
+| `ui/AppSettings.applyBackgroundImage` | **P1**：`createScaledBitmap`/`createBitmap` 尺寸恰好相等时返回源对象本身，随后 `recycle()` 掉正在用作背景的位图 → 下一帧绘制崩溃 | 身份判断后再回收 |
+| `compression/CompressionDialogs.runCompress` | 完成回调无守卫，`onComplete()`（含 navTab）在销毁后的 Activity 上执行 | 补守卫 |
+| `fileops/DeleteProgress` ×5 | 全部 `runOnUiThread` 无守卫；`onDone`（exitAllMultiSelect/navTab）在销毁后执行 | 补守卫 |
+| `terminal/TerminalDialog.exec` | `waitFor` 先于排空管道：输出 >64KB 时子进程写阻塞 → 健康命令被 30s 误杀且输出全丢 | 后台线程边跑边排空 |
+| `ui/RichTextRender.stripRtf` | `\'hh` 分支不可达（控制字读取只收字母，cmd 永不为 `'`）→ **非 ASCII RTF 全部渲染成 'xx 乱码**；`\u+N` 正号路径丢字符；粗+斜体只渲染粗体 | 特判 `\'` 转义；数字起点跟随符号；粗斜独立 span |
+| `ui/ImageConvertDialog` | 目录选择被取消时 ≤64MB 位图滞留等 GC | 改为先压到缓存临时文件，选完目录只搬移 |
+| `ui/ImageEditorDialog` | 自动保存 400ms 节流放行并发写同一 tempFile（损坏恢复副本）；合成位图不回收 | 单线程执行器串行化 + recycle |
+
+### 补记（已落地但上表遗漏项）
+
+| 位置 | 问题 | 修复 |
+|------|------|------|
+| `batch/BatchExtract.batchDirectExtract` | 分卷目录模式取消后，本次新建的输出目录残留（`uniqueFile` 预计算名，删除安全） | `doneUntil` 记录已完整产出数，取消分支后台删掉它们；解到父目录模式与既有文件混杂则不清理 |
+| `batch/BatchCompress.compressSeparate` | 取消/失败也清空多选并刷新（与 compressMerged 策略不一致，取消后无法直接重试） | 取消/失败保留多选，仅成功才 `exitAllMultiSelect() + nav` |
+| `terminal/TerminalDialog` | cd 跳转回调/命令输出回填 3 处 `runOnUiThread` 无守卫 | 补 `isFinishing/isDestroyed` 守卫（与 exec 管道修复同轮） |
+| `jniLibs`（3 ABI `.so`） | `build.sh` 重编产物刷新入库（本轮无 Rust 源码改动） | — |
+
+---
+
+## 预览工作区 · 设计存档（已实现，见上方 v5.15.0 段落）
 
 > 归档预览 ⋮ 加「在窗口中打开」：把包内容实体化成一个专属 tab 的普通浏览目录，多选/复制/移动/分享/重命名/详情/排序等 FS 能力全部免费获得。此方案吸收并取代原 Tier1+2 统一化计划的主体价值。
 
@@ -84,7 +221,7 @@
 ### 实现要点 / 参照
 - 整解压到缓存再操作的先例：`startEditArchive`（cacheDir/edit 同构流程）；进度用 OpOverlay 卡片。
 - 工作区 tab 标题带 📦 前缀以示身份；tab 关闭回调里挂清理询问逻辑。
-- 会话恢复是否还原工作区 tab：**待定**（涉及缓存目录存活期与恢复时序）。
+- 会话恢复是否还原工作区 tab：**已决策（v5.15.0 实现）**：ws 目录存在→完整还原工作区身份；被系统清掉→降级普通目录 tab。
 - 与回收站的关系：工作区内删除走正常回收站流程 ✓ 无需特判。
 
 ---
@@ -1057,6 +1194,8 @@
 - [x] **lzma (.lzma) 压缩 level 无效 + 极慢** — **已修**：`lzma-core` 压缩改用 **`lzma-sys`（liblzma C FFI）** `lzma_alone_encoder` + 流式 `lzma_code`——preset 0-9 真级别（实测 l1→11.3MB / l6→8.7MB / l9→8.2MB，32MB 文本），速度 ~3x（lzma-rs 0.84→liblzma ~2.5-3 MB/s 级别 6-9，级别 1 达 29 MB/s），产物系统 `lzma -d` 可解；解码保持 lzma-rs（语料 15 向量已验）；注：liblzma alone 头写未知大小，列表预览不显示解压大小
 - [x] **7z/bzip2 解压慢** — 已修（见 v5.8.0）：7z 换 liblzma（30→~232 MB/s）、bzip2 换 C libbz2（17→~80 MB/s）
 - [x] 完善单元测试与 CI/CD — 见 v5.8.0 CI/CD 搭建
+- [ ] **cxdec 解密支持** — feng 系等用 `xp3filter.tjs` 注册 cxdec filter 的 galgame（XP3 容器可解析、条目内容为密文，解出"损坏的图片/全是 mp3 流"）；移植 arc_unpacker `au/cxdec` 实现（约 400 行：算法族 + 按文件名哈希选扰动规则），从游戏目录 `xp3filter.tjs` 解析控制表初始化；真机样本与诊断数据可向 Tyranor-Next 仓库索取
+- [ ] **DestAllocator 推广 zip/tar** — 提取循环统一重名/大小写碰撞去重（zip 并行提取路径需共享 Mutex 版分配器；xp3/pfs 已接入，见上方审查反馈修复第 1 条与反馈第 11 条）
 
 ---
 
@@ -1086,6 +1225,7 @@
 - [x] **XP3 封包** — XP3 格式的打包/压缩功能（见 v5.7.0）
 - [x] **PFS 封包** — PFS/PF6/PF8 格式的打包/压缩功能（见 v5.7.0）
 - [ ] **UI 重构** — 优化交互流程
+- [x] **应用图标更换** — 根目录新图（530×512 中央正方形裁剪 + Lanczos 重采样）生成五档 `mipmap/ic_launcher.png`（48/72/96/144/192）
 - [x] 完善单元测试与 CI/CD — 见 v5.8.0 CI/CD 搭建
 
 ---

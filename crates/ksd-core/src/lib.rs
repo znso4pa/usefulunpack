@@ -17,7 +17,11 @@ use std::path::Path;
 //   mode 2: i64 compressed_len + i64 uncompressed_len + 2-byte zlib header + raw deflate
 //   result: UTF-16 LE TJS script
 
-const MAX_MODE2_OUT: usize = 512 * 1024 * 1024;
+// KSD wraps UTF-16 text (real save data / wrapped TJS scripts are KBs); 16 MiB
+// bounds both the RAM a hostile declaration can pin here and the decode cap of
+// the XP3 in-archive probe (xp3-core's KSD_PROBE_MAX), leaving no room for a
+// single entry to squeeze out a 512 MiB native allocation on low-RAM devices.
+const MAX_MODE2_OUT: usize = 16 * 1024 * 1024;
 
 /// Output name: "foo.ksd" → "foo.txt".
 fn output_name(input: &str) -> String {
@@ -94,16 +98,34 @@ fn decompress_mode2(data: &[u8]) -> Result<(Vec<u8>, u64), String> {
     Ok((out, uncompressed_len as u64))
 }
 
+/// Weak plausibility check for probe-decoded content. Real KSD mode-2
+/// payloads are UTF-16 LE scripts: require strict UTF-16 validity (no
+/// unpaired surrogates) and no control characters beyond newline/tab/CR.
+/// Any ≤16 MiB XP3 entry passes the 5-byte magic probe — a binary whose
+/// header happens to start `FE FE 02 FF FE` (e.g. some TGA variants) would
+/// otherwise "decode" into garbage that replaces the original file; failing
+/// the check passes the bytes through untouched instead.
+fn plausible_utf16_text(bytes: &[u8]) -> bool {
+    if bytes.len() % 2 != 0 { return false; }
+    let units = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]));
+    std::char::decode_utf16(units).all(|r| {
+        r.map(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t')).unwrap_or(false)
+    })
+}
+
 /// Detects a KSD mode-2 scrambled blob — used as a Kirikiri filter inside XP3
 /// (and similar) archives: `FE FE 02 FF FE` + [compressed_len:i64]
 /// [uncompressed_len:i64] + deflate. Returns the decoded bytes when the magic
-/// matches, else None so the caller writes the content as-is.
+/// matches AND the decode passes the UTF-16 plausibility check, else None so
+/// the caller writes the content as-is.
 pub fn ksd_mode2_decode(data: &[u8]) -> Option<Vec<u8>> {
     if data.len() >= 5
         && data[0] == 0xFE && data[1] == 0xFE && data[2] == 0x02
         && data[3] == 0xFF && data[4] == 0xFE
     {
-        decompress_mode2(&data[5..]).ok().map(|(bytes, _)| bytes)
+        decompress_mode2(&data[5..]).ok()
+            .filter(|(bytes, _)| plausible_utf16_text(bytes))
+            .map(|(bytes, _)| bytes)
     } else {
         None
     }
@@ -376,8 +398,8 @@ mod tests {
 
     #[test]
     fn oversize_file_rejected_before_read() {
-        // A sparse file > 512MB must be rejected from metadata alone — the
-        // whole file is never read into RAM.
+        // A sparse file above MAX_MODE2_OUT must be rejected from metadata
+        // alone — the whole file is never read into RAM.
         let dir = tmp("oversize");
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("big.ksd");
@@ -390,5 +412,43 @@ mod tests {
         assert!(err.contains("too large"), "unexpected error: {err}");
         assert!(probe_ksd(f.to_str().unwrap()).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Builds a mode-2 wrapper around arbitrary inner bytes.
+    fn wrap_mode2(inner: &[u8]) -> Vec<u8> {
+        let mut enc = ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+        enc.write_all(inner).unwrap();
+        let compressed = enc.finish().unwrap();
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&[0xFE, 0xFE, 2, 0xFF, 0xFE]);
+        blob.extend_from_slice(&(compressed.len() as i64).to_le_bytes());
+        blob.extend_from_slice(&(inner.len() as i64).to_le_bytes());
+        blob.extend_from_slice(&compressed);
+        blob
+    }
+
+    #[test]
+    fn mode2_probe_rejects_non_text_magic_collision() {
+        // Any ≤16MiB entry passes the XP3 probe's 5-byte magic check; a binary
+        // (TGA-style collision) must NOT be "decoded" into garbage. Invalid
+        // UTF-16 (lone high surrogate) → None → caller passes bytes through.
+        let mut inner = vec![0x41u8, 0x00]; // 'A'
+        inner.extend_from_slice(&[0x00, 0xD8]); // lone high surrogate U+D800
+        inner.extend_from_slice(&[0x42u8, 0x00]); // 'B', no low surrogate follows
+        assert_eq!(ksd_mode2_decode(&wrap_mode2(&inner)), None);
+
+        // Valid UTF-16 but a non-whitespace control char (U+0001) → also None.
+        let ctrl = vec![0x41u8, 0x00, 0x01, 0x00, 0x42u8, 0x00];
+        assert_eq!(ksd_mode2_decode(&wrap_mode2(&ctrl)), None);
+
+        // Odd byte length can't be UTF-16 at all → None.
+        assert_eq!(ksd_mode2_decode(&wrap_mode2(&[0x41u8, 0x00, 0x42])), None);
+    }
+
+    #[test]
+    fn mode2_probe_accepts_real_text() {
+        let text: Vec<u8> = "セーブデータ\nテスト\r\nint x = 1;\t".encode_utf16()
+            .flat_map(|u| u.to_le_bytes()).collect();
+        assert_eq!(ksd_mode2_decode(&wrap_mode2(&text)).unwrap(), text);
     }
 }

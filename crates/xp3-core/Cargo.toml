@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 [dependencies]
 archive_common = { path = "../common" }
 archive_ksd-core = { path = "../ksd-core" }
+archive_cxdec-core = { path = "../cxdec-core" }
 jni = "0.21"
 xp3 = "0.4"
 tokio = { version = "1", features = ["io-util"] }

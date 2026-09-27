@@ -183,6 +183,7 @@ XOR key auto-detection (0xFF vs 0xC9) is done per-file on the first entry.
 | Format | Source / Reference | License |
 |--------|-------------------|---------|
 | **XP3** | [xp3 crate](https://crates.io/crates/xp3) | MIT / Apache-2.0 |
+| **cxdec (XP3 content filter)** | [Cxdec_Tools](https://github.com/1F1E33-float32/Cxdec_Tools) (vendored cipher core + XP3 parsing, MIT), scheme table from [arc_unpacker](https://github.com/vn-tools/arc_unpacker) | MIT |
 | **PFS / PF6 / PF8** | [pf8 crate](https://crates.io/crates/pf8) | See [crates.io/pf8](https://crates.io/crates/pf8) |
 | **NSA / SAR** | [NSA 格式规范](https://orin.page/w/index.php?title=NSA), LZSS/SPB via [GARbro](https://github.com/morkt/GARbro) / [ONScripter](https://github.com/nscripter/nscripter) | Public spec / MIT / GPL |
 | **YPF** | [YU-RIS 格式解析参考](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker) (Kaitai), [GARbro](https://github.com/morkt/GARbro) SwapTable, XOR + Shift-JIS, zlib | Public spec / MIT |

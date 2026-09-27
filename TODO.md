@@ -1,5 +1,33 @@
 # TODO
 
+## 已实现: cxdec 经典解密（XP3 内容过滤，单包拆包）
+
+经典 cxdec 保护的 XP3（feng《ちいさな彼女の小夜曲》真机样本验证目标）此前解出的是密文
+（"损坏的图片/全是 mp3 流"）。现按游戏文件夹自动路由解密：
+
+- **密码机核心 + XP3 解析 vendor 自 [Cxdec_Tools](https://github.com/1F1E33-float32/Cxdec_Tools)
+  （MIT © 2026 bfloat16，致谢见 README）** → `crates/vendor/cxdec-tools`（原样保留，仅补 `Xp3Archive::open` pub 入口）
+- 新增 `crates/cxdec-core`（**rlib，链接进 xp3_core 同一个 .so，无新 so**）：
+  - 游戏 scheme 表：feng 模板（从其 xp3filter.tjs 的 VM switch 排列推导：mask 0x275 /
+    offset 0x380 + 三组扰动序）+ arc_unpacker 插件表 8 款（fha/comyu/mahoyoru/natsuzora/
+    tenshin/dracuriot/lavender/karakara/waremete）
+  - 控制表探测：游戏目录 `.tpm`/`.dat` 二进制签名扫描（vendor 读取器，字补码语义）或
+    `xp3filter.tjs` 内嵌 4096 字节数组解析（含 `bondary = (hash & 0xNNN) + 0xMMM` 常量提取）
+  - scheme 判定：对包内前 8 条目按 13 组明文魔数（TLG/PNG/JPEG/BMP/Ogg/RIFF/MP3 同步…）
+    打分取最优，全部不中则明确报错
+- **Kotlin 路由**（`ArchiveExtractor.xp3ExtractDispatch`）：xp3 旁有 cxdec 侧车文件
+  （xp3filter.tjs/.tpm/.dat）→ 先走 `Xp3Core.xp3CxdecExtract[Selected]`，探测失败自动回退
+  普通 XP3 路径；进度/取消复用 xp3 通道（同 .so 同 store，无新 fmtKey）；预览列表无需变化
+  （经典 cxdec 索引为明文）；批量/预览/工作区/全局搜索全部经 `extractByFormat` 自动覆盖
+- 单条目整块 RAM 解码，1GiB 声明上限防敌意索引；写失败删半成品；重名走 DestAllocator
+- 回归测试：手工构造 cxdec 加密 XP3 → feng/TPM scheme 端到端解出明文、错误 scheme 拒绝、
+  控制表解析（含签名校验/非法数组拒绝）
+- **范围**：仅经典 cxdec 单包拆包。新一代 HX（exe bootstrap 全静态还原 + 文件名恢复，
+  Yuzusoft 2025+ 等）是 Cxdec_Tools 的另一条 recover 流水线，见下版本计划
+
+---
+
+
 ## 已修复: XP3/PFS/KSD 移植审查反馈（Tyranor-Next 对照审查）
 
 背景：Tyranor-Next 把本仓库 `xp3-core` / `pfs-core` / `ksd-core` / `common` 移植为单 crate 时，
@@ -1194,7 +1222,8 @@
 - [x] **lzma (.lzma) 压缩 level 无效 + 极慢** — **已修**：`lzma-core` 压缩改用 **`lzma-sys`（liblzma C FFI）** `lzma_alone_encoder` + 流式 `lzma_code`——preset 0-9 真级别（实测 l1→11.3MB / l6→8.7MB / l9→8.2MB，32MB 文本），速度 ~3x（lzma-rs 0.84→liblzma ~2.5-3 MB/s 级别 6-9，级别 1 达 29 MB/s），产物系统 `lzma -d` 可解；解码保持 lzma-rs（语料 15 向量已验）；注：liblzma alone 头写未知大小，列表预览不显示解压大小
 - [x] **7z/bzip2 解压慢** — 已修（见 v5.8.0）：7z 换 liblzma（30→~232 MB/s）、bzip2 换 C libbz2（17→~80 MB/s）
 - [x] 完善单元测试与 CI/CD — 见 v5.8.0 CI/CD 搭建
-- [ ] **cxdec 解密支持** — feng 系等用 `xp3filter.tjs` 注册 cxdec filter 的 galgame（XP3 容器可解析、条目内容为密文，解出"损坏的图片/全是 mp3 流"）；移植 arc_unpacker `au/cxdec` 实现（约 400 行：算法族 + 按文件名哈希选扰动规则），从游戏目录 `xp3filter.tjs` 解析控制表初始化；真机样本与诊断数据可向 Tyranor-Next 仓库索取
+- [x] **cxdec 解密支持（经典 cxdec 单包拆包）** — 见顶部「已实现: cxdec 经典解密」；
+- [ ] **cxdec HX 新一代（exe bootstrap）** — Cxdec_Tools 的 recover 流水线（bootstrap 密钥派生 + 索引解密 + 文件名恢复，Yuzusoft/Laplacian/Purple software 2025+），作为独立模式接入
 - [ ] **DestAllocator 推广 zip/tar** — 提取循环统一重名/大小写碰撞去重（zip 并行提取路径需共享 Mutex 版分配器；xp3/pfs 已接入，见上方审查反馈修复第 1 条与反馈第 11 条）
 
 ---

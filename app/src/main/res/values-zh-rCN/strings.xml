@@ -517,4 +517,5 @@
 
     <string name="zip_invalid_entry_name">条目名不能包含 | 字符</string>
     <string name="msg_empty_archive">该归档为空</string>
+    <string name="pfs_auto_renamed">已自动更名为 %1$s</string>
 </resources>

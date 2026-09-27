@@ -11,6 +11,8 @@ object PfsCore {
     external fun pfsExtractProgressName(): String?
     external fun pfsExtractCancel()
     external fun pfsCreateArchive(tool: String, input: String, output: String): String?
+    // PF6 封包（独立 writer：同 pf8 索引布局、pf6 魔数、无加密）
+    external fun pfsCreateArchivePf6(tool: String, input: String, output: String): String?
     external fun pfsCompressProgressCount(): Long
     external fun pfsCompressProgressTotal(): Long
     external fun pfsCompressProgressFileCount(): Long

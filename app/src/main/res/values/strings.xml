@@ -514,4 +514,5 @@
 
     <string name="zip_invalid_entry_name">Entry names cannot contain the | character</string>
     <string name="msg_empty_archive">This archive is empty</string>
+    <string name="pfs_auto_renamed">Auto-renamed to %1$s</string>
 </resources>

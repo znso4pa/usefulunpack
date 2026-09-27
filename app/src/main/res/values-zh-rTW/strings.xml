@@ -504,4 +504,5 @@
 
     <string name="zip_invalid_entry_name">條目名不能包含 | 字元</string>
     <string name="msg_empty_archive">該封包為空</string>
+    <string name="pfs_auto_renamed">已自動更名為 %1$s</string>
 </resources>

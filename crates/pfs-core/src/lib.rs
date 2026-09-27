@@ -426,6 +426,38 @@ mod tests {
     }
 
     #[test]
+    fn pf6_header_matches_pf8_writer_layout() {
+        // The independent PF6 writer must produce a header byte-identical to
+        // the pf8 crate's Pf8Writer output for the same entry set (modulo the
+        // magic) — any drift would break external tools reading the index or
+        // the filesize-offset table. Data differs (PF8 XOR-encrypts), so only
+        // the header region is compared; XOR is length-preserving so the
+        // total file length must also match.
+        let dir = tmp("pf6parity");
+        let indir = dir.join("in");
+        std::fs::create_dir_all(indir.join("sub")).unwrap();
+        std::fs::write(indir.join("a.txt"), b"parity").unwrap();
+        std::fs::write(indir.join("sub/b.bin"), vec![1u8; 3000]).unwrap();
+
+        // Outputs live OUTSIDE the input dir — collect_files_pfs would
+        // otherwise pack the previous archive into the next run.
+        let pf8 = dir.join("p.pfs");
+        let pf6 = dir.join("q.pfs");
+        create_pfs(indir.to_str().unwrap(), pf8.to_str().unwrap()).unwrap();
+        create_pf6(indir.to_str().unwrap(), pf6.to_str().unwrap()).unwrap();
+
+        let d8 = std::fs::read(&pf8).unwrap();
+        let d6 = std::fs::read(&pf6).unwrap();
+        assert_eq!(&d8[..3], b"pf8");
+        assert_eq!(&d6[..3], b"pf6");
+        assert_eq!(d8.len(), d6.len(), "XOR is length-preserving");
+        let index_size = u32::from_le_bytes(d6[3..7].try_into().unwrap()) as usize;
+        let header_len = 7 + index_size;
+        assert_eq!(d6[3..header_len], d8[3..header_len], "header layout drift");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn pf6_pack_round_trip() {
         // PF6 pack (independent writer, no encryption) must be readable by the
         // pf8 crate's PF6 path and round-trip every byte, including nested

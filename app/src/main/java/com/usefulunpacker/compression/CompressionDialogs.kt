@@ -206,7 +206,9 @@ private fun runCompress(
     val splitEnabled = splitSize > 0 && fmt in setOf("zip", "7z")
     // Acquire a scheduler slot BEFORE showing the progress dialog — a queued
     // op surfaces position/ETA in that dialog instead of being refused.
-    val opH = tryStartOperation(activity, fmt)
+    // PF6 与 PFS 共用同一 cdylib 的 compress_progress store，调度 key 归并到
+    // "pfs" 才能串行——并行的 pf8/pf6 封包会互相污染对方的进度读数。
+    val opH = tryStartOperation(activity, if (fmt == "pf6") "pfs" else fmt)
     var cancelled = false
     val accessors = compressAccessors(fmt)
     val prog = PollingProgressDialog(

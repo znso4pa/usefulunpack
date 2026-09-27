@@ -282,6 +282,38 @@ pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3ExtractProgressName(en
 #[no_mangle]
 pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3ExtractCancel(_: JNIEnv, _: JClass) { extract_progress::cancel(); }
 
+// ─── XP3 cxdec (classic content-filter decryption) ────────────────────────
+// Scheme probing, control-block discovery and entry decryption live in
+// archive_cxdec-core; these entries only translate the JNI surface. Progress
+// and cancel share this cdylib's extract store, so the app's existing "xp3"
+// polling accessors and OpScheduler key work unchanged.
+
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CxdecExtract(
+    mut env: JNIEnv, _: JClass,
+    _t: JString, game_dir: JString, input: JString, output: JString,
+) -> jstring {
+    extract_progress::clear_cancel();
+    let gd = s(&mut env, &game_dir); let inp = s(&mut env, &input); let out = s(&mut env, &output);
+    match guarded(move || archive_cxdec_core::extract(&gd, &inp, &out, None)) {
+        Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match env.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
+        Err(er) => { let _ = env.throw_new("java/io/IOException", er); std::ptr::null_mut() }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CxdecExtractSelected(
+    mut env: JNIEnv, _: JClass,
+    _t: JString, game_dir: JString, input: JString, output: JString, selected: JString,
+) -> jstring {
+    extract_progress::clear_cancel();
+    let gd = s(&mut env, &game_dir); let inp = s(&mut env, &input); let out = s(&mut env, &output); let sel_str = s(&mut env, &selected);
+    match guarded(move || archive_cxdec_core::extract(&gd, &inp, &out, Some(&sel_str))) {
+        Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match env.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
+        Err(er) => { let _ = env.throw_new("java/io/IOException", er); std::ptr::null_mut() }
+    }
+}
+
 // ─── XP3 Pack (封包) ──────────────────────
 
 /// Collects files under `base` (or the single file itself) with `/`-separated

@@ -54,12 +54,14 @@ private val ARCHIVE_LABELS = mapOf(
     "LZ4 compressed data" to "lz4",
     "LZMA compressed data" to "lzma",
     "XP3 archive" to "xp3",
+    "PF6 archive" to "pfs",
+    "PF8 archive" to "pfs",
     "ISO 9660 disc image" to "iso",
     "POSIX tar archive" to "tar",
 )
 
 /** Formats whose native readers require the archive at byte 0 (must carve first). */
-private val NEEDS_CARVE = setOf("7z", "gz", "bz2", "xz", "zst", "lzma", "lz4", "xp3", "tar")
+private val NEEDS_CARVE = setOf("7z", "gz", "bz2", "xz", "zst", "lzma", "lz4", "xp3", "tar", "pfs")
 
 /** rars scans only the first 8 MiB for an embedded RAR signature. */
 private const val RAR_SCAN_LIMIT = 8L * 1024 * 1024

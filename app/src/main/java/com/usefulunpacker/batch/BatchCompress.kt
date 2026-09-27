@@ -96,13 +96,19 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                 // Kotlin-side flag here instead.
                                 val ok = if (cancelled) false else compressDispatch(tmpDir, outF, fmt, level, password, prefs, chosenSplit)
                                 tmpDir.deleteRecursively()
+                                // PFS/PF6 产物按 Artemis 约定自动更名 root.pfs(.NNN)
+                                var pfsRenamed: String? = null
+                                if (ok && !cancelled && fmt in setOf("pfs", "pf6")) {
+                                    applyPfsRootNaming(outF)?.let { pfsRenamed = it.name }
+                                }
                                 runOnUiThread {
                                     if (isFinishing || isDestroyed) return@runOnUiThread
                                     pd.dismiss()
                                     if (cancelled) {
                                         toast(getString(R.string.msg_cancelled))
                                     } else if (ok) {
-                                        val shown = if (chosenSplit > 0 && fmt in setOf("zip", "7z")) "${outF.name}.001" else outF.name
+                                        pfsRenamed?.let { toast(getString(R.string.pfs_auto_renamed, it)) }
+                                        val shown = if (chosenSplit > 0 && fmt in setOf("zip", "7z")) "${outF.name}.001" else pfsRenamed ?: outF.name
                                         toast("${getString(R.string.msg_extract_complete)} $shown")
                                         // Leave multi-select only on success — on
                                         // cancel/failure keep the selection so the
@@ -164,6 +170,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                     if (!opH.await()) return@thread
                     try {
                         var ok = true
+                        val pfsRenamedList = mutableListOf<String>()
                         for (f in items) {
                             if (cancelled) { ok = false; break }
                             val outName = if (fmt == "ksd") "${f.nameWithoutExtension}.$ext" else "${f.name}.$ext"
@@ -185,6 +192,9 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                                 }
                                 result
                             }
+                            if (ok2 && fmt in setOf("pfs", "pf6")) {
+                                applyPfsRootNaming(outF)?.let { pfsRenamedList.add(it.name) }
+                            }
                             if (!ok2) { ok = false; break }
                         }
                         runOnUiThread {
@@ -193,7 +203,10 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                             // 取消/失败保留多选（与 compressMerged 策略一致），
                             // 只有成功才清空并刷新。
                             if (cancelled) toast(getString(R.string.msg_cancelled))
-                            else if (ok) { toast(getString(R.string.msg_batch_compress_done)); exitAllMultiSelect(); nav(currentDir) }
+                            else if (ok) {
+                                pfsRenamedList.forEach { toast(getString(R.string.pfs_auto_renamed, it)) }
+                                toast(getString(R.string.msg_batch_compress_done)); exitAllMultiSelect(); nav(currentDir)
+                            }
                             else toast(getString(R.string.title_compress_failed))
                         }
                     } catch (e: Exception) {

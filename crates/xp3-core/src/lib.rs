@@ -1,7 +1,7 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jstring, jlong};
-use archive_common::{s, SyncIo, oneshot_async, json_escape, derive_dirs, safe_join, extract_result_json, ProgressWriter, ProgressReader};
+use archive_common::{s, SyncIo, oneshot_async, json_escape, derive_dirs, safe_join, extract_result_json, ProgressWriter, ProgressReader, DestAllocator};
 use archive_common::{extract_progress, compress_progress};
 use xp3::read::XP3Archive;
 use xp3::header::XP3Version;
@@ -17,23 +17,37 @@ use std::path::{Path, PathBuf};
 /// appears only on text/scripts (tiny), while images/audio are streamed.
 const KSD_PROBE_MAX: u64 = 16 * 1024 * 1024;
 
+/// Disk-fill guardrail: an entry may write at most declared size + 1 GiB.
+/// krkr2 neither caps nor verifies the sum of decoded segment bytes against
+/// INFO.size, and third-party repacks really do disagree (the extra bytes are
+/// KEPT on disk — lenient extraction, see the extract loops) — but a hostile
+/// entry inflating gigabytes past its declaration is cut off here instead of
+/// filling the disk. Well-formed packs never come near the slack.
+const ENTRY_WRITE_SLACK: u64 = 1024 * 1024 * 1024;
+
 /// Copies one entry from the xp3 stream to disk. Small entries are buffered so
 /// a Kirikiri KSD mode-2 filter (`FE FE 02 FF FE …`, used on text inside XP3)
 /// can be unwrapped — the xp3 crate only decodes the outer zlib, which would
 /// otherwise leave the scrambled wrapper as the file content. Returns true on
-/// success.
+/// success. Every success path flushes explicitly: a `BufWriter` dropped on
+/// failure would swallow a disk-full/EIO from its final <8 KiB, counting a
+/// truncated file as extracted (same semantics zip-core already enforces).
+/// Failure paths do NOT flush — the caller deletes the half-written file.
 fn copy_xp3_entry<R: tokio::io::AsyncRead + Unpin>(
     mut xf: R,
     size: u64,
     out_stream: &mut SyncIo<ProgressWriter<BufWriter<File>>>,
 ) -> bool {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let cap = size.saturating_add(ENTRY_WRITE_SLACK);
     if size <= KSD_PROBE_MAX {
         // Buffer up to a hard cap so a crafted entry that inflates far beyond
         // its declared size can't grow the Vec unboundedly (zlib bomb → OOM).
+        // The preallocation is capped too — the declared size is attacker-
+        // controlled and a burst of inflated claims would churn the heap.
         let copied: Result<Vec<u8>, std::io::Error> = oneshot_async(async {
             let x = &mut xf; // borrow, not consume — we may stream the rest below
-            let mut buf2 = Vec::with_capacity(size as usize);
+            let mut buf2 = Vec::with_capacity((size as usize).min(1024 * 1024));
             let limit = (KSD_PROBE_MAX + 1) as usize;
             let mut tmp = [0u8; 8192];
             loop {
@@ -45,33 +59,42 @@ fn copy_xp3_entry<R: tokio::io::AsyncRead + Unpin>(
             }
             Ok(buf2)
         });
-        let buf = match copied {
-            Ok(b) if b.len() as u64 <= KSD_PROBE_MAX => b,
+        match copied {
+            Ok(b) if b.len() as u64 <= KSD_PROBE_MAX => {
+                let payload = archive_ksd_core::ksd_mode2_decode(&b).unwrap_or(b);
+                // Calibrate the per-file progress to the actual (KSD-unwrapped)
+                // size — the wrapper's declared size was set before we knew.
+                extract_progress::set_file(payload.len() as u64);
+                oneshot_async(async {
+                    out_stream.write_all(&payload).await?;
+                    out_stream.flush().await
+                }).is_ok()
+            }
             Ok(b) => {
                 // The stream is bigger than the probe window — write what we
                 // already buffered verbatim (no KSD guess), then stream the
                 // rest. Skipping straight to `io::copy` would drop the buffered
                 // bytes (the reader has already consumed them).
-                let written = oneshot_async(async {
-                    out_stream.write_all(&b).await
-                });
-                if written.is_err() {
-                    return false;
-                }
-                return oneshot_async(tokio::io::copy(&mut xf, out_stream)).is_ok();
+                let rest = cap.saturating_sub(b.len() as u64);
+                oneshot_async(async {
+                    out_stream.write_all(&b).await?;
+                    tokio::io::copy(&mut xf.take(rest), out_stream).await?;
+                    out_stream.flush().await
+                }).is_ok()
             }
             _ => {
                 // Read error: stream the remainder (best-effort).
-                return oneshot_async(tokio::io::copy(&mut xf, out_stream)).is_ok();
+                oneshot_async(async {
+                    tokio::io::copy(&mut xf.take(cap), out_stream).await?;
+                    out_stream.flush().await
+                }).is_ok()
             }
-        };
-        let payload = archive_ksd_core::ksd_mode2_decode(&buf).unwrap_or(buf);
-        // Calibrate the per-file progress to the actual (KSD-unwrapped)
-        // size — the wrapper's declared size was set before we knew.
-        extract_progress::set_file(payload.len() as u64);
-        oneshot_async(async { out_stream.write_all(&payload).await }).is_ok()
+        }
     } else {
-        oneshot_async(tokio::io::copy(&mut xf, out_stream)).is_ok()
+        oneshot_async(async {
+            tokio::io::copy(&mut xf.take(cap), out_stream).await?;
+            out_stream.flush().await
+        }).is_ok()
     }
 }
 
@@ -104,13 +127,18 @@ fn extract_xp3(input: &str, output: &str) -> Result<(u32, u32), String> {
     let total = archive.entries().len() as u32;
     extract_progress::reset(archive.entries().iter().map(|e| e.size).sum());
     let mut fail = 0u32;
+    // XP3 indexes can carry duplicate names, and /sdcard + FAT are
+    // case-insensitive — allocate collision-free dests instead of letting
+    // last-wins File::create silently destroy the earlier entry's data.
+    let mut dests = DestAllocator::new();
     for i in 0..total as usize {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
-        let name = &archive.entries()[i].name;
-        extract_progress::set_name(name);
-        extract_progress::set_file(archive.entries()[i].size);
-        let dest = match safe_join(output, name) {
-            Ok(d) => d,
+        let entry = &archive.entries()[i];
+        extract_progress::set_name(&entry.name);
+        extract_progress::set_file(entry.size);
+        let size = entry.size;
+        let dest = match safe_join(output, &entry.name) {
+            Ok(d) => dests.allocate(d),
             Err(_) => { fail += 1; continue; }
         };
         if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
@@ -118,15 +146,24 @@ fn extract_xp3(input: &str, output: &str) -> Result<(u32, u32), String> {
             Ok(f) => f,
             Err(_) => { fail += 1; continue; }
         };
-        let size = archive.entries()[i].size;
         let mut out_stream = SyncIo(ProgressWriter::extract(BufWriter::new(out_file)));
         let xf = match oneshot_async(archive.by_index(i)) {
             Some(Ok(f)) => f,
-            _ => { fail += 1; continue; }
+            _ => { let _ = fs::remove_file(&dest); fail += 1; continue; }
         };
         if !copy_xp3_entry(xf, size, &mut out_stream) {
             let _ = fs::remove_file(&dest);
             fail += 1;
+            continue;
+        }
+        // Lenient extraction: keep what the segments actually decoded, even
+        // when it disagrees with INFO.size (krkr2 does the same). Re-base the
+        // progress so the bar still lands exactly on 100%.
+        let written = extract_progress::file_bytes();
+        if written != size {
+            extract_progress::calibrate_file(written);
+            let delta = (written as i128 - size as i128).clamp(i64::MIN as i128, i64::MAX as i128);
+            extract_progress::adjust_total(delta as i64);
         }
     }
     Ok((total, fail))
@@ -192,6 +229,7 @@ fn extract_xp3_selected(input: &str, output: &str, selected: &str) -> Result<(u3
     };
     extract_progress::reset(archive.entries().iter().filter(|e| matches(&e.name)).map(|e| e.size).sum());
     let mut sel = 0u32; let mut fail = 0u32;
+    let mut dests = DestAllocator::new();
     for i in 0..archive.entries().len() {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
         let raw_name = &archive.entries()[i].name;
@@ -199,8 +237,9 @@ fn extract_xp3_selected(input: &str, output: &str, selected: &str) -> Result<(u3
         sel += 1;
         extract_progress::set_name(raw_name);
         extract_progress::set_file(archive.entries()[i].size);
+        let size = archive.entries()[i].size;
         let dest = match safe_join(output, raw_name) {
-            Ok(d) => d,
+            Ok(d) => dests.allocate(d),
             Err(_) => { fail += 1; continue; }
         };
         if let Some(p) = dest.parent() { let _ = fs::create_dir_all(p); }
@@ -208,15 +247,21 @@ fn extract_xp3_selected(input: &str, output: &str, selected: &str) -> Result<(u3
             Ok(f) => f,
             Err(_) => { fail += 1; continue; }
         };
-        let size = archive.entries()[i].size;
         let mut out_stream = SyncIo(ProgressWriter::extract(BufWriter::new(out_file)));
         let xf = match oneshot_async(archive.by_index(i)) {
             Some(Ok(f)) => f,
-            _ => { fail += 1; continue; }
+            _ => { let _ = fs::remove_file(&dest); fail += 1; continue; }
         };
         if !copy_xp3_entry(xf, size, &mut out_stream) {
             let _ = fs::remove_file(&dest);
             fail += 1;
+            continue;
+        }
+        let written = extract_progress::file_bytes();
+        if written != size {
+            extract_progress::calibrate_file(written);
+            let delta = (written as i128 - size as i128).clamp(i64::MIN as i128, i64::MAX as i128);
+            extract_progress::adjust_total(delta as i64);
         }
     }
     Ok((sel, fail))
@@ -397,6 +442,44 @@ mod tests {
         extract_xp3(xp3.to_str().unwrap(), out.to_str().unwrap()).unwrap();
         let got = std::fs::read(out.join("script.txt")).unwrap();
         assert_eq!(got, text, "KSD wrapper must be unwrapped to the original text");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn duplicate_entry_names_are_renamed_not_overwritten() {
+        // XP3 indexes may carry several entries under one name, and /sdcard +
+        // FAT are case-insensitive: without the dedup pass the second entry's
+        // File::create truncates the first (last-wins) while the result JSON
+        // still reports success. Both entries must land on disk.
+        let dir = tmp("dupnames");
+        std::fs::create_dir_all(&dir).unwrap();
+        let xp3 = dir.join("dup.xp3");
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+
+        let out_file = std::fs::File::create(&xp3).unwrap();
+        let mut writer = oneshot_async(XP3Writer::new(
+            XP3Version::Current { minor: 0 },
+            SyncIo(BufWriter::new(out_file)),
+        )).unwrap();
+        for (name, mut payload) in [("Readme.txt", &b"payload-one"[..]), ("readme.txt", &b"payload-two"[..])] {
+            let mut fw = oneshot_async(writer.file(name.to_string(), false, Some(6))).unwrap();
+            oneshot_async(tokio::io::copy(&mut payload, &mut fw)).unwrap();
+            oneshot_async(fw.finish()).unwrap();
+        }
+        oneshot_async(writer.finish(None)).unwrap();
+
+        let (_, error) = extract_xp3(xp3.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+        assert_eq!(error, 0);
+        let mut names: Vec<String> = std::fs::read_dir(&out).unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), 2, "both entries must exist, got {names:?}");
+        // Case-folded uniqueness is what actually protects /sdcard and FAT.
+        let folded: HashSet<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        assert_eq!(folded.len(), 2, "case-only collision must be renamed, got {names:?}");
+        assert!(names.iter().any(|n| n.contains("(1)")), "renamed variant expected, got {names:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

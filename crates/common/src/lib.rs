@@ -1,6 +1,6 @@
 use jni::JNIEnv;
 use jni::objects::JString;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -71,6 +71,30 @@ macro_rules! progress_store {
             /// the writer later, so this must NOT double-count.
             pub fn set_file_bytes(n: u64) {
                 FILE_BYTES.store(n, Ordering::Relaxed);
+            }
+
+            /// Shifts the OVERALL total by a signed delta. Poorly repacked
+            /// archives disagree with their own index (actual decoded length
+            /// ≠ declared size); re-basing the total after each such entry
+            /// keeps the bar ending exactly at 100% instead of stuck short
+            /// of (or past) full. Saturating — a bogus declared size can't
+            /// wrap the counter through zero.
+            pub fn adjust_total(delta: i64) {
+                if delta >= 0 {
+                    TOTAL.fetch_add(delta as u64, Ordering::Relaxed);
+                } else {
+                    let next = TOTAL.load(Ordering::Relaxed).saturating_sub(delta.unsigned_abs());
+                    TOTAL.store(next, Ordering::Relaxed);
+                }
+            }
+
+            /// Re-bases the current file's counters to the size actually on
+            /// disk. Companion to `adjust_total` for entries whose real
+            /// decoded length differs from the index-declared one, so the
+            /// per-file bar doesn't linger past/below its target.
+            pub fn calibrate_file(written: u64) {
+                FILE_TOTAL.store(written, Ordering::Relaxed);
+                FILE_BYTES.store(written, Ordering::Relaxed);
             }
 
             pub fn set_name(name: &str) { *FNAME.lock().unwrap_or_else(|e| e.into_inner()) = name.to_string(); }
@@ -296,6 +320,51 @@ pub fn extract_result_json(total: u32, success: u32, error: u32) -> String {
     format!(r#"{{"total":{},"success":{},"error":{}}}"#, total, success, error)
 }
 
+/// Allocates non-colliding on-disk paths for archive entries.
+///
+/// XP3/PFS indexes may carry several entries under the same name, and both
+/// Android `/sdcard` (sdcardfs/FUSE) and FAT volumes are case-insensitive —
+/// `Readme.txt` and `readme.txt` resolve to ONE physical file. Writing each
+/// entry in turn to the same `File::create` dest is last-wins truncation:
+/// data is silently destroyed while the result JSON still reports success.
+/// The allocator case-folds its dedup key so case-only collisions are caught,
+/// and renames later claimants to `stem (n).ext` (common unarchiver
+/// convention) — nothing already written is ever overwritten. Scope is one
+/// extraction run: re-extracting over a previous run overwrites, as usual.
+pub struct DestAllocator {
+    seen: HashSet<String>,
+}
+
+impl Default for DestAllocator {
+    fn default() -> Self { Self::new() }
+}
+
+impl DestAllocator {
+    pub fn new() -> Self { Self { seen: HashSet::new() } }
+
+    /// Claims `dest` for one entry; returns the path to write (possibly a
+    /// `stem (n).ext` variant when `dest` — or a case-fold of it — was
+    /// already claimed by an earlier entry in this run).
+    pub fn allocate(&mut self, dest: PathBuf) -> PathBuf {
+        let key = dest.to_string_lossy().to_lowercase();
+        if self.seen.insert(key) { return dest; }
+        let parent = dest.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let stem = dest.file_stem().map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".to_string());
+        let ext = dest.extension().map(|s| format!(".{}", s.to_string_lossy()));
+        for n in 1..u32::MAX {
+            let name = match &ext {
+                Some(e) => format!("{stem} ({n}){e}"),
+                None => format!("{stem} ({n})"),
+            };
+            let cand = parent.join(name);
+            let key = cand.to_string_lossy().to_lowercase();
+            if self.seen.insert(key) { return cand; }
+        }
+        dest
+    }
+}
+
 /// Byte-splits a file into `<path>.001/.002/...` parts of `part_size` bytes
 /// (7-Zip `-v` semantics), then removes the original. `part_size == 0` is a
 /// no-op returning 1. Returns the number of parts written.
@@ -422,5 +491,52 @@ mod tests {
         // Zero limit rejects any write.
         let mut w = BoundedWriter::new(Vec::new(), 0);
         assert!(w.write(&[1]).is_err());
+    }
+
+    #[test]
+    fn dest_allocator_renames_duplicates_and_case_collisions() {
+        let mut da = DestAllocator::new();
+
+        // First claimant keeps its name.
+        let a = da.allocate(PathBuf::from("/out/sub/Readme.txt"));
+        assert_eq!(a, PathBuf::from("/out/sub/Readme.txt"));
+
+        // Case-insensitive volume: `readme.txt` would physically overwrite
+        // `Readme.txt` — must be renamed (keeping its own name), never
+        // returned as-is.
+        let b = da.allocate(PathBuf::from("/out/sub/readme.txt"));
+        assert!(b.to_string_lossy().ends_with("readme (1).txt"), "got {b:?}");
+
+        // Exact duplicate also renames, incrementing past the taken slot.
+        let c = da.allocate(PathBuf::from("/out/sub/Readme.txt"));
+        assert!(c.to_string_lossy().ends_with("Readme (2).txt"), "got {c:?}");
+
+        // Extension-less names rename without a dangling dot.
+        let d1 = da.allocate(PathBuf::from("/out/blob"));
+        let d2 = da.allocate(PathBuf::from("/out/blob"));
+        assert_eq!(d1, PathBuf::from("/out/blob"));
+        assert!(d2.to_string_lossy().ends_with("blob (1)"), "got {d2:?}");
+
+        // Distinct names are untouched.
+        let e = da.allocate(PathBuf::from("/out/other.txt"));
+        assert_eq!(e, PathBuf::from("/out/other.txt"));
+    }
+
+    #[test]
+    fn progress_total_adjust_saturates() {
+        // adjust_total is generated per-format by the progress_store! macro;
+        // exercise the extract instance in place (it is otherwise unused in
+        // this crate's tests). The store is per-cdylib static state, so these
+        // assertions only rely on deltas this test itself applies.
+        extract_progress::adjust_total(5);
+        let up = extract_progress::total_bytes();
+        extract_progress::adjust_total(-3);
+        let down = extract_progress::total_bytes();
+        assert_eq!(down, up - 3, "positive delta adds, negative delta subtracts");
+
+        // A negative delta larger than the current total must saturate at 0
+        // (fetch_sub would panic on underflow in debug builds).
+        extract_progress::adjust_total(i64::MIN);
+        assert_eq!(extract_progress::total_bytes(), 0);
     }
 }

@@ -20,8 +20,20 @@
   普通 XP3 路径；进度/取消复用 xp3 通道（同 .so 同 store，无新 fmtKey）；预览列表无需变化
   （经典 cxdec 索引为明文）；批量/预览/工作区/全局搜索全部经 `extractByFormat` 自动覆盖
 - 单条目整块 RAM 解码，1GiB 声明上限防敌意索引；写失败删半成品；重名走 DestAllocator
+- **真包验证**（feng《ちいさな彼女の小夜曲》patch.xp3 + data.xp3，adb pull → Rust probe 实测）：
+  首轮 454 条仅 ~15% 有效 → 定位 vendored VM 的 `MovEaxIndirect` 对控制表字取反
+  （TPM 读取器同样取反、双重取反抵消，故上游未发现；TJS 路径需预取反一次）——修复后
+  **patch.xp3 454/454、data.xp3 2432/2432 全部有效**（908 PNG + 1022 TLG + 135 OGG +
+  41 SCN(mdf) + 149 tjs/ks UTF-16 文本 + 字体，0 未知）
+- `tjs_scheme_params` 锚点修正：`(hash & 0x275) + 0x380` 的带括号形式（此前误抓 VM 自身的
+  `hash & 0x7f`）
 - 回归测试：手工构造 cxdec 加密 XP3 → feng/TPM scheme 端到端解出明文、错误 scheme 拒绝、
-  控制表解析（含签名校验/非法数组拒绝）
+  控制表解析（含签名校验/非法数组拒绝）；新增 `examples/probe.rs` 真包诊断工具
+- **脚本查看增强**：`detectBestEncoding` 新增无 BOM UTF-16LE 识别
+  （`detectBomlessUtf16Le`：`[可打印ASCII, 0x00]` 字对指纹，SJIS/GBK 文件不含 0x00 字节、
+  二进制 NUL 串是 `[0,0]` 对——判别力强）。krkr2 的 tjs/ks 常见无 BOM UTF-16LE，
+  此前落入 SJIS 启发式显示乱码；预览/编辑/内容搜索共用的识别链一处修复全生效。
+  真包 149 个 tjs/ks 全部正确识别（含 28 个无 BOM），SJIS/PNG 对照零误触
 - **范围**：仅经典 cxdec 单包拆包。新一代 HX（exe bootstrap 全静态还原 + 文件名恢复，
   Yuzusoft 2025+ 等）是 Cxdec_Tools 的另一条 recover 流水线，见下版本计划
 

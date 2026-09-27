@@ -134,6 +134,7 @@ fun detectBestEncoding(data: ByteArray): String? {
     detectBomEncoding(data)?.let { return it }
     if (data.isEmpty()) return null
     if (looksLikeUtf8(data)) return "UTF-8"
+    detectBomlessUtf16Le(data)?.let { return it }
     fun bad(s: String) = s.count { it == '\uFFFD' }
     val sjis = decodeTextStrict(data, "SHIFT-JIS")
     val gbk = decodeTextStrict(data, "GBK")
@@ -145,6 +146,29 @@ fun detectBestEncoding(data: ByteArray): String? {
     // the bad chars of SJIS — the common SJIS↔GBK cross-read where a SJIS file
     // "accidentally" decodes under GBK now stays SJIS.
     return if (bG * 2 < bS) "GBK" else "SHIFT-JIS"
+}
+
+/** Detects BOM-less UTF-16LE text — the standard encoding of Kirikiri2
+ *  `.tjs`/`.ks` scripts (Windows origin, often saved without a BOM). The
+ *  fingerprint: ASCII code appears as [printable, 0x00] pairs, a shape
+ *  SJIS/GBK text never has (they contain no 0x00 bytes at all), and binary
+ *  NUL runs are [0x00, 0x00] pairs (low byte 0x00 is not printable). Only LE
+ *  is auto-detected — krkr2 scripts are LE; BE files stay on the manual
+ *  encoding switch. Returns "UTF-16" (the BOM-less branch of
+ *  [decodeTextStrict] decodes LE) or null when the shape doesn't match. */
+fun detectBomlessUtf16Le(data: ByteArray): String? {
+    if (data.size < 16 || data.size % 2 != 0) return null
+    val pairs = data.size / 2
+    var asciiLe = 0
+    var i = 0
+    while (i < data.size) {
+        val lo = data[i].toInt() and 0xFF
+        if (data[i + 1] == 0.toByte() && lo in 0x20..0x7E) asciiLe++
+        i += 2
+    }
+    // 5% of pairs: far above any non-UTF-16 noise, far below the actual share
+    // in code-bearing scripts (keywords/brackets alone usually exceed 20%).
+    return if (asciiLe * 20 >= pairs) "UTF-16" else null
 }
 
 /** Reads at most [maxBytes] from [file] — for preview/search of potentially

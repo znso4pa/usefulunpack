@@ -40,10 +40,9 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                 .setView(inp)
                 .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                     val name = inp.text.toString().trim().ifEmpty { "archive" }
-                    showCompressOptionsDialog(this, prefs, fmt) { level, chosenSplit ->
+                    showCompressOptionsDialog(this, prefs, fmt) { level, chosenSplit, artemisNaming ->
                         val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                         val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
-                        val outF = uniqueFile(currentDir, "$name.$ext")
                         // Sanitize the staging subdir name (reject ../ and path
                         // separators) so a weird name can't escape cacheDir.
                         val safeName = name.replace(Regex("[/\\\\:*?\"<>|]"), "_")
@@ -67,6 +66,9 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                         thread {
                             if (!opH.await()) return@thread
                             try {
+                                // 产物名在【拿到槽位之后】解析：入队时解析的话，排队
+                                // 中的第二次封包会和第一次拿到同一个名字互相覆盖。
+                                val outF = resolvePfsOutName(uniqueFile(currentDir, "$name.$ext"), artemisNaming)
                                 // Copy off the UI thread — large batches would
                                 // ANR the main thread here. Clear any stale staging
                                 // dir from a previously crashed run first.
@@ -96,19 +98,16 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                 // Kotlin-side flag here instead.
                                 val ok = if (cancelled) false else compressDispatch(tmpDir, outF, fmt, level, password, prefs, chosenSplit)
                                 tmpDir.deleteRecursively()
-                                // PFS/PF6 产物按 Artemis 约定自动更名 root.pfs(.NNN)
-                                var pfsRenamed: String? = null
-                                if (ok && !cancelled && fmt in setOf("pfs", "pf6")) {
-                                    applyPfsRootNaming(outF)?.let { pfsRenamed = it.name }
-                                }
+                                // 失败/取消必须清掉半成品：产物名可能是 root.pfs，
+                                // 留个截断的 root.pfs 会被游戏当分层补丁挂载。
+                                if (!ok) outF.delete()
                                 runOnUiThread {
                                     if (isFinishing || isDestroyed) return@runOnUiThread
                                     pd.dismiss()
                                     if (cancelled) {
                                         toast(getString(R.string.msg_cancelled))
                                     } else if (ok) {
-                                        pfsRenamed?.let { toast(getString(R.string.pfs_auto_renamed, it)) }
-                                        val shown = if (chosenSplit > 0 && fmt in setOf("zip", "7z")) "${outF.name}.001" else pfsRenamed ?: outF.name
+                                        val shown = if (chosenSplit > 0 && fmt in setOf("zip", "7z")) "${outF.name}.001" else outF.name
                                         toast("${getString(R.string.msg_extract_complete)} $shown")
                                         // Leave multi-select only on success — on
                                         // cancel/failure keep the selection so the
@@ -148,7 +147,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                 toast(getString(R.string.msg_ksd_need_txt)); return@showFormatPicker
             }
             // 压缩选项（等级/分卷）内联，与单文件压缩流一致。
-            showCompressOptionsDialog(this, prefs, fmt) { level, chosenSplit ->
+            showCompressOptionsDialog(this, prefs, fmt) { level, chosenSplit, artemisNaming ->
                 val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                 val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
                 // Lock first, then the progress dialog (see extractAll).
@@ -170,11 +169,10 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                     if (!opH.await()) return@thread
                     try {
                         var ok = true
-                        val pfsRenamedList = mutableListOf<String>()
                         for (f in items) {
                             if (cancelled) { ok = false; break }
                             val outName = if (fmt == "ksd") "${f.nameWithoutExtension}.$ext" else "${f.name}.$ext"
-                            val outF = uniqueFile(f.parentFile ?: currentDir, outName)
+                            val outF = resolvePfsOutName(uniqueFile(f.parentFile ?: currentDir, outName), artemisNaming)
                             // zip/7z/tar 的 Rust 端 read_dir 不接受单文件输入，需临时目录包裹
                             val ok2 = if (f.isDirectory || fmt !in setOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")) {
                                 compressDispatch(f, outF, fmt, level, password, prefs, chosenSplit)
@@ -192,10 +190,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                                 }
                                 result
                             }
-                            if (ok2 && fmt in setOf("pfs", "pf6")) {
-                                applyPfsRootNaming(outF)?.let { pfsRenamedList.add(it.name) }
-                            }
-                            if (!ok2) { ok = false; break }
+                            if (!ok2) { outF.delete(); ok = false; break }
                         }
                         runOnUiThread {
                             if (isFinishing || isDestroyed) return@runOnUiThread
@@ -204,7 +199,6 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                             // 只有成功才清空并刷新。
                             if (cancelled) toast(getString(R.string.msg_cancelled))
                             else if (ok) {
-                                pfsRenamedList.forEach { toast(getString(R.string.pfs_auto_renamed, it)) }
                                 toast(getString(R.string.msg_batch_compress_done)); exitAllMultiSelect(); nav(currentDir)
                             }
                             else toast(getString(R.string.title_compress_failed))

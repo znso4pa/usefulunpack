@@ -455,7 +455,7 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                     toast(getString(R.string.edit_only_pack))
                 } else {
                     dlg.dismiss()
-                    startEditArchive(src, format, pwd)
+                    startEditArchive(src, format, pwd, ownerTab)
                 }
             }
         }
@@ -647,7 +647,9 @@ internal fun MainActivity.showMergeTargetPicker(src: File, selectedPaths: List<S
 
 /**
  * Extracts the source preview's selected entries, unpacks the target archive,
- * overlays them into one staging dir, and repacks into `目标-cn.ext`. Runs under
+ * overlays them into one staging dir, and repacks into a NEW archive next to the
+ * target (`目标-cn.ext`, or `root.pfs`/`.NNN` for pfs/pf6 — see resolvePfsOutName).
+ * Runs under
  * the OpScheduler ("merge" key) with the dual progress dialog; source/target are
  * both held by OpenArchiveRegistry so a second window can't race the same archives.
  */
@@ -666,7 +668,10 @@ internal fun MainActivity.mergeIntoArchive(
         return
     }
     val parent = target.parentFile ?: ownerTab.currentDir
-    val outF = uniqueFile(parent, "${target.nameWithoutExtension}-cn.${target.extension.ifEmpty { targetFmt }}")
+    // 与编辑回包统一：pfs/pf6 目标也走 Artemis 命名（root.pfs/.NNN），开关同源。
+    // 产物名在【拿到槽位之后】解析——merge 用的是伪 key "merge"，与 pfs 封包
+    // 不同槽，排队中的两次合并必须各自解析名字，否则后完成者覆盖先完成者。
+    val artemisNaming = targetFmt in setOf("pfs", "pf6") && prefs.getBoolean("pfs_artemis_naming", true)
     val stageDir = File(cacheDir, "merge/${target.nameWithoutExtension}")
     var cancelled = false
     val accessors = extractAccessors(targetFmt)
@@ -717,13 +722,19 @@ internal fun MainActivity.mergeIntoArchive(
                     //    overwrite them — merge intent).
                     val tgtOutcome = extractByFormat(targetFmt, target.path, stageDir.path, "", prefs, tgtPwd)
                     if (cancelled) return@thread
-                    // 3. Repack into a -cn copy (never overwrite the original target).
+                    // 3. Repack into a new file (never overwrite the original target).
+                    val outF = resolvePfsOutName(
+                        uniqueFile(parent, "${target.nameWithoutExtension}-cn.${target.extension.ifEmpty { targetFmt }}"),
+                        artemisNaming
+                    )
                     val ok = compressDispatch(stageDir, outF, targetFmt, prefs.getInt("generic_level", 6), "", prefs)
+                    // 失败/取消清半成品（产物名可能是 root.pfs）。
+                    if (cancelled || !ok) outF.delete()
                     runOnUiThread {
                         if (isFinishing || isDestroyed) return@runOnUiThread
                         prog.dismiss()
                         if (cancelled) toast(getString(R.string.msg_cancelled))
-                        else if (ok) toast(getString(R.string.merge_done, outF.name))
+                        else if (ok) { toast(getString(R.string.merge_done, outF.name)); refreshTab(ownerTab) }
                         else toast(getString(R.string.title_compress_failed))
                     }
                 } catch (e: Exception) {
@@ -844,13 +855,15 @@ private fun MainActivity.showEditScriptList(src: File, format: String, editDir: 
 private fun MainActivity.repackEditedArchive(src: File, format: String, editDir: File, ownerTab: TabState = activeTab) {
     val parent = src.parentFile ?: return
     val ext = src.extension.ifEmpty { format }
-    val outF = uniqueFile(parent, "${src.nameWithoutExtension}-cn.$ext")
+    // Artemis 命名与产物名在【拿到槽位之后】解析（见 resolvePfsOutName）；进度卡
+    // 在 await 前就要画，所以标题用【源包名】而不是产物名。
+    val artemisNaming = format in setOf("pfs", "pf6") && prefs.getBoolean("pfs_artemis_naming", true)
     val opH = tryStartOperation(this, if (format == "pf6") "pfs" else format)
     var cancelled = false
     val accessors = compressAccessors(format)
     val prog = PollingProgressDialog(
         this,
-        "${getString(R.string.edit_repack)} — ${outF.name}",
+        "${getString(R.string.edit_repack)} — ${src.name}",
         accessors,
         { n, b, t -> compressProgressMessage(this, n, b, t) },
         getString(R.string.action_cancel),
@@ -862,6 +875,7 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
     thread {
         if (!opH.await()) return@thread
         try {
+            val outF = resolvePfsOutName(uniqueFile(parent, "${src.nameWithoutExtension}-cn.$ext"), artemisNaming)
             val ok = when (format) {
                 "xp3" -> Xp3Core.xp3CreateArchive("", editDir.path, outF.path, prefs.getInt("generic_level", 6).toString()) != null
                 "nsa" -> NsaCore.nsaCreateArchive("", editDir.path, outF.path, "2") != null
@@ -875,19 +889,16 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
                 "pf6" -> PfsCore.pfsCreateArchivePf6("", editDir.path, outF.path) != null
                 else -> PfsCore.pfsCreateArchive("", editDir.path, outF.path) != null
             }
-            // PFS/PF6 封包产物按 Artemis 约定自动更名 root.pfs(.NNN)
-            var pfsRenamed: String? = null
-            if (ok && !cancelled && format in setOf("pfs", "pf6")) {
-                applyPfsRootNaming(outF)?.let { pfsRenamed = it.name }
-            }
+            // 失败/取消清半成品：产物名可能是 root.pfs，截断的 root.pfs 会被
+            // 游戏当分层补丁挂载，比留个 -cn 残留危险得多。
+            if (cancelled || !ok) outF.delete()
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 prog.dismiss()
                 if (cancelled) toast(getString(R.string.msg_cancelled))
                 else if (ok) {
-                    pfsRenamed?.let { toast(getString(R.string.pfs_auto_renamed, it)) }
-                    toast(getString(R.string.edit_done, pfsRenamed ?: outF.name))
-                    nav(currentDir)
+                    toast(getString(R.string.edit_done, outF.name))
+                    refreshTab(ownerTab)
                 }
                 else toast(getString(R.string.title_compress_failed))
             }

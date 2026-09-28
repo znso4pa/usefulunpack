@@ -23,8 +23,8 @@ fun showCompressFormatPicker(
                 Toast.makeText(activity, activity.getString(R.string.msg_ksd_need_txt), Toast.LENGTH_SHORT).show()
                 return@showFormatPicker
             }
-            showCompressOptionsDialog(activity, prefs, fmt) { level, split ->
-                runCompress(activity, dir, currentDir, prefs, fmt, level, split, onComplete, ownerTab)
+            showCompressOptionsDialog(activity, prefs, fmt) { level, split, artemisNaming ->
+                runCompress(activity, dir, currentDir, prefs, fmt, level, split, onComplete, ownerTab, artemisNaming)
                 true
             }
         },
@@ -37,12 +37,13 @@ fun showCompressFormatPicker(
  * Inline compress options (level + split) shown after the format picker —
  * per-operation overrides that default to the settings values, so the user
  * doesn't have to visit Settings first. Shared by single-file and batch flows.
- * The resolved (level, splitBytes) is handed to [onResolved]; returning false
- * there cancels (e.g. batch format guards) without running the compress.
+ * The resolved (level, splitBytes, pfsArtemisNaming) is handed to [onResolved];
+ * returning false there cancels (e.g. batch format guards) without running the
+ * compress.
  */
 fun showCompressOptionsDialog(
     activity: AppCompatActivity, prefs: SharedPreferences,
-    fmt: String, onResolved: (level: Int, splitBytes: Long) -> Boolean
+    fmt: String, onResolved: (level: Int, splitBytes: Long, pfsArtemisNaming: Boolean) -> Boolean
 ) {
     val isZip = fmt == "zip"
     val isSz = fmt == "7z"
@@ -78,6 +79,12 @@ fun showCompressOptionsDialog(
         else -> fmt(v) // custom value from settings
     }
     val canSplit = isZip || isSz
+    // PFS/PF6 only: Artemis layered-patch naming. On = write straight into
+    // root.pfs / root.pfs.NNN (the slot the engine mounts last, i.e. the one a
+    // translation patch must occupy — see resolvePfsOutName). Off = keep the
+    // name the caller derived (pfs-rs's explicit `-o` behaviour).
+    val isPfs = fmt == "pfs" || fmt == "pf6"
+    var artemisNaming = isPfs && prefs.getBoolean("pfs_artemis_naming", true)
     // Byte-split volumes are named `.001/.002/…` (7-Zip `-v` semantics) — never
     // PKWARE `.z01` true disks, which this writer does not produce. Show the
     // suffix on the row so a user isn't left guessing which split scheme they got.
@@ -181,12 +188,28 @@ fun showCompressOptionsDialog(
             }
             addView(splitRow)
         }
+        if (isPfs) {
+            addView(android.view.View(activity).apply {
+                setBackgroundColor(C["divider_subtle"]!!)
+                layoutParams = android.widget.LinearLayout.LayoutParams(MATCH, 1).apply { setMargins(24, 0, 24, 0) }
+            })
+            addView(androidx.appcompat.widget.SwitchCompat(activity).apply {
+                isChecked = artemisNaming
+                text = activity.getString(R.string.pfs_artemis_naming)
+                setTextColor(C["primary"]!!)
+                setPadding(24, 12, 24, 12)
+                setOnCheckedChangeListener { _, checked ->
+                    artemisNaming = checked
+                    prefs.edit().putBoolean("pfs_artemis_naming", checked).apply()
+                }
+            })
+        }
     }
     android.app.AlertDialog.Builder(activity)
         .setTitle(activity.getString(R.string.title_compress_options))
         .setView(body)
         .setPositiveButton(activity.getString(R.string.action_confirm)) { _, _ ->
-            if (!onResolved(levelVals[level], chosenSplit)) return@setPositiveButton
+            if (!onResolved(levelVals[level], chosenSplit, artemisNaming)) return@setPositiveButton
         }
         .setNegativeButton(activity.getString(R.string.action_cancel), null)
         .show()
@@ -195,12 +218,12 @@ fun showCompressOptionsDialog(
 private fun runCompress(
     activity: AppCompatActivity, dir: File, currentDir: File, prefs: SharedPreferences,
     fmt: String, level: Int, splitSize: Long, onComplete: () -> Unit,
-    ownerTab: TabState? = null
+    ownerTab: TabState? = null, artemisNaming: Boolean = false
 ) {
     val ext = COMPRESS_EXT[fmt] ?: fmt
     // KSD 输出替换源扩展名（save.txt → save.ksd），其余格式保留源扩展名（save.txt → save.txt.gz）
     val outName = if (fmt == "ksd") "${dir.nameWithoutExtension}.$ext" else "${dir.name}.$ext"
-    val outFile = uniqueFile(dir.parentFile ?: currentDir, outName)
+    val outDir = dir.parentFile ?: currentDir
     val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
     val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
     val splitEnabled = splitSize > 0 && fmt in setOf("zip", "7z")
@@ -225,12 +248,10 @@ private fun runCompress(
     thread {
         if (!opH.await()) return@thread
         try {
-            var ok = compressDispatch(dir, outFile, fmt, level, password, prefs, splitSize)
-            // PFS/PF6 封包按 Artemis 分层补丁约定自动更名（见 applyPfsRootNaming）
-            var pfsRenamed: String? = null
-            if (ok && !cancelled && fmt in setOf("pfs", "pf6")) {
-                applyPfsRootNaming(outFile)?.let { pfsRenamed = it.name }
-            }
+            // 产物名在【拿到槽位之后】解析：入队时解析的话，排队中的第二次封包
+            // 会和第一次拿到同一个名字，后完成者覆盖先完成者（产物丢失）。
+            val outFile = resolvePfsOutName(uniqueFile(outDir, outName), artemisNaming)
+            val ok = compressDispatch(dir, outFile, fmt, level, password, prefs, splitSize)
             if (cancelled || !ok) {
                 // split_volumes already removed the original; remove the
                 // `.001/.002/...` parts too, not just outFile.
@@ -246,10 +267,7 @@ private fun runCompress(
                 prog.dismiss()
                 if (cancelled) { Toast.makeText(activity, activity.getString(R.string.msg_cancelled), Toast.LENGTH_SHORT).show() }
                 else if (ok) {
-                    pfsRenamed?.let {
-                        Toast.makeText(activity, activity.getString(R.string.pfs_auto_renamed, it), Toast.LENGTH_LONG).show()
-                    }
-                    val shown = if (splitEnabled) "${outFile.name}.001" else pfsRenamed ?: outFile.name
+                    val shown = if (splitEnabled) "${outFile.name}.001" else outFile.name
                     Toast.makeText(activity, "${activity.getString(R.string.msg_extract_complete)} $shown", Toast.LENGTH_SHORT).show()
                     onComplete()
                 }
@@ -259,22 +277,6 @@ private fun runCompress(
             opH.release()
         }
     }
-}
-
-/**
- * PFS/PF6 封包产物按 Artemis 分层补丁约定自动更名：`root.pfs`；已存在则
- * `root.pfs.000`、`root.pfs.001` …（三位数字递增）。返回更名后的文件；
- * 产物本身已叫 root.pfs 或更名失败时返回 null。 */
-fun applyPfsRootNaming(outFile: File): File? {
-    if (outFile.name == "root.pfs") return null
-    val dir = outFile.parentFile ?: return null
-    var target = File(dir, "root.pfs")
-    if (target.exists()) {
-        var n = 0
-        while (File(dir, "root.pfs.%03d".format(n)).exists()) n++
-        target = File(dir, "root.pfs.%03d".format(n))
-    }
-    return if (outFile.renameTo(target)) target else null
 }
 
 /** 通用压缩派发：任何来源（单文件/目录/临时合并目录）→ 指定格式，供单文件、批量合并、批量分别共用。 */

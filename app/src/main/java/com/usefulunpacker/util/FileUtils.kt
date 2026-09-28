@@ -285,6 +285,28 @@ fun uniqueFile(parent: File, name: String): File {
     }
 }
 
+/**
+ * PFS/PF6 封包产物名。Artemis 分层补丁约定：游戏按 `root.pfs` → `root.pfs.000` →
+ * `root.pfs.001` … 的顺序挂载，**编号越大越晚挂载、越优先**（越后面的覆盖前面的），
+ * 所以翻译补丁就是往这个槽位里写。等价于 pfs-rs 不带 `-o` 的默认输出行为
+ * （`-o` 显式给名则原样使用；`-f` 才覆盖，本 app 不提供覆盖）。
+ *
+ * 在【拿到调度槽位之后】调用：同 key 的 pfs 封包是串行的，此刻扫描不会和别人撞名。
+ * 直接写最终名（而非封完再改名）——改名会失败且失败后无提示，半截 `root.pfs`
+ * 会被游戏当补丁挂载，比留个 `X (1).pfs` 危险得多。
+ *
+ * [artemisNaming] 为 false 时原样返回（尊重调用方给的 `-o` 风格名字）。
+ */
+fun resolvePfsOutName(outFile: File, artemisNaming: Boolean): File {
+    if (!artemisNaming) return outFile
+    val dir = outFile.parentFile ?: return outFile
+    val base = File(dir, "root.pfs")
+    if (!base.exists()) return base
+    var n = 0
+    while (File(dir, "root.pfs.%03d".format(n)).exists()) n++
+    return File(dir, "root.pfs.%03d".format(n))
+}
+
 fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
 fun hashFile(f: File, algorithm: String): String {

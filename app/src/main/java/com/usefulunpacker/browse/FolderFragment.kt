@@ -83,7 +83,7 @@ class FolderFragment : Fragment() {
             // Next-frame delay: exitPreview triggers navTab (list refresh +
             // FileObserver restart); starting the edit dialog on the same frame
             // can stack two window ops that Honor drops one of (dialog vanishes).
-            act.viewPager.post { act.startEditArchive(src, tab.previewFormat, tab.previewPwd) }
+            act.viewPager.post { act.startEditArchive(src, tab.previewFormat, tab.previewPwd, tab) }
         }
         fun doZipManage() {
             if (tab.previewFormat != "zip") {

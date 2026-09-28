@@ -1,5 +1,50 @@
 # TODO
 
+## 已修复: PFS 封包产物命名重构 — 预解析最终名 + Artemis 命名开关
+
+上一版用「封完再 `renameTo` 成 `root.pfs`」，本轮改成**在拿到调度槽位之后直接解析出最终名、
+直接写进去**，并补齐 6 个缺陷。
+
+### 设计变更
+
+| | 旧（post-rename） | 新（预解析最终名） |
+|---|---|---|
+| 机制 | `applyPfsRootNaming()` 封完改名 | `resolvePfsOutName(outFile, artemisNaming)`（`util/FileUtils.kt`）解析后直接压 |
+| 改名失败 | `renameTo` 失败静默返回 null，toast 只报真实名 → **无任何告警**（Artemis 场景下产物游戏不会挂载，用户却以为成功） | 无改名步骤，该类失败消失 |
+| 进度卡标题 | 用 `outF.name`（`game-cn.pfs`）→ 与最终产物 `root.pfs.NNN` 不符 | 编辑回包标题改用**源包名** `src.name` |
+| 用户显式命名 | 批量合并的名字输入框对 pfs/pf6 **完全作废** | 封包选项新增开关（默认开=Artemis 命名，关=尊重输入框名字，等价 pfs-rs 的 `-o`） |
+
+### 缺陷清单
+
+| 位置 | 问题 | 修复 |
+|------|------|------|
+| `CompressionDialogs.runCompress` | `uniqueFile` 在 `tryStartOperation` **之前**解析 → 排队中的第二次封包拿到同一名字，后完成者覆盖先完成者（产物丢失）。zip 三件套早已修过（解析挪到 `await()` 之后），封包/回包路径漏网 | 解析挪进 `thread{}` 的 `await()` 之后 |
+| `PreviewFlow.repackEditedArchive` | 同上；且 `outF.name` 被进度卡标题提前消费，无法简单后移 | 同上 + 标题改用源包名 |
+| `PreviewFlow.mergeIntoArchive` | 上一版**不**参与 root.pfs 化，产物 `game-cn.pfs`；与编辑回包 `root.pfs.NNN` 不一致（TODO 旧决策「root.pfs 化只作用于打包产物」作废） | 统一走 `resolvePfsOutName`，开关同源；最终名进 `merge_done` toast |
+| `BatchCompress` 合并/分别 | 同 A（`uniqueFile` 在入队时解析） | 解析挪进 `await()` 之后 |
+| `compressDispatch` 失败路径 | 只 `catch → false`，**不清理半成品**。原本残留的是无害的 `X.pfs`；直接写 `root.pfs` 后，**截断的 root.pfs 会被游戏当分层补丁挂载** | runCompress 原有清理保留；repack / merge / 批量合并 / 批量分别补 `if (cancelled \|\| !ok) outF.delete()` |
+| `PreviewFlow.repackEditedArchive` | 收了 `ownerTab` 只用于进度卡，完成后 `nav(currentDir)` 刷瞬时活跃窗（与 c86bfd0 修的 CsoConvert `refreshTab(ownerTab)` 同类） | `nav(currentDir)` → `refreshTab(ownerTab)`；`startEditArchive` 两个调用点补传 ownerTab（`PreviewFlow` / `FolderFragment`） |
+| `ExtractProgress.compressAccessors` | `"pf6" -> …` 与 `"nsa" -> …` 挤在同一行（缺换行） | 换行 |
+
+### 其余
+
+- 新增字符串 `pfs_artemis_naming`（4 locale）；**移除**已无引用的 `pfs_auto_renamed`（4 locale）
+- 调度 key 归并（pf6→pfs）与 `compressAccessors` 共用 `PfsCore.pfsCompress*` 保持不变——已复核正确
+- 纯 Kotlin 改动，JNI 面未变，无需 `bash build.sh`
+- 已知取舍：`mergeIntoArchive` 走伪 key `"merge"`，与 `"pfs"` 不同槽，理论上可与 pfs 封包并发抢同一个 `root.pfs.NNN`；两处 toast 都报最终名，用户可发现
+
+### 验证状态
+
+- `./gradlew :app:compileReleaseKotlin` / `lintDebug` / `:app:assembleRelease` 全过（0 lint error，无新增 warning）
+- **真机回归待做**（装机后按序验）：
+  1. pfs 连封两次 → `root.pfs` + `root.pfs.000`
+  2. **封包中途取消 → 目录不留任何半截 `root.pfs`**（新直写路径最关键的一条）
+  3. 关闭开关封 pfs → 用输入框填的名字
+  4. 连续两次「编辑回包」同一 7z → 两个产物都在（验证槽位后解析）
+  5. 合并回包 pfs → 同样落在 `root.pfs`/`.NNN`，与编辑回包一致
+
+---
+
 ## 已实现: PFS 大更新 — PF6 独立封包 + root.pfs 自动更名
 
 参考 [pfs-rs](https://github.com/sakarie9/pfs-rs)（其 pf8 crate 即本仓库在用的 0.1.6：PF6 仅读取且无加密、PF8 可读可写）：
@@ -14,6 +59,7 @@
   `root.pfs`；已存在则 `root.pfs.000`、`root.pfs.001` …（三位数字递增），
   toast 提示「已自动更名为 …」（四语言）。单目录封包与预览工作区"合并回包"
   两条路径都生效；产物本身已是 root.pfs 时不多余更名
+  （⚠️ 本节的「自动更名」机制已由上方「命名重构」章节整体替换为预解析最终名）
 - 格式选择器新增 PF6 项（PFS/PF8 与 PF6 并列可选）；pf6 读取/预览/解包沿用
   既有 "pfs" 通道（crate 原生支持）
 - 回归测试：PF6 打包 → pf8 crate PF6 读取 → 逐字节回环（嵌套目录 +
@@ -32,6 +78,7 @@
   报错而非静默截断）+ file_offset 起点 checked_add；回环测试补日文文件名
   （SHIFT_JIS 路径编码路径）与 0 字节条目；合并回包的 `-cn.pfs` 翻译命名
   惯例保留不动（root.pfs 化只作用于"打包产物"，编辑回包走翻译工作流语义）
+  （⚠️ 末句该决策已由上方「命名重构」章节推翻：合并回包现也参与 root.pfs 化）
 
 ---
 

@@ -296,7 +296,7 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:layout_marginStart="4dp"
-                    android:text="@string/merge_into_archive"
+                    android:text="@string/merge_short"
                     android:textSize="12sp"
                     android:textColor="@color/text_primary"
                     android:minWidth="0dp"

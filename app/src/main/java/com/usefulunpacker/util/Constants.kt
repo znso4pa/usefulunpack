@@ -42,6 +42,11 @@ val FORMAT_COLORS = mapOf(
     "nsa" to 0xFF9b59b6.toInt(),
     "iso" to 0xFF1abc9c.toInt(),
     "ypf" to 0xFFe91e63.toInt(),
+    "rgss" to 0xFFd35400.toInt(),
+    "rpgmv" to 0xFFb26500.toInt(),
+    "rpgmvp" to 0xFFb26500.toInt(),
+    "rpgmvo" to 0xFFb26500.toInt(),
+    "rpgmvm" to 0xFFb26500.toInt(),
     "zip" to 0xFF3498db.toInt(),
     "7z" to 0xFF8e44ad.toInt(),
     "rar" to 0xFFc0392b.toInt(),
@@ -73,6 +78,14 @@ fun formatOfName(name: String): String? {
         "nsa", "sar" -> "nsa"
         "iso" -> "iso"
         "ypf" -> "ypf"
+        // All three RGSS container versions read through one key: the parser
+        // takes the layout from the archive header, so there is nothing for
+        // the user to choose. Packing still offers them separately
+        // (COMPRESS_GROUPS) because there the target version IS a decision.
+        "rgssad", "rgss2a", "rgss3a" -> "rgss"
+        // RPG Maker MV/MZ: one obfuscated file per asset, extension says
+        // nothing about the real format (it is recovered from the header).
+        "rpgmvp", "rpgmvo", "rpgmvm", "png_", "ogg_", "m4a_" -> "rpgmv"
         "zip" -> "zip"
         "7z" -> "7z"
         "rar" -> "rar"
@@ -105,11 +118,14 @@ fun iconTintFor(f: File): Int {
 val ARCHIVE_EXTS = setOf(
     "xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso", "ypf", "zip", "7z", "rar", "lz4",
     "gz", "bz2", "xz", "zst", "lzma", "tar", "tgz", "tbz2", "txz", "tzst", "ksd", "br",
+    "rgssad", "rgss2a", "rgss3a", "rpgmvp", "rpgmvo", "rpgmvm", "png_", "ogg_", "m4a_",
 )
 
 // 归档模式格式选择器：格式 key → 显示标签
 val FORMAT_LABELS = mapOf(
     "xp3" to "XP3", "pfs" to "PFS/PF6/PF8", "nsa" to "NSA/SAR", "iso" to "ISO", "ypf" to "YPF",
+    "rgss" to "RGSS (.rgssad/.rgss2a/.rgss3a)",
+    "rpgmv" to "RPG Maker MV/MZ (.rpgmvp/.rpgmvo/.rpgmvm)",
     "zip" to "ZIP", "7z" to "7z", "rar" to "RAR", "lz4" to "LZ4",
     "tar" to "TAR (.tar/.tgz/.tar.gz/.tbz2/.txz)", "gz" to "GZIP (.gz)", "bz2" to "BZIP2 (.bz2)",
     "xz" to "XZ (.xz)", "zst" to "ZSTD (.zst)", "lzma" to "LZMA (.lzma)",
@@ -119,19 +135,21 @@ val FORMAT_LABELS = mapOf(
 // 归档模式格式选择器分组顺序（表头用 string 资源，格式 key 列表）
 val FORMAT_GROUPS = listOf(
     Pair(R.string.format_group_generic, listOf("zip", "7z", "rar", "lz4", "tar", "gz", "bz2", "xz", "zst", "lzma", "br")),
-    Pair(R.string.format_group_other, listOf("xp3", "pfs", "nsa", "iso", "ypf", "ksd")),
+    Pair(R.string.format_group_other, listOf("xp3", "pfs", "nsa", "iso", "ypf", "ksd", "rgss", "rpgmv")),
 )
 
 // 压缩模式格式选择器分组（zip/7z + tar 变体 = 归档打包；单流 = 单文件压缩）
 val COMPRESS_GROUPS = listOf(
     Pair(R.string.format_group_generic, listOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")),
     Pair(R.string.format_group_single, listOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "br", "ksd")),
-    Pair(R.string.format_group_other, listOf("xp3", "pfs", "pf6", "nsa", "iso", "ypf")),
+    Pair(R.string.format_group_other, listOf("xp3", "pfs", "pf6", "nsa", "iso", "ypf", "rgssad", "rgss2a", "rgss3a", "rpgmvp", "rpgmvo", "rpgmvm")),
 )
 
 // 压缩输出扩展名（dir.name + 该扩展名）
 val COMPRESS_EXT = mapOf(
     "xp3" to "xp3", "pfs" to "pfs", "pf6" to "pfs", "nsa" to "nsa", "iso" to "iso", "ypf" to "ypf",
+    "rgssad" to "rgssad", "rgss2a" to "rgss2a", "rgss3a" to "rgss3a",
+    "rpgmvp" to "rpgmvp", "rpgmvo" to "rpgmvo", "rpgmvm" to "rpgmvm",
     "zip" to "zip", "7z" to "7z",
     "tar" to "tar", "tgz" to "tar.gz", "tbz2" to "tar.bz2", "txz" to "tar.xz", "tzst" to "tar.zst",
     "gz" to "gz", "bz2" to "bz2", "xz" to "xz", "zst" to "zst", "lzma" to "lzma", "lz4" to "lz4",
@@ -139,23 +157,33 @@ val COMPRESS_EXT = mapOf(
 )
 
 // 单文件压缩格式（选中文件夹时不可用）
-val SINGLE_FILE_COMPRESS = setOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "br", "ksd")
+// MV/MZ obfuscation is one asset in, one asset out, so it belongs here: a folder
+// cannot become a single .rpgmvp. (Derived from the key list so the two cannot
+// drift apart.)
+val SINGLE_FILE_COMPRESS = setOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "br", "ksd") + MV_PACK_KEYS.toSet()
 
 // 批量"合并为一个压缩包"可用格式（多条目归档，排除单文件格式）
 val MERGE_COMPRESS_GROUPS = listOf(
     Pair(R.string.format_group_generic, listOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")),
-    Pair(R.string.format_group_other, listOf("xp3", "pfs", "pf6", "nsa", "iso", "ypf")),
+    Pair(R.string.format_group_other, listOf("xp3", "pfs", "pf6", "nsa", "iso", "ypf", "rgssad", "rgss2a", "rgss3a")),
 )
 
 // 压缩模式格式选择器：格式 key → 显示标签
 val COMPRESS_LABELS = mapOf(
     "xp3" to "XP3 (.xp3)", "pfs" to "PFS/PF8 (.pfs)", "pf6" to "PF6 (.pfs)", "nsa" to "NSA (.nsa/.sar)", "iso" to "ISO (.iso)", "ypf" to "YPF (.ypf)",
+    "rgssad" to "RGSS XP (.rgssad)", "rgss2a" to "RGSS VX (.rgss2a)", "rgss3a" to "RGSS VX Ace (.rgss3a)",
     "zip" to "ZIP (.zip)", "7z" to "7z (.7z)",
     "tar" to "TAR (.tar)", "tgz" to "TAR.GZ (.tar.gz)", "tbz2" to "TAR.BZ2 (.tar.bz2)",
     "txz" to "TAR.XZ (.tar.xz)", "tzst" to "TAR.ZST (.tar.zst)",
     "gz" to "GZIP (.gz)", "bz2" to "BZIP2 (.bz2)", "xz" to "XZ (.xz)",
     "zst" to "ZSTD (.zst)", "lzma" to "LZMA (.lzma)", "lz4" to "LZ4 (.lz4)",
     "br" to "BROTLI (.br)", "ksd" to "KSD (.ksd)",
+    // The source type is in the label because the key is the type: RPG Maker
+    // picks the loader from the obfuscated extension, so a JPEG behind
+    // foo.rpgmvp would load as a broken picture. mvExtMismatch refuses it.
+    "rpgmvp" to "RPG Maker MV picture (.rpgmvp) — from .png",
+    "rpgmvo" to "RPG Maker MV sound (.rpgmvo) — from .ogg",
+    "rpgmvm" to "RPG Maker MV movie (.rpgmvm) — from .m4a",
 )
 
 val TEXT_SEARCH_EXTS = setOf(

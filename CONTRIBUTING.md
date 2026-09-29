@@ -61,7 +61,7 @@ usefulunpack/
 ├── crates/                                 # Rust native libraries (one cdylib per format family)
 │   ├── common/                             # shared: json_escape, safe_join, BoundedWriter,
 │   │                                       #   progress_store! (per-format GLOBAL progress/CANCEL slots)
-│   ├── <fmt>-core/ …                       # xp3 pfs nsa iso ypf zip sevenz rar tar ksd lz4 gzip
+│   ├── <fmt>-core/ …                       # xp3 pfs nsa iso ypf zip sevenz rar tar ksd lz4 gzip rgss
 │   │                                       #   bzip2 xz zstd lzma brotli cso scan-core
 │   └── vendor/                             # vendored forks (rars, sevenz-rust, isomage, zip) + patches
 ├── build.sh                                # One command: Rust cross-compile (3 ABIs) + Gradle APK
@@ -160,7 +160,7 @@ CI runs `cargo test --workspace` (+ clippy, non-fatal). Run locally before openi
 
 ```bash
 cargo test --workspace          # Rust suite (see below)
-./gradlew lintDebug             # baseline: 0 errors / ~268 warnings — do not add errors
+./gradlew lintDebug             # baseline: 0 errors / 271 warnings — do not add errors
 bash build.sh                   # full APK (needs NDK); Kotlin-only: :app:assembleRelease
 ```
 
@@ -169,7 +169,12 @@ What the Rust tests cover (keep it green):
 - **Round-trips / real corpus** — each `*_core` packs then extracts with byte equality; a real-world corpus (`files4testing`, ~423 vectors + 13 injected faults across 14 formats) validates compatibility: valid archives extract with matching hashes, injected faults (truncated / corrupted / wrong password / missing volume) reject cleanly.
 - **Security / malicious headers** — crafted inputs rejected without abort: decompression bombs (`BoundedWriter` caps), huge header counts (7z num_files/coders, ISO dir sizes), negative/overflowing lengths (KSD, PFS offsets), path traversal (`safe_join`), stack-depth limits.
 - **Signature scan** — real-compressed-sample vectors (gzip/bzip2/xz/zstd/lz4/lzma) catch byte-order/bitfield regressions. Historically validated against binwalk 3.1 (201 semantic differences, all favorable).
+- **RPG Maker (RGSS / MV / MZ)** — `crates/rgss-core`. Parsers checked against the real archives in `uuksu/RPGMakerDecrypter`'s test suite (`EncryptedArchives/Game.rgss{ad,2a,3a}`, `EncryptedFiles/{Image,AudioOrbis,AudioMpeg}`), for which that project publishes exact offsets/sizes/keys and the SHA-1 of each decrypted asset. Because `rgss-core` is also an `rlib`, an out-of-workspace scratch crate can `path`-depend on it and diff against those oracles without touching the repo; `examples/probe.rs` does the same thing on-device.
 - **Real-archive rar probes** — env-gated on-disk tests: `UU_RAR_PROBE=/path/to/big.rar cargo test -p archive_rar_core probe_real_archive_progress -- --nocapture` asserts exact top-bar totals; `UU_RAR_SEL_PROBE` verifies non-solid random-access extraction of a late member.
+
+### Synthetic fixtures are necessary, not sufficient
+
+A hand-made fixture encodes the same assumption as the code under test, so both are wrong together and the test stays green. Three examples that shipped green and were caught only by real files: an M4A fixture carrying the wrong `ftyp` minor version (`0.0.2.0`; real files use `0.0.0.0`), a probe window one byte too short to reach the `moov` box, and an obfuscated fixture whose 16-byte header did not match the real `RPGMV` header. Prefer byte-identity as the oracle — re-packing a real file must reproduce it exactly — and keep validators *falsifiable*: never check for a structure at a position your own derivation implies.
 
 Real-device points before merging UI/ROM-sensitive changes:
 
@@ -182,7 +187,7 @@ Real-device points before merging UI/ROM-sensitive changes:
 
 1. `cargo check` clean for all crates; `cargo test --workspace` green
 2. `./gradlew lintDebug` introduces no new errors
-3. `build.sh` completes (requires NDK)
+3. `build.sh` completes (requires NDK) — note it, not `:app:assembleRelease`, is what refreshes the root `UsefulUnpack.apk`
 4. Update `TODO.md` if you addressed a listed issue; add a bullet under the current dev section
 5. One feature/bugfix per PR; no unrelated reformatting
 6. New format PRs: tick all five items in [New Format PR Requirements](#new-format-pr-requirements)

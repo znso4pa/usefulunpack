@@ -61,7 +61,7 @@ usefulunpack/
 ├── crates/                                 # Rust 原生库（每格式家族一个 cdylib）
 │   ├── common/                             # 共享：json_escape、safe_join、BoundedWriter、
 │   │                                       #   progress_store!（每格式全局唯一进度/CANCEL 槽）
-│   ├── <fmt>-core/ …                       # xp3 pfs nsa iso ypf zip sevenz rar tar ksd lz4 gzip
+│   ├── <fmt>-core/ …                       # xp3 pfs nsa iso ypf zip sevenz rar tar ksd lz4 gzip rgss
 │   │                                       #   bzip2 xz zstd lzma brotli cso scan-core
 │   └── vendor/                             # 内置 fork（rars、sevenz-rust、isomage、zip）+ 补丁
 ├── build.sh                                # 一条命令：Rust 三 ABI 交叉编译 + Gradle APK
@@ -160,7 +160,7 @@ CI 跑 `cargo test --workspace`（+ clippy，非致命）。开 PR 前本地先�
 
 ```bash
 cargo test --workspace          # Rust 全套（见下）
-./gradlew lintDebug             # 基线：0 errors / 约268 warnings —— 不要新增 errors
+./gradlew lintDebug             # 基线：0 errors / 271 warnings —— 不要新增 errors
 bash build.sh                   # 完整 APK（需 NDK）；纯 Kotlin 改动可只跑 :app:assembleRelease
 ```
 
@@ -169,7 +169,12 @@ Rust 测试覆盖面（保持全绿的理由）：
 - **往返/真实语料** — 每个 `*_core` 先打包再解压并比对字节相等；真实语料库（`files4testing` 约423向量+14格式的13个注入故障）验证兼容性：合法归档解压哈希一致，注入故障（截断/损坏/错密码/缺卷）干净拒绝。
 - **安全/恶意头** — 构造输入拒绝且不 abort：解压炸弹（`BoundedWriter` 封顶）、超大头数量（7z num_files/coders、ISO 目录尺寸）、负数/溢出长度（KSD、PFS offset）、路径穿越（`safe_join`）、栈深限制（ISO 目录）。
 - **签名扫描** — 真实压缩样本向量（gzip/bzip2/xz/zstd/lz4/lzma）捕获字节序/位域回归。历史战绩：对照 binwalk 3.1 的 201 处语义差异全部占优。
+- **RPG Maker（RGSS / MV / MZ）** — `crates/rgss-core`。解析器对照 `uuksu/RPGMakerDecrypter` 测试套件里的真归档（`EncryptedArchives/Game.rgss{ad,2a,3a}`、`EncryptedFiles/{Image,AudioOrbis,AudioMpeg}`）验证，该项目公开了精确的 offset/size/key 与每个解密素材的 SHA-1。由于 `rgss-core` 同时是 `rlib`，可以建一个仓外 scratch crate 用 `path` 依赖它来比对这些 oracle，完全不碰仓库；`examples/probe.rs` 是同一件事的机内版本。
 - **真实归档 rar 探针** — 环境变量门控的磁盘测试：`UU_RAR_PROBE=/path/to/big.rar cargo test -p archive_rar_core probe_real_archive_progress -- --nocapture` 断言顶条精确到总量；`UU_RAR_SEL_PROBE` 验证非固实随机访问跳过前置成员。
+
+### 合成夹具是必要条件，不是充分条件
+
+手造的夹具会和被验证的代码共享同一个错误假设，于是两者一起错，测试照样是绿的。三个曾 shipped-green、只被真文件抓出来的例子：M4A 夹具带着错误的 `ftyp` 小版本（`0.0.2.0`，真文件是 `0.0.0.0`）、probe 窗口差一个字节够不到 `moov` box、以及密文夹具的 16 字节头与真实 `RPGMV` 头不匹配。优先用**字节恒等**当 oracle —— 重新封包真文件必须精确复现它 —— 并且校验必须**可证伪**：绝不要去检查「自己刚推导出来的位置」上是否有什么结构。
 
 真机回归要点（UI/ROM 敏感改动合入前）：
 

@@ -15,7 +15,7 @@
     <string name="msg_tjs_compiled">編譯後的 TJS 腳本（TJS2 二進位）,無法以文字預覽</string>
     <string name="edit_archive">✏️ 編輯</string>
     <string name="action_more">更多</string>
-    <string name="edit_only_pack">僅支援可封包的格式（XP3/PFS/ISO/NSA/7Z/YPF）</string>
+    <string name="edit_only_pack">僅支援可封包的格式（XP3/PFS/ISO/NSA/7Z/YPF/RGSS）</string>
     <string name="zip_manage_only_zip">僅 ZIP 封存支援條目管理</string>
     <string name="convert_only_iso">僅 ISO 映像支援 CSO 轉換</string>
     <string name="nested_archive_title">巢狀封存</string>
@@ -27,6 +27,9 @@
     <string name="edit_done">已產生 %1$s</string>
     <string name="msg_repacking">正在封包</string>
     <string name="title_compress_options">壓縮選項</string>
+    <string name="title_select_format">選擇歸檔格式</string>
+    <string name="title_extract_to">解壓到…</string>
+    <string name="prompt_search_hint">搜尋檔案名稱…</string>
     <string name="title_level">壓縮等級</string>
     <string name="action_close">關閉</string>
     <string name="action_search">搜尋</string>
@@ -76,6 +79,7 @@
     <string name="title_convert_failed">轉換失敗</string>
     <string name="msg_convert_done">已轉換: %1$s</string>
     <string name="action_new_folder">新資料夾</string>
+    <string name="title_new_folder">新增資料夾</string>
     <string name="nav_home">回到根目錄</string>
     <string name="nav_up">上一層</string>
     <string name="nav_bookmarks">📌 書籤管理</string>
@@ -106,6 +110,7 @@
     <string name="msg_select_one">請至少選擇一項</string>
     <string name="msg_cannot_decode">無法解碼圖片</string>
     <string name="msg_cannot_read">無法讀取歸檔內容</string>
+    <string name="msg_not_supported">不支援預覽</string>
     <string name="msg_compress_mode_block">壓縮模式下不處理歸檔檔案</string>
     <string name="title_delete">刪除</string>
     <string name="title_password">檔案可能已加密</string>
@@ -120,6 +125,8 @@
     <string name="title_compress_failed">壓縮失敗</string>
     <string name="title_compress_success">壓縮完成</string>
     <string name="title_pwd_wrong">密碼錯誤</string>
+    <string name="hint_password">壓縮密碼：將自動用於後續每一次壓縮</string>
+    <string name="continue_scan">繼續掃描</string>
     <string name="action_rename">✏️ 重新命名</string>
     <string name="action_select">☑️ 多選</string>
     <string name="action_terminal">>_ 終端</string>
@@ -228,6 +235,10 @@
     <string name="msg_archive_open_in_tab">此歸檔已在「%1$s」開啟</string>
     <string name="msg_archive_open_skipped">已跳過 %1$d 個在其他視窗開啟的歸檔</string>
     <string name="merge_into_archive">📦 合併到其他歸檔…</string>
+    <string name="merge_short">📦 合併到…</string>
+    <string name="merge_group_here">目前資料夾</string>
+    <string name="merge_group_open">其他視窗正在開啟</string>
+    <string name="merge_self_target">歸檔不能合併進自己</string>
     <string name="merge_no_target">目前資料夾沒有可合併的歸檔</string>
     <string name="merge_select_target">選擇目標歸檔</string>
     <string name="merge_target_unsupported">該歸檔格式無法重新封包</string>
@@ -284,6 +295,7 @@
     <string name="format_group_single">單檔壓縮</string>
     <string name="msg_single_file_compress">單檔壓縮僅支援單一檔案</string>
     <string name="msg_ksd_need_txt">KSD 打包僅支援 .txt 文字檔</string>
+    <string name="msg_mv_ext_mismatch">此格式僅封包 .%1$s 檔案</string>
     <string name="settings_parallel_threads">並行解壓執行緒 (rar/zip)</string>
     <string name="parallel_auto">自動</string>
     <string name="settings_compress_generic">通用格式 (gzip/bzip2/xz/zstd/lzma/lz4/brotli/tar)</string>
@@ -378,6 +390,8 @@
         <item>TAR — 解壓 + 壓縮\n.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
         <item>KSD (.ksd) — 解壓 + 壓縮\nKirikiri2 存檔；壓縮僅接受 .txt 文字</item>
         <item>BROTLI (.br) — 解壓 + 壓縮\nGoogle Brotli 壓縮；級別 0-11（預設 6）；廣泛用於網頁內容</item>
+        <item>RPG Maker MV/MZ (.rpgmvp/.rpgmvo/.rpgmvm) — 解壓 &amp; 封包\n逐檔混淆的素材：圖片 (.rpgmvp)、音訊 (.rpgmvo)、影片 (.rpgmvm)。16 位元組檔頭可從檔案自身還原，不需金鑰；產物依真實副檔名命名，可直接進圖片 / 音訊預覽\n同時支援 RPG Maker MZ 的 .png_ / .ogg_ / .m4a_。未混淆的檔案（重新打包過的遊戲）原樣透出\n注意：點一次會看到「解碼後的檔案」這一個項目的歸檔檢視，再點一次進圖片 / 音訊預覽；批次模式可一次解密整個資料夾\n封包為單個素材混淆（foo.png → foo.rpgmvp），使用封包選項裡輸入的金鑰：32 位十六進位原樣使用；其他文字依 RPG Maker 的規則做 MD5；留空則用預設金鑰。批次模式可一次混淆整個多選。每個格式只收自己的類型：.rpgmvp 收 .png、.rpgmvo 收 .ogg、.rpgmvm 收 .m4a，其餘一律擋下</item>
+        <item>RGSS (.rgssad/.rgss2a/.rgss3a) — 解壓 + 壓縮\nRPG Maker 加密封包：XP (.rgssad)、VX (.rgss2a)、VX Ace (.rgss3a)。版面依封包標頭自動辨識，三種副檔名互相都能開啟；檔名為 UTF-8 / Shift-JIS\n封包時可選目標版本；可編輯腳本（重新打包為 name-cn.rgss3a）。封包產物預設命名為 Game.rgss3a——這是 RPG Maker 唯一會開啟的名字（可在封包選項裡關掉）\n注意：RPG Maker 只載入與遊戲 .exe 同目錄、且名為 Game.rgss3a（.rgssad / .rgss2a）的封包，需自行重新命名後放回遊戲目錄\n限制：v3 位移為 32 位，封包產物不能超過 4GiB</item>
     </string-array>
         <string-array name="help_tutorials">
         <item>壓縮設定\n設定 → 壓縮：壓縮等級（zip/7z/通用）、分割大小（zip/7z）、ZIP 編碼、壓縮密碼；點「確定」一次儲存；工作模式（封包/壓縮）切換後標題欄會更新</item>
@@ -392,8 +406,13 @@
         <item>格式掃描（binwalk）\n長按檔案 → 掃描：偵測檔案內嵌的壓縮包/圖片等簽名（如影片內嵌 ZIP），列出偏移與格式，ZIP 附檔數。每條命中兩個按鈕：「解壓」直接預覽/解壓封包，「切割」儲存原始片段為獨立檔；失敗會提示具體原因</item>
         <item>封包內編輯腳本\n開啟 XP3/PFS/ISO/NSA 預覽，點「編輯」：自動解包 → 彈出腳本列表（.ks/.tjs/.csv/…）→ 點一個用顯式編碼編輯（儲存保留原位元組序）→ 「重新打包」在同目錄生成「原名-cn.xp3/pfs/iso/nsa」。ISO 重封用 Level-1 8.3 名 + 1GiB 上限</item>
         <item>就地編輯 ZIP 條目\nZIP 預覽裡點「條目」：刪除選中條目（有確認框）或從本機檔新增條目（選檔 → 命名 → deflate 寫入）。未動條目位元組級保留。多碟 ZIP 不可編輯</item>
+        <item>跨歸檔合併\n在預覽裡勾選要貢獻的項目，再點底部的「合併到…」（沒有可合併目標時按鈕置灰）。目標清單分兩組：目前瀏覽資料夾裡的歸檔，以及**其他視窗正開啟的歸檔**。你的項目先解包，目標再解包到同一個暫存目錄（同名路徑由你的覆蓋），最後封成「目標名-cn.ext」副本放在目標旁邊。目標全程唯讀、原歸檔一個位元組不動，所以合併進別人正預覽著的歸檔也安全。加密目標會先問密碼，且密碼框在進度條之前彈，不會卡住其它視窗</item>
+        <item>RPG Maker 封包（RGSS / MV / MZ）\nRGSS：選 .rgssad / .rgss2a / .rgss3a 與目標版本；產物預設命名 `Game.rgss3a`，因為**這是 RPG Maker 唯一會開啟的名字**（需要別的名字可在封包選項裡關掉）。編輯腳本後回包會保持來源封包的版本，.rgss3a 仍是 v3。MV/MZ：一個素材進、一個素材出——hero.png 變 hero.rpgmvp（**替換**副檔名，不是追加）。每個格式只收自己的類型（.rpgmvp 收 .png、.rpgmvo 收 .ogg、.rpgmvm 收 .m4a），不符的在你填金鑰之前就被擋下，因為引擎是依副檔名選解碼器的。金鑰框接受 32 位十六進位（原樣使用），或任意文字（依 RPG Maker 的規則做 MD5），留空則用預設金鑰</item>
+        <item>圖片編輯器\n從圖片預覽的 ⋮ 選單進入。畫筆（色板 + 不透明度 + 粗細，**每條筆畫記住自己畫時的透明度**，所以之後調不透明度不會把已畫的重新著色）、矩形裁剪、拉伸到 1:1 / 4:3 / 3:4 / 16:9 / 9:16、像素取色、雙指縮放（1–8×）+ 平移、復原/重設。另存「原名-edit.png」副本，不覆寫原圖</item>
+        <item>預覽工作區\n在歸檔預覽裡開啟工作區，會把解包後的內容當作真實資料夾、在獨立視窗裡瀏覽。適合歸檔裡有大量小檔案、想逐個預覽/編輯/取出的場景；工作區沿用預覽時的密碼，不會重複詢問</item>
         <item>編碼與亂碼\n每個預覽/編輯器都有編碼行：點它切換 UTF-8/SHIFT-JIS/GBK/UTF-16，文字立即重渲染；帶 BOM 的 UTF-16/UTF-8 檔自動按正確編碼開啟；用錯的非 UTF-8 編碼讀檔時會提示「看起來是 UTF-8」</item>
         <item>捲動與自動重新整理\n長列表右側有常顯可拖把手（抓住拖動即可跳轉）；文字預覽/編輯器也有可拖捲軸。目前目錄內容變化（重新命名/移動/刪除/解壓/壓縮或 USB 等外部改動）時檔案列表自動重新整理</item>
+        <item>回收站\n抽屜裡的回收站保留刪除前的副本（可設定保留天數）；支援復原與清空，並依檔案大小與原路徑顯示</item>
     </string-array>
 
 
@@ -505,4 +524,8 @@
     <string name="zip_invalid_entry_name">條目名不能包含 | 字元</string>
     <string name="msg_empty_archive">該封包為空</string>
     <string name="pfs_artemis_naming">命名為 root.pfs（Artemis 補丁槽位）</string>
+    <string name="rgss_game_naming">封包命名為 Game.rgss3a（RPG Maker 只認這個名字）</string>
+    <string name="rgss_game_naming_note">放回遊戲目錄即可覆蓋原封包</string>
+    <string name="rpgmv_key_title">XOR 金鑰 / encryptionKey</string>
+    <string name="rpgmv_key_hint">32 位十六進位 = 直接使用該 XOR 金鑰流；其他任意文字 = 作為 encryptionKey 交給 RPG Maker 做 MD5；留空則用預設金鑰（即 encryptionKey 未設定時的結果）</string>
 </resources>

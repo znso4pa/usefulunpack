@@ -70,7 +70,7 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
         if (activeTab === tab) tab.btnFolderNext?.visibility = View.GONE
         saveSession()
         restartDirObserverFor(tab)
-        tab.tvPath.text = dir.absolutePath
+        tab.tvPath.text = tab.displayPath().absolutePath
         val isCompress = prefs.getInt("work_mode", 0) == 1
         updateTitle()
         tab.tvCount.text = "…"

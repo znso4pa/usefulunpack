@@ -15,7 +15,7 @@
     <string name="msg_tjs_compiled">Compiled TJS script (binary TJS2), can\'t preview as text</string>
     <string name="edit_archive">✏️ Edit</string>
     <string name="action_more">More</string>
-    <string name="edit_only_pack">Only packable formats support this (XP3/PFS/ISO/NSA/7Z/YPF)</string>
+    <string name="edit_only_pack">Only packable formats support this (XP3/PFS/ISO/NSA/7Z/YPF/RGSS)</string>
     <string name="zip_manage_only_zip">Only ZIP archives support entry management</string>
     <string name="convert_only_iso">Only ISO images support CSO conversion</string>
     <string name="nested_archive_title">Nested archive</string>
@@ -245,6 +245,10 @@
     <string name="msg_archive_open_in_tab">This archive is already open in &quot;%1$s&quot;</string>
     <string name="msg_archive_open_skipped">Skipped %1$d archives open in another window</string>
     <string name="merge_into_archive">📦 Merge into archive...</string>
+    <string name="merge_short">📦 Merge…</string>
+    <string name="merge_group_here">This folder</string>
+    <string name="merge_group_open">Open in another window</string>
+    <string name="merge_self_target">An archive cannot be merged into itself</string>
     <string name="merge_no_target">No archive in this folder to merge into</string>
     <string name="merge_select_target">Select target archive</string>
     <string name="merge_target_unsupported">This archive format cannot be repacked</string>
@@ -301,6 +305,8 @@
     <string name="format_group_single">Single-file Compression</string>
     <string name="msg_single_file_compress">Single-file compression only supports a single file</string>
     <string name="msg_ksd_need_txt">KSD packing only supports .txt text files</string>
+    <!-- %1$s = the plain extension this MV/MZ key packs (png/ogg/m4a) -->
+    <string name="msg_mv_ext_mismatch">This format only packs .%1$s files</string>
     <string name="settings_parallel_threads">Parallel decode threads (rar/zip)</string>
     <string name="parallel_auto">Auto</string>
     <string name="settings_compress_generic">Generic (gzip/bzip2/xz/zstd/lzma/lz4/brotli/tar)</string>
@@ -395,6 +401,8 @@
         <item>TAR — Extract &amp; Pack\n.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
         <item>KSD (.ksd) — Extract &amp; Pack\nKirikiri2 save; packing accepts .txt only</item>
         <item>BROTLI (.br) — Extract &amp; Pack\nGoogle Brotli compression; levels 0-11 (default 6); widely used for web content</item>
+        <item>RPG Maker MV/MZ (.rpgmvp/.rpgmvo/.rpgmvm) — Extract &amp; Pack\nObfuscated per-file assets: pictures (.rpgmvp), sounds (.rpgmvo), movies (.rpgmvm). The 16-byte header is recovered from the file itself, so no key is needed; the output is named with the real extension and opens in the image / audio viewer\nAlso covers RPG Maker MZ\'s .png_ / .ogg_ / .m4a_. Files that are not obfuscated (repacked games) are copied through untouched\nNote: one tap shows the decoded file as a single-entry archive — tap it again for the image / audio preview; batch mode decrypts a whole folder at once\nPacking obfuscates a single asset (foo.png → foo.rpgmvp) with the keystream you type in the pack options: 32 hex digits are used as-is, any other text is MD5-hashed the way RPG Maker does it, and empty gives the default key. Batch mode obfuscates a whole selection at once. Each key takes only its own type: .rpgmvp packs .png, .rpgmvo packs .ogg, .rpgmvm packs .m4a — anything else is refused</item>
+        <item>RGSS (.rgssad/.rgss2a/.rgss3a) — Extract &amp; Pack\nRPG Maker encrypted archives: XP (.rgssad), VX (.rgss2a), VX Ace (.rgss3a). The layout is picked from the header, so any of the three opens any of the three; names are UTF-8 / Shift-JIS\nPacking offers the target version; edit scripts in-place (Repack as name-cn.rgss3a). Packed output is named Game.rgss3a by default, because that is the only name RPG Maker opens (toggleable in the pack options)\nNote: RPG Maker only loads an archive named Game.rgss3a (or .rgssad / .rgss2a) sitting next to the game .exe — rename the output and drop it back into the game folder\nLimits: v3 offsets are 32-bit, so a packed archive cannot pass 4GiB</item>
     </string-array>
         <string-array name="help_tutorials">
         <item>Compression settings\nSettings → Compression: levels (zip/7z/generic), split size (zip/7z), ZIP encoding, password; "OK" saves everything at once; the work mode (archive/compress) updates the title bar</item>
@@ -409,6 +417,10 @@
         <item>Signature scan (binwalk)\nLong-press a file → Scan: detects embedded archive/image signatures (e.g. a ZIP embedded inside a video), listing offsets and formats with ZIP file counts. Each hit has two buttons: "Extract" opens archives directly for preview/extraction, "Carve (dd)" saves the raw segment as a standalone file; failures show the specific reason</item>
         <item>Edit scripts inside an archive\nOpen an XP3/PFS/ISO/NSA preview and tap "Edit": the archive is unpacked, a script list (.ks/.tjs/.csv/…) appears, tap one to edit with an explicit encoding (the original byte order is kept on save), then "Repack" creates a new "name-cn.xp3/pfs/iso/nsa" in the same folder. ISO repack uses Level-1 8.3 names with a 1GiB cap</item>
         <item>Edit ZIP entries in place\nIn a ZIP preview, tap "Entries": delete selected entries (with confirmation) or add a new entry from a local file (pick a file, name it, added as deflate). Untouched entries keep their exact bytes. Split-volume ZIPs cannot be edited</item>
+        <item>Merge into another archive\nIn a preview, tick the entries to contribute, then tap Merge at the bottom (it greys out when there is nothing to merge into). The target list is grouped: archives in the folder you are browsing, plus archives other windows currently have open. Your entries are unpacked, the target is unpacked over the same staging folder — so matching paths are overwritten by yours — and the result is repacked as a "target-cn.ext" copy beside the target. The target is only read and the original is never modified, so merging into an archive another window is previewing is safe. Encrypted targets ask for their password first, and that prompt appears before the progress bar so other windows are not blocked</item>
+        <item>RPG Maker packing (RGSS / MV / MZ)\nRGSS: pick .rgssad / .rgss2a / .rgss3a plus a version; the output is named Game.rgss3a by default because that is the ONLY name RPG Maker opens (toggle in the pack options for a different name). Editing a script and repacking keeps the source archive\'s version, so a .rgss3a stays v3. MV/MZ: one asset in, one asset out — hero.png becomes hero.rpgmvp (the extension is replaced, not appended). Each key takes only its own type (.rpgmvp packs .png, .rpgmvo packs .ogg, .rpgmvm packs .m4a) and anything else is refused before you type a key, because RPG Maker picks its loader from the extension. The keystream field takes 32 hex digits verbatim, or any text to be MD5-hashed the way RPG Maker does it; empty gives the default key</item>
+        <item>Image editor\nFrom the image preview ⋮ menu. Brush (palette + opacity + width — every stroke keeps the opacity it was drawn at, so changing it later never restyles earlier work), rectangular crop, stretch to 1:1 / 4:3 / 3:4 / 16:9 / 9:16, pixel eyedropper, two-finger pinch zoom (1–8×) + pan, undo / reset. Saves a "name-edit.png" copy; the original is never overwritten</item>
+        <item>Preview workspace\nFrom an archive preview, open a workspace to browse the extracted contents as a real folder in its own window. Useful when the archive holds many small files you want to preview, edit or extract one by one; the workspace keeps the preview\'s password so there is no re-prompt</item>
         <item>Encoding &amp; garbled text\nEvery preview/editor shows an encoding row — tap it to switch UTF-8/Shift-JIS/GBK/UTF-16 and the text re-renders instantly. UTF-16/UTF-8 files with a byte-order mark open with the right encoding automatically; a "looks like UTF-8" hint appears when a file was read with a wrong non-UTF-8 encoding</item>
         <item>Scrolling &amp; refresh\nLong lists have an always-visible draggable handle on the right (grab and drag to jump); the text preview/editor have a draggable scrollbar too. The file list refreshes automatically when the current folder changes (rename/move/delete/extract/compress or external changes such as USB)</item>
         <item>Recycle bin\nDelete moves files to the recycle bin instead of permanently deleting them (configurable). Tap the recycle bin icon in the toolbar to view, restore, or permanently delete items. Auto-clean removes items after a configurable period (7/14/30/60/90 days or never). Files in the recycle bin count against storage space. Note: the recycle bin is stored in app internal storage and is cleared when the app is uninstalled</item>
@@ -515,4 +527,8 @@
     <string name="zip_invalid_entry_name">Entry names cannot contain the | character</string>
     <string name="msg_empty_archive">This archive is empty</string>
     <string name="pfs_artemis_naming">Name it root.pfs (Artemis patch slot)</string>
+    <string name="rgss_game_naming">Name the archive Game.rgss3a (RPG Maker requires this name)</string>
+    <string name="rgss_game_naming_note">Put it in the game folder to replace the original</string>
+    <string name="rpgmv_key_title">XOR key / encryption key</string>
+    <string name="rpgmv_key_hint">32 hex digits = the XOR keystream as-is. Any other text = the encryptionKey that RPG Maker hashes (MD5). Leave empty for the default key, which is what an unset encryptionKey produces.</string>
 </resources>

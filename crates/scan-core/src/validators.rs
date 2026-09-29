@@ -1580,6 +1580,9 @@ pub const SIGNATURES: &[Sig] = &[
     // Note: "FE FE" alone is too short (high false-positive), so we require the
     // subsequent pattern "FE FE 0x02 FF FE" (mode 2) or "FE FE 0x00" (mode 0/1).
     Sig { magics: &[b"\xfe\xfe\x02\xff\xfe", b"\xfe\xfe\x01\xff\xfe", b"\xfe\xfe\x00"], label: "KSD save data", confidence: CONFIDENCE_MEDIUM, validate: validate_ksd },
+    // RGSS (RPG Maker XP / VX / VX Ace): "RGSSAD\0" + a version byte. The
+    // 7-byte magic plus the version check is specific enough for HIGH.
+    Sig { magics: &[b"RGSSAD\x00"], label: "RGSS archive", confidence: CONFIDENCE_HIGH, validate: validate_rgss },
     // ─── Media format signatures ───
     // Ogg container: "OggS" magic followed by version byte (0x00).
     Sig { magics: &[b"OggS\x00"], label: "Ogg container", confidence: CONFIDENCE_HIGH, validate: validate_ogg },
@@ -1629,6 +1632,40 @@ fn validate_pf6pf8(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
     if INDEX_DATA_START + index_size > file_len - off { return None; }
     if index_count == 0 || index_count * 16 > index_size { return None; }
     Some(HitInfo { size: None, count: None })
+}
+
+/// RGSS encrypted archive validator (RPG Maker XP / VX / VX Ace).
+/// Magic: "RGSSAD\0" (7 bytes) followed by the version byte.
+/// 1 = XP, 2 = VX, 3 = VX Ace. The version byte is the only thing that can
+/// collide, so it is checked here: 7 magic bytes + a legal version is already
+/// unique enough for CONFIDENCE_HIGH, but rejecting the impossible versions
+/// keeps text mentions of "RGSSAD" out of the results.
+///
+/// v3 carries a u32 seed from which the master key is derived as
+/// `seed*9 + 3` (a bijection over u32, so any seed is legal — no invariant to
+/// check there). Instead the first index dword is decrypted: it is either the
+/// zero terminator of an empty archive or the first entry's data offset, which
+/// must land inside the file.
+fn validate_rgss(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
+    if file_len - off < 8 { return None; }
+    let mut h = [0u8; 8];
+    if !read_at(f, off, &mut h) { return None; }
+    if &h[0..7] != b"RGSSAD\x00" { return None; }
+    match h[7] {
+        1 | 2 => Some(HitInfo { size: None, count: None }),
+        3 => {
+            if file_len - off < 12 { return None; }
+            let mut s = [0u8; 4];
+            if !read_at(f, off + 8, &mut s) { return None; }
+            let key = u32le(&s, 0).wrapping_mul(9).wrapping_add(3);
+            let mut idx = [0u8; 4];
+            if !read_at(f, off + 12, &mut idx) { return None; }
+            let data_offset = u32le(&idx, 0) ^ key;
+            if data_offset != 0 && (data_offset as u64) >= file_len - off { return None; }
+            Some(HitInfo { size: None, count: None })
+        }
+        _ => None,
+    }
 }
 
 /// KSD (Kirikiri2 save data) validator.
@@ -2524,5 +2561,84 @@ mod tests {
         let p6 = tmp("s.lzma", &lzma);
         let mut f6 = File::open(&p6).unwrap();
         assert!(validate_lzma(&mut f6, 0, lzma.len() as u64).is_some(), "real lzma");
+    }
+    /// The Kotlin side mirrors these two numbers into the scan dialog footer
+    /// (SignatureScan.kt SCAN_SIG_COUNT / SCAN_PATTERN_COUNT). They had already
+    /// drifted once (the footer claimed 77 patterns while the table held 82),
+    /// so they are asserted here rather than maintained by hand.
+    #[test]
+    fn signature_counts_match_the_kotlin_footer() {
+        let sigs = SIGNATURES.len() as u32;
+        let patterns: u32 = SIGNATURES.iter().map(|s| s.magics.len() as u32).sum();
+        assert_eq!(sigs, 32);
+        assert_eq!(patterns, 83);
+    }
+
+    /// RGSS: 7-byte magic + a legal version byte, plus the v3 index sanity.
+    #[test]
+    fn rgss_validates() {
+        for version in [1u8, 2, 3] {
+            let mut blob = vec![0u8; 256];
+            blob[0..7].copy_from_slice(b"RGSSAD\x00");
+            blob[7] = version;
+            // seed 0 -> key 3, which is what a v3 archive written by this app
+            // (and by the reference packers) carries.
+            blob[8..12].copy_from_slice(&0u32.to_le_bytes());
+            let p = tmp(&format!("v{version}.rgss"), &blob);
+            let mut f = File::open(&p).unwrap();
+            assert!(validate_rgss(&mut f, 0, blob.len() as u64).is_some(), "version {version}");
+        }
+    }
+
+    /// The scanner passes the magic's own offset, so a valid RGSS header
+    /// embedded at a nonzero offset must still be found.
+    #[test]
+    fn rgss_found_at_nonzero_offset() {
+        let mut host = vec![b'x'; 128];
+        host[40..47].copy_from_slice(b"RGSSAD\x00");
+        host[47] = 0x03;
+        host[48..52].copy_from_slice(&0u32.to_le_bytes()); // key = 3
+        host[52..56].copy_from_slice(&3u32.to_le_bytes()); // empty-archive terminator
+        let p = tmp("host.rgss", &host);
+        let mut f = File::open(&p).unwrap();
+        assert!(validate_rgss(&mut f, 40, host.len() as u64 - 40).is_some());
+    }
+
+    /// An unknown version, a v3 index pointing past EOF, and a truncated
+    /// header must all be rejected.
+    #[test]
+    fn rgss_false_positives_rejected() {
+        let mut bad_version = vec![0u8; 64];
+        bad_version[0..7].copy_from_slice(b"RGSSAD\x00");
+        bad_version[7] = 9;
+        let p = tmp("ver.rgss", &bad_version);
+        let mut f = File::open(&p).unwrap();
+        assert!(validate_rgss(&mut f, 0, bad_version.len() as u64).is_none(), "version 9");
+
+        // v3 whose first index dword decrypts to an offset past EOF
+        let mut bad_index = vec![0u8; 64];
+        bad_index[0..7].copy_from_slice(b"RGSSAD\x00");
+        bad_index[7] = 3;
+        bad_index[8..12].copy_from_slice(&0u32.to_le_bytes()); // key = 3
+        bad_index[12..16].copy_from_slice(&(9_000u32 ^ 3).to_le_bytes());
+        let p = tmp("index.rgss", &bad_index);
+        let mut f = File::open(&p).unwrap();
+        assert!(validate_rgss(&mut f, 0, bad_index.len() as u64).is_none(), "offset past EOF");
+
+        // ...and the terminator of an empty v3 archive, which decrypts to 0
+        let mut empty = vec![0u8; 64];
+        empty[0..7].copy_from_slice(b"RGSSAD\x00");
+        empty[7] = 3;
+        empty[8..12].copy_from_slice(&0u32.to_le_bytes());
+        empty[12..16].copy_from_slice(&3u32.to_le_bytes());
+        let p = tmp("empty.rgss", &empty);
+        let mut f = File::open(&p).unwrap();
+        assert!(validate_rgss(&mut f, 0, empty.len() as u64).is_some(), "empty v3 terminator");
+
+        let mut short = vec![0u8; 6];
+        short[0..6].copy_from_slice(b"RGSSAD");
+        let p = tmp("short.rgss", &short);
+        let mut f = File::open(&p).unwrap();
+        assert!(validate_rgss(&mut f, 0, short.len() as u64).is_none(), "truncated");
     }
 }

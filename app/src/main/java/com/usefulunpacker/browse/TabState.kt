@@ -19,6 +19,17 @@ import java.util.Collections
  */
 class TabState(val tabId: Int) {
     var currentDir: File = File("/")
+
+    /**
+     * What this tab's path bar must show.
+     *
+     * Derived, never stored: an open preview covers the list but not the bar, and
+     * the bar is written in far fewer places than the preview is rendered in
+     * (session restore, tab switch, fragment rebuild). Keeping the value derived
+     * is what stops the bar from falling back to the layout's default `/`.
+     */
+    fun displayPath(): File =
+        if (previewActive) previewSrc?.parentFile ?: currentDir else currentDir
     // Optional custom name shown in the tab strip; empty = default "窗口 N".
     var title: String = ""
     var selectedFile: File? = null

@@ -30,13 +30,39 @@ object OperationLock {
     }
 }
 
+/** Collapses a format key onto the scheduler slot it must actually share.
+ *
+ * Format keys that are handled by the SAME native library also share that
+ * library's single `extract_progress` / `compress_progress` store, so running
+ * them concurrently under separate keys would cross-contaminate both progress
+ * bars. Three such families exist today:
+ *  - `pf6` and `pfs` both live in `libarchive_pfs_core` -> slot `pfs`
+ *  - `rgssad` / `rgss2a` / `rgss3a` all live in `libarchive_rgss_core` and
+ *    share the read key `rgss` -> slot `rgss`
+ *  - the five tar variants are ONE `tarCompress(fmt, …)` entry point in
+ *    `libarchive_tar_core` -> slot `tar` (they differ only in the container,
+ *    not in the native side; packing a `.tar` and a `.tgz` at once reset each
+ *    other's total and let one cancel abort the other)
+ *
+ * Done here, inside the single choke point every operation goes through, so a
+ * new call site cannot forget it (the `pf6` collapse was previously duplicated
+ * by hand at each of its three sites and had to be re-audited twice). */
+fun schedulerKeyOf(fmtKey: String): String = when (fmtKey) {
+    "pf6" -> "pfs"
+    "tar", "tgz", "tbz2", "txz", "tzst" -> "tar"
+    // `rpgmv` shares libarchive_rgss_core with the archive side, so it shares
+    // the progress store too — hence one slot rather than two.
+    "rgssad", "rgss2a", "rgss3a", "rpgmv", "rpgmvp", "rpgmvo", "rpgmvm" -> "rgss"
+    else -> fmtKey
+}
+
 /** Acquires a scheduler slot for [fmtKey] (never refuses — busy operations are
  *  QUEUED with live position/ETA shown in the progress dialog). The worker
  *  thread must call `handle.await()` before touching the format layer and
  *  `handle.release()` in its finally. Delete/scan flows intentionally stay on
  *  the legacy OperationLock (see OpScheduler docs). */
 fun tryStartOperation(activity: AppCompatActivity, fmtKey: String): OpScheduler.OpHandle =
-    OpScheduler.obtain(fmtKey)
+    OpScheduler.obtain(schedulerKeyOf(fmtKey))
 
 /** Maps the raw JNI error message to a user-facing string. */
 fun friendlyExtractError(activity: AppCompatActivity, error: String?): String {
@@ -184,6 +210,16 @@ fun extractByFormat(
                      else IsoCore.isoExtractSelected("", src, out, selected)
             "ypf" -> if (selected.isEmpty()) YpfCore.ypfExtract("", src, out)
                      else YpfCore.ypfExtractSelected("", src, out, selected)
+            // One key for all three RGSS container versions: the parser picks
+            // the layout from the archive header.
+            "rgss" ->
+                     if (selected.isEmpty()) RgssCore.rgssExtract("", src, out)
+                     else RgssCore.rgssExtractSelected("", src, out, selected)
+            // MV/MZ loose assets: one obfuscated file per asset, exposed as a
+            // one-entry "archive" whose member is the decoded file.
+            "rpgmv" ->
+                     if (selected.isEmpty()) RgssCore.rgssMvExtract("", src, out)
+                     else RgssCore.rgssMvExtractSelected("", src, out, selected)
             "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); zipExtractDispatch(src, out, selected, password) }
             "7z" -> szExtractDispatch(src, out, selected, password)
             "nsa" -> if (selected.isEmpty()) NsaCore.nsaExtract("", src, out)
@@ -359,8 +395,13 @@ fun tryExtractWithPassword(
         return runCatching {
             when (fmt) {
                 "zip" -> ExtractOutcome(ExtractCounts.fromJson(zipExtractDispatch(src, out, sel, pwd)), null)
-                "7z" -> ExtractOutcome(ExtractCounts.fromJson(szExtractDispatch(src, out, "", pwd)), null)
-                "rar" -> ExtractOutcome(ExtractCounts.fromJson(rarExtractDispatch(src, out, "", pwd)), null)
+                // `sel` must be forwarded here too, exactly as in the
+                // password-retry branch below. Dropping it (as this once did)
+                // silently turns a selective extract of an unencrypted 7z/rar
+                // into a FULL extract — the user's selection would be ignored
+                // with no error at all.
+                "7z" -> ExtractOutcome(ExtractCounts.fromJson(szExtractDispatch(src, out, sel, pwd)), null)
+                "rar" -> ExtractOutcome(ExtractCounts.fromJson(rarExtractDispatch(src, out, sel, pwd)), null)
                 else -> extractByFormat(fmt, src, out, sel, prefs)
             }
         }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }

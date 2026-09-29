@@ -8,15 +8,19 @@ Human-facing docs: [README](README.md) · [CONTRIBUTING](CONTRIBUTING.md) (中�
 ## Commands
 
 ```bash
-bash build.sh                      # full build: Rust cross-compile (3 ABIs) -> jniLibs -> assembleRelease (needs NDK)
-./gradlew :app:assembleRelease     # Kotlin-only changes
+bash build.sh                      # full build: Rust cross-compile (3 ABIs) -> jniLibs -> assembleRelease -> ./UsefulUnpack.apk (needs NDK)
+./gradlew :app:assembleRelease     # Kotlin-only changes (output lands in app/build/outputs/apk/release/ — NOT the root APK)
 cargo test --workspace             # Rust suite — must stay green
-./gradlew lintDebug                # baseline: 0 errors / ~268 warnings — NEVER introduce new errors
+./gradlew lintDebug                # baseline: 0 errors / 271 warnings — NEVER introduce new errors
 ```
+
+> `build.sh` is the only script that refreshes the root `UsefulUnpack.apk`. A bare
+> `:app:assembleRelease` does not, so `adb install UsefulUnpack.apk` after one
+> silently ships the PREVIOUS build.
 
 ## Non-negotiable architecture invariants
 
-1. **One global progress/CANCEL slot per format on the Rust side** (`progress_store!` in `crates/common`). Therefore EVERY archive operation must go through:
+1. **One global progress/CANCEL slot per native library on the Rust side** (`progress_store!` in `crates/common`). Therefore EVERY archive operation must go through:
    ```kotlin
    val opH = tryStartOperation(activity, fmtKey)   // never blocks/refuses; queues instead
    thread {
@@ -25,12 +29,16 @@ cargo test --workspace             # Rust suite — must stay green
    }
    ```
    Same `fmtKey` serializes; different keys share 3 slots. Composite two-format flows use pseudo-key `"merge"`; zip entry edits use `"zip"`.
+   **Keys that share a `.so` MUST also share a slot** — go through `schedulerKeyOf()` in `archive/ArchiveExtractor.kt`, never the raw key. Three such families exist: `pf6`→`pfs`; the five tar variants (`tar`/`tgz`/`tbz2`/`txz`/`tzst`)→`tar`; and all eight `rgss*`/`rpgmv*`→`rgss`. A per-format `.so` with one `compress_progress` static, polled by several keys, means the second op's `reset(total)` wipes the first one's total and the second op's cancel aborts the first. This already happened twice (pf6, then the tar family) — the `schedulerKeyOf` comment lists the families; keep it accurate when adding a format.
 2. **Password prompts BEFORE `tryStartOperation`** — modals block ~30 s and must never hold a slot/format lock.
 3. Every new JNI operation entry calls `clear_cancel()` first, or the previous op's cancel poisons it.
 4. Cancel isolation: queued-cancel must NOT set the format-global CANCEL flag (it would kill an unrelated running same-format op). Use `PollingProgressDialog.cancelQueuedThenNotify()` semantics.
 5. Every `runOnUiThread` block that touches UI (Toast, AlertDialog, Progress.dismiss, etc.) MUST start with `if (isFinishing || isDestroyed) return@runOnUiThread`. When a `prog.dismiss()` appears in the same block, place it AFTER the guard to avoid dismissing on a destroyed Activity.
-5. Deliberate legacy exceptions — do NOT migrate without revisiting rationale: delete/recycle flows and signature scan stay on old `OperationLock`.
-6. `viewPager.offscreenPageLimit = MAX_TABS - 1` keeps all fragments alive; don't lower it.
+6. Deliberate legacy exceptions — do NOT migrate without revisiting rationale: delete/recycle flows and signature scan stay on old `OperationLock`.
+7. `viewPager.offscreenPageLimit = MAX_TABS - 1` keeps all fragments alive; don't lower it.
+8. **Derived UI state, never stored**: anything a tab shows about its own state must be a function of that state. `TabState.displayPath()` exists because `tvPath` was written in only one of the three places a preview gets rendered — a rebuilt fragment left the bar at the layout default `/`. Same rule for `syncMergeButton()` and the merge target list, which share `mergeTargetGroups()` so the button and the picker can never disagree.
+9. **Semi-transparent drawing needs its own layer.** Painting segments straight onto a persistent bitmap blends each one into the previous (`SRC_OVER`), so a 50% stroke gets darker the longer it is drawn and blobs at the joints. `ImageEditorView` renders each stroke at FULL alpha into `activeLayer` and applies that stroke's alpha once at composite time; the stroke records its own colour/alpha/width so re-rendering history (undo) cannot restyle it.
+10. **One source of truth per dispatch table.** Duplicated `when (format)` blocks drift. The archive listing dispatch is `listEntriesJson()`; merge availability is `mergeTargetGroups()`. When you add a format, add it there and let the others forward.
 
 ## Known traps
 
@@ -39,32 +47,61 @@ cargo test --workspace             # Rust suite — must stay green
 - **Cross-tab multi-select**: selections persist per-tab (`TabState.multiSelected`); batch ops aggregate via `allSelectedFiles()` / `totalSelectedCount()`. Cancel clears ALL tabs via `exitAllMultiSelect()`. Tab badges auto-refresh via `syncAllTabAdapters()` + `tabAdapter.notifyDataSetChanged()`.
 - **Async completion dialogs**: any `runOnUiThread { ... AlertDialog ... }` after background work requires `isFinishing || isDestroyed` guard (BadTokenException class — exterminated twice).
 - **Honor/EMUI ROM**: custom ScrollView/TextView/EditText must not enable native scrollbars (ROM NPE in `onDrawScrollBars`).
-- New strings go to ALL FOUR locales: `values/`, `-zh-rCN/`, `-zh-rTW/`, `-ja/`.
+- New strings go to ALL FOUR locales: `values/`, `-zh-rCN/`, `-zh-rTW/`, `-ja/`. Check with a set comparison, not eyeballing — `values-zh-rTW` had drifted 7 `<string>` and 1 `help_tutorials` item behind for a long time. In XML, `'` must be `\'` (AAPT2 fails obscurely otherwise) and a help entry MUST carry `Title\nBody` or `parseItem` renders the whole thing as a bold title with no body.
+- Android string resources also carry a `\\n` (literal backslash-n) style in older entries; both appear in `strings.xml`. Match the style of the array you are editing instead of normalizing the file.
+
+## The lesson that keeps costing the most
+
+**Self-made fixtures fail together with the assumption they encode.** Every one of these shipped green locally and was caught only by real data:
+
+- An M4A fixture whose `ftyp` minor version was the same wrong guess as the code (`0.0.2.0`; real files use `0.0.0.0`).
+- A 24-byte probe window that stopped one byte short of the `moov` box, so a real `.rpgmvm` was rejected as invalid.
+- A hand-typed obfuscated fixture whose 16-byte header did not match `RPGM_HEADER` (which carries `03 01`), so the reader passed it through as "not obfuscated" and the test still went green.
+- An M4A validation that searched for a box type at the position implied by the value it had just derived — unfalsifiable by construction.
+
+When adding a format, **get real samples and check them against an independent oracle**, and prefer byte-identity over "it extracted without error": re-packing must reproduce the original file exactly. See the RPG Maker corpus note below.
+
+## Real-file regression corpora
+
+| Corpus | What it gives | Oracle |
+|---|---|---|
+| `files4testing` (see `CONTRIBUTING.md`) | ~423 vectors + 13 injected faults across 14 formats | extraction hashes; faults must reject cleanly |
+| **uuksu/RPGMakerDecrypter** test data | real `Game.rgssad` / `.rgss2a` / `.rgss3a`, and real `.rpgmvp`/`.rpgmvo`/`.rpgmvm` assets (kept WITHOUT extensions) | exact offset/size/key per entry; `MD5("12345")` as the MV keystream; SHA-1 of each decrypted asset |
+| binwalk 3.1 samples | signature-scan agreement | 201 semantic differences, all favorable |
+
+Download the RPG Maker files with `curl` from `raw.githubusercontent.com/uuksu/RPGMakerDecrypter/master/RPGMakerDecrypter.Tests/`. A harness that exercises the parser from OUTSIDE the workspace is preferable — `crates/rgss-core` is an `rlib` as well as a `cdylib`, so a scratch crate can `path`-depend on it and leave the repo untouched. The env-gated `examples/probe.rs` is the on-device version of the same idea.
 
 ## Conventions
 
 - Commits: conventional prefixes; releases are single narrative commits `feat(vX.Y.Z): …` + dedicated TODO.md section + `versionCode`/`versionName` bump in `app/build.gradle`.
 - `TODO.md` is the changelog AND roadmap — append a bullet under the current dev section for behavioral changes.
-- Format listing JSON contract: `[{"n":name,"s":size,"d":isDir,"e":encrypted}]`; selective extraction takes newline-separated paths with exact + directory-prefix matching.
+- Format listing JSON contract: `[{"n":name,"s":size,"d":isDir,"e":encrypted}]`; selective extraction takes newline-separated paths with exact + directory-prefix matching. A forwarded selection argument must be forwarded on EVERY branch: dropping it silently turns a selective extract into a full one.
 - Rust JNI style: compact single-line functions wrapped in `guarded()`; reuse `archive_common::{s, json_escape, safe_join}`.
 - Progress reporting: feed `extract_progress::reset/set_file/add_bytes` (packing: `compress_progress::*`). Whole-member buffered decodes feed the top bar from the WRITE side (`ProgressWriter::extract`) so totals stay exact.
+- RPG Maker specifics worth remembering: RGSS v1 and v2 share one layout (VX is written as v1, keyed off the extension); a packed archive the engine will open must be named `Game.<ext>`, and there is no usable fallback name if that slot is taken. MV/MZ obfuscation XORs only the first 16 asset bytes behind a 16-byte `RPGMV` header, so without the game's key the header is *reconstructed* per container — and the M4A minor version is a reconstruction, not a recovery.
 
 ## Map of non-obvious places
 
 | Thing | Where |
 |---|---|
-| Scheduler / lock / queue | `archive/OpScheduler.kt` |
+| Scheduler / lock / queue / slot collapsing | `archive/OpScheduler.kt`, `schedulerKeyOf()` in `archive/ArchiveExtractor.kt` |
 | Progress UI (OpOverlay floating layer + PollingProgressDialog) | `archive/ExtractProgress.kt` |
 | Format dispatch + password retry flows | `archive/ArchiveExtractor.kt`, `extract/PreviewFlow.kt` (largest file) |
-| Tab state / multi-window | `browse/TabState.kt`, `browse/FolderFragment.kt`, `MainActivity.kt` (~840 lines: tab strip adapter, rename, memory badge) |
+| Archive listing dispatch (single source) | `listEntriesJson()` in `extract/PreviewFlow.kt` |
+| Cross-archive merge (targets, staging, repack) | `mergeTargetGroups()` / `mergeIntoArchive()` in `extract/PreviewFlow.kt` |
+| Tab state / multi-window / path bar | `browse/TabState.kt` (`displayPath()`), `browse/FolderFragment.kt`, `MainActivity.kt` |
+| Image editor (brush alpha layering) | `ui/ImageEditorView.kt`, `ui/ImageEditorDialog.kt` |
+| RPG Maker MV/MZ key + extension rules | `RgssCore.kt` (`mvRequiredExt`, `mvExtMismatch`, `PREF_MV_KEY`) |
 | Recycle bin | `fileops/RecycleBin.kt` (rename-first fast path; copy fallback reports per-file progress; copy failure must abort BEFORE deleting originals) |
 | Signature scan engine | `crates/scan-core` (binwalk-style; validated against binwalk 3.1 corpus) |
-| Vendored forks | `crates/vendor/` (rars, sevenz-rust, isomage, zip) |
+| RPG Maker RGSS / MV-MZ codec | `crates/rgss-core` (+ `examples/probe.rs` for on-device diagnosis) |
+| Vendored forks | `crates/vendor/` (rars, sevenz-rust, isomage, zip, xp3) |
 
 ## Verification before finishing a task
 
 1. `cargo test --workspace` green (if Rust touched)
 2. `./gradlew lintDebug` — no new errors (if Kotlin/resources touched)
 3. `bash build.sh` completes (if JNI surface changed)
-4. Behavioral checklist for UI-sensitive changes: rotation survival, cancel mid-op cleanup, parallel smoke (different formats overlap; same format queues; queued-cancel isolates), Honor scrollbar avoidance
-4. Behavioral checklist for UI-sensitive changes: rotation survival, cancel mid-op cleanup, parallel smoke (different formats overlap; same format queues; queued-cancel isolates), Honor scrollbar avoidance
+4. If a format or codec was touched, run the real-file corpora above — synthetic round-trips are necessary, not sufficient
+5. Behavioral checklist for UI-sensitive changes: rotation survival, cancel mid-op cleanup, parallel smoke (different formats overlap; same format queues; queued-cancel isolates), Honor scrollbar avoidance
+6. Four-locale string set comparison (same key set in all four `strings.xml`, and every `help_tutorials` item has a `Title\nBody` split)

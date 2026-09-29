@@ -4,7 +4,7 @@
 
 A lightweight Android file manager and archive packing/unpacking tool.
 
-Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF** (YU-RIS), **KSD** (Kirikiri2), **ZIP**, **7z**, **RAR**, **LZ4**, and **ISO 9660** disc images — with native Rust-powered extraction and packing.
+Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF** (YU-RIS), **RGSS** (RPG Maker XP/VX/VX Ace), **KSD** (Kirikiri2), **ZIP**, **7z**, **RAR**, **LZ4**, and **ISO 9660** disc images — with native Rust-powered extraction and packing.
 
 ---
 
@@ -17,6 +17,8 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 📜 **NSA/SAR** | Unpack NScripter `.nsa` / `.sar` archives (LZSS + SPB), **pack** (stored / LZSS) |
 | 🗜️ **ZIP** | Browse/extract/pack ZIP (AES-256, split volumes); **PKWARE multi-disk** (`.z01/.z02/.zip`) with **cross-disk entries**; **in-place edit** — replace / delete / add entries without repacking the whole archive, **AES flag preserved** for untouched encrypted entries; edits save as a `name-cn.zip` copy (original untouched) |
 | 📦 **YPF** | Unpack YU-RIS `.ypf` archives with adaptive boundary detection |
+| 🎮 **RGSS** | Unpack **and pack** RPG Maker encrypted archives (packed output is named `Game.rgss3a`, the only name the engine opens) — `.rgssad` (XP), `.rgss2a` (VX), `.rgss3a` (VX Ace); layout auto-detected from the header, so any of the three opens any of the three; UTF-8 / Shift-JIS names; edit scripts in-place |
+| 🎮 **RPG Maker MV/MZ** | Decode **and re-obfuscate** per-file assets — `.rpgmvp` pictures, `.rpgmvo` sounds, `.rpgmvm` movies (and MZ's `.png_` / `.ogg_` / `.m4a_`); decoding needs no key because the 16-byte header is recovered from the file itself (including for files whose name carries no extension — the content decides), and packing takes the keystream you type (32 hex digits verbatim, or any text to be MD5-hashed the way RPG Maker does it). **Each key takes only its own type: `.rpgmvp` packs `.png`, `.rpgmvo` packs `.ogg`, `.rpgmvm` packs `.m4a`** — anything else is refused, because the engine picks its loader from the extension; output named with its real extension so it opens in the image / audio viewer; batch mode handles a whole selection |
 | 💾 **KSD** | Pack/unpack `.ksd` files — mode 0/1/2 scrambling + UTF-16 ↔ UTF-8 |
 | 💿 **ISO 9660** | Browse and extract ISO disc images (CD/DVD/BD) via isomage; **pack** (Level 1); **CSO↔ISO conversion** (PSP CISO) |
 | 🗜️ **RAR** | Unpack RAR archives (RAR4/5) with password support; **header-encrypted (`-hp`) archives** prompt for a password and preview/extract with it; **members >64MB stream** (byte-level progress, bounded memory — no RAM spike on 100–500MB members); **non-solid archives extract selected files / preview with random access** (a late text file opens instantly, skipping the preceding members); **Huffman lookahead decode** (~30% faster) |
@@ -47,18 +49,18 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 📂 **Local File Preview** | Tap any previewable file in the browser to view directly |
 | 🗂 **File Browser** | ZArchiver-style UI with path breadcrumb, fast scroll, folder ⭐ bookmarks |
 | 🪟 **Multi-Window Tabs** | Up to 3 independent windows (ViewPager2 swipe, add/close). Each window keeps its own path, selected file, multi-select state, batch bar and paste/move state — fully isolated. **Long-press a tab label to rename it**; Chrome-style top tab bar (active tab highlighted with a rounded pill) |
-| 📦 **In-Window Archive Preview** | FAB preview renders INSIDE the current window (no modal), so **you can swipe between windows while previewing**; bottom bar has Extract all / Extract selected / Merge into archive, top bar has Search + a **⋮ overflow menu** (Edit / ZIP-manage / ISO-convert, shown per format, toast when not applicable). Entering global search from a preview returns to the preview when closed |
-| 🔀 **Cross-Archive Merge** | In a preview, select entries → "Merge into archive" → pick a target archive → merged and repacked into a `target-cn.ext` copy (original untouched, guarded by the same-archive mutex) |
+| 📦 **In-Window Archive Preview** | FAB preview renders INSIDE the current window (no modal), so **you can swipe between windows while previewing**; bottom bar has Extract all / Extract selected / Merge (the merge button greys out when no merge target exists, so you never hit a dead end), top bar has Search + a **⋮ overflow menu** (Edit / ZIP-manage / ISO-convert, shown per format, toast when not applicable). Entering global search from a preview returns to the preview when closed |
+| 🔀 **Cross-Archive Merge** | In a preview, select entries → "Merge" → pick a target from **this folder or an archive another window has open** (grouped list, annotated with the window name) → the source's selected entries are unpacked, the target is unpacked over the same staging dir (so matching paths are overwritten by the source), and the result is repacked into a `target-cn.ext` copy next to the target. The target is only ever read and the original is never touched, so merging into an archive another window is previewing is safe. The button is greyed out when there is nothing to merge into |
 | 📍 **Path/File Picker Mode** | General settings toggle: "Open path picker dialog" (default) or "Pick in a new window" — the latter opens a new window to browse and pick, then closes it and returns to the origin window (applies to search scope / extract target / ZIP add / compress target) |
 | 📌 **Bookmarks** | Quick-access paths via star button on folders or slide-out drawer |
 | 🏠 **Root Navigation** | One-tap home button to jump to `/storage/emulated/0` |
 | ⚡ **One-Tap Preview** | Tap an archive → FAB → direct archive preview; format auto-detected from the extension (`.tar.gz`/`.tgz`/`.pf6`/`.sar`…), no extra chooser dialogs |
 | 📦 **Extract All** | One-click "Extract all" in the preview extracts to a deduped sibling folder; reuses the password entered during preview |
 | 🧩 **Extensionless Detection** | Magic-byte sniffing recognizes archives that lost their extension or were mislabeled, with a manual format picker as fallback |
-| 🔬 **Signature Scan** | Rust scan-core engine: **23 signatures / 70 magic patterns** at any offset, per-format header validation (real size + file counts, incl. **tar** `ustar` and **ISO 9660**), **decompression dry-runs** (gzip/xz/lzma) cutting false positives, **header-encrypted RAR5 fallback**, Aho-Corasick matching, streaming scan (no whole-file load), one tap to extract or carve (dd) the raw segment — works for archives embedded between other files |
+| 🔬 **Signature Scan** | Rust scan-core engine: **32 signatures / 83 magic patterns** at any offset, per-format header validation (real size + file counts, incl. **tar** `ustar` and **ISO 9660**), **decompression dry-runs** (gzip/xz/lzma) cutting false positives, **header-encrypted RAR5 fallback**, Aho-Corasick matching, streaming scan (no whole-file load), one tap to extract or carve (dd) the raw segment — works for archives embedded between other files |
 | 🔤 **Text Encoding** | Global text-encoding setting (UTF-8 / Shift-JIS / GBK / UTF-16) applied strictly to every text preview and content search — BOM-aware UTF-8/UTF-16 with **auto-detection** (a UTF-16 BOM opens as UTF-16 automatically); the preview/editor have an inline encoding switch that re-renders instantly; heavy garble prompts a switch hint, and a strictly-valid-UTF-8 check flags the classic "legal-but-wrong" cross-read |
 | ✏️ **Archive Text Editing** | Edit script/text files inside XP3/PFS/ISO/NSA/**7z** archives: extract the archive, pick a script (`.ks`/`.tjs`/`.csv`/…), edit it with an explicit encoding + byte-faithful BOM round-trip, then repack into a new `name-cn.xp3/pfs/iso/nsa/7z` — a full in-app edit loop; ZIP entries edit in place and save as `name-cn.zip` |
-| 🎨 **Image Editor** | Open from the image preview **⋮** menu: watercolor/highlighter brush (color palette + opacity + width), **rectangular crop** (drag → tap Crop again to confirm), **stretch to 1:1 / 4:3 / 3:4 / 16:9 / 9:16**, **pixel eyedropper** (drag to auto-sample, tap the readout to copy HEX/RGB), **two-finger pinch zoom (1–8×) + pan**, undo / reset. Saves a `name-edit.png` copy — original untouched (~2048px working cap, rotation-safe autosave with restore prompt) |
+| 🎨 **Image Editor** | Open from the image preview **⋮** menu: watercolor/highlighter brush (color palette + opacity + width — each stroke keeps the opacity it was drawn at, so lowering it never restyles earlier work), **rectangular crop** (drag → tap Crop again to confirm), **stretch to 1:1 / 4:3 / 3:4 / 16:9 / 9:16**, **pixel eyedropper** (drag to auto-sample, tap the readout to copy HEX/RGB), **two-finger pinch zoom (1–8×) + pan**, undo / reset. Saves a `name-edit.png` copy — original untouched (~2048px working cap, rotation-safe autosave with restore prompt) |
 | 🔄 **Image Format Conversion** | From the image preview **⋮** menu: convert static **JPG/PNG/WebP** between each other, and animated **GIF/WebP → a static first frame** (JPG/PNG/WebP). Saves a copy, original untouched |
 | 📤 **Share** | Long-press any file → **Share**: hands it to another app via FileProvider + `ACTION_SEND` — no network permission, no manifest change |
 | 💾 **Session Restore** | Settings → **Other settings** → "Restore last session": on launch reopen the previous windows/folders **and the archive previews that were open** for up to 3 tabs (toast if more). The Recycle-bin settings live under Other settings too |
@@ -99,7 +101,7 @@ Signature scan details (parser + size-skip semantics, following the approach of 
 
 | Design | How it works |
 |--------|--------------|
-| Engine | Aho-Corasick multi-pattern matching over 1 MiB streaming chunks (magics straddling a boundary still match); 23 signatures / 70 magic patterns |
+| Engine | Aho-Corasick multi-pattern matching over 1 MiB streaming chunks (magics straddling a boundary still match); 32 signatures / 83 magic patterns |
 | Validation | Every hit runs a per-format header parser (ZIP EOCD, RAR EOF marker + volume flags, PNG chunk walk, JPEG marker walk, gzip/bzip2/xz/zstd/lz4/lzma header checks, …) plus **decompression dry-runs for gzip/xz/lzma**; header-encrypted RAR5 falls back to a whole-file region — false positives are dropped |
 | Size skip | Validated hits with a known size are skipped past entirely (e.g. a 5.3 GB RAR resolves in ~4 ms from its EOF marker) |
 | Post-pass | Same-offset conflicts resolved by confidence; hits inside an identified region removed; unknown sizes extended to the next hit or EOF |
@@ -147,6 +149,7 @@ User taps file → Kotlin UI calls format-specific JNI
           libarchive_nsa_core.so  → NSA/SAR
           libarchive_iso_core.so  → ISO 9660
           libarchive_ypf_core.so  → YPF (YU-RIS)
+          libarchive_rgss_core.so → RGSS (XP/VX/VX Ace) + MV/MZ loose assets
           libarchive_zip_core.so  → ZIP
           libarchive_sevenz_core.so → 7z
           libarchive_rar_core.so  → RAR
@@ -187,6 +190,8 @@ XOR key auto-detection (0xFF vs 0xC9) is done per-file on the first entry.
 | **PFS / PF6 / PF8** | [pf8 crate](https://crates.io/crates/pf8) | See [crates.io/pf8](https://crates.io/crates/pf8) |
 | **NSA / SAR** | [NSA 格式规范](https://orin.page/w/index.php?title=NSA), LZSS/SPB via [GARbro](https://github.com/morkt/GARbro) / [ONScripter](https://github.com/nscripter/nscripter) | Public spec / MIT / GPL |
 | **YPF** | [YU-RIS 格式解析参考](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker) (Kaitai), [GARbro](https://github.com/morkt/GARbro) SwapTable, XOR + Shift-JIS, zlib | Public spec / MIT |
+| **RPG Maker MV/MZ assets** | Format cross-checked against [Petschko's RPG-Maker-MV-Decrypter](https://gitlab.com/Petschko/RPG-Maker-MV-Decrypter) and [rpgm-asset-decrypter-lib](https://github.com/RPG-Maker-Translation-Tools/rpgm-asset-decrypter-lib) (MIT); the keystream is recovered from each file's own header, so no MD5 or `System.json` sidecar is needed | Public spec / MIT |
+| **RGSS (RPG Maker)** | Layout cross-checked against [uuksu/RPGMakerDecrypter](https://github.com/uuksu/RPGMakerDecrypter) (MIT), [mkxp-z `crypto/rgssad.cpp`](https://github.com/mkxp-z/mkxp-z) (BSD-3-Clause) and [rpgm-archive-decrypter-lib](https://github.com/RPG-Maker-Translation-Tools/rpgm-archive-decrypter-lib) (Apache-2.0/MIT); no equivalent crate exists on crates.io, so the parser is self-contained | Public spec / MIT / BSD-3-Clause / Apache-2.0 |
 | **ISO 9660** | [isomage crate](https://crates.io/crates/isomage) | MIT |
 | **ZIP** | [zip crate](https://crates.io/crates/zip) | MIT |
 | **7z** | [sevenz-rust crate](https://crates.io/crates/sevenz-rust) | MIT / Apache-2.0 |
@@ -208,8 +213,9 @@ XOR key auto-detection (0xFF vs 0xC9) is done per-file on the first entry.
 | `xp3` 0.4 | MIT / Apache-2.0 | XP3 pack/unpack |
 | `pf8` 0.1 | — | PFS/PF6/PF8 pack/unpack |
 | `isomage` 0.1 | MIT | ISO 9660 / UDF |
+| `md5` (self-implemented) | RFC 1321 | MV `encryptionKey` → keystream (format requirement, not a security control) |
 | `flate2` 1 | MIT / Apache-2.0 | zlib (YPF/KSD) + gzip pack/unpack |
-| `encoding_rs` 0.8 | (Apache-2.0 OR MIT) AND BSD-3-Clause | Shift-JIS (YPF) |
+| `encoding_rs` 0.8 | (Apache-2.0 OR MIT) AND BSD-3-Clause | Shift-JIS (YPF, RGSS) |
 | `tokio` 1 | MIT | Async I/O (XP3) |
 | `rars` 0.4 | MIT / Apache-2.0 | RAR extraction (vendored fork) |
 | `lz4_flex` | MIT | LZ4 pack/unpack |

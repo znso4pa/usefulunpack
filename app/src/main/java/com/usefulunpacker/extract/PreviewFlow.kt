@@ -39,25 +39,7 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
                 if (entered == null) { runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss() }; return@thread }
                 pwd = entered
             }
-            val json = try { when(format) { "xp3" -> Xp3Core.xp3ListEntries(src.absolutePath)
-                "pfs" -> PfsCore.pfsListEntries(src.absolutePath)
-                "nsa" -> NsaCore.nsaListEntries(src.absolutePath)
-                "iso" -> IsoCore.isoListEntries(src.absolutePath)
-                "ypf" -> YpfCore.ypfListEntries(src.absolutePath)
-                "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); val vols = resolveZipVolumes(src); if (vols.size > 1) ZipCore.zipListEntriesVolumes(volumeJoin(vols)) else ZipCore.zipListEntries(src.absolutePath) }
-                "7z" -> { val vols = resolveSevenZVolumes(src); if (vols.size > 1) (if (pwd.isNotEmpty()) SevenZCore.szListEntriesVolumesWithPassword(volumeJoin(vols), pwd) else SevenZCore.szListEntriesVolumes(volumeJoin(vols))) else if (pwd.isNotEmpty()) SevenZCore.szListEntriesWithPassword(src.absolutePath, pwd) else SevenZCore.szListEntries(src.absolutePath) }
-                "rar" -> { val vols = resolveRarVolumes(src); if (vols.size > 1) (if (pwd.isNotEmpty()) RarCore.rarListEntriesVolumesWithPassword(volumeJoin(vols), pwd) else RarCore.rarListEntriesVolumes(volumeJoin(vols))) else if (pwd.isNotEmpty()) RarCore.rarListEntriesWithPassword(src.absolutePath, pwd) else RarCore.rarListEntries(src.absolutePath) }
-                "lz4" -> Lz4Core.lz4ListEntries(src.absolutePath)
-                "gz" -> GzipCore.gzListEntries(src.absolutePath)
-                "bz2" -> Bzip2Core.bz2ListEntries(src.absolutePath)
-                "xz" -> XzCore.xzListEntries(src.absolutePath)
-                "zst" -> ZstdCore.zstListEntries(src.absolutePath)
-                "lzma" -> LzmaCore.lzmaListEntries(src.absolutePath)
-                "ksd" -> KsdCore.ksdListEntries(src.absolutePath)
-                "br" -> BrotliCore.brotliListEntries(src.absolutePath)
-                "tar" -> TarCore.tarListEntries(src.absolutePath)
-                else -> null
-            } } catch (_: Exception) { null }
+            val json = listEntriesJson(format, src, pwd, nestedOnly = false)
             runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss() }
             if (json == null) {
                 val msg = if (format in setOf("zip", "7z", "rar")) getString(R.string.err_cannot_read_maybe_pwd) else getString(R.string.msg_cannot_read)
@@ -134,6 +116,9 @@ internal fun MainActivity.renderPreview(tab: TabState, src: File, entries: List<
         syncPreview(tab)
         updatePreviewStats(tab)
     }
+    // A new preview open in ANY window changes what every other open preview can
+    // merge into, so the buttons have to be re-evaluated everywhere.
+    refreshMergeButtons()
     saveSession()
 }
 
@@ -150,6 +135,9 @@ internal fun MainActivity.exitPreview(tab: TabState) {
         tab.previewRoot.visibility = View.GONE
         navTab(tab, tab.currentDir)
     }
+    // This window just gave up its archive, which may have been another window's
+    // only merge target.
+    refreshMergeButtons()
     saveSession()
 }
 
@@ -286,6 +274,13 @@ internal fun MainActivity.syncPreview(tab: TabState) {
     if (!tab.viewsBound) return
     val src = tab.previewSrc ?: return
     tab.previewRoot.visibility = View.VISIBLE
+    // The preview covers the list but NOT the path bar, and this runs on every
+    // tab switch / fragment rebuild — so the bar is refreshed from the tab's
+    // derived state here too, not only in navTab. Without this the bar kept
+    // whatever it last had, i.e. the layout default `/` for a tab whose
+    // fragment was rebuilt while a preview was open.
+    tab.tvPath.text = tab.displayPath().absolutePath
+    syncMergeButton(tab)
     val adapter = PreviewAdapter(this, tab.previewEntries, tab.previewSelected, tab.previewExpanded,
         { entry -> previewFileEntry(src, entry, tab.previewFormat, tab.previewPwd, tab) },
         { updatePreviewStats(tab) })
@@ -451,7 +446,7 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
             setPadding(12, 8, 12, 8)
             layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
             setOnClickListener {
-                if (format !in setOf("xp3", "pfs", "iso", "nsa", "7z", "ypf")) {
+                if (format !in setOf("xp3", "pfs", "iso", "nsa", "7z", "ypf", "rgss")) {
                     toast(getString(R.string.edit_only_pack))
                 } else {
                     dlg.dismiss()
@@ -619,30 +614,104 @@ internal fun MainActivity.showOutputDirDialog(src: File, selectedPaths: List<Str
 internal fun MainActivity.showMergeTargetPicker(src: File, selectedPaths: List<String>, format: String, pwd: String, ownerTab: TabState) {
     // List candidates in the OWNING tab's directory (not the active tab's) —
     // the picker can be invoked from a background tab's preview.
-    val dir = ownerTab.currentDir
-    val candidates = dir.listFiles()?.filter {
-        it.isFile && it !== src && isArchiveFile(it)
-    }?.sortedBy { it.name.lowercase() } ?: emptyList()
-    if (candidates.isEmpty()) {
+    val groups = mergeTargetGroups(ownerTab, src)
+    if (groups.all { it.second.isEmpty() }) {
         toast(getString(R.string.merge_no_target))
         return
     }
-    AlertDialog.Builder(this)
-        .setTitle(getString(R.string.merge_select_target))
-        .setItems(candidates.map { it.name }.toTypedArray()) { _, w ->
-            val target = candidates[w]
-            val targetFmt = detectFormat(target) ?: detectFormatByMagic(target)
-            // Only formats that can be repacked are mergeable targets
-            // (zip/7z/tar + xp3/pfs/nsa/iso/ypf).
-            val mergeable = MERGE_COMPRESS_GROUPS.flatMap { it.second }.toSet()
-            if (targetFmt == null || targetFmt !in mergeable) {
-                toast(getString(R.string.merge_target_unsupported))
-                return@setItems
-            }
-            mergeIntoArchive(src, selectedPaths, format, pwd, target, targetFmt, ownerTab)
+    // showFormatPicker is format-agnostic (groups of string keys + a label map),
+    // so it doubles as the grouped file picker here. Absolute paths are the keys.
+    val labels = HashMap<String, String>()
+    groups.forEach { (_, list) ->
+        list.forEach { c ->
+            labels[c.file.absolutePath] =
+                if (c.window == null) c.file.name else "${c.file.name}  (${tabTitle(c.window)})"
         }
-        .setNegativeButton(getString(R.string.action_cancel), null)
-        .show()
+    }
+    showFormatPicker(
+        this, getString(R.string.merge_select_target),
+        groups = groups.map { it.first to it.second.map { c -> c.file.absolutePath } },
+        labels = labels,
+    ) { path ->
+        val target = File(path)
+        // Re-resolve here rather than trusting the list: the directory can have
+        // changed between listing and tapping.
+        val targetFmt = detectFormat(target) ?: detectFormatByMagic(target)
+        if (targetFmt == null || targetFmt !in MERGE_COMPRESS_GROUPS.flatMap { g -> g.second }) {
+            toast(getString(R.string.merge_target_unsupported))
+            return@showFormatPicker
+        }
+        mergeIntoArchive(src, selectedPaths, format, pwd, target, targetFmt, ownerTab)
+    }
+}
+
+/** A merge target plus the window that has it open, or null for "just a file in
+ *  this folder" (no window label needed). */
+internal data class MergeTarget(val file: File, val window: TabState?)
+
+/**
+ * Every archive this tab can merge INTO, split by how the user is most likely
+ * to recognise it: first the folder they are browsing, then the archives other
+ * windows currently have open.
+ *
+ * ONE source of truth — the picker and the button's enabled state both read it,
+ * so they can never disagree about whether a merge target exists.
+ *
+ * Only repackable formats survive the filter (zip/7z/tar + xp3/pfs/nsa/iso/ypf +
+ * rgss), so the list never offers something that would bounce off
+ * `merge_target_unsupported` on tap. Duplicates (an archive open in a neighbour
+ * window that also sits in this folder) collapse to the folder row, which is the
+ * nearer one.
+ */
+private fun MainActivity.mergeTargetGroups(
+    ownerTab: TabState, src: File
+): List<Pair<Int, List<MergeTarget>>> {
+    val mergeable = MERGE_COMPRESS_GROUPS.flatMap { it.second }.toSet()
+    fun fmtOf(f: File): String? = detectFormat(f) ?: detectFormatByMagic(f)
+    val srcKey = archiveKey(src)
+
+    val here = ownerTab.currentDir.listFiles().orEmpty()
+        .filter { it.isFile && isArchiveFile(it) && archiveKey(it) != srcKey }
+        .filter { fmtOf(it) in mergeable }
+        .sortedBy { it.name.lowercase() }
+        .map { MergeTarget(it, null) }
+
+    val seen = here.mapTo(HashSet()) { archiveKey(it.file) }
+    // `previewSrc` rather than OpenArchiveRegistry: the registry has no
+    // enumeration API, and previewActive guarantees the file is open RIGHT NOW.
+    val elsewhere = tabs.asSequence()
+        .filter { it !== ownerTab && it.previewActive && it.previewSrc != null }
+        .mapNotNull { t -> t.previewSrc?.let { MergeTarget(it, t) } }
+        .filter { archiveKey(it.file) != srcKey && archiveKey(it.file) !in seen }
+        .filter { fmtOf(it.file) in mergeable }
+        .sortedBy { tabTitle(it.window!!) }
+        .toList()
+
+    return listOf(
+        R.string.merge_group_here to here,
+        R.string.merge_group_open to elsewhere,
+    )
+}
+
+/** Re-evaluates the merge button on every open preview. Another window opening
+ *  or closing an archive changes the answer, and nothing else re-renders this
+ *  tab, so without this hook the button would go stale. */
+internal fun MainActivity.refreshMergeButtons() { for (t in tabs) syncMergeButton(t) }
+
+/**
+ * Greys the merge button out when [tab]'s preview has nowhere to merge INTO.
+ * Reads the same `mergeTargetGroups` the picker does, so a disabled button
+ * always means "no target right now" and an enabled one always means the tap
+ * opens a list with something in it.
+ */
+private fun MainActivity.syncMergeButton(tab: TabState) {
+    val src = tab.previewSrc ?: return
+    if (!tab.viewsBound || !tab.previewActive) return
+    val ok = mergeTargetGroups(tab, src).any { it.second.isNotEmpty() }
+    tab.btnPreviewMerge.isEnabled = ok
+    // textColor is a flat colour, not a state list, so the disabled state needs
+    // an explicit alpha to be visible at all.
+    tab.btnPreviewMerge.alpha = if (ok) 1f else 0.4f
 }
 
 /**
@@ -657,14 +726,16 @@ internal fun MainActivity.mergeIntoArchive(
     src: File, selectedPaths: List<String>, format: String, pwd: String,
     target: File, targetFmt: String, ownerTab: TabState = activeTab
 ) {
-    // Same-archive mutex on the TARGET: another window holding it must not
-    // repack a stale copy under it. Compare against the ORIGIN tab, not the
-    // transiently-active one — the dialog is activity-level and the user can
-    // switch windows before tapping.
-    val targetKey = archiveKey(target)
-    val targetOwner = OpenArchiveRegistry.owner(targetKey)
-    if (targetOwner != null && targetOwner !== ownerTab) {
-        toast(getString(R.string.msg_archive_open_in_tab, tabTitle(targetOwner)))
+    // The target is only ever READ here — the product is a fresh
+    // `uniqueFile(parent, "<name>-cn.<ext>")`, never the target itself — so a
+    // window that has it open for previewing is NOT a conflict: two concurrent
+    // readers are fine and that window's view stays correct. The mutex used to
+    // refuse exactly this case; what actually needs serializing is covered by
+    // the "merge" scheduler key below, and the in-place writers (zipReplaceEntry
+    // and friends) never consulted the registry either — they rely on their own
+    // "zip" slot.
+    if (archiveKey(target) == archiveKey(src)) {
+        toast(getString(R.string.merge_self_target))
         return
     }
     val parent = target.parentFile ?: ownerTab.currentDir
@@ -672,6 +743,8 @@ internal fun MainActivity.mergeIntoArchive(
     // 产物名在【拿到槽位之后】解析——merge 用的是伪 key "merge"，与 pfs 封包
     // 不同槽，排队中的两次合并必须各自解析名字，否则后完成者覆盖先完成者。
     val artemisNaming = targetFmt in setOf("pfs", "pf6") && prefs.getBoolean("pfs_artemis_naming", true)
+    // Same reasoning as the pfs toggle: RPG Maker only opens `Game.<ext>`.
+    val gameNaming = targetFmt in setOf("rgssad", "rgss2a", "rgss3a") && prefs.getBoolean("rgss_game_naming", true)
     val stageDir = File(cacheDir, "merge/${target.nameWithoutExtension}")
     var cancelled = false
     val accessors = extractAccessors(targetFmt)
@@ -723,18 +796,31 @@ internal fun MainActivity.mergeIntoArchive(
                     val tgtOutcome = extractByFormat(targetFmt, target.path, stageDir.path, "", prefs, tgtPwd)
                     if (cancelled) return@thread
                     // 3. Repack into a new file (never overwrite the original target).
-                    val outF = resolvePfsOutName(
-                        uniqueFile(parent, "${target.nameWithoutExtension}-cn.${target.extension.ifEmpty { targetFmt }}"),
-                        artemisNaming
+                    val mergeExt = target.extension.ifEmpty { targetFmt }
+                    val (outF, renamed) = resolveRgssOutName(
+                        resolvePfsOutName(
+                            uniqueFile(parent, "${target.nameWithoutExtension}-cn.$mergeExt"),
+                            artemisNaming
+                        ),
+                        gameNaming, mergeExt
                     )
-                    val ok = compressDispatch(stageDir, outF, targetFmt, prefs.getInt("generic_level", 6), "", prefs)
+                    // Level and password come from the same settings the pack
+                    // flows use: a merge into a password-protected 7z/zip that
+                    // silently dropped the password would hand back an
+                    // unencrypted copy of a protected archive.
+                    val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
+                    val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
+                    val ok = compressDispatch(stageDir, outF, targetFmt, defaultCompressLevel(prefs, targetFmt), password, prefs)
                     // 失败/取消清半成品（产物名可能是 root.pfs）。
                     if (cancelled || !ok) outF.delete()
                     runOnUiThread {
                         if (isFinishing || isDestroyed) return@runOnUiThread
                         prog.dismiss()
                         if (cancelled) toast(getString(R.string.msg_cancelled))
-                        else if (ok) { toast(getString(R.string.merge_done, outF.name)); refreshTab(ownerTab) }
+                        else if (ok) {
+                            toast(getString(R.string.merge_done, outF.name) + if (renamed) " " + getString(R.string.rgss_game_naming_note) else "")
+                            refreshTab(ownerTab)
+                        }
                         else toast(getString(R.string.title_compress_failed))
                     }
                 } catch (e: Exception) {
@@ -858,7 +944,12 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
     // Artemis 命名与产物名在【拿到槽位之后】解析（见 resolvePfsOutName）；进度卡
     // 在 await 前就要画，所以标题用【源包名】而不是产物名。
     val artemisNaming = format in setOf("pfs", "pf6") && prefs.getBoolean("pfs_artemis_naming", true)
-    val opH = tryStartOperation(this, if (format == "pf6") "pfs" else format)
+    // RPG Maker only opens an archive named `Game.<ext>` beside its .exe.
+    // NOTE: `format` here is the *read* key ("rgss"), not the pack key — the
+    // write version is derived from the source extension further down. Testing
+    // against the pack keys here silently disabled renaming on every repack.
+    val gameNaming = format == "rgss" && prefs.getBoolean("rgss_game_naming", true)
+    val opH = tryStartOperation(this, format)
     var cancelled = false
     val accessors = compressAccessors(format)
     val prog = PollingProgressDialog(
@@ -875,12 +966,19 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
     thread {
         if (!opH.await()) return@thread
         try {
-            val outF = resolvePfsOutName(uniqueFile(parent, "${src.nameWithoutExtension}-cn.$ext"), artemisNaming)
+            val (outF, renamed) = resolveRgssOutName(
+                resolvePfsOutName(uniqueFile(parent, "${src.nameWithoutExtension}-cn.$ext"), artemisNaming),
+                gameNaming, ext
+            )
             val ok = when (format) {
                 "xp3" -> Xp3Core.xp3CreateArchive("", editDir.path, outF.path, prefs.getInt("generic_level", 6).toString()) != null
                 "nsa" -> NsaCore.nsaCreateArchive("", editDir.path, outF.path, "2") != null
                 "iso" -> IsoCore.isoCreateArchive("", editDir.path, outF.path) != null
                 "ypf" -> YpfCore.ypfCreateArchive("", editDir.path, outF.path, prefs.getInt("generic_level", 6).toString()) != null
+                // Reached only from the edit workspace, where `format` is the
+                // read key — decide the container from the source archive's
+                // extension so the game's own `Game.rgss3a` keeps a v3 body.
+                "rgss" -> RgssCore.rgssCreateArchive("", editDir.path, outF.path, rgssRepackVersionOf(src.name)) != null
                 "7z" -> {
                     val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                     val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
@@ -897,7 +995,7 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
                 prog.dismiss()
                 if (cancelled) toast(getString(R.string.msg_cancelled))
                 else if (ok) {
-                    toast(getString(R.string.edit_done, outF.name))
+                    toast(getString(R.string.edit_done, outF.name) + if (renamed) " " + getString(R.string.rgss_game_naming_note) else "")
                     refreshTab(ownerTab)
                 }
                 else toast(getString(R.string.title_compress_failed))
@@ -1039,7 +1137,7 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
         // Nested archive inside the current one (e.g. a .zip living inside an
         // .xp3): offer to open it in a NEW window so the outer preview is kept.
         val nestedFmt = formatOfName(entry.path)
-        if (nestedFmt != null && nestedFmt in setOf("zip", "7z", "rar", "xp3", "pfs", "nsa", "iso", "ypf")) {
+        if (nestedFmt != null && nestedFmt in setOf("zip", "7z", "rar", "xp3", "pfs", "nsa", "iso", "ypf", "rgss", "rpgmv")) {
             AlertDialog.Builder(this)
                 .setTitle(getString(R.string.nested_archive_title))
                 .setMessage(getString(R.string.nested_archive_msg, entry.path, archive.name))
@@ -1107,30 +1205,72 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
         }
     }
 
-    /**
-     * Lists an archive's entries for the in-tab preview, mirroring the dispatch
-     * used when first opening an archive. Returns null when the archive can't be
-     * read (wrong format / encrypted without password).
-     */
+/**
+ * Lists an archive's entries as the format's raw JSON, or null when the format
+ * cannot be listed.
+ *
+ * SINGLE SOURCE for the per-format listing dispatch. It used to be copy-pasted
+ * into three places (previewArchive, listPreviewEntries, batchPreview) and the
+ * copies had already drifted: batchPreview was the only one that never applied
+ * the ZIP encoding preference, so a GBK-named zip listed as mojibake in batch
+ * preview while single preview was correct. Always call this instead.
+ *
+ * @param pwd already-resolved password, or "" (the caller must have asked
+ *   BEFORE taking a scheduler slot — see the project invariant).
+ * @param nestedOnly restricts the result to formats that can appear *inside*
+ *   another archive, i.e. the ones with more than one entry.
+ */
+internal fun MainActivity.listEntriesJson(
+    format: String, src: File, pwd: String, nestedOnly: Boolean
+): String? = try {
+    when (format) {
+        "xp3" -> Xp3Core.xp3ListEntries(src.absolutePath)
+        "pfs" -> PfsCore.pfsListEntries(src.absolutePath)
+        "nsa" -> NsaCore.nsaListEntries(src.absolutePath)
+        "iso" -> IsoCore.isoListEntries(src.absolutePath)
+        "ypf" -> YpfCore.ypfListEntries(src.absolutePath)
+        "rgss" -> RgssCore.rgssListEntries(src.absolutePath)
+        "rpgmv" -> RgssCore.rgssMvListEntries(src.absolutePath)
+        // The encoding is process-global native state, so it must be re-applied
+        // on every listing — not just once per process.
+        "zip" -> {
+            ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8")
+            val vols = resolveZipVolumes(src)
+            if (vols.size > 1) ZipCore.zipListEntriesVolumes(volumeJoin(vols)) else ZipCore.zipListEntries(src.absolutePath)
+        }
+        "7z" -> {
+            val vols = resolveSevenZVolumes(src)
+            if (vols.size > 1) (if (pwd.isNotEmpty()) SevenZCore.szListEntriesVolumesWithPassword(volumeJoin(vols), pwd) else SevenZCore.szListEntriesVolumes(volumeJoin(vols)))
+            else if (pwd.isNotEmpty()) SevenZCore.szListEntriesWithPassword(src.absolutePath, pwd) else SevenZCore.szListEntries(src.absolutePath)
+        }
+        "rar" -> {
+            val vols = resolveRarVolumes(src)
+            if (vols.size > 1) (if (pwd.isNotEmpty()) RarCore.rarListEntriesVolumesWithPassword(volumeJoin(vols), pwd) else RarCore.rarListEntriesVolumes(volumeJoin(vols)))
+            else if (pwd.isNotEmpty()) RarCore.rarListEntriesWithPassword(src.absolutePath, pwd) else RarCore.rarListEntries(src.absolutePath)
+        }
+        // Single-stream formats: one synthetic entry, nothing to list. Only the
+        // full-archive listing paths can show them.
+        "lz4" -> if (nestedOnly) null else Lz4Core.lz4ListEntries(src.absolutePath)
+        "gz" -> if (nestedOnly) null else GzipCore.gzListEntries(src.absolutePath)
+        "bz2" -> if (nestedOnly) null else Bzip2Core.bz2ListEntries(src.absolutePath)
+        "xz" -> if (nestedOnly) null else XzCore.xzListEntries(src.absolutePath)
+        "zst" -> if (nestedOnly) null else ZstdCore.zstListEntries(src.absolutePath)
+        "lzma" -> if (nestedOnly) null else LzmaCore.lzmaListEntries(src.absolutePath)
+        "br" -> if (nestedOnly) null else BrotliCore.brotliListEntries(src.absolutePath)
+        "tar" -> if (nestedOnly) null else TarCore.tarListEntries(src.absolutePath)
+        "ksd" -> if (nestedOnly) null else KsdCore.ksdListEntries(src.absolutePath)
+        else -> null
+    }
+} catch (_: Exception) { null }
+
+/**
+ * Lists an archive's entries for the in-tab preview, mirroring the dispatch
+ * used when first opening an archive. Returns null when the archive can't be
+ * read (wrong format / encrypted without password).
+ */
     internal fun MainActivity.listPreviewEntries(format: String, src: File, pwd: String): List<ArchiveEntry>? {
-        val json = try { when (format) {
-            "xp3" -> Xp3Core.xp3ListEntries(src.absolutePath)
-            "pfs" -> PfsCore.pfsListEntries(src.absolutePath)
-            "nsa" -> NsaCore.nsaListEntries(src.absolutePath)
-            "iso" -> IsoCore.isoListEntries(src.absolutePath)
-            "ypf" -> YpfCore.ypfListEntries(src.absolutePath)
-            "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8")
-                val vols = resolveZipVolumes(src)
-                if (vols.size > 1) ZipCore.zipListEntriesVolumes(volumeJoin(vols)) else ZipCore.zipListEntries(src.absolutePath) }
-            "7z" -> { val vols = resolveSevenZVolumes(src)
-                if (vols.size > 1) (if (pwd.isNotEmpty()) SevenZCore.szListEntriesVolumesWithPassword(volumeJoin(vols), pwd) else SevenZCore.szListEntriesVolumes(volumeJoin(vols)))
-                else if (pwd.isNotEmpty()) SevenZCore.szListEntriesWithPassword(src.absolutePath, pwd) else SevenZCore.szListEntries(src.absolutePath) }
-            "rar" -> { val vols = resolveRarVolumes(src)
-                if (vols.size > 1) (if (pwd.isNotEmpty()) RarCore.rarListEntriesVolumesWithPassword(volumeJoin(vols), pwd) else RarCore.rarListEntriesVolumes(volumeJoin(vols)))
-                else if (pwd.isNotEmpty()) RarCore.rarListEntriesWithPassword(src.absolutePath, pwd) else RarCore.rarListEntries(src.absolutePath) }
-            else -> null
-        } } catch (_: Exception) { null }
-        if (json == null || json == "[]") return null
+        val json = listEntriesJson(format, src, pwd, nestedOnly = true) ?: return null
+        if (json == "[]") return null
         return parseEntries(json)
     }
 

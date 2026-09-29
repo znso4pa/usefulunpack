@@ -23,14 +23,30 @@ fun showCompressFormatPicker(
                 Toast.makeText(activity, activity.getString(R.string.msg_ksd_need_txt), Toast.LENGTH_SHORT).show()
                 return@showFormatPicker
             }
-            showCompressOptionsDialog(activity, prefs, fmt) { level, split, artemisNaming ->
-                runCompress(activity, dir, currentDir, prefs, fmt, level, split, onComplete, ownerTab, artemisNaming)
+            // MV/MZ 封包按扩展名定类型：引擎只认 .rpgmvp/.rpgmvo/.rpgmvm，
+            // 装错类型（比如 jpg→rpgmvp）会产出一个游戏能加载但显示不出来的文件。
+            if (mvExtMismatch(dir, fmt)) {
+                Toast.makeText(activity, activity.getString(R.string.msg_mv_ext_mismatch, mvRequiredExt(fmt)), Toast.LENGTH_SHORT).show()
+                return@showFormatPicker
+            }
+            showCompressOptionsDialog(activity, prefs, fmt) { level, split, artemisNaming, gameNaming, mvKey ->
+                runCompress(activity, dir, currentDir, prefs, fmt, level, split, onComplete, ownerTab, artemisNaming, gameNaming, mvKey)
                 true
             }
         },
         groups = COMPRESS_GROUPS,
         labels = COMPRESS_LABELS
     )
+}
+
+/**
+ * Default level for a format, honouring the per-format settings. Shared so the
+ * repack paths (which have no options dialog) cannot drift away from the picker.
+ */
+internal fun defaultCompressLevel(prefs: SharedPreferences, fmt: String): Int = when (fmt) {
+    "zip" -> prefs.getInt("zip_level", 5)
+    "7z" -> prefs.getInt("sz_level", 6)
+    else -> prefs.getInt("generic_level", 6)
 }
 
 /**
@@ -43,7 +59,8 @@ fun showCompressFormatPicker(
  */
 fun showCompressOptionsDialog(
     activity: AppCompatActivity, prefs: SharedPreferences,
-    fmt: String, onResolved: (level: Int, splitBytes: Long, pfsArtemisNaming: Boolean) -> Boolean
+    fmt: String,
+    onResolved: (level: Int, splitBytes: Long, pfsArtemisNaming: Boolean, gameNaming: Boolean, mvKey: String) -> Boolean
 ) {
     val isZip = fmt == "zip"
     val isSz = fmt == "7z"
@@ -56,11 +73,7 @@ fun showCompressOptionsDialog(
         activity.getString(R.string.level_store), activity.getString(R.string.level_low),
         activity.getString(R.string.level_medium), activity.getString(R.string.level_high),
         activity.getString(R.string.level_extreme))
-    val defaultLevel = when {
-        isZip -> prefs.getInt("zip_level", 5)
-        isSz -> prefs.getInt("sz_level", 6)
-        else -> prefs.getInt("generic_level", 6)
-    }
+    val defaultLevel = defaultCompressLevel(prefs, fmt)
     var level = levelVals.indexOf(defaultLevel).let { if (it < 0) 2 else it }
     val splitVals = longArrayOf(0L, 1024L * 1024, 100L * 1024 * 1024, 1024L * 1024 * 1024)
     // index 4 = custom size (matches the Settings dialog's 5-entry list).
@@ -85,6 +98,17 @@ fun showCompressOptionsDialog(
     // name the caller derived (pfs-rs's explicit `-o` behaviour).
     val isPfs = fmt == "pfs" || fmt == "pf6"
     var artemisNaming = isPfs && prefs.getBoolean("pfs_artemis_naming", true)
+    // RPG Maker only loads an RGSS archive named exactly `Game.rgss3a` (or
+    // .rgssad / .rgss2a) sitting next to the game .exe, so an output called
+    // "my-translation.rgss3a" is silently ignored by the game. On = resolve the
+    // final name to `Game.<ext>`; off = keep the caller's name.
+    val isRgss = fmt == "rgssad" || fmt == "rgss2a" || fmt == "rgss3a"
+    var gameNaming = isRgss && prefs.getBoolean("rgss_game_naming", true)
+    // MV/MZ obfuscation key. 32 hex chars = the XOR keystream verbatim; any
+    // other text = an `encryptionKey` string that RPG Maker MD5s. Empty = the
+    // default key, which is what an unset `encryptionKey` produces and by far
+    // the most common case.
+    var mvKey = if (isMvPackKey(fmt)) (prefs.getString(PREF_MV_KEY, "") ?: "") else ""
     // Byte-split volumes are named `.001/.002/…` (7-Zip `-v` semantics) — never
     // PKWARE `.z01` true disks, which this writer does not produce. Show the
     // suffix on the row so a user isn't left guessing which split scheme they got.
@@ -96,6 +120,9 @@ fun showCompressOptionsDialog(
     // update the var AND the row label so the dialog reflects the choice).
     var levelRow: android.widget.TextView? = null
     var splitRow: android.widget.TextView? = null
+    // Held so the positive-button handler can read the keystream the user
+    // actually typed (tapping Confirm does not necessarily blur the field).
+    var mvKeyField: android.widget.EditText? = null
 
     // Custom split size input (mirrors Settings): MB/GB toggle, 1..2048
     // validation. Writes into [chosenSplit] and refreshes the split row.
@@ -188,11 +215,13 @@ fun showCompressOptionsDialog(
             }
             addView(splitRow)
         }
-        if (isPfs) {
+        if (isPfs || isRgss || isMvPackKey(fmt)) {
             addView(android.view.View(activity).apply {
                 setBackgroundColor(C["divider_subtle"]!!)
                 layoutParams = android.widget.LinearLayout.LayoutParams(MATCH, 1).apply { setMargins(24, 0, 24, 0) }
             })
+        }
+        if (isPfs) {
             addView(androidx.appcompat.widget.SwitchCompat(activity).apply {
                 isChecked = artemisNaming
                 text = activity.getString(R.string.pfs_artemis_naming)
@@ -204,12 +233,49 @@ fun showCompressOptionsDialog(
                 }
             })
         }
+        if (isRgss) {
+            addView(androidx.appcompat.widget.SwitchCompat(activity).apply {
+                isChecked = gameNaming
+                text = activity.getString(R.string.rgss_game_naming)
+                setTextColor(C["primary"]!!)
+                setPadding(24, 12, 24, 12)
+                setOnCheckedChangeListener { _, checked ->
+                    gameNaming = checked
+                    prefs.edit().putBoolean("rgss_game_naming", checked).apply()
+                }
+            })
+        }
+        if (isMvPackKey(fmt)) {
+            addView(android.widget.TextView(activity).apply {
+                text = activity.getString(R.string.rpgmv_key_hint)
+                setTextColor(C["hint"]!!)
+                setTextSize(12f)
+                setPadding(24, 4, 24, 4)
+            })
+            mvKeyField = android.widget.EditText(activity).apply {
+                setSingleLine(true)
+                inputType = android.text.InputType.TYPE_CLASS_TEXT
+                setText(mvKey)
+                hint = activity.getString(R.string.rpgmv_key_title)
+                setTextColor(C["primary"]!!)
+                setHintTextColor(C["hint"]!!)
+                setPadding(24, 8, 24, 8)
+            }
+            addView(mvKeyField)
+        }
     }
     android.app.AlertDialog.Builder(activity)
         .setTitle(activity.getString(R.string.title_compress_options))
         .setView(body)
         .setPositiveButton(activity.getString(R.string.action_confirm)) { _, _ ->
-            if (!onResolved(levelVals[level], chosenSplit, artemisNaming)) return@setPositiveButton
+            // Read the field here rather than trusting a focus listener: tapping
+            // Confirm does not necessarily blur it, and packing with a stale key
+            // would produce an archive the game cannot read.
+            mvKeyField?.let { field ->
+                mvKey = field.text.toString().trim()
+                prefs.edit().putString(PREF_MV_KEY, mvKey).apply()
+            }
+            if (!onResolved(levelVals[level], chosenSplit, artemisNaming, gameNaming, mvKey)) return@setPositiveButton
         }
         .setNegativeButton(activity.getString(R.string.action_cancel), null)
         .show()
@@ -218,11 +284,19 @@ fun showCompressOptionsDialog(
 private fun runCompress(
     activity: AppCompatActivity, dir: File, currentDir: File, prefs: SharedPreferences,
     fmt: String, level: Int, splitSize: Long, onComplete: () -> Unit,
-    ownerTab: TabState? = null, artemisNaming: Boolean = false
+    ownerTab: TabState? = null, artemisNaming: Boolean = false,
+    gameNaming: Boolean = false, mvKey: String = ""
 ) {
     val ext = COMPRESS_EXT[fmt] ?: fmt
-    // KSD 输出替换源扩展名（save.txt → save.ksd），其余格式保留源扩展名（save.txt → save.txt.gz）
-    val outName = if (fmt == "ksd") "${dir.nameWithoutExtension}.$ext" else "${dir.name}.$ext"
+    // 产物名的三种规则：
+    //  - MV/MZ：替换扩展名（hero.png → hero.rpgmvp）——RPG Maker 只按 .rpgm* 找
+    //  - KSD：同样替换（save.txt → save.ksd）
+    //  - 其余：追加（save.txt → save.txt.gz）
+    val outName = when {
+        isMvPackKey(fmt) -> mvPackedName(dir, fmt)
+        fmt == "ksd" -> "${dir.nameWithoutExtension}.$ext"
+        else -> "${dir.name}.$ext"
+    }
     val outDir = dir.parentFile ?: currentDir
     val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
     val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
@@ -231,7 +305,7 @@ private fun runCompress(
     // op surfaces position/ETA in that dialog instead of being refused.
     // PF6 与 PFS 共用同一 cdylib 的 compress_progress store，调度 key 归并到
     // "pfs" 才能串行——并行的 pf8/pf6 封包会互相污染对方的进度读数。
-    val opH = tryStartOperation(activity, if (fmt == "pf6") "pfs" else fmt)
+    val opH = tryStartOperation(activity, fmt)
     var cancelled = false
     val accessors = compressAccessors(fmt)
     val prog = PollingProgressDialog(
@@ -251,24 +325,31 @@ private fun runCompress(
             // 产物名在【拿到槽位之后】解析：入队时解析的话，排队中的第二次封包
             // 会和第一次拿到同一个名字，后完成者覆盖先完成者（产物丢失）。
             val outFile = resolvePfsOutName(uniqueFile(outDir, outName), artemisNaming)
-            val ok = compressDispatch(dir, outFile, fmt, level, password, prefs, splitSize)
+            // RPG Maker only opens `Game.<ext>`, so resolve that name here
+            // rather than writing something the game silently ignores.
+            val (finalFile, renamed) = resolveRgssOutName(outFile, gameNaming, ext)
+            val ok = compressDispatch(dir, finalFile, fmt, level, if (isMvPackKey(fmt)) mvKey else password, prefs, splitSize)
             if (cancelled || !ok) {
                 // split_volumes already removed the original; remove the
-                // `.001/.002/...` parts too, not just outFile.
-                outFile.parentFile?.listFiles()?.filter { f ->
-                    f.name.startsWith(outFile.name + ".") &&
+                // `.001/.002/...` parts too, not just the output.
+                finalFile.parentFile?.listFiles()?.filter { f ->
+                    f.name.startsWith(finalFile.name + ".") &&
                     f.name.substringAfterLast('.').isNotEmpty() &&
                     f.name.substringAfterLast('.').all { it.isDigit() }
                 }?.forEach { it.delete() }
-                var deleted = false; for (i in 0..10) { deleted = outFile.delete(); if (deleted) break else Thread.sleep(200) }
+                var deleted = false; for (i in 0..10) { deleted = finalFile.delete(); if (deleted) break else Thread.sleep(200) }
             }
             activity.runOnUiThread {
                 if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                 prog.dismiss()
                 if (cancelled) { Toast.makeText(activity, activity.getString(R.string.msg_cancelled), Toast.LENGTH_SHORT).show() }
                 else if (ok) {
-                    val shown = if (splitEnabled) "${outFile.name}.001" else outFile.name
-                    Toast.makeText(activity, "${activity.getString(R.string.msg_extract_complete)} $shown", Toast.LENGTH_SHORT).show()
+                    val shown = if (splitEnabled) "${finalFile.name}.001" else finalFile.name
+                    val label = if (renamed) {
+                        activity.getString(R.string.msg_renamed_to, shown) + " " +
+                            activity.getString(R.string.rgss_game_naming_note)
+                    } else "${activity.getString(R.string.msg_extract_complete)} $shown"
+                    Toast.makeText(activity, label, if (renamed) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
                     onComplete()
                 }
                 else Toast.makeText(activity, activity.getString(R.string.title_compress_failed), Toast.LENGTH_SHORT).show()
@@ -292,6 +373,11 @@ fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password
             "nsa" -> NsaCore.nsaCreateArchive("", src.path, outFile.path, if (level > 0) "2" else "0") != null
             "iso" -> IsoCore.isoCreateArchive("", src.path, outFile.path) != null
             "ypf" -> YpfCore.ypfCreateArchive("", src.path, outFile.path, level.toString()) != null
+            "rgssad", "rgss2a", "rgss3a" -> RgssCore.rgssCreateArchive("", src.path, outFile.path, rgssWriteVersionOf(fmt)) != null
+            // MV/MZ obfuscation. `password` carries the keystream here: the
+            // format key already picked the asset type, so the only thing left
+            // for the user to supply is the key.
+            "rpgmvp", "rpgmvo", "rpgmvm" -> RgssCore.rgssMvEncrypt("", src.path, outFile.path, password) != null
             "ksd" -> KsdCore.ksdCompress("", src.path, outFile.path, level.toString()) != null
             "zip" -> ZipCore.zipCompress("", src.path, outFile.path, level.toString(), password, splitStr)
             "7z" -> SevenZCore.szCompress("", src.path, outFile.path, level.toString(), password, splitStr)

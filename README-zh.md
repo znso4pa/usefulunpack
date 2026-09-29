@@ -4,7 +4,7 @@
 
 轻量级 Android 文件管理器 & 归档打包/解压工具
 
-支持 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**KSD**（吉里吉里2）、**ISO 9660** 光盘镜像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支持打包与解压），Rust 原生核心。
+支持 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**ISO 9660** 光盘镜像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支持打包与解压），Rust 原生核心。
 
 ---
 
@@ -16,6 +16,8 @@
 | 📦 **PFS** | 解压 + 封包 Artemis `.pfs` / `.pf6` / `.pf8` |
 | 📜 **NSA/SAR** | 解压 NScripter `.nsa` / `.sar` 封包（LZSS + SPB），**封包**（stored / LZSS） |
 | 📦 **YPF** | 解压 YU-RIS `.ypf` 封包，三层自适应边界检测 |
+| 🎮 **RGSS** | 解压 + 打包 RPG Maker 加密归档：`.rgssad`（XP）、`.rgss2a`（VX）、`.rgss3a`（VX Ace）；布局按包头自动识别，三种扩展名互相都能打开；文件名 UTF-8 / Shift-JIS；可编辑脚本；**封包产物默认命名为 `Game.<ext>`**（RPG Maker 只认这个名字），封包选项里可关 |
+| 🎮 **RPG Maker MV/MZ** | 解码 + 回封逐文件混淆素材（回封需自填密钥）：`.rpgmvp` 图片、`.rpgmvo` 音频、`.rpgmvm` 视频（以及 MZ 的 `.png_` / `.ogg_` / `.m4a_`）；16 字节文件头可从文件自身还原，**无需密钥**（文件没有扩展名时也认得出来，靠内容判断类型）；回封密钥接受 32 位十六进制（原样使用）或任意文本（按 RPG Maker 的规则做 MD5）；**每个格式只收自己的类型：`.rpgmvp` 收 `.png`、`.rpgmvo` 收 `.ogg`、`.rpgmvm` 收 `.m4a`**，其余一律拦住，因为引擎是按扩展名选解码器的；产物按真实扩展名命名，可直接进图片 / 音频预览；批量模式一次解码整个文件夹 |
 | 💾 **KSD** | 解压/打包 `.ksd`（mode 0/1/2 解扰 + UTF-16→UTF-8） |
 | 🗜️ **ZIP** | 浏览和提取标准 ZIP 压缩包，支持压缩、加密；**包内编辑**（替换/删除/新增条目，**未触及加密条目保留 AES**，保存为 `原名-cn.zip` 副本不破坏原归档）；**PKWARE 多盘分卷**（`.z01/.z02/.zip`，支持**跨盘条目**） |
 | 📦 **7z** | 浏览和提取 7-Zip 压缩包，支持压缩、加密；**包内编辑**（编辑脚本后重压为 `原名-cn.7z` 副本） |
@@ -36,8 +38,8 @@
 | 📂 **本地预览** | 浏览器中直接点击可预览文件 |
 | 🗂 **文件浏览器** | 类 ZArchiver 界面，路径面包屑，文件夹 ⭐ 星标 |
 | 🪟 **多窗口 Tab** | 最多 3 个独立窗口（ViewPager2 滑动切换，可新建/关闭），每窗口各自记住路径、选中文件、多选状态、批量栏与粘贴/移动状态，互不串扰；**长按标签可重命名窗口**；Chrome 式顶置 Tab 栏（活动标签圆角高亮） |
-| 📦 **内嵌归档预览** | FAB 预览归档直接渲染进当前窗口（非弹窗），**预览时可滑动切换窗口**；底部一键解压全部/提取选中/合并到归档，顶栏搜索 + **⋮ 溢出菜单**（编辑/ZIP 管理/ISO 转换，按格式显隐，不支持时 toast 提示）；预览中进入全局搜索后关闭搜索回到预览 |
-| 🔀 **跨归档合并提取** | 预览勾选条目 → 「合并到其他归档」→ 选中目标归档 → 提取合并后封包成 `目标-cn.ext` 副本（原归档不动，同归档互斥保护） |
+| 📦 **内嵌归档预览** | FAB 预览归档直接渲染进当前窗口（非弹窗），**预览时可滑动切换窗口**；底部一键解压全部/提取选中/合并到（无可合并目标时按钮置灰，不会点出死路），顶栏搜索 + **⋮ 溢出菜单**（编辑/ZIP 管理/ISO 转换，按格式显隐，不支持时 toast 提示）；预览中进入全局搜索后关闭搜索回到预览 |
+| 🔀 **跨归档合并提取** | 预览勾选条目 → 「合并到…」→ 目标可选**本文件夹，或其他窗口正打开的归档**（分组列表，标注所属窗口）→ 把源的选中条目与目标解包到同一个暂存目录（同名路径由源覆盖），再封包成 `目标-cn.ext` 副本放在目标旁边。**目标全程只读、原归档一个字节不动**，所以合并进别人正预览着的归档也是安全的；没有可合并目标时按钮置灰 |
 | 📍 **选择路径/文件方式** | 一般设置可选「直接打开路径界面」或「在新窗口中打开选择」——后者开新窗口浏览选择，选中后关闭该窗口返回原窗口（适用于搜索范围/提取目标/ZIP 加条目/压缩目标） |
 | 📌 **书签** | 文件夹星标 + 侧滑抽屉 |
 | 🏠 **根目录** | 一键回到 `/storage/emulated/0` |
@@ -55,10 +57,10 @@
 | 📂 **批量预览** | 多选归档统一查看内容并勾选解压 |
 | 🛡️ **防连点** | 800ms 冷却 |
 | 🌙 **深色主题** | 护眼暗色 |
-| 🔬 **签名扫描** | Rust scan-core 引擎：**23 种签名 / 70 个魔数模式**任意偏移检测（含 **tar** `ustar` 与 **ISO 9660**），逐格式头部验证（真实大小 + 文件数），**gzip/xz/lzma 解压 dry-run 降误报**，**头加密 RAR5 兜底**，AhoCorasick 多模式匹配，流式扫描（整文件不进内存），一键解压或切割（dd）原始片段——夹在其它文件中间的归档也能找出来 |
+| 🔬 **签名扫描** | Rust scan-core 引擎：**32 种签名 / 83 个魔数模式**任意偏移检测（含 **tar** `ustar` 与 **ISO 9660**），逐格式头部验证（真实大小 + 文件数），**gzip/xz/lzma 解压 dry-run 降误报**，**头加密 RAR5 兜底**，AhoCorasick 多模式匹配，流式扫描（整文件不进内存），一键解压或切割（dd）原始片段——夹在其它文件中间的归档也能找出来 |
 | 🔤 **文本编码** | 全局文本编码设置（UTF-8 / SHIFT-JIS / GBK / UTF-16）严格应用于所有文本预览与内容搜索；UTF-8/UTF-16 自动去 BOM 且 **按 BOM 自动探测**（UTF-16 脚本开箱即显）；预览/编辑器内置编码切换行，切完立即重渲染；乱码提示 + 严格 UTF-8 校验兜住"合法但错"的交叉误读 |
 | ✏️ **归档文本编辑** | 在 XP3/PFS 归档里改脚本/文本：解包 → 选脚本（`.ks`/`.tjs`/`.csv`…）→ 显式编码 + 原 BOM 保真地编辑 → 重新打包成 `原名-cn.xp3/pfs`，应用内完整闭环 |
-| 🎨 **图片编辑器** | 图片预览 **⋮** 菜单进入：水彩/荧光笔（色板 + 透明度 + 粗细）、**矩形裁剪**（拖框 → 再点「裁剪」确认）、**拉伸到 1:1 / 4:3 / 3:4 / 16:9 / 9:16**、**像素取色**（按住拖动自动采样，点击读数复制 HEX/RGB）、**双指缩放（1–8×）+ 平移**、撤销/还原。另存 `原名-edit.png` 副本——不覆盖原图（~2048px 工作上限，旋转安全自动保存 + 恢复提示） |
+| 🎨 **图片编辑器** | 图片预览 **⋮** 菜单进入：水彩/荧光笔（色板 + 透明度 + 粗细 —— 每条笔画**记住自己画时的透明度**，所以调低不透明度不会把已画的笔迹重新着色）、**矩形裁剪**（拖框 → 再点「裁剪」确认）、**拉伸到 1:1 / 4:3 / 3:4 / 16:9 / 9:16**、**像素取色**（按住拖动自动采样，点击读数复制 HEX/RGB）、**双指缩放（1–8×）+ 平移**、撤销/还原。另存 `原名-edit.png` 副本——不覆盖原图（~2048px 工作上限，旋转安全自动保存 + 恢复提示） |
 | 🔄 **图片格式转换** | 图片预览 **⋮** 菜单：静态 **JPG/PNG/WebP 互转**，以及**动图 GIF/WebP → 静态首帧**（JPG/PNG/WebP）。另存副本，不覆盖原图 |
 | 📤 **分享** | 长按任意文件 → **分享**：经 FileProvider + `ACTION_SEND` 交给其他应用——无需联网权限、无需改 manifest |
 | 💾 **恢复上次会话** | 设置 → **其余设置** →「恢复上次会话」：启动时重开上次的窗口/目录**以及打开着的归档预览**（最多 3 个 tab，超出弹 toast）。回收站设置也归入其余设置 |
@@ -67,7 +69,7 @@
 | 🔄 **自动刷新** | 后台监听当前目录，文件列表自动同步——重命名/移动/删除/解压/压缩及外部改动（adb push、USB）无需退出重进 |
 | ✂️ **精确切割** | 签名扫描的切割/解压按验证出的归档大小（zip/rar/7z/zstd/lz4/iso）精确切取——夹在其它文件中间的归档（如 `mp4 + zip + mp4`）能干净提出，不带尾部数据，解压成功 |
 | 📲 **APK 安装** | 点 APK 调系统安装器（FileProvider + PackageInstaller 兜底）；安装前可选保留副本（部分系统安装器装完会删除安装包） |
-| 🦀 **Rust 核心** | 每种格式独立 `.so`，互不干扰（17 种格式，含签名扫描） |
+| 🦀 **Rust 核心** | 每种格式独立 `.so`，互不干扰（20 种格式，含签名扫描） |
 | 🔒 **最小权限** | 仅存储权限 |
 
 ## 多窗口常见问题（FAQ）
@@ -125,6 +127,7 @@ bash build.sh
          libarchive_nsa_core.so  → NSA/SAR
          libarchive_iso_core.so  → ISO 9660
          libarchive_ypf_core.so  → YPF (YU-RIS)
+         libarchive_rgss_core.so → RGSS (XP/VX/VX Ace) + MV/MZ 散素材
          libarchive_zip_core.so  → ZIP
          libarchive_sevenz_core.so → 7z
          libarchive_rar_core.so  → RAR
@@ -161,12 +164,15 @@ XOR 密钥（0xFF / 0xC9）按文件首条目自动判断。
 | **PFS / PF6 / PF8** | [pf8 crate](https://crates.io/crates/pf8) | 见 crates.io |
 | **NSA / SAR** | [NSA 格式规范](https://orin.page/w/index.php?title=NSA), LZSS/SPB via [GARbro](https://github.com/morkt/GARbro) / [ONScripter](https://github.com/nscripter/nscripter) | 公开规范 / MIT / GPL |
 | **YPF** | [YU-RIS 格式解析参考](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker) (Kaitai), [GARbro](https://github.com/morkt/GARbro) SwapTable, XOR + Shift-JIS, zlib | 公开规范 / MIT |
+| **RPG Maker MV/MZ 素材** | 格式对照 [Petschko's RPG-Maker-MV-Decrypter](https://gitlab.com/Petschko/RPG-Maker-MV-Decrypter) 与 [rpgm-asset-decrypter-lib](https://github.com/RPG-Maker-Translation-Tools/rpgm-asset-decrypter-lib)（MIT）；密钥流从文件自身头部还原，无需 MD5 或 `System.json` 侧车文件 | 公开规范 / MIT |
+| **RGSS（RPG Maker）** | 布局对照 [uuksu/RPGMakerDecrypter](https://github.com/uuksu/RPGMakerDecrypter)（MIT）、[mkxp-z `crypto/rgssad.cpp`](https://github.com/mkxp-z/mkxp-z)（BSD-3-Clause）、[rpgm-archive-decrypter-lib](https://github.com/RPG-Maker-Translation-Tools/rpgm-archive-decrypter-lib)（Apache-2.0/MIT）；crates.io 上无同类 crate，解析器为自研 | 公开规范 / MIT / BSD-3-Clause / Apache-2.0 |
 | **ISO 9660** | [isomage crate](https://crates.io/crates/isomage) | MIT |
 | **ZIP** | [zip crate](https://crates.io/crates/zip) | MIT |
 | **7z** | [sevenz-rust crate](https://crates.io/crates/sevenz-rust) | MIT / Apache-2.0 |
 | **RAR** | [rars crate](https://crates.io/crates/rars)（vendored fork，流式过滤器） | MIT / Apache-2.0 |
 | **LZ4** | [lz4_flex crate](https://crates.io/crates/lz4_flex) | MIT |
 | **GZIP** | [flate2 crate](https://crates.io/crates/flate2)（Rust 后端） | MIT / Apache-2.0 |
+| **MD5** | 自研（约 60 行，见 TODO） | RFC 1321 | MV `encryptionKey` → 密钥流（格式要求，非安全用途） |
 | **BZIP2** | [oxiarc-bzip2 crate](https://crates.io/crates/oxiarc-bzip2) | Apache-2.0 |
 | **XZ / LZMA** | [xz2 crate](https://crates.io/crates/xz2)（liblzma，`.xz`）+ [lzma-sys](https://crates.io/crates/lzma-sys)（`.lzma`） | 公有领域 / 0BSD |
 | **KSD** | [krkr-save-tools](https://github.com/Luv-Ray/krkr-save-tools)、[KirikiriTools](https://github.com/arcusmaximus/KirikiriTools) | MIT |

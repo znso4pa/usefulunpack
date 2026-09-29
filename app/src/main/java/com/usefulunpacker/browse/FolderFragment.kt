@@ -74,7 +74,7 @@ class FolderFragment : Fragment() {
         tab.btnPreviewSearch.setOnClickListener { act.previewSearch(tab) }
         // 编辑：仅可封包格式；否则 toast 提示。
         fun doEdit() {
-            if (tab.previewFormat !in setOf("xp3", "pfs", "iso", "nsa", "7z", "ypf")) {
+            if (tab.previewFormat !in setOf("xp3", "pfs", "iso", "nsa", "7z", "ypf", "rgss")) {
                 act.toast(act.getString(R.string.edit_only_pack))
                 return
             }
@@ -250,7 +250,7 @@ class FolderFragment : Fragment() {
             if (tab.previewActive && tab.previewEntries.isNotEmpty()) {
                 // 预览分支不经过 navTab：必须手动回填路径栏，否则重建出的
                 // 视图停留在 XML 默认文本「/」（预览盖住列表，路径条却暴露）。
-                tab.tvPath.text = tab.currentDir.absolutePath
+                tab.tvPath.text = tab.displayPath().absolutePath
                 tab.tvPreviewTitle.text = tab.previewSrc?.name ?: ""
                 act2.syncPreview(tab)
                 act2.updatePreviewStats(tab)

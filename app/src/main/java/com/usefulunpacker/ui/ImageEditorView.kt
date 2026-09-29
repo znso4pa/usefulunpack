@@ -38,9 +38,27 @@ class ImageEditorView(context: Context) : View(context) {
         private set
     private var overlay: Bitmap? = null
     private var overlayCanvas: Canvas? = null
-    private val strokes = mutableListOf<MutableList<PointF>>()
-    private var currentStroke: MutableList<PointF>? = null
+    // The stroke being drawn right now, rendered at FULL alpha into its own
+    // layer and composited with its alpha only at draw time. Painting segments
+    // straight onto `overlay` would blend every segment into the previous one
+    // (SRC_OVER), so a slow drag at 50% opacity would get darker the longer it
+    // ran and blob at every joint.
+    private var activeLayer: Bitmap? = null
+    private var activeCanvas: Canvas? = null
+    private val strokes = mutableListOf<Stroke>()
+    private var currentStroke: Stroke? = null
     private var lastPoint: PointF? = null
+    private val layerPaint = Paint()
+
+    /** One brush stroke: its geometry AND the paint it was made with. Keeping
+     *  the paint per stroke is what stops a later opacity change (or an undo,
+     *  which re-renders from geometry) from repainting history. */
+    private class Stroke(
+        val points: MutableList<PointF> = mutableListOf(),
+        val color: Int = 0,
+        val alpha: Int = 255,
+        val width: Float = 0f,
+    )
 
     private val displayMatrix = Matrix()
     private val invMatrix = Matrix()
@@ -95,6 +113,8 @@ class ImageEditorView(context: Context) : View(context) {
         baseBitmap = bmp
         overlay = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
         overlayCanvas = Canvas(overlay!!)
+        activeLayer = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
+        activeCanvas = Canvas(activeLayer!!)
         strokes.clear(); currentStroke = null; lastPoint = null
         cropStart = null; cropEnd = null; samplePoint = null
         scaleFactor = 1f; panX = 0f; panY = 0f; mode = GestureMode.NONE
@@ -134,6 +154,14 @@ class ImageEditorView(context: Context) : View(context) {
         val bmp = baseBitmap ?: return
         canvas.drawBitmap(bmp, displayMatrix, null)
         overlay?.let { canvas.drawBitmap(it, displayMatrix, null) }
+        // The in-progress stroke is still on its own layer at full alpha, so it
+        // is composited here with its own opacity — same treatment as a finished
+        // one, which is why the live preview matches what gets flattened.
+        val s = currentStroke
+        if (s != null) {
+            layerPaint.alpha = s.alpha
+            activeLayer?.let { canvas.drawBitmap(it, displayMatrix, layerPaint) }
+        }
         if (tool == EditorTool.CROP) {
             val s = cropStart; val e = cropEnd
             if (s != null && e != null) {
@@ -227,18 +255,26 @@ class ImageEditorView(context: Context) : View(context) {
         val bp = toBitmap(PointF(e.x, e.y))
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                currentStroke = mutableListOf(bp)
-                strokes.add(currentStroke!!)
+                val stroke = Stroke(
+                    points = mutableListOf(bp),
+                    color = brushColor,
+                    alpha = brushAlpha,
+                    width = brushWidthPx.toFloat(),
+                )
+                currentStroke = stroke
+                strokes.add(stroke)
                 lastPoint = bp
             }
             MotionEvent.ACTION_MOVE -> {
                 val lp = lastPoint ?: return
-                val c = overlayCanvas ?: return
-                brushPaint.color = brushColor
-                brushPaint.alpha = brushAlpha
-                brushPaint.strokeWidth = brushWidthPx.toFloat()
+                val c = activeCanvas ?: return
+                // Drawn at full alpha into the scratch layer; the stroke's own
+                // opacity is applied once, when the layer is composited.
+                brushPaint.color = currentStroke?.color ?: brushColor
+                brushPaint.alpha = 255
+                brushPaint.strokeWidth = currentStroke?.width ?: brushWidthPx.toFloat()
                 c.drawLine(lp.x, lp.y, bp.x, bp.y, brushPaint)
-                currentStroke?.add(bp)
+                currentStroke?.points?.add(bp)
                 lastPoint = bp
                 invalidate()
             }
@@ -248,8 +284,29 @@ class ImageEditorView(context: Context) : View(context) {
 
     private fun endStroke() {
         lastPoint = null
+        val s = currentStroke ?: return
+        // A tap produces a single point, which no line can render — draw the dot
+        // the round cap would have made, or the stroke silently vanishes.
+        if (s.points.size == 1) {
+            val p = s.points[0]
+            brushPaint.color = s.color
+            brushPaint.alpha = 255
+            brushPaint.strokeWidth = s.width
+            activeCanvas?.drawPoint(p.x, p.y, brushPaint)
+        }
+        flattenActiveStroke(s)
         currentStroke = null
         scheduleAutosave()
+    }
+
+    /** Composites the scratch layer onto `overlay` with the stroke's opacity and
+     *  clears the scratch, so each stroke lands as one uniform alpha. */
+    private fun flattenActiveStroke(s: Stroke) {
+        val dst = overlayCanvas ?: return
+        val src = activeLayer ?: return
+        layerPaint.alpha = s.alpha
+        dst.drawBitmap(src, 0f, 0f, layerPaint)
+        src.eraseColor(Color.TRANSPARENT)
     }
 
     private fun handleCrop(e: MotionEvent) {
@@ -323,6 +380,7 @@ class ImageEditorView(context: Context) : View(context) {
 
     fun clearEdits() {
         overlayCanvas?.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+        activeLayer?.eraseColor(Color.TRANSPARENT)
         strokes.clear(); currentStroke = null; lastPoint = null
         cropStart = null; cropEnd = null; samplePoint = null
         invalidate()
@@ -331,19 +389,32 @@ class ImageEditorView(context: Context) : View(context) {
 
     private fun redrawOverlay() {
         val c = overlayCanvas ?: return
+        val scratch = activeCanvas ?: return
+        val src = activeLayer ?: return
         c.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
-        brushPaint.color = brushColor
-        brushPaint.alpha = brushAlpha
-        brushPaint.strokeWidth = brushWidthPx.toFloat()
-        for (stroke in strokes) {
-            if (stroke.size < 2) continue
-            var prev = stroke[0]
-            for (i in 1 until stroke.size) {
-                val cur = stroke[i]
-                c.drawLine(prev.x, prev.y, cur.x, cur.y, brushPaint)
-                prev = cur
+        for (s in strokes) {
+            val pts = s.points
+            if (pts.isEmpty()) continue
+            src.eraseColor(Color.TRANSPARENT)
+            brushPaint.color = s.color
+            brushPaint.alpha = 255            // full alpha; opacity applied below
+            brushPaint.strokeWidth = s.width
+            if (pts.size == 1) {
+                scratch.drawPoint(pts[0].x, pts[0].y, brushPaint)
+            } else {
+                var prev = pts[0]
+                for (i in 1 until pts.size) {
+                    val cur = pts[i]
+                    scratch.drawLine(prev.x, prev.y, cur.x, cur.y, brushPaint)
+                    prev = cur
+                }
             }
+            // Each stroke is composited ONCE with the opacity it was drawn at,
+            // so re-rendering history (undo) cannot restyle it.
+            layerPaint.alpha = s.alpha
+            c.drawBitmap(src, 0f, 0f, layerPaint)
         }
+        src.eraseColor(Color.TRANSPARENT)
     }
 
     /** Composites base + overlay into a new Bitmap for saving. */

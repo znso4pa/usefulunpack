@@ -15,7 +15,7 @@
     <string name="msg_tjs_compiled">コンパイル済み TJS スクリプト（TJS2 バイナリ）のため、テキストとしてプレビューできません</string>
     <string name="edit_archive">✏️ 編集</string>
     <string name="action_more">More</string>
-    <string name="edit_only_pack">対応するのはパック可能な形式のみです（XP3/PFS/ISO/NSA/7Z/YPF）</string>
+    <string name="edit_only_pack">対応するのはパック可能な形式のみです（XP3/PFS/ISO/NSA/7Z/YPF/RGSS）</string>
     <string name="zip_manage_only_zip">エントリ管理に対応しているのは ZIP のみです</string>
     <string name="convert_only_iso">CSO 変換に対応しているのは ISO のみです</string>
     <string name="nested_archive_title">入れ子のアーカイブ</string>
@@ -228,6 +228,10 @@
     <string name="msg_archive_open_in_tab">このアーカイブは「%1$s」で開かれています</string>
     <string name="msg_archive_open_skipped">他のウィンドウで開いている %1$d 個のアーカイブをスキップしました</string>
     <string name="merge_into_archive">📦 他のアーカイブに統合…</string>
+    <string name="merge_short">📦 統合…</string>
+    <string name="merge_group_here">このフォルダ</string>
+    <string name="merge_group_open">他のウィンドウで開いているもの</string>
+    <string name="merge_self_target">アーカイブ自分自身には統合できません</string>
     <string name="merge_no_target">このフォルダに統合先のアーカイブがありません</string>
     <string name="merge_select_target">統合先アーカイブを選択</string>
     <string name="merge_target_unsupported">このアーカイブ形式は再パックできません</string>
@@ -284,6 +288,7 @@
     <string name="format_group_single">単一ファイル圧縮</string>
     <string name="msg_single_file_compress">単一ファイル圧縮は単一ファイルのみ対応</string>
     <string name="msg_ksd_need_txt">KSD パックは .txt テキストファイルのみ対応</string>
+    <string name="msg_mv_ext_mismatch">この形式は .%1$s ファイルのみパックできます</string>
     <string name="settings_parallel_threads">並列解凍スレッド数 (rar/zip)</string>
     <string name="parallel_auto">自動</string>
     <string name="settings_compress_generic">汎用形式 (gzip/bzip2/xz/zstd/lzma/lz4/brotli/tar)</string>
@@ -378,6 +383,8 @@
         <item>TAR — 解凍 + 圧縮\n.tar / .tar.gz / .tgz / .tar.bz2 / .tbz2 / .tar.xz / .txz / .tar.zst / .tzst</item>
         <item>KSD (.ksd) — 解凍 + 圧縮\nKirikiri2 セーブ；圧縮は .txt のみ受付</item>
         <item>BROTLI (.br) — 解凍 + 圧縮\nGoogle Brotli 圧縮；レベル 0-11（デフォルト 6）；Web コンテンツで広く使用</item>
+        <item>RPG Maker MV/MZ (.rpgmvp/.rpgmvo/.rpgmvm) — 展開 &amp; 圧縮\n1 ファイルずつ難読化される素材：画像 (.rpgmvp)、音声 (.rpgmvo)、動画 (.rpgmvm)。16 バイトのヘッダーはファイル自身から復元できるため鍵は不要。出力は本来の拡張子で命名されるため、そのまま画像 / 音声プレビューを開ける\nRPG Maker MZ の .png_ / .ogg_ / .m4a_ にも対応。難読化されていないファイル（再パックされたゲーム）はそのまま出力\n注意：1 回タップすると「復号したファイル」1 件のアーカイブビューが開くので、もう一度タップで画像 / 音声プレビュー。一括モードでフォルダ全体をまとめて復号可能\n圧縮は 1 つの素材を難読化します（foo.png → foo.rpgmvp）。キーは圧縮オプションで入力: 32 桁の 16 進数はそのまま使用、他の文字は RPG Maker と同じく MD5 化、空欄ならデフォルトキー。一括モードで複数まとめて実行できます。形式ごとに型は 1 種類のみ: .rpgmvp は .png、.rpgmvo は .ogg、.rpgmvm は .m4a のみです。それ以外は拒否されます</item>
+        <item>RGSS (.rgssad/.rgss2a/.rgss3a) — 解凍 + 圧縮\nRPG Maker 暗号化アーカイブ：XP (.rgssad)、VX (.rgss2a)、VX Ace (.rgss3a)。レイアウトはヘッダーから自動判別され、どの組み合わせでも開けます。ファイル名は UTF-8 / Shift-JIS\n圧縮時は対象バージョンを選択可。スクリプト編集可（name-cn.rgss3a として再パック）。圧縮産物は既定で Game.rgss3a という名前になります（RPG Maker が開くのはこの名前だけのため。圧縮オプションで変更可）\n注意：編集して再パックした場合は元の Game.rgss3a が存在するため上書きせず、-cn 名的ままになります。ゲームに読ませるには手動で差し替えてください\n制限：v3 のオフセットは 32 ビットのため、圧縮産物が 4GiB を超えることはありません</item>
     </string-array>
         <string-array name="help_tutorials">
         <item>圧縮設定\n設定 → 圧縮：圧縮レベル（zip/7z/汎用）、分割サイズ（zip/7z）、ZIP エンコーディング、圧縮パスワード；「OK」で一括保存；作業モード（アーカイブ/圧縮）切替でタイトルバー更新</item>
@@ -392,8 +399,13 @@
         <item>シグネチャスキャン（binwalk）\nファイル長押し → スキャン：埋め込まれた圧縮/画像シグネチャを検出（動画内に埋め込まれた ZIP 等）、オフセットと形式を表示、ZIP はファイル数付き。各ヒットに2つのボタン：「解凍」はアーカイブを直接プレビュー/解凍、「切り出し」は生のセグメントを独立ファイルとして保存；失敗時は具体的な理由を表示</item>
         <item>アーカイブ内のスクリプト編集\nXP3/PFS/ISO/NSA プレビューを開き「編集」をタップ：自動で解凍 → スクリプト一覧（.ks/.tjs/.csv/…）→ 1つを選んで明示的エンコーディングで編集（保存時は元のバイト順を維持）→「再パック」で同フォルダに「原名-cn.xp3/pfs/iso/nsa」を作成。ISO 再パックは Level-1 8.3 名 + 1GiB 上限</item>
         <item>ZIP 項目をインプレース編集\nZIP プレビューで「項目」をタップ：選択項目を削除（確認あり）またはローカルファイルから新規追加（ファイル選択 → 命名 → deflate 書き込み）。未変更項目はバイト単位で保持。マルチディスク ZIP は編集不可</item>
+        <item>アーカイブ間統合\nプレビューで寄与したい項目にチェックを入れ、下部の「統合…」をタップ（統合先が無ければボタンは無効化）。対象リストは 2 グループ：現在のフォルダ内のアーカイブと、**他のウィンドウで開いているアーカイブ**。選んだ項目を展開後、対象を同じステージング領域へ展開するため同名パスは自分の項目で上書きされ、結果は `対象-cn.ext` コピーを対象の再隣に作成。対象は読み取りのみで元は変更しないため、他ウィンドウがプレビュー中のアーカイブへの統合も安全。暗号化対象には先にパスワードを尋ね、入力欄は進捗表示より前に出るため他ウィンドウをブロックしない</item>
+        <item>RPG Maker 圧縮（RGSS / MV / MZ）\nRGSS：.rgssad / .rgss2a / .rgss3a と出力バージョンを選択。出力は既定で `Game.rgss3a` という名前になる（RPG Maker が開くのはこの名前だけ）。別名にしたい場合は圧縮オプションで無効化。スクリプト編集して再パックしても元のバージョン（.rgss3a は v3 のまま）が保たれる。MV/MZ：素材 1 個に対し出力 1 個——hero.png は hero.rpgmvp になる（拡張子は**置換**、追記ではない）。形式ごとに型は 1 種類のみ（.rpgmvp は .png、.rpgmvo は .ogg、.rpgmvm は .m4a）で、それ以外は鍵を入力する前に拒否される（エンジンが拡張子でローダを選ぶため）。鍵欄は 32 桁の 16 進数（そのまま）か任意テキスト（RPG Maker と同じく MD5 化）を受け付け、空欄はデフォルト鍵</item>
+        <item>画像エディタ\n画像プレビューの ⋮ メニューから。ブラシ（パレット + 不透明度 + 太さ。各ストロークは描画時の不透明度を保持するため、後から変更しても既存の線は変わらない）、矩形切り取り、1:1 / 4:3 / 3:4 / 16:9 / 9:16 への引き伸ばし、スポイト、2 本指ズーム（1–8 倍）+ パン、元に戻す/リセット。`原名-edit.png` のコピーとして保存し、元画像は上書きしない</item>
+        <item>プレビュー作業領域\nアーカイブのプレビューから作業領域を開くと、展開された内容を実ファイルとして別ウィンドウで閲覧できる。多数の小さなファイルを 1 つずつプレビュー/編集/取り出したいときに便利。作業領域はプレビュー時の鍵を引き継ぐため再入力不要</item>
         <item>エンコーディングと文字化け\n各プレビュー/エディタにエンコーディング行があります：タップで UTF-8/SHIFT-JIS/GBK/UTF-16 を切替、テキストは即座に再描画；BOM 付きの UTF-16/UTF-8 ファイルは正しいエンコーディングで自動オープン；非 UTF-8 の誤ったエンコーディングで読むと「UTF-8 に見えます」とヒント</item>
         <item>スクロールと自動更新\n長いリストの右側に常時表示のドラッグハンドル（掴んでドラッグで移動）；テキストプレビュー/エディタにもドラッグ可能なスクロールバー。現在のフォルダに変更（名前変更/移動/削除/解凍/圧縮、USB 等の外部変更）があるとファイル一覧が自動更新されます</item>
+        <item>ごみ箱\nドロワーのごみ箱は削除前の複製を保持（保持日数を設定可）。復元と全消去に対応し、サイズと元のパスで表示される</item>
     </string-array>
 
 
@@ -512,4 +524,8 @@
     <string name="zip_invalid_entry_name">項目名に「|」は使えません</string>
     <string name="msg_empty_archive">このアーカイブは空です</string>
     <string name="pfs_artemis_naming">root.pfs という名前にする（Artemis パッチ用）</string>
+    <string name="rgss_game_naming">アーカイブを Game.rgss3a という名前にする（RPG Maker はこの名前しか読みません）</string>
+    <string name="rgss_game_naming_note">ゲームフォルダーに戻せば元のと置き換えられます</string>
+    <string name="rpgmv_key_title">XOR キー / encryptionKey</string>
+    <string name="rpgmv_key_hint">32 桁の 16 進数 = その XOR キーストリームをそのまま使用。それ以外の文字 = encryptionKey として RPG Maker が MD5 を計算。空欄ならデフォルトキー（encryptionKey 未設定時と同じ）</string>
 </resources>

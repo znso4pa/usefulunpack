@@ -56,12 +56,13 @@ private val ARCHIVE_LABELS = mapOf(
     "XP3 archive" to "xp3",
     "PF6 archive" to "pfs",
     "PF8 archive" to "pfs",
+    "RGSS archive" to "rgss",
     "ISO 9660 disc image" to "iso",
     "POSIX tar archive" to "tar",
 )
 
 /** Formats whose native readers require the archive at byte 0 (must carve first). */
-private val NEEDS_CARVE = setOf("7z", "gz", "bz2", "xz", "zst", "lzma", "lz4", "xp3", "tar", "pfs")
+private val NEEDS_CARVE = setOf("7z", "gz", "bz2", "xz", "zst", "lzma", "lz4", "xp3", "tar", "pfs", "rgss")
 
 /** rars scans only the first 8 MiB for an embedded RAR signature. */
 private const val RAR_SCAN_LIMIT = 8L * 1024 * 1024
@@ -94,6 +95,10 @@ private val ARCHIVE_EXT_FOR_LABEL = mapOf(
     "LZ4 compressed data" to "lz4",
     "LZMA compressed data" to "lzma",
     "XP3 archive" to "xp3",
+    // Carve extension only (the read side routes through ARCHIVE_LABELS above).
+    // The container version is not recoverable without opening the segment, so
+    // the dominant VX Ace extension is the useful default.
+    "RGSS archive" to "rgss3a",
     "ISO 9660 disc image" to "iso",
     "POSIX tar archive" to "tar",
 )
@@ -129,11 +134,12 @@ fun carveToFile(src: File, offset: Long, length: Long?, dest: File, onProgress: 
 }
 
 /** Signature / magic-pattern counts reported by the Rust scan-core (kept in
- *  sync with validators.rs: 31 signatures, 77 magic patterns — bzip2 has 9
+ *  sync with validators.rs: 32 signatures, 83 magic patterns — bzip2 has 9
  *  variants, gif 2, jpeg 3, lzma 36 (4 props × 9 dict prefixes), iso 1,
- *  ypf 1, pf6/pf8 2, ksd 2, ogg 1, mp3 4, flac 1, bmp 1, everything else 1). */
-private const val SCAN_SIG_COUNT = 31
-private const val SCAN_PATTERN_COUNT = 77
+ *  ypf 1, pf6/pf8 2, ksd 3, rgss 1, ogg 1, mp3 4, flac 1, bmp 1,
+ *  everything else 1). */
+private const val SCAN_SIG_COUNT = 32
+private const val SCAN_PATTERN_COUNT = 83
 
 /** binwalk-style scan dialog (Rust scan-core + byte-level progress bar). */
 internal fun MainActivity.showSignatureScan(f: File) {

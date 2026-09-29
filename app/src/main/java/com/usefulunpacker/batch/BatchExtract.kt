@@ -158,18 +158,18 @@ internal fun MainActivity.batchPreview(archives: List<File>, fmt: String) {
             }
             val all: MutableList<Pair<File, List<ArchiveEntry>>> = mutableListOf()
             for (src in filtered) {
-                val json = try { when(fmt) {
-                    "xp3"->Xp3Core.xp3ListEntries(src.path)
-                    "pfs"->PfsCore.pfsListEntries(src.path)
-                    "nsa"->NsaCore.nsaListEntries(src.path)
-                    "iso"->IsoCore.isoListEntries(src.path)
-                    "ypf"->YpfCore.ypfListEntries(src.path)
-                    "zip"->{ val vols = resolveZipVolumes(src); if (vols.size>1) ZipCore.zipListEntriesVolumes(volumeJoin(vols)) else ZipCore.zipListEntries(src.path) }
-                    "7z"->{ val vols = resolveSevenZVolumes(src); if (vols.size>1) { val p = resolvePwd(src); if (p == null) null else if (p.isEmpty()) SevenZCore.szListEntriesVolumes(volumeJoin(vols)) else SevenZCore.szListEntriesVolumesWithPassword(volumeJoin(vols), p) } else { val p = resolvePwd(src); if (p == null) null else if (p.isEmpty()) SevenZCore.szListEntries(src.path) else SevenZCore.szListEntriesWithPassword(src.path, p) } }
-                    "rar"->{ val vols = resolveRarVolumes(src); val p = resolvePwd(src); if (p == null) null else if (vols.size>1) (if (p.isEmpty()) RarCore.rarListEntriesVolumes(volumeJoin(vols)) else RarCore.rarListEntriesVolumesWithPassword(volumeJoin(vols), p)) else (if (p.isEmpty()) RarCore.rarListEntries(src.path) else RarCore.rarListEntriesWithPassword(src.path, p)) }
-                    "lz4"->Lz4Core.lz4ListEntries(src.path); "gz"->GzipCore.gzListEntries(src.path); "bz2"->Bzip2Core.bz2ListEntries(src.path); "xz"->XzCore.xzListEntries(src.path); "zst"->ZstdCore.zstListEntries(src.path); "lzma"->LzmaCore.lzmaListEntries(src.path); "br"->BrotliCore.brotliListEntries(src.path); "tar"->TarCore.tarListEntries(src.path)
-                    else->null
-                } } catch(_:Exception){null}
+                // Same listing dispatch as the single-archive paths. It used to
+                // be a third hand-rolled copy that omitted the ZIP encoding
+                // preference, so a GBK-named zip showed mojibake here and
+                // rendered correctly when previewed on its own.
+                val json = if (fmt in setOf("zip", "7z", "rar")) {
+                    // A null password means the user cancelled; the caller
+                    // stops the whole batch on pwdCancelled.
+                    val p = resolvePwd(src)
+                    if (p == null) null else listEntriesJson(fmt, src, p, nestedOnly = false)
+                } else {
+                    listEntriesJson(fmt, src, "", nestedOnly = false)
+                }
                 if (json != null) all.add(src to parseEntries(json))
                 if (pwdCancelled) break
             }

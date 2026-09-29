@@ -43,6 +43,8 @@ fun extractAccessors(fmt: String): ProgressAccessors = when (fmt) {
     "ksd" -> ProgressAccessors({ KsdCore.ksdExtractProgressCount() }, { KsdCore.ksdExtractProgressTotal() }, { KsdCore.ksdExtractProgressFileCount() }, { KsdCore.ksdExtractProgressFileTotal() }, { KsdCore.ksdExtractProgressName() }, { KsdCore.ksdExtractCancel() })
     "br" -> ProgressAccessors({ BrotliCore.brotliExtractProgressCount() }, { BrotliCore.brotliExtractProgressTotal() }, { BrotliCore.brotliExtractProgressFileCount() }, { BrotliCore.brotliExtractProgressFileTotal() }, { BrotliCore.brotliExtractProgressName() }, { BrotliCore.brotliExtractCancel() })
     "tar" -> ProgressAccessors({ TarCore.tarExtractProgressCount() }, { TarCore.tarExtractProgressTotal() }, { TarCore.tarExtractProgressFileCount() }, { TarCore.tarExtractProgressFileTotal() }, { TarCore.tarExtractProgressName() }, { TarCore.tarExtractCancel() })
+    "rpgmv" -> ProgressAccessors({ RgssCore.rgssMvProgressCount() }, { RgssCore.rgssMvProgressTotal() }, { RgssCore.rgssMvProgressFileCount() }, { RgssCore.rgssMvProgressFileTotal() }, { RgssCore.rgssMvProgressName() }, { RgssCore.rgssMvCancel() })
+    "rgss" -> ProgressAccessors({ RgssCore.rgssExtractProgressCount() }, { RgssCore.rgssExtractProgressTotal() }, { RgssCore.rgssExtractProgressFileCount() }, { RgssCore.rgssExtractProgressFileTotal() }, { RgssCore.rgssExtractProgressName() }, { RgssCore.rgssExtractCancel() })
     else -> throw IllegalArgumentException("unsupported extract format: $fmt")
 }
 
@@ -63,6 +65,12 @@ fun compressAccessors(fmt: String): ProgressAccessors = when (fmt) {
     "ksd" -> ProgressAccessors({ KsdCore.ksdCompressProgressCount() }, { KsdCore.ksdCompressProgressTotal() }, { KsdCore.ksdCompressProgressFileCount() }, { KsdCore.ksdCompressProgressFileTotal() }, { KsdCore.ksdCompressProgressName() }, { KsdCore.ksdCompressCancel() })
     "br" -> ProgressAccessors({ BrotliCore.brotliCompressProgressCount() }, { BrotliCore.brotliCompressProgressTotal() }, { BrotliCore.brotliCompressProgressFileCount() }, { BrotliCore.brotliCompressProgressFileTotal() }, { BrotliCore.brotliCompressProgressName() }, { BrotliCore.brotliCompressCancel() })
     "ypf" -> ProgressAccessors({ YpfCore.ypfCompressProgressCount() }, { YpfCore.ypfCompressProgressTotal() }, { YpfCore.ypfCompressProgressFileCount() }, { YpfCore.ypfCompressProgressFileTotal() }, { YpfCore.ypfCompressProgressName() }, { YpfCore.ypfCompressCancel() })
+    // "rgss" is the READ key and belongs here too: repackEditedArchive builds
+    // its progress card from the archive's read key, not from a picker choice.
+    // Omitting it is the same class of bug as the old missing "pf6" branch —
+    // an IllegalArgumentException before the card is even shown, so the repack
+    // dies silently.
+    "rgss", "rgssad", "rgss2a", "rgss3a", "rpgmvp", "rpgmvo", "rpgmvm" -> ProgressAccessors({ RgssCore.rgssCompressProgressCount() }, { RgssCore.rgssCompressProgressTotal() }, { RgssCore.rgssCompressProgressFileCount() }, { RgssCore.rgssCompressProgressFileTotal() }, { RgssCore.rgssCompressProgressName() }, { RgssCore.rgssCompressCancel() })
     "tar", "tgz", "tbz2", "txz", "tzst" -> ProgressAccessors({ TarCore.tarCompressProgressCount() }, { TarCore.tarCompressProgressTotal() }, { TarCore.tarCompressProgressFileCount() }, { TarCore.tarCompressProgressFileTotal() }, { TarCore.tarCompressProgressName() }, { TarCore.tarCompressCancel() })
     else -> throw IllegalArgumentException("unsupported compress format: $fmt")
 }

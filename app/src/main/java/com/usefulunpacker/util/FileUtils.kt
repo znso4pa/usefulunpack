@@ -307,6 +307,30 @@ fun resolvePfsOutName(outFile: File, artemisNaming: Boolean): File {
     return File(dir, "root.pfs.%03d".format(n))
 }
 
+/**
+ * RPG Maker only loads an RGSS archive named exactly `Game.rgss3a` (or
+ * `.rgssad` / `.rgss2a`) from beside the game `.exe` — anything else is simply
+ * never opened, with no error the user would notice. So the packer resolves the
+ * final name up front instead of writing a file the game ignores.
+ *
+ * Unlike the PFS layered-patch case there is NO meaningful fallback name: a
+ * `Game.rgss3a.001` would not be mounted either. So if the slot is taken the
+ * caller's own name is kept and the caller is expected to say so — better a
+ * visible odd name than a silently useless one.
+ *
+ * @param gameNaming false keeps the caller's name outright (an explicit `-o`).
+ * @return the file to write, and whether it differs from [outFile].
+ */
+fun resolveRgssOutName(outFile: File, gameNaming: Boolean, ext: String): Pair<File, Boolean> {
+    if (!gameNaming) return outFile to false
+    val dir = outFile.parentFile ?: return outFile to false
+    val target = File(dir, "Game.$ext")
+    // Already the right name, or the slot is taken: leave it to the caller.
+    if (target.name == outFile.name) return outFile to false
+    if (target.exists()) return outFile to false
+    return target to true
+}
+
 fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
 fun hashFile(f: File, algorithm: String): String {
@@ -573,6 +597,12 @@ fun detectFormatByMagic(f: File): String? {
         has(byteArrayOf(0x28, 0xB5.toByte(), 0x2F, 0xFD.toByte())) -> "zst"
         has(byteArrayOf(0x04, 0x22, 0x4D, 0x18)) -> "lz4"
         has("XP3".toByteArray(Charsets.US_ASCII)) -> "xp3"
+        // RPG Maker RGSS: "RGSSAD\0" + the version byte (1 = XP, 2 = VX,
+        // 3 = VX Ace), so a game using a non-standard archive name still opens.
+        // All three map to the one read key — the parser reads the header.
+        has(byteArrayOf(0x52, 0x47, 0x53, 0x53, 0x41, 0x44, 0x00)) -> "rgss"
+        // RPG Maker MV/MZ obfuscated asset: the fixed 16-byte "RPGMV..." header.
+        has("RPGMV".toByteArray(Charsets.US_ASCII)) -> "rpgmv"
         else -> null
     }
 }

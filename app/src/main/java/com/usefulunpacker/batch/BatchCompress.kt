@@ -40,7 +40,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                 .setView(inp)
                 .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                     val name = inp.text.toString().trim().ifEmpty { "archive" }
-                    showCompressOptionsDialog(this, prefs, fmt) { level, chosenSplit, artemisNaming ->
+                    showCompressOptionsDialog(this, prefs, fmt) { level, chosenSplit, artemisNaming, gameNaming, mvKey ->
                         val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                         val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
                         // Sanitize the staging subdir name (reject ../ and path
@@ -49,7 +49,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                         val tmpDir = File(cacheDir, "batch_compress/$safeName")
                         // Lock first, then the progress dialog (see extractAll);
                         // busy just queues — position/ETA show in the dialog.
-                        val opH = tryStartOperation(this, if (fmt == "pf6") "pfs" else fmt)
+                        val opH = tryStartOperation(this, fmt)
                         var cancelled = false
                         val accessors = compressAccessors(fmt)
                         val pd = PollingProgressDialog(
@@ -68,7 +68,10 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                             try {
                                 // 产物名在【拿到槽位之后】解析：入队时解析的话，排队
                                 // 中的第二次封包会和第一次拿到同一个名字互相覆盖。
-                                val outF = resolvePfsOutName(uniqueFile(currentDir, "$name.$ext"), artemisNaming)
+                                val (outF, renamed) = resolveRgssOutName(
+                                    resolvePfsOutName(uniqueFile(currentDir, "$name.$ext"), artemisNaming),
+                                    gameNaming, ext
+                                )
                                 // Copy off the UI thread — large batches would
                                 // ANR the main thread here. Clear any stale staging
                                 // dir from a previously crashed run first.
@@ -108,7 +111,9 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                         toast(getString(R.string.msg_cancelled))
                                     } else if (ok) {
                                         val shown = if (chosenSplit > 0 && fmt in setOf("zip", "7z")) "${outF.name}.001" else outF.name
-                                        toast("${getString(R.string.msg_extract_complete)} $shown")
+                                        toast(if (renamed) {
+                                            getString(R.string.msg_renamed_to, shown) + " " + getString(R.string.rgss_game_naming_note)
+                                        } else "${getString(R.string.msg_extract_complete)} $shown")
                                         // Leave multi-select only on success — on
                                         // cancel/failure keep the selection so the
                                         // user can retry without re-picking files.
@@ -146,12 +151,17 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
             if (fmt == "ksd" && items.any { !it.name.lowercase().endsWith(".txt") }) {
                 toast(getString(R.string.msg_ksd_need_txt)); return@showFormatPicker
             }
+            // MV/MZ 按扩展名定类型（见 mvExtMismatch）。批量下宁可整批拦下也不
+            // 静默跳过：用户选了 50 张图，产 47 个会让「少了 3 个」变得难查。
+            if (items.any { mvExtMismatch(it, fmt) }) {
+                toast(getString(R.string.msg_mv_ext_mismatch, mvRequiredExt(fmt))); return@showFormatPicker
+            }
             // 压缩选项（等级/分卷）内联，与单文件压缩流一致。
-            showCompressOptionsDialog(this, prefs, fmt) { level, chosenSplit, artemisNaming ->
+            showCompressOptionsDialog(this, prefs, fmt) { level, chosenSplit, artemisNaming, gameNaming, mvKey ->
                 val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                 val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
                 // Lock first, then the progress dialog (see extractAll).
-                val opH = tryStartOperation(this, if (fmt == "pf6") "pfs" else fmt)
+                val opH = tryStartOperation(this, fmt)
                 var cancelled = false
                 val accessors = compressAccessors(fmt)
                 val pd = PollingProgressDialog(
@@ -171,11 +181,20 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                         var ok = true
                         for (f in items) {
                             if (cancelled) { ok = false; break }
-                            val outName = if (fmt == "ksd") "${f.nameWithoutExtension}.$ext" else "${f.name}.$ext"
+                            // MV obfuscation REPLACES the extension (foo.png ->
+                            // foo.rpgmvp); everything else appends. RPG Maker's
+                            // Game.<ext> name is deliberately not applied here:
+                            // this loop writes N archives, and they would all
+                            // claim the same slot.
+                            val outName = when {
+                                isMvPackKey(fmt) -> mvPackedName(f, fmt)
+                                fmt == "ksd" -> "${f.nameWithoutExtension}.$ext"
+                                else -> "${f.name}.$ext"
+                            }
                             val outF = resolvePfsOutName(uniqueFile(f.parentFile ?: currentDir, outName), artemisNaming)
                             // zip/7z/tar 的 Rust 端 read_dir 不接受单文件输入，需临时目录包裹
                             val ok2 = if (f.isDirectory || fmt !in setOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")) {
-                                compressDispatch(f, outF, fmt, level, password, prefs, chosenSplit)
+                                compressDispatch(f, outF, fmt, level, if (isMvPackKey(fmt)) mvKey else password, prefs, chosenSplit)
                             } else {
                                 val tmpDir = File(cacheDir, "batch_compress/${f.nameWithoutExtension}")
                                 // 先清掉上次崩溃/失败可能留下的残留，否则旧文件会被

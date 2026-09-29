@@ -1,4 +1,442 @@
+## feat(v6.0.0): 真机回归（真语料）+ 合并跨窗口目标 + 画笔透明度修复
+
+### 1. 真机回归：拉真语料对 oracle，抓出 3 个合成夹具永远发现不了的 bug
+
+之前的验证全是自造夹具。本轮从 `uuksu/RPGMakerDecrypter`（社区公认的 ground truth 工具）
+拉下**真归档 + 真混淆素材 + 公开断言**，在**仓外**建 harness（`/tmp/uu_regress`，path 依赖
+指向 `crates/rgss-core`，repo 一个字节没动）跑端到端比对。
+
+语料：`Game.rgssad` / `Game.rgss2a` / `Game.rgss3a`（真 XP/VX/VX Ace 归档）+ `Image` /
+`AudioOrbis` / `AudioMpeg`（真 MV 混淆素材，**无扩展名**）。Oracle：精确 offset/size/key、
+`MD5("12345")` 作为 keystream、三个素材解密后 SHA1 全部公开。
+
+| # | 位置 | 问题 | 修复 |
+|---|------|------|------|
+| 1 | `mv_plain_header` M4A 分支 | ftyp 的 **minor version 硬编码成 `0.0.2.0`**，真文件是 `0.0.0.0`。这 4 字节在混淆窗内、没有密钥就恢复不出来 → `.rpgmvm` 解码结果**永远不是逐字节正确的**。合成夹具带着同样的错，所以自测 100% 绿 | 按真值改 `0x00,0x00,0x00,0x00`；夹具改为从真文件截取 |
+| 2 | `MV_PROBE_LEN` / box 扫描范围 | probe 窗 56B → 窗外只剩 24B，而扫描范围 `4..len-4 = 4..20` **恰好排除 20**，真文件的 `moov` 正在 `tail[20]`。一字节之差导致真 M4A 被判非法；`box_size` 恢复同样漏位，真值应是 **32** 而非默认 28 —— 这是**载荷正确性问题**，不只是校验 | probe 提到 96B；两处扫描范围改闭区间 |
+| 3 | `mv_kind_of` | 素材类型**只从文件名取**，无扩展名的真素材直接报「cannot tell what kind」。改名的包、重打包的游戏都这样 | 新增 `mv_sniff_kind()`：用 `mv_check_plain`（**只读窗外**的独立证据）逐个试，要求唯一命中 |
+
+**第 3 条的第一版修法是错的，值得记下来**：我先让 `mv_plain_header` 重建出魔数再「检测」
+它——而 `mv_plain_header` 本来就是**按 kind 凭空造**魔数的（Png 直接返回常量
+`PNG_HEADER16`），等于自证。这是本轮第三次犯「循环论证」，用自己刚写过的判据去抓自己。
+正确做法：证据必须**独立于猜测**。`mv_check_plain` 恰好就是为此写的（PNG 验 IHDR body、
+Ogg 验 page sequence、M4A 验下一个 box），且三者互斥，真实素材上各自唯一命中。
+
+回归结果（26/26）：
+
+- RGSS 解析 vs uuksu 精确断言：3 归档 × (version / entries / offset / size / key) 全对
+- 载荷是**合法 Ruby Marshal 4.8**，可见 `RPG::Actor` / `RPG::Map` / `RPG::Tileset` 类名
+  —— 排除「名字对但载荷是垃圾」
+- 解包→重封→重解，v1 与 v3 两种目标版本均逐字节一致
+- **v1 重封 = 与 uuksu 原始 `Game.rgssad` 504228 B 逐字节相同**（字节恒等）
+- MV 密钥推导 + 三个素材解密后 **SHA1 与 oracle 全对**
+- **MV 封包往返 = 与 RPG Maker 自己产出的混淆文件逐字节相同**（字节恒等）
+- 4 种密钥形式往返一致；3 类拒绝（类型不符 / 已混淆再混淆 / 全零密钥）均不留产物
+
+### 2. 合并进现有归档：可发现性 + 目标可来自其他窗口
+
+用户反馈「第三个我不会用」。查下来不是不会用，是**按钮标签被裁掉了**。
+
+`folder_view.xml` 里三个按钮 `layout_weight=1` 平分，而合并那个标签 10 字（「📦 合并到其他
+归档…」）、另外两个各 4 字，360dp 机型上每个按钮只有约 118dp，12sp 的 10 个中文字放不下，
+**且未设 `ellipsize`**，文字直接被按钮边界裁掉，看着像个空壳。
+
+- 新增短串 `merge_short`（4 语言）给底栏按钮；`merge_into_archive` 保持不变，继续给
+  `showOutputDirDialog` 菜单项用——同一字符串两处复用、约束不同，所以不复用
+- **目标候选从「仅当前目录」扩到「其他窗口正在打开的归档」**：
+  - 来源是 `tabs.filter { it !== ownerTab && it.previewActive && it.previewSrc != null }`
+    ——`previewSrc` 而非 `OpenArchiveRegistry`，因为 registry **没有枚举接口**，而
+    `previewActive` 保证它此刻真的开着
+  - 用 `showFormatPicker` 分组展示（它本来就是通用的：`Pair<Int, List<String>>` + labels，
+    不做任何格式相关处理），顺带白拿 ScrollView 与 Honor/EMUI 禁滚动条的规避
+  - 列表在**枚举时**就过滤掉不可封包格式，列表里只留可操作项，省掉
+    `merge_target_unsupported` 的点击后报错
+  - 重复项（某窗口打开的归档也在本目录）折叠成本目录行——更近
+- **拆掉 `mergeIntoArchive` 里的过度防御**：原来若目标被别的窗口持有就拒绝，而那恰好是
+  现在要支持的场景。依据：**目标全程只读**，产物是 `uniqueFile(parent, "<名>-cn.<ext>")`
+  这个新文件（`PreviewFlow.kt:717-721`），目标从未被打开写入 → 并发读+读安全，别人的预览
+  也不失效。真正需要串行化的由 `"merge"` 调度槽负责；而三个**原地写** zip 的函数
+  （`zipReplaceEntry`/`zipDeleteEntries`/`zipAddEntry`）**本来就不查 registry**，靠 `"zip"`
+  槽串行。换成 `archiveKey(target) == archiveKey(src)` 守卫
+- **无可合并目标时按钮置灰**：`mergeTargetGroups()` 是选择器与置灰的**唯一来源**，
+  两处不会对「有没有目标」产生分歧。`textColor` 是平铺颜色不是 state-list，所以另外显式
+  设 `alpha=0.4f`。`refreshMergeButtons()` 挂在 `renderPreview` / `exitPreview`——
+  任何窗口开关预览都会改变别的窗口的答案，不挂就会过期
+
+### 3. 图片编辑器：画笔不透明度
+
+用户反馈「不透明度以后画笔在图片上画画会有问题」。根因是**笔迹没有独立的透明度层**，
+半透明被重复叠加，三个缺陷同源：
+
+- **A（用户看到的）**：`handleBrush` 把每一段线直接画到常驻 `overlay` 上，用 `SRC_OVER`
+  合成。相邻线段共享端点、圆头笔帽互相重叠，于是**每段都在前段的 alpha 上再叠一次**：
+  50% 下 50%→75%→87%…，慢拖时笔画越往后越深、关节结块。alpha=255 时看不出来，
+  所以只在调低不透明度后暴露
+- **B**：`redrawOverlay()` 用**当前**的 `brushAlpha`/`brushColor` 重画所有笔迹，而它被
+  `undo()` 调用 → 100% 画几笔、调到 30%、按撤销，**剩下所有笔迹立刻变成 30%**。
+  笔迹只存了几何点，没存画时用的颜色和透明度
+- **C**：`size < 2` 的笔迹被 `redrawOverlay` 跳过，单击（DOWN+UP 无 MOVE）**不出点**
+
+改法：每个笔迹记录自己的颜色/透明度/线宽（`Stroke`），画进独立图层时用**满 alpha**，
+只在合成那一刻施加一次该笔迹的透明度。`onDraw` 用同一个合成路径画进行中的图层 →
+实时预览与最终落盘一致。`composeResult()` 无需改动。
+
+### 4. tab 切换后路径栏跳到 `/`
+
+根因：**`tvPath` 只在 `navTab` 里被写，而预览渲染从不写它。** 预览盖住列表但盖不住路径栏。
+进预览 → `syncPreview` 这条链完全不碰 `tvPath`；而 `TabState.currentDir` 初值是
+`File("/")`、`folder_view.xml` 默认文本也是 `/`。所以只要片段在预览态下被重建
+（切 tab、旋转、`rebuildPager`、会话恢复），路径栏就停在 `/`。
+
+`FolderFragment.kt:253` 早意识到这点并手动回填，但那只是**一处**打补丁，`syncPreview`
+那条路没有。
+
+改法：把路径变成**派生值**而非存储值，三处写入统一：
+
+```kotlin
+fun displayPath(): File =
+    if (previewActive) previewSrc?.parentFile ?: currentDir else currentDir
+```
+
+在 `navTab` / `syncPreview` / 片段绑定三处都用 `displayPath().absolutePath`。预览时显示
+归档所在目录（这才是「你在哪」的答案）。以后新增渲染路径不会再漏。
+
+注：路径栏是 `ellipsize="start"`，长路径会截掉**头部**（显示 `…/Pictures/game`）——这是原有
+的显示取舍，未改动。
+
+### 5. 机械审计（不读代码，改跑脚本）
+
+换了手法：不顺链路读，改跑 4 个审计。1 个真 bug，另外 3 个报的都是我自己的误报。
+
+| 审计 | 结果 |
+|---|---|
+| 取槽是否所有出口都释放 | 25 处全 OK（漏一个 = 那个格式永久卡死） |
+| Rust 侧 `clear_cancel` 不变量 | 报 36 个，实际全是 `*ListEntries`/`*NeedsPassword`/`setParallelThreads`/`zipSetEncoding`——纯读不受取消标志影响，**正则过宽** |
+| **解压侧 key 集合对称性** | **真 bug**，见下 |
+| 路径逃逸 | 45 处 `File::create` + 22 处条目名 `join`：排除 `#[cfg(test)]` 与「名字来自输入文件自身 `file_stem()`」的单流格式后，**无逃逸**；9 个多条目 crate 全经 `safe_join` |
+
+**key 对称性真 bug**：列举代码被手抄成**三份**，已漂移一次——
+
+| 列举路径 | zip 编码设置 | ksd 分支 |
+|---|---|---|
+| `previewArchive` | ✅ | ✅ |
+| `listPreviewEntries` | ✅ | ❌（设计如此，只管可嵌套格式） |
+| **`batchPreview`** | **❌** | **❌** |
+
+`zipSetEncoding` 设置的是**进程级 native 全局状态**，5 处调用点都设了，唯独批量预览没设
+→ 用户设置 GBK 后，单包预览中文 zip 文件名正常，**批量预览同一个文件全是乱码**。静默、
+只有对比才看得出。
+
+修法不是补那两行，而是抽 `listEntriesJson(format, src, pwd, nestedOnly)` 作单一来源，
+三处都只是转发。`nestedOnly` 保留「可嵌套格式只有 10 种」的语义（9 个单流格式在
+`nestedOnly=true` 时返回 null）。`batchPreview` 特有的 `resolvePwd` 取消语义保留。
+现在 19 种格式精确对齐。
+
+### 6. 其他修复
+
+| 位置 | 问题 | 修复 |
+|---|------|------|
+| `schedulerKeyOf` | 5 个 tar 变体共用 `libarchive_tar_core` 的**同一个** `compress_progress` 静态量，却各占各的槽位 → **可以并发** → 第二个的 `reset(total)` 清掉第一个的总量；取消第二个会**顺手杀掉第一个**。这正是 `pf6→pfs` 当初归并要解决的同类问题，tar 一直漏了（而该函数注释还写着「今天只有两族」） | 归并到 `tar` 槽；注释改成三族并逐个列名 |
+| `tryExtractWithPassword` 的 `doExtract` | 7z/rar 丢 `sel`（写死 `""`），而同函数重试分支传对了。`sel` 是四路分派输入，丢了会掉进 `else` → **全量解压**且无任何提示。当前不可达（调用方都先挡了空选），但是活陷阱 | 转发 `sel`；补注释说明为什么不能省 |
+| `mergeIntoArchive` | `password` 写死 `""`、`level` 写死 `generic_level`。6 个 `compressDispatch` 调用点里 5 个读设置，只有这里不读 → **合并进带密码的 7z 会产出无密码的副本**（等于把受保护归档复制成明文） | 读设置 + 共用 `defaultCompressLevel(prefs, fmt)` |
+| `repackEditedArchive` | `gameNaming = format in setOf("rgssad","rgss2a","rgss3a")`，但该路径的 `format` 是**读取 key `"rgss"`**（`FolderFragment.kt:77` 为证）→ 条件恒假 → **编辑回包的 `Game.<ext>` 改名从未生效**，而这是用户唯一没有独立压缩按钮的重打包入口 | 改 `format == "rgss"`；写版本仍由源文件扩展名推 |
+| `mv_encrypt` | 用 `.jpg` 选 `rpgmvp`、或对已混淆文件再混淆，都会**静默产出游戏读不了的文件** | 新增 `MvKind::matches()`：类型不符拒、已混淆拒（均在建文件之前 return，不留半成品） |
+| MV 封包 key 扩展名把关 | `rpgmvp` 只收 `.png`、`rpgmvo` 只收 `.ogg`、`rpgmvm` 只收 `.m4a`，不符则 toast 拦下（拦在**填密钥之前**）。批量下整批拦而非静默跳过：选 50 张图只产 47 个，事后极难发现少了哪 3 个 | `mvRequiredExt` / `mvExtMismatch` + `msg_mv_ext_mismatch`；选择器标签改为「… — from .png」把规则前置 |
+| `COMPRESS_LABELS` MV 条目 | 封包格式列表里 MV 那条写着 **"Extract only"**——解码时代的遗留，用户在选择器里看到「仅解压」点进去却是封包对话框 | 四语言改为「解压 & 封包」并补上类型规则 |
+
+### 7. 我自己在这轮犯的 3 次同类错误（都栽在夹具和脚本上）
+
+值得记下来，因为它们和上面 3 个真 bug 是同一个教训：**自造的验证物会和被验证的假设一起错。**
+
+- 手抄密文夹具时用了 11 个 0，而 `RPGM_HEADER` 是 16 字节含 `03 01` → 文件被当成「未混淆」
+  直接透传，**测试一度是绿的**。改为用脚本从明文生成密文（本次会话已因此栽过两次，
+  这次彻底换成生成式）
+- 「三处列举代码」审计里我的括号配对函数把 `&[u8]` 的括号当成数组开头 → 误报
+- 汇总脚本本身 2 个 bug（标签 padding 未 strip、`diff -r` 把重封产物也算进对比目录）→
+  报出的 5 条「失败」全是假的
+
+### 待做（装机后，仅剩交互层）
+
+算法层已无已知不确定项（26/26 对 oracle，含两组字节恒等）。剩的只有 UI 观感：
+
+1. 360dp 机型上确认 `merge_short` 不再截断
+2. 开两个窗口各预览一个归档 → 合并按钮能选到对方那个；关掉对方窗口的预览 → 按钮转灰
+3. 图片编辑器：调低不透明度画一笔，确认笔画均匀、关节无结块；改不透明度后按撤销，确认
+   历史笔迹不变
+4. 预览态切 tab，确认路径栏仍是原目录
+5. 把真 `Game.rgss3a` 封包→改名→放回游戏目录→游戏能启动
+
+## feat(v6.0.0): MV/MZ 封包（自填密钥）+ RGSS 自动命名为 Game.*
+
+在「散素材解码」与「RGSS 封包」之上补两条用户明确要的能力。
+
+### 1. MV/MZ 封包：用户自己填 XOR 密钥
+
+`mv_encrypt()` 是解码的精确逆运算：`RPGM 头 | asset[0..16] XOR keystream | asset[16..]`。
+因为 `keystream = MD5(encryptionKey)`，**重新混淆需要游戏自己的密钥**——但这恰好是
+用户手上有的东西，所以做成输入框而不是内置。
+
+密钥输入接受**两种形式**（两种在现实里都有人拿）：
+
+| 输入 | 语义 |
+|------|------|
+| 32 位十六进制 | 直接当作 XOR 密钥流（社区工具给用户看的就是这个值） |
+| 其他任意文本（含空） | 作为 `encryptionKey` 交给 MD5 —— RPG Maker 的真实规则；空 = 默认密钥，也就是 `encryptionKey` 未设置时的结果 |
+
+为此**自研了 MD5**（约 60 行）而非引依赖：lockfile 里没有 md5 crate，而 MD5 是完全
+确定的算法，可以用 RFC 1321 标准向量钉死（`md5_matches_the_standard_vectors` 覆盖
+7 个官方向量）。这不是安全用途，只是格式要求——「加密」本来就是 16 字节 XOR。
+
+**粒度：单个素材**。`foo.png` → `foo.rpgmvp`（**替换**扩展名，不是追加）。这正好落在
+app 既有的「一个输入 → 一个产物」模型里，无需新流程；批量「分别封包」选 50 张图即得
+50 个 `.rpgmvp`。因此 `rpgmvp/vo/vm` 进 `SINGLE_FILE_COMPRESS`，选文件夹时禁用
+（一个文件夹无法变成单个 `.rpgmvp`）。
+
+端到端实测（真 PNG，三种密钥形式）：写入字节数正确、`mv_list` 正确、解码回来与原文件
+**逐字节相同**。
+
+### 2. RGSS 封包自动改名 `Game.<ext>` + toast
+
+RPG Maker 只加载与 `.exe` 同目录、名为 `Game.rgss3a`（/`.rgssad` / `.rgss2a`）的归档，
+其他名字**静默不加载**。新增 `resolveRgssOutName()`（挨着 `resolvePfsOutName`），
+封包选项里加开关（默认开，与 pfs 的 Artemis 命名同一套交互），改名时复用已有的
+`msg_renamed_to` 并追加一句「放回游戏目录即可覆盖原包」。
+
+**与 pfs 的关键差异**：pfs 有 `root.pfs.NNN` 分层补丁语义，所以冲突时递增后缀有意义；
+RGSS **没有任何可用的退路**——`Game.rgss3a.001` 同样不会被挂载。所以槽位被占用时
+**保留调用方原名并说明**，而不是产出一个看起来成功、实则无效的文件。
+
+命名生效的三条路径：目录封包、批量合并（都是「一个产物」）；**批量分别封包刻意不生效**
+——那个循环要写 N 个归档，全叫 `Game.rgss3a` 会互相覆盖。编辑回包与合并回包若源包就是
+`Game.rgss3a`，`target.exists()` 命中 → 不改名、绝不覆盖原包（这正是「编辑回包不覆盖
+原包」语义要求的，日文帮助文案里也写明了要手动替换）。
+
+---
+
+## debug: 全面 debug（本轮自查抓出 7 个真 bug）
+
+按「先审自己的新代码」逐条过，抓到的都是**能静默产出坏文件**那一类：
+
+| # | 位置 | 问题 | 修复 |
+|---|------|------|------|
+| 1 | `mv_extract` | 每次提取把 `mv_plan()` 跑**两遍**（第二遍再开一次文件；Ogg 还要再读 130KB 再走一遍 page）——批量 500 个 `.rpgmvo` 就是 65MB 冗余读 | 计划对象向下传递，只算一次 |
+| 2 | `mv_extract` | 失败/取消**不删半成品**，与全 app「失败删半成品」的规则不一致——用户分不清截断的图和真图 | 加 `mv_extract_guarded()`，任何失败都删 |
+| 3 | `mv_output_name` | 透传路径**盲信扩展名**：一个内容是 RIFF 的 `.rpgmvp` 会被命名成 `foo.png`（打不开的图） | 嗅探结果与扩展名矛盾时以内容为准 |
+| 4 | `mv_plain_header` M4A 分支 | 恢复 `ftyp` box 尺寸时**差 12 字节**（类型在 `asset[i+4]`，box 起点在 `asset[i]`，换算到 tail 基准是 `i+12` 却写成了 `i`）。这条路径**一个测试都没有**，是补测试时立刻暴露的 | 改为 `i + 12`，并加真 M4A 测试 |
+| 5 | `mv_check_plain` M4A 分支 | 校验写成「在推导出的尺寸位置找 box 类型」——**循环论证**，无论算出什么都成立 | 改为独立校验：下一个 box 声明的 size 必须 `>= 8` |
+| 6 | `mv_list` | 报的大小是拷贝长度（少 16 字节还原头），与实际落盘文件不符，进度条也会短一截 | 新增 `decoded_size()`，列表/进度/落盘统一 |
+| 7 | 封包对话框 | 密钥只在**失焦**时提交——用户输完直接点「确定」（按钮不一定触发失焦）会用**旧密钥**封包，产出游戏读不了的归档 | 保留输入框引用，在确定按钮回调里读 |
+
+另外两处是既有基础设施的债，顺手清了：
+
+- **`// ─── JNI ─` 段头在某次批量替换里被吞掉**，只有注释丢失、无功能影响，但会让后来人
+  找不到 JNI 段的起点 → 补回
+- **MD5 常量表我第一版用 `sin()` 现算**——结果会随 libm 实现漂移。改成把 64 个常量
+  写死，`const fn` 查表，行为确定
+
+以及**测试夹具手抄错位两次**（PNG chunk 头重复、长度字段写错位）。已改为夹具一律由脚本按
+规格生成后直接写入源码——这也是「真 PNG 夹具」能抓出第 5 行那个校验 bug 的原因。
+
+### 顺手把一处「不可证伪」的校验变成可证伪
+
+`mv_check_plain` 的存在理由是：还原 16 字节头这个动作**按构造永远自洽**，猜错了也会产出
+一个自洽的垃圾头。所以必须用**混淆窗口之外**的字节去验（PNG 验 IHDR body 的宽/高/位深/
+色彩类型，Ogg 验第一个 page 的 sequence 为 0，M4A 验下一个 box 声明的 size）。第一版我
+把校验点取在了窗口内，等于没写。
+
+---
+
+## 验证状态
+
+- `cargo test --workspace` 全绿，3 连跑；rgss-core **31 个测试**，clippy 零告警
+  （工作区里仅 `crates/common` 有 4 条既有 `io::Error::other` 建议）
+- `showCompressOptionsDialog` 回调签名从 3 值扩到 5 值，3 个调用点全部更新
+- **key 覆盖审计脚本重跑并扩到新封包 key**：extractByFormat / extractAccessors /
+  compressAccessors / compressDispatch / previewArchive / listEntriesJson /
+  batchPreview / 读 key 路由 / 调度归并 —— 9 项全 OK
+- **共享 progress store 的分组反查**：RgssCore 8 key、TarCore 5 key、PfsCore 2 key
+  全部收敛到唯一调度槽
+- `./gradlew lintDebug` **0 error / 271 warning**（基线 272，本轮用 en dash 消掉 1 条 TypographyDashes）
+- `bash build.sh` 全过；**26 个 JNI 导出 ↔ 26 个 `external fun`**，`nm -D` 精确一一对应
+- 端到端功能实测：三种密钥形式（默认 / 自定义文本 / 原始 hex）封包后再解码，与原始 PNG
+  逐字节相同
+- **真语料回归 26/26**（详见上方「真机回归」章节），含两组**字节恒等**：
+  RGSS v1 重封 = 原始 `Game.rgssad`；MV 重封 = 原始混淆素材
+
+### 待做
+
+- **真包验证已由上方「真机回归」章节完成**（uuksu 真语料，26/26 对 oracle，含两组字节恒等）。
+  装机后仅需人工确认「放回游戏目录后游戏能启动」这一条交互闭环。
+- M4A 的 `major brand` 假定为 `M4A `（参考实现同样如此）；若真包里出现别的 brand，
+  4 个字节会解错但不影响播放。要精确就得读 `System.json`
+
+## feat(v6.0.0): RPG Maker MV/MZ 散素材解码（.rpgmvp / .rpgmvo / .rpgmvm）
+
+接在 RGSS 之后。同一个引擎家族，但**不是归档**：MV 把每张图、每个声音各自存成一个
+混淆文件。仍然收进 `rgss-core`，共用一个 `.so`。
+
+### 「加密」其实不是密码学
+
+和 RGSS 的 `*7+3` 轮转完全不同，MV 的方案是**只异或 16 字节**：
+
+```
+offset 0..16    "RPGMV" + 3 NULs + 00 03 01 + 0   固定头
+offset 16..32   素材自身的前 16 字节 XOR keystream
+offset 32..     素材剩余部分，完全明文
+```
+
+`keystream` 是 `System.json` 里 `encryptionKey` 的 MD5——而这个字段几乎没人填，
+所以实际就是空串的 MD5（`d41d8cd98f00b204e9800998ecf8427e`）。
+**但我们根本不需要它**：三类素材的头部都是已知的，keystream 可以从文件自身反解出来。
+于是解码结果就是 `还原出的 16 字节头 + 文件从 offset 32 起的原样拷贝`——
+keystream 之后再也不需要参与，所以实现是一次「写 16 字节 + 流式拷贝」，
+而不是流式密码。
+
+| 类型 | 还原方式 | 确定性 |
+|------|---------|--------|
+| `.rpgmvp` PNG | 前 16 字节是硬编码常量（签名 + IHDR 的长度和 tag） | 精确 |
+| `.rpgmvo` Ogg | 16 字节里 14 个固定；剩下 2 个是流 serial 的低字节——**去第二个 page 读**（serial 跨 page 恒定，而第二个 page 是明文） | 精确 |
+| `.rpgmvm` M4A | 16 字节里 12 个固定；`ftyp` box 尺寸靠扫描下一个 box 定位，major brand 假定为 `M4A ` | 启发式（写盘前会校验） |
+
+格式对照 [Petschko's RPG-Maker-MV-Decrypter](https://gitlab.com/Petschko/RPG-Maker-MV-Decrypter)（社区事实标准）与 [rpgm-asset-decrypter-lib](https://github.com/RPG-Maker-Translation-Tools/rpgm-asset-decrypter-lib)（其 Rust 重写，MIT）。**顺带纠正了一个我一开始的误判**：我最初按「16 字节头里带 per-file 种子 + `*7+3` 轮转」实现，写完才发现真实格式完全不是这样——第一版整个是错的，已推倒重写。
+
+### 关键设计：当成「单条目归档」
+
+每个文件对 app 暴露为**只有一个条目的归档**，条目就是解码后的素材，扩展名取真实类型。
+这样预览 / 选择性提取 / 批量提取 / 全局搜索**全部零改动复用**，而且条目名字对了，
+点条目就能直接进图片 / 音频预览——否则用户拿到的会是个没有扩展名的怪文件。
+
+### 三道防线
+
+1. **没 `RPGMV` 头 = 根本没混淆** → 原样透出。重打包/汉化过的 MV 游戏大量把
+   `.rpgm*` 扩展名配明文内容，一律报错是帮倒忙（`.rpgmvm` 视频本来就不加密）
+2. **还原的 16 字节头不可证伪**——错误的假设同样能自洽地产出一个垃圾头。所以
+   **必须拿混淆窗口之外的字节去验**：PNG 查 IHDR body 的宽高/位深/色彩类型，
+   Ogg 查第一个 page 的 sequence 是否为 0，M4A 查 `ftyp` 之后的 box 类型。
+   验不过就报错，**绝不写出垃圾文件**
+3. 扩展名映射是**查表**（`.rpgmvp` 恒为 PNG），不是嗅探；只有扩展名什么都说明不了的
+   文件才回退到嗅探
+
+### 缺陷记录
+
+| 位置 | 问题 | 修复 |
+|------|------|------|
+| 整个 MV 实现（第一版） | 按错误的格式理解实现：以为头里带 per-file 种子、载荷是 `*7+3` 轮转（实际那是 RGSS 的方案） | 对照权威实现后推倒重写 |
+| 结构性校验 | 校验字节取在混淆窗口**之内**——那么"还原"永远自洽，校验形同虚设；且索引基准算错 16 字节 | 改用窗口**之外**的 IHDR body / page sequence / box type 校验 |
+| 结构性校验（第二轮） | 以为 PNG 的 IHDR **长度字段**在窗口外可验——其实它就在 `asset[8..12]`，仍在窗口内 | 改验 IHDR **body**（宽/高/位深/色彩类型） |
+| `mv_list` 报的大小 | 报的是拷贝长度（少了还原头的 16 字节），与实际落盘文件不符 | 新增 `decoded_size()`，列表/进度/落盘三处统一 |
+| 手抄测试夹具 | 手工誊写夹具字节，誊错两次（PNG chunk 头重复、长度字段写错位） | 夹具改由脚本按规格生成后直接写入源码，不再手抄 |
+| `resources` 编译失败 | 四语言帮助文案里的 `MZ's` 未转义单引号 → AAPT2 抛 NPE（报错信息完全指不到真正原因） | 转义为 `MZ\'s` |
+
+### 验证状态
+
+- `cargo test --workspace` 全绿；rgss-core 25 个测试（20 连跑稳定）；clippy 零告警
+- 夹具仍按老规矩**独立于本 crate 生成**（另一份按规格写的 Python 实现）
+- **额外加了一个真 PNG 夹具**：由独立的 zlib/CRC 编码器生成的 1×1 合法 PNG，
+  逐字节回环——**它当场抓出了上面表格里第三行那个校验 bug**
+- `./gradlew lintDebug` 0 error / 272 warning（与基线逐项一致）
+- `bash build.sh` 全过；25 个 JNI 导出与 Kotlin 侧 `external fun` 用 `nm -D` 逐一对齐
+- `examples/probe.rs` 同时支持归档与 MV 素材（装机取样时直接用）
+
+### 待做
+
+- **真包验证（装机后）**：adb pull 一个真游戏目录的 `www/img/pictures/*.rpgmvp`
+  与 `www/audio/*/*.rpgmvo` → `cargo run -p archive_rgss-core --example probe -- x.rpgmvp`
+  → 与 Petschko 工具解同一文件**逐字节比对**（PNG/OGG 都应完全一致）
+- **不做回封**：重新混淆需要游戏自己的 `encryptionKey`（MZ 的 `.mzp` 之类才是真正需要），
+  本轮明确只读，故 `rpgmv` 不在 `COMPRESS_GROUPS`、也不在编辑允许集里
+- 未混淆文件的透出目前是静默的；若真包验证发现大量游戏其实是明文，可考虑在列表里
+  标注「未加密」
+
+---
+
 # TODO
+
+## feat(v6.0.0): RPG Maker RGSS 封包支持（.rgssad / .rgss2a / .rgss3a）
+
+6.0 首个新封包。选型时对比了三个候选（CatSystem2 `.int` / ASAR / RPG Maker），
+RGSS 胜出的原因是**密钥完全自包含**——v3 主密钥由包内种子派生，v1/v2 用固定
+`0xDEADCAFE`，不像 cxdec 那样需要 exe 侧车文件；魔数 `RGSSAD\0` + 版本字节 8 字节，
+签名扫描零误报；crates.io 上无同类 crate，自研约 700 行即可覆盖读写。
+
+### 格式规格（三方交叉验证，第四方独立复现）
+
+uuksu/RPGMakerDecrypter（C#，社区事实标准）、mkxp-z `crypto/rgssad.cpp`、
+[rpgm-archive-decrypter-lib](https://github.com/RPG-Maker-Translation-Tools/rpgm-archive-decrypter-lib)（Rust）
+三方一致。公共头 `"RGSSAD\0"` + `u8 version`（1=XP / 2=VX / 3=VX Ace）。
+
+- **v1 / v2（顺序流，无索引表）**：`key = 0xDEADCAFE` 起手，
+  `name_len`(u32) → 每**字节**轮转的 `name` → `size`(u32) → 数据
+  （4 字节窗口 `key*7+3`）。⚠ 两个易错点：**文件名是每字节轮转**（不是每 4 字节），
+  且**数据的轮转不持久化**——下一条 EntryHeader 从 size 之后那一刻的 key 继续
+- **v3（索引表 + 数据区）**：`key = seed*9 + 3`（u32 上是双射，seed 无约束），
+  `offset`(0 终止) / `size` / `entry_key` / `name_len` 四个 u32 各自 `^ key`（主密钥全程不轮转），
+  文件名 `b ^ ((key >> 8*(i%4)) & 0xFF)`，数据用 `entry_key` 按 v1 的 4 字节窗口规则
+- **版本 1 与 2 布局完全相同**（uuksu 只接受 1、mkxp-z 的 RGSS2_Archiver 复用同一 opener、
+  YARE-py 明写 `v1 (.rgssad, .rgss2a)`），但 XentaxWiki 声称 v2 是 version=2。
+  实现**接受 1/2/3 全部三个版本字节**，并额外做**双候选解码 + 启发式择优**：
+  主路径走文档的轮转 key，备路径走常量 key，按「名称可打印 + 是相对路径 + size 在文件内」打分，
+  取分高者。约 30 行代码消掉整类规格不确定性
+- 文件名编码：UTF-8 优先、CP932 兜底（`encoding_rs`，ypf-core 同款依赖），不可解码时降级为 ASCII 折叠而非报错
+
+### 实现
+
+- 新增 `crates/rgss-core`（`archive_rgss-core`，`["cdylib", "rlib"]`——rlib 只给
+  `examples/probe.rs` 用，产物仍只有一个 `.so`），无新 crates.io 依赖
+- JNI 面 16 个导出，与 `RgssCore.kt` 的 16 个 `external fun` 逐一对齐（已用 `nm -D` 核过）
+- 三个 fmtKey（`rgssad`/`rgss2a`/`rgss3a`）读路径完全等价（按包头自动判别布局）；
+  封包时用 `rgssWriteVersionOf()` 选目标版本（`rgss2a` 写 v1 布局，与引擎对该扩展名的期望一致）
+- 封包：v1 单遍流式（元数据与数据交错，索引无法预计算）；v3 单遍前向
+  （索引大小只由文件名决定，数据偏移在写数据前已知，无需回填）4GiB 偏移溢出护栏
+- `examples/probe.rs`：真包诊断工具（照 cxdec `probe.rs` 先例），打印版本 / 条目数 /
+  每条解密后前 16 字节的魔数嗅探——**名称看着对但数据全是垃圾是这类格式最典型的失败模式**，
+  光看列表看不出来
+
+### 顺手修的两处既有缺陷
+
+| 位置 | 问题 | 修复 |
+|------|------|------|
+| `SignatureScan.SCAN_SIG_COUNT` / `SCAN_PATTERN_COUNT` | 声明 31/77，实际表里是 32/82（注释自己写着「ksd 2」而 KSD 实有 3 个魔数）——扫描对话框页脚一直显示错数字 | 改为脚本从 `validators.rs` 实测的 **32/83**，并在 scan-core 加 `signature_counts_match_the_kotlin_footer` 测试锁死，防止再次漂移 |
+| `tryStartOperation` | `pf6`→`pfs` 调度归并靠 3 处手写 `if (fmt == "pf6") "pfs" else fmt` 复制，已经漏网补过两次（TODO v5.15 二轮 debug 记录）。RGSS 若照抄，同一个 .so 的 `extract_progress` store 会被 `rgssad`/`rgss3a` 两条解压并发污染——共 15 处 `tryStartOperation` 调用点，靠人肉不可能不漏 | 归并逻辑收进 `schedulerKeyOf()`，由 `tryStartOperation` 单点强制，3 处手写副本删除。今后新增格式只需在一处登记 |
+| `AGENTS.md` lint 基线 | 文档写「~268 warnings」，实际基线已是 272 | 本轮实测基线 272，改动前后一致（0 新增） |
+
+### 验证状态
+
+- `cargo test --workspace` 全绿；`cargo clippy -p archive_rgss-core --all-targets` 零告警
+- `rgss-core` 18 个测试，其中最关键的 4 个用**独立于本 crate、由规格描述直接写出的
+  Python 实现**生成的裸字节常量做对拍（uuksu C# → Rust → Python 三方推导，
+  杜绝「自洽的往返掩盖共同误读规格」）：
+  - `v1_writer_matches_spec_bytes` / `v3_writer_matches_spec_bytes`：writer 逐字节 == 规格字节
+  - `reader_accepts_the_spec_derived_archives`：reader 解析同一批字节并解出正确明文
+  - `parses_fixed_v1_bytes` / `parses_fixed_v3_bytes` / `version_two_reads_as_v1_layout`
+  - 其余覆盖往返（含 CP932 日文名、0 字节文件、900KB 跨 256KiB 流块的大文件）、
+    目录前缀选择性提取、敌意索引（0xFFFFFFFF 文件名长度 / 越界偏移 / 截断）、
+    `..\` 路径穿越（计为失败且不落盘）、重名与大小写碰撞（`DestAllocator` 改名不覆盖）、
+    封包中途取消、坏魔数 / 未知版本字节
+- ⚠️ 该 Python 对拍在开发中**抓到了实现错误**（我第一版把 v3 载荷密码误当成了
+  v3 的*文件名*密码：前者是 4 字节窗口整体 XOR 整组 key，后者才是按位置取 key 字节）
+- `./gradlew lintDebug` 0 error、272 warning（与基线逐项一致，0 新增）
+- `bash build.sh` 全过；3 个 ABI 的 `libarchive_rgss_core.so` 已进 APK
+  （614K/460K/667K），jniLibs 由 19 → 20 个 `.so`
+
+### 待做
+
+- **真包验证（装机后）**：adb pull 一个真 `Game.rgss3a` →
+  `cargo run -p archive_rgss-core --example probe -- Game.rgss3a` →
+  与 uuksu 解同一包的结果比对（目录树 + 逐文件 sha256 全等）；
+  再验「本工具封包 → 改名回游戏目录 → 游戏能启动」
+- **已知取舍**：封包时文件名按磁盘上的 UTF-8 字节写入。RGSS1(XP) 是 Ruby 1.8
+  （原始字节按 CP932 解读），日文名理论上需要写 CP932 才匹配得上；VX/VX Ace 是
+  Ruby 1.9+（UTF-8），无此问题。中文名在 CP932 下本就无法表示，故本轮统一走 UTF-8。
+  若真包验证发现 XP 日文名对不上，在此处改 `create_older` 的文件名编码即可
+- ~~**RPG Maker MV/MZ 的 `.rpgmvp`/`.rpgmvo`/`.rpgmvm`**~~ —— **已在本版本做掉，
+  见上方章节**。原判断「需另开按目录批量解密流程、密钥取自 System.json」有误：
+  密钥流可从每个文件自身还原，不需要 `System.json` 侧车文件
+- 封包产物命名：RPG Maker 只加载与 .exe 同目录的 `Game.rgss3a`，用户若封成
+  `新建文件夹.rgss3a` 放回去游戏不会加载。本轮只在帮助文案里提示，未做 pfs 的
+  `root.pfs` 式自动改名（待用户确认是否需要）
+
+---
 
 ## 已修复: PFS 封包产物命名重构 — 预解析最终名 + Artemis 命名开关
 

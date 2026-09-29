@@ -1,0 +1,14 @@
+[package]
+name = "archive_rgss-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+# rlib in addition to the cdylib so examples/probe.rs (the on-device
+# verification tool) can link the parser. Only the cdylib is shipped.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+archive_common = { path = "../common" }
+jni = "0.21"
+encoding_rs = "0.8"

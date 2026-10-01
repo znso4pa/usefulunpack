@@ -75,6 +75,13 @@ fn list_tar(input: &str) -> Result<String, String> {
     res
 }
 
+/// Host-side entry for the out-of-tree files4testing regression harness.
+/// Without an `rlib` in `crate-type`, path-dependents can't reach `extract_tar`.
+#[doc(hidden)]
+pub fn extract_tar_host(input: &str, output: &str) -> Result<(u32, u32), String> {
+    extract_tar(input, output, None)
+}
+
 fn extract_tar(input: &str, output: &str, selected: Option<&HashSet<String>>) -> Result<(u32, u32), String> {
     // Pass 1: collect file entries so the progress total can be computed
     // (tar was the only format that never reset the progress store).

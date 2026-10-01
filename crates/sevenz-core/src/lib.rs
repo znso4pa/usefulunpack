@@ -471,6 +471,17 @@ fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 /// Delegates to the same path the app uses. `selected` is an optional list of
 /// entry names to extract (all when empty).
 #[doc(hidden)]
+/// Host-side entry for split volumes (`.7z.001/.002`).
+///
+/// Mirrors what the app does via `szExtractVolumes`: the volume set is
+/// presented to the parser as one logical stream by `ConcatReader`. Reading
+/// only `.001` alone fails with UnexpectedEof because the packed-stream header
+/// points into later parts.
+#[doc(hidden)]
+pub fn extract_7z_volumes_host(paths: &[String], output: &str, password: &str) -> Result<(u32, u32), String> {
+    extract_7z_volumes(&vol_refs(paths), output, None, password)
+}
+
 pub fn extract_7z_host(input: &str, output: &str, selected: &[String], password: &str) -> Result<(u32, u32), String> {
     let sel: Option<HashSet<String>> = if selected.is_empty() { None } else { Some(selected.iter().cloned().collect()) };
     if password.is_empty() {

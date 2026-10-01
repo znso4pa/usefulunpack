@@ -156,6 +156,21 @@ fn ypf_extract_one(f: &mut BufReader<File>, e: &YpfEntry, d: &std::path::Path, f
     Ok(())
 }
 
+/// Read-only snapshot of the compress progress statics:
+/// `(bytes, total, file_bytes, file_total)`.
+///
+/// Exists for the out-of-tree byte-progress regression harness and
+/// `examples/probe.rs`. Pure accessors with **no side effects** — reading them
+/// cannot perturb the very counters a test is trying to observe.
+pub fn compress_progress_snapshot() -> (u64, u64, u64, u64) {
+    (
+        compress_progress::bytes(),
+        compress_progress::total_bytes(),
+        compress_progress::file_bytes(),
+        compress_progress::file_total(),
+    )
+}
+
 fn guard_panic<T, F: FnOnce() -> Result<T, String>>(f: F) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
         let msg = panic.downcast_ref::<&str>().copied()
@@ -314,14 +329,19 @@ fn ypf_create_archive(input: &str, output: &str, level: i32) -> Result<u32, Stri
     if files.is_empty() { return Err("ypf pack: empty input".to_string()); }
 
     let key: u8 = 0xFF; // unpack auto-detect prefers 0xFF ties; keep it simple
-    // Progress total must match what add_bytes() feeds (bytes), not the file
-    // count — otherwise the bar overruns on large files / stalls on many small.
+    // Progress total must match what add_bytes() feeds, and here both are the
+    // **source** byte count (see usize_ below), not the file count and not the
+    // compressed payload size. The old code fed `payload.len()` (post-compression)
+    // against this source-size total, so on compressible input the bar stalled at
+    // the compression ratio — e.g. 30% — and never reached 100%.
     let total_bytes: u64 = files.iter().map(|(_, p)| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)).sum();
     compress_progress::reset(total_bytes);
 
     // Build in-memory record + payload list first (offsets need the total size
     // of the records before the data area starts).
-    struct Rec { marker: u8, name_xor: Vec<u8>, ft: u8, compressed: bool, usize_: u32, asize: u32, offset: u32, data: Vec<u8> }
+    // `src_size` is the SOURCE length, kept alongside the payload so the write
+    // loop can feed progress in the same unit as `total_bytes`.
+    struct Rec { marker: u8, name_xor: Vec<u8>, ft: u8, compressed: bool, usize_: u32, asize: u32, offset: u32, src_size: u32, data: Vec<u8> }
     let mut recs: Vec<Rec> = Vec::new();
     for (rel, path) in &files {
         if compress_progress::cancelled() { return Err("cancelled".to_string()); }
@@ -337,6 +357,7 @@ fn ypf_create_archive(input: &str, output: &str, level: i32) -> Result<u32, Stri
             usize_: data.len() as u32,
             asize: payload.len() as u32,
             offset: 0, // filled after record area is sized
+            src_size: data.len() as u32,
             data: payload,
         });
     }
@@ -392,10 +413,18 @@ fn ypf_create_archive(input: &str, output: &str, level: i32) -> Result<u32, Stri
     for r in recs.iter() {
         if compress_progress::cancelled() { return Err("cancelled".to_string()); }
         out.write_all(&r.data).map_err(|e| format!("{e}"))?;
-        compress_progress::add_bytes(r.data.len() as u64);
+        // Feed the SOURCE length, matching total_bytes (sum of source sizes).
+        // Feeding `r.data.len()` (the compressed payload) made the bar stall at
+        // the compression ratio and never reach 100%.
+        compress_progress::add_bytes(r.src_size as u64);
     }
     compress_progress::set_file(0);
     Ok(recs.len() as u32)
+}
+
+#[doc(hidden)]
+pub fn compress_ypf_host(input: &str, output: &str, level: i32) -> Result<u32, String> {
+    ypf_create_archive(input, output, level)
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_YpfCore_ypfExtractProgressCount(_: JNIEnv, _: JClass) -> jlong { extract_progress::bytes() as jlong }
@@ -451,6 +480,57 @@ mod tests {
     use flate2::Compression;
     use std::io::Write as _;
 
+    // compress_progress 是全局静态量，并行跑测试会互相覆盖 total/bytes。
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 进度口径防回归：`add_bytes` 喂的量必须等于 `reset(total)` 的 total，
+    /// 且两者都必须是**源文件**字节（不是压缩后 payload）。
+    ///
+    /// 旧代码喂 `r.data.len()`（压缩后），对着源字节的 total —— 可压缩输入下
+    /// 条子停在压缩比处（实测 ~30%），永不归零收尾。这条断言把那类错钉死。
+    #[test]
+    fn compress_progress_total_matches_bytes_fed() {
+        let _g = lock();
+        let dir = std::env::temp_dir().join(format!("uu_ypf_prog_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Highly compressible content: the ratio between source and payload is
+        // what made the old bug visible.
+        let body = vec![b'A'; 512 * 1024];
+        std::fs::write(dir.join("a_bigfile.bin"), &body).unwrap();
+        // A second, incompressible file so the total is a sum of two.
+        let noise: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(dir.join("b_smallfile.bin"), &noise).unwrap();
+
+        let out = dir.join("out.ypf");
+        compress_progress::clear_cancel();
+        ypf_create_archive(dir.to_str().unwrap(), out.to_str().unwrap(), 6).unwrap();
+
+        let total = compress_progress::total_bytes();
+        let fed = compress_progress::bytes();
+        let src_total = body.len() as u64 + noise.len() as u64;
+        assert_eq!(
+            total, src_total,
+            "total must be the sum of SOURCE sizes, not the payload size"
+        );
+        assert_eq!(
+            fed, src_total,
+            "add_bytes must be fed SOURCE bytes (src_size) to match total; \
+             feeding the compressed payload stalls the bar at the compression ratio"
+        );
+        // And the payload really was smaller — otherwise this test wouldn't have
+        // caught the original bug.
+        let packed = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+        assert!(
+            packed < src_total,
+            "fixture must actually compress (packed {packed} vs source {src_total})"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn zlib(data: &[u8]) -> Vec<u8> {
         let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
         enc.write_all(data).unwrap();
@@ -459,6 +539,7 @@ mod tests {
 
     #[test]
     fn extract_streams_zlib_and_raw_entries() {
+        let _g = lock();
         let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
         let compressed = zlib(&data);
         let dir = std::env::temp_dir().join(format!("uu_ypf_x_{}", std::process::id()));
@@ -503,6 +584,7 @@ mod tests {
 
     #[test]
     fn inflated_output_clamped_to_declared_size() {
+        let _g = lock();
         // Declared usize = 1 KiB, but the zlib stream inflates to 1 MiB.
         // The decompressed output must be clamped to the declared size
         // (disk-exhaustion guard), never grow unbounded.
@@ -535,6 +617,7 @@ mod tests {
     /// same marker/XOR/tail layout as the reader).
     #[test]
     fn create_then_extract_round_trip() {
+        let _g = lock();
         let dir = std::env::temp_dir().join(format!("uu_ypf_w_{}", std::process::id()));
         std::fs::create_dir_all(dir.join("src/sub")).unwrap();
         // Names whose SJIS length maps to a marker in the 9..=55 table.

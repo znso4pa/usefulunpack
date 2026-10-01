@@ -4,7 +4,7 @@ use jni::sys::{jboolean, jstring, jlong, JNI_TRUE, JNI_FALSE};
 use archive_common::{s, json_escape, extract_result_json, ProgressWriter, ProgressReader};
 use archive_common::{extract_progress, compress_progress};
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// Output name: strip the compression suffix. "foo.txt.gz" → "foo.txt".
@@ -73,25 +73,51 @@ fn extract_gz(input: &str, output: &str) -> Result<u32, String> {
     let name = output_name(input);
     let dest = Path::new(output).join(&name);
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
+    let in_len = fs::metadata(input).map(|m| m.len()).unwrap_or(0);
     // MultiGzDecoder handles concatenated multi-member .gz files (some tools
     // produce these); plain GzDecoder stops after the first member.
-    let mut dec = flate2::read::MultiGzDecoder::new(File::open(input).map_err(|e| format!("gzip: {e}"))?);
-    // Cap output at the footer ISIZE for single-member files; multi-member
-    // streams (rare, concatenated) fall back to the shared hard cap because no
-    // single footer bounds their total output.
     let members = gzip_member_count(input);
     let declared = if members <= 1 { decompressed_size(input) } else { 0 };
-    let mut writer = ProgressWriter::extract(
-        archive_common::BoundedWriter::new(
-            File::create(&dest).map_err(|e| format!("{e}"))?,
-            if declared > 0 { declared } else { archive_common::DEFAULT_EXTRACT_CAP },
-        ));
-    extract_progress::reset(if members <= 1 { declared } else { 0 });
+    // Single member: the footer ISIZE bounds the output exactly, so keep the
+    // write-side caliber (total = declared) and count bytes as they're written.
+    // Multi-member: no single footer bounds the total, so the old code did
+    // reset(0) and the bar spun for the whole run. Fall back to the read caliber
+    // (total = archive size) so there is always a denominator. Each branch feeds
+    // exactly ONE side — feeding both would double-count.
+    let single = members <= 1 && declared > 0;
+    let total = if single { declared } else { in_len };
+    // Cap output at the footer ISIZE for single-member files; multi-member
+    // streams fall back to the shared hard cap (no single footer bounds them).
+    let cap = if single { declared } else { archive_common::DEFAULT_EXTRACT_CAP };
+    let out = File::create(&dest).map_err(|e| format!("{e}"))?;
+
+    extract_progress::reset(total);
     extract_progress::set_name(&name);
-    extract_progress::set_file(extract_progress::total_bytes());
-    if let Err(e) = io::copy(&mut dec, &mut writer) {
-        let _ = fs::remove_file(&dest);
-        return Err(format!("gzip: {e}"));
+    extract_progress::set_file(total);
+
+    // The two calibers need different wrapper types (ProgressWriter vs
+    // ProgressReader), so they get separate io::copy calls rather than one
+    // variable holding two concrete types.
+    // 两个分支的错误类型不同（map_err 产出 String，但 early-return 用了整函数类型），
+    // 所以各自独立收尾，不塞进同一个 Result 变量。
+    if single {
+        let rdr = BufReader::new(File::open(input).map_err(|e| format!("gzip: {e}"))?);
+        let mut dec = flate2::read::MultiGzDecoder::new(rdr);
+        let mut w = ProgressWriter::extract(archive_common::BoundedWriter::new(out, cap));
+        if let Err(e) = io::copy(&mut dec, &mut w) {
+            let _ = fs::remove_file(&dest);
+            return Err(format!("gzip: {e}"));
+        }
+    } else {
+        let rdr = BufReader::new(ProgressReader::extract(
+            File::open(input).map_err(|e| format!("gzip: {e}"))?,
+        ));
+        let mut dec = flate2::read::MultiGzDecoder::new(rdr);
+        let mut w = archive_common::BoundedWriter::new(out, cap);
+        if let Err(e) = io::copy(&mut dec, &mut w) {
+            let _ = fs::remove_file(&dest);
+            return Err(format!("gzip: {e}"));
+        }
     }
     Ok(0)
 }
@@ -125,6 +151,21 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 #[doc(hidden)]
 pub fn extract_gzip_host(input: &str, output: &str) -> Result<u32, String> {
     extract_gz(input, output)
+}
+
+/// Read-only snapshot of the extract progress statics:
+/// `(bytes, total, file_bytes, file_total)`.
+///
+/// Exists for the out-of-tree byte-progress regression harness and
+/// `examples/probe.rs`. Pure accessors with **no side effects** — reading them
+/// cannot perturb the very counters a test is trying to observe.
+pub fn extract_progress_snapshot() -> (u64, u64, u64, u64) {
+    (
+        extract_progress::bytes(),
+        extract_progress::total_bytes(),
+        extract_progress::file_bytes(),
+        extract_progress::file_total(),
+    )
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_GzipCore_gzListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {

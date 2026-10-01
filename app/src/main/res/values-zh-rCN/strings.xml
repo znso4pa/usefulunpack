@@ -272,6 +272,12 @@
     <string name="msg_delete_counting">正在统计…</string>
     <string name="msg_delete_result">删除完成: %1$d 成功, %2$d 失败</string>
     <string name="msg_moved_to_recycle">已移到回收站</string>
+    <plurals name="recycle_progress_items">
+        <item quantity="other">%1$d / %2$d 项</item>
+    </plurals>
+    <plurals name="recycle_progress_items_bytes">
+        <item quantity="other">%1$s / %2$s · %3$d/%4$d 项</item>
+    </plurals>
     <string name="msg_restore_failed">恢复失败：%1$d 项</string>
     <string name="title_recycle_bin">♻️ 回收站</string>
     <string name="action_restore">♻️ 恢复</string>

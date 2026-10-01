@@ -48,16 +48,37 @@ fun deleteWithProgress(
             return@thread
         }
         try {
-            // Per-target progress: indeterminate during each target's scan,
-            // then real file counts once moveToRecycleBin knows its total.
-            val moveCb = RecycleBin.MoveProgress { done, total ->
+            // Per-target progress: indeterminate while each target is being
+            // scanned, then a BYTE-driven bar once moveToRecycleBin reports its
+            // totals. Bytes (not file count) drive the bar because a folder of
+            // many tiny files would crawl while gigabytes stream past; the file
+            // count still rides along in the label, which is what users read.
+            val moveCb = RecycleBin.MoveProgress { done, total, doneBytes, totalBytes ->
                 activity.runOnUiThread {
                     if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                     val c = card ?: return@runOnUiThread
-                    if (total > 0) {
-                        c.overallBar.isIndeterminate = false
-                        c.overallBar.max = total
-                        c.overallBar.progress = done.coerceAtMost(total)
+                    when {
+                        // Byte progress available: volume-accurate bar.
+                        totalBytes > 0 -> {
+                            c.overallBar.isIndeterminate = false
+                            c.overallBar.max = 100
+                            c.overallBar.progress =
+                                (doneBytes * 100 / totalBytes).coerceIn(0, 100).toInt()
+                            c.overallText.text = activity.resources.getQuantityString(
+                                R.plurals.recycle_progress_items_bytes, total,
+                                fmt(doneBytes), fmt(totalBytes), done, total
+                            )
+                        }
+                        // Byte total unknown (e.g. a single file we couldn't stat):
+                        // fall back to the file count so the bar still moves.
+                        total > 0 -> {
+                            c.overallBar.isIndeterminate = false
+                            c.overallBar.max = total
+                            c.overallBar.progress = done.coerceAtMost(total)
+                            c.overallText.text = activity.resources.getQuantityString(
+                                R.plurals.recycle_progress_items, total, done, total
+                            )
+                        }
                     }
                 }
             }
@@ -71,6 +92,10 @@ fun deleteWithProgress(
                     val c = card ?: return@runOnUiThread
                     c.overallBar.isIndeterminate = true
                     c.overallBar.progress = 0
+                    // Derived, never stored: the previous target's byte text would
+                    // otherwise linger while this one is still being scanned
+                    // (same class of bug as TabState.displayPath()).
+                    c.overallText.text = ""
                 }
                 if (!t.exists()) { failed++; processed++; continue }
                 if (recycleEnabled) {

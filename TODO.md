@@ -155,6 +155,45 @@ fun displayPath(): File =
 - 汇总脚本本身 2 个 bug（标签 padding 未 strip、`diff -r` 把重封产物也算进对比目录）→
   报出的 5 条「失败」全是假的
 
+### 8. 背景图（壁纸）：被自己加的不透明层挡死
+
+`applyBackgroundImage` 把壁纸画在 `R.id.root` 上，再把 `toolbar` / `pathBar` 压成半透明黑、
+`panel` 置空 —— 这套是 4.x 单窗口时代的做法，**当时是对的**。多窗口改造给布局加了
+`viewPager`、`folderRoot`、`previewRoot`、`tabBar` 四层，每层都带自己的不透明背景，而
+`applyBackgroundImage` 从没跟着更新：壁纸从此**整个 app 都看不到**，而每一层新加的不透明底
+都会重新挡一次 —— 与「壁纸画在 `R.id.root`、任何不透明底都会挡住它」这条既有不变量
+完全吻合，只是当初没人按它去登记新增的层。
+
+四个真缺陷：
+
+| 位置 | 问题 | 修复 |
+|------|------|------|
+| `applyBackgroundImage` | 只清 `panel` / `pathBar` / `toolbar`。`viewPager`、`folderRoot`、`previewRoot`、`tabBar` 四层不透明底**从没被管过** | 三张让位表 `BACKDROP_TRANSLUCENT` / `BACKDROP_TRANSPARENT` / `BACKDROP_ORIGINAL` + 整棵树遍历；新增不透明背景的 view 必须登记 |
+| 同上，多 tab | `panel` / `pathBar` / `bottomBar` / `folderRoot` 是**每个 tab 一份**（`offscreenPageLimit` 全量驻留），`findViewById` 只能清到第一份 → 只有第一个窗口透得出壁纸 | 走整棵树；`clear` 分支对称恢复全部 8 个 id（原表只恢复 4 个，多出来的会残留） |
+| `placeOnRoot` 首帧 | `if (rw <= 0 \|\| rh <= 0) return` —— 首帧没量到尺寸就**静默什么都不做**，壁纸永不出现且**无任何日志可查** | 抽成本地函数 + `root.post` 重试一帧 |
+| `clear` 分支的 root | 恢复成 `bg_surface`，而布局里 root 的底是 `bg_file_list` | 改回 `bg_file_list` |
+
+**第一版修法自己踩了同一个坑，值得记下来**：把让位调用放在 `FolderFragment.onCreateView` 里、
+调 `act2.refreshBackdrop()`（从 `R.id.root` 往下走）。但 **`onCreateView` 返回时 fragment 的
+view 还没挂到 ViewPager 上**，从 root 出发根本走不到它 —— 那样只有 tab 条透得出壁纸，
+其余三处依旧全黑，而静态检查和 lint 全绿。改成 `applyBackdropInTree(自己的 root)`，
+不依赖是否已挂载。
+
+`AGENTS.md` 本轮新增了一条壁纸让位的不变量，并把这三张表登记规则、第 (2) 条的
+「必须走整棵树」、第 (3) 条的「fragment 必须遍历自己的子树，不能调 `refreshBackdrop()`」
+连同「改完必须实机设图确认四处透出」的验收动作一起写进去（AGENTS.md 通篇英文）。
+
+**状态**：代码完成、APK 已装上设备，**实机验证尚未跑完**（设备中途从 USB 掉线，恢复后
+`adb install -r` 成功，验证流程被打断）。静态侧已查：8 个 id / 8 个颜色全部真实存在、
+两张处理表与恢复表 key 一致且无 id 跨表、无浅色主题、列表行 item 用透明涟漪不挡壁纸、
+`FolderFragment` 只经 `TabPagerAdapter` 创建（`rebuildPager()` 重建后必经 `onCreateView`）。
+
+装机后仍需人工确认（**其中第 2 项专验上面那个 onCreateView 的坑**）：
+
+1. 设一张高对比壁纸 → tab 条 / 工具栏 / 列表 / 预览**四处都透出**
+2. **再开第二个窗口**，确认第二个窗口同样透出（只透第一个 = 又踩了 `findViewById` 那个坑）
+3. 点「清除背景」→ 四处恢复实心底、无残留半透明
+
 ### 待做（装机后，仅剩交互层）
 
 算法层已无已知不确定项（26/26 对 oracle，含两组字节恒等）。剩的只有 UI 观感：

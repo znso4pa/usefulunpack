@@ -596,6 +596,8 @@ class MainActivity : AppCompatActivity() {
         tabs.add(tab)
         rebuildPager()
         viewPager.post { viewPager.currentItem = tabs.size - 1 }
+        // 新 tab 的视图还没创建，但已有的那几份也别因为重建而回到不透明底
+        refreshBackdrop()
     }
 
     /** Renames the given tab (long-press its label in the strip). Empty input

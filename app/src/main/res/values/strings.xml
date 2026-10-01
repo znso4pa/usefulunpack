@@ -277,6 +277,14 @@
     <string name="msg_delete_counting">Counting files…</string>
     <string name="msg_delete_result">Deleted: %1$d ok, %2$d failed</string>
     <string name="msg_moved_to_recycle">Moved to recycle bin</string>
+    <plurals name="recycle_progress_items">
+        <item quantity="one">%1$d / %2$d item</item>
+        <item quantity="other">%1$d / %2$d items</item>
+    </plurals>
+    <plurals name="recycle_progress_items_bytes">
+        <item quantity="one">%1$s / %2$s · %3$d/%4$d item</item>
+        <item quantity="other">%1$s / %2$s · %3$d/%4$d items</item>
+    </plurals>
     <string name="msg_restore_failed">Restore failed: %1$d</string>
     <string name="title_recycle_bin">♻️ Recycle bin</string>
     <string name="action_restore">♻️ Restore</string>

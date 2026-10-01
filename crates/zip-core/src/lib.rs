@@ -568,6 +568,17 @@ pub fn extract_zip_host(input: &str, output: &str, password: &str) -> Result<(u3
     extract_zip_with_password(input, output, password)
 }
 
+/// Host-side entry for split-volume zips (`.zip.001/.002`, `.z01/.zip`).
+///
+/// The app reaches this through `zipExtractVolumes` (ArchiveExtractor.kt's
+/// `resolveZipVolumes` picks the volume branch when the set has >1 member);
+/// without a host wrapper the out-of-tree harness could only ever try a single
+/// `.001`, which correctly fails with "Could not find EOCD".
+#[doc(hidden)]
+pub fn extract_zip_volumes_host(paths: &[String], output: &str, password: &str) -> Result<(u32, u32), String> {
+    extract_zip_volumes(&vol_refs(paths), output, password, None)
+}
+
 /// Host-side list (mirrors the app's list JSON).
 #[doc(hidden)]
 pub fn list_zip_host(input: &str) -> Result<String, String> {

@@ -183,20 +183,101 @@ view 还没挂到 ViewPager 上**，从 root 出发根本走不到它 —— 那
 「必须走整棵树」、第 (3) 条的「fragment 必须遍历自己的子树，不能调 `refreshBackdrop()`」
 连同「改完必须实机设图确认四处透出」的验收动作一起写进去（AGENTS.md 通篇英文）。
 
-**状态**：代码完成、APK 已装上设备，**实机验证尚未跑完**（设备中途从 USB 掉线，恢复后
-`adb install -r` 成功，验证流程被打断）。静态侧已查：8 个 id / 8 个颜色全部真实存在、
+**状态**：**实机验证通过**（用户确认）。静态侧亦已查：8 个 id / 8 个颜色全部真实存在、
 两张处理表与恢复表 key 一致且无 id 跨表、无浅色主题、列表行 item 用透明涟漪不挡壁纸、
 `FolderFragment` 只经 `TabPagerAdapter` 创建（`rebuildPager()` 重建后必经 `onCreateView`）。
 
-装机后仍需人工确认（**其中第 2 项专验上面那个 onCreateView 的坑**）：
+已完成的实机确认：
 
-1. 设一张高对比壁纸 → tab 条 / 工具栏 / 列表 / 预览**四处都透出**
-2. **再开第二个窗口**，确认第二个窗口同样透出（只透第一个 = 又踩了 `findViewById` 那个坑）
-3. 点「清除背景」→ 四处恢复实心底、无残留半透明
+1. ✅ 高对比壁纸下 tab 条 / 工具栏 / 列表 / 预览**四处都透出**
+2. ✅ 第二窗口同样透出（`refreshBackdrop()` 整棵树遍历生效）
+3. ✅ 点「清除背景」→ 四处恢复实心底、无残留半透明
+
+## feat(v6.0.0): 字节级进度条深度调试 —— 6 处解压 + 2 处压缩 + 回收站
+
+### 1. 口径先定下来：未知输出大小的格式统一走**读侧**
+
+解压进度分两种口径：
+
+- **写侧**：`total = 未压缩条目总大小`，`bytes = 已写出字节`。精确，但很多格式的
+  输出大小事先**不可知** —— `.lzma` 头的 uncompressed size 常年是 `-1`，zstd/brotli/
+  xz 帧头根本不存这个字段。
+- **读侧**：`total = 归档大小`，`bytes = 已消费归档字节`。永远有分母。
+
+用户裁定：**读侧**。所以本轮把 5 个单文件流（brotli/bzip2/xz/zstd/lzma）从写侧改读侧，
+gzip **单成员保留写侧**（它精确可知且体积小，改读侧反而倒退），**多成员改读侧**。
+两种口径的 UI 含义不同，但都不再出现「整个解压过程转圈」。
+
+### 2. 查出来的 8 个缺陷
+
+| # | 位置 | 问题 | 修复 |
+|---|------|------|------|
+| 1 | brotli / bzip2 / xz / zstd / lzma | `reset(0)` + 只喂输出字节 → `total <= 0`，Kotlin 侧永远不定进度，整个解压是一个转圈 | 改读侧（`ProgressReader::extract` 套裸文件）+ 保留 `BoundedWriter` 防解压炸弹 |
+| 2 | lzma | **上一条的同源 bug 藏得更深**：真实 `.lzma` 的 `uncompressed_size` 就是 `-1` | 同上；另外 `lzma_rs` 读到约 93% 就停（它知道解压后多大），补一段收尾让条落到 100% |
+| 3 | gzip 多成员 | 走写侧但多成员的总量无从累加 | 多成员分支改读侧 |
+| 4 | **zstd 窗口上限** | `StreamingDecoder::new` 用 ruzstd 的 `DEFAULT_MAX_WINDOW_SIZE = 100MB`，而 zstd **level 22 写 `window_log=27`（128MB）** → files4testing 里所有 `.zst-22` 全被拒，系统 zstd 却能解 | 改 `new_with_max_window_size(ZSTD_MAX_WINDOW)`，上限 1 GiB（窗口在内容校验前就分配，必须有界） |
+| 5 | zstd 失败清理 | 解压失败时 `File::create(&dest)` 已经建好文件，Err 返回后**半成品留在磁盘上** | 加 `fail()` 闭包，所有错误路径 `remove_file` |
+| 6 | ypf 压缩 | `total` 是源目录字节，喂的却是**压缩后** payload → 进度条冲过 100% 后卡住 | 记录 `src_size`，按源字节喂 |
+| 7 | ksd 压缩 | `reset()` 之后**从不 `add_bytes`** → 恒 0% | 按 64 KiB 分块喂 UTF-16LE 输入字节，并检查取消 |
+| 8 | 回收站 | `scanTree()` 一直算得出字节总数（`ScanResult.size`），但 `MoveProgress` 只带文件计数 → 一堆小文件时条几乎不动 | 签名扩为 `(done, total, doneBytes, totalBytes)`；条走**字节**，文字带**文件计数** |
+
+### 3. `ProgressReader` 同时实现 `Read` 和 `BufRead` 是个陷阱
+
+lzma 的收尾补丁第一版写成 `if in_len > fed { add_bytes(in_len - fed) }`，测试仍然红，
+而且红得很有启发性：`left: 330, right: 327` —— **超出了 3 字节**。
+
+原因是我把 `ProgressReader` 套在 `BufReader` **外面**：`ProgressReader` 也有 `BufRead`
+实现，于是解码器的读请求由 8 KB 缓冲满足，`fill_buf` 不计数、`consume` 只在消费时计数。
+小文件会被**整个读空**，`read` 路径计到 327、`BufRead` 路径停在 305。
+
+**正解是反过来：`BufReader::with_capacity(64 KiB, ProgressReader::extract(file))`** ——
+让 `ProgressReader` 套裸文件，只数真实读取。另外 4 个 crate 本来就是
+`ProgressReader::extract(裸文件)`，没有这个问题。
+
+### 4. 回归：files4testing 484 条向量 + 23 条注入故障
+
+仓外 harness（`/tmp/f4tregress`，`[patch.crates-io]` 指向本地 vendor fork，否则会去
+crates.io 拉官方 `zip`/`rars`，缺我们自己加的 `with_disk_offsets`）：
+
+- **484 / 484 通过**，覆盖 20 种格式 × 3 层（plain / password(123) / 1 MB 分卷）
+- **22 / 23 条注入故障干净拒绝**（干净 = 返回 Err **且不留半个产物**）
+
+**harness 自己犯了 4 次「夹具编码错误前提」，全部由 sabotage 抓出来**（把判据换成必错
+的值，看报告是否变红）：
+
+1. 手写 JSON 扫描漏掉 484 条里的一半，还误吃顶层 `raw_files` 的 9 个 `path` →
+   换 `serde_json`。漏一半向量的报告比没有报告更糟。
+2. `"zip" if is_volume` 的 guard 臂写在**无 guard 的 `"zip"` 臂下面** → Rust 取首个匹配
+   臂，卷路径从未执行过。同一类错误今天已经栽了三次。
+3. `rawfile_tree` 结构 oracle 的臂同样排在 `"iso"` 臂之后，从未执行；而我又在 main 里
+   加了个「这条算通过」的兜底臂，于是 **sabotage 换成 `Err` 时报告依然 484 全绿**。
+4. tar 与 iso 的期望条目集合**本来就不一样**（tar 有 `link_to_rawfile1.txt`，iso 没有），
+   共用一份表会让 iso 永远失败。
+
+另外 zip/7z/rar 的 host 入口返回 `(total, error_count)`，**`Ok` 不等于成功** ——
+wrongpass 走 per-entry 的 `fail += 1`，整包仍返回 `Ok`。最初据此判成「竟然成功」。
+
+### 5. 遗留（未修，需单独决定）
+
+**rar 从不校验条目 CRC**：`crates/rar-core` 里没有一处 `crc`，所以
+`faults/corrupt-rawfile1.m5.rar` 被当成成功，还留下一个内容已损坏的 `rawfile1.txt`
+（`unrar t` 报 `checksum error`）。`rars::crc32::crc32()` 和 `FileHeader.data_crc32`
+都在，只是没接上；要接就得把 header 穿过 buffered/parallel/streaming 三条写入路径。
+超出本轮范围，未动。
+
+### 6. 验证结果
+
+- `cargo test --workspace` **213 / 213**（新增 7 条进度断言：5 个单文件流 + ypf + ksd）
+- files4testing **484 / 484**，20 种格式 × 3 层，注入故障 **22 / 23** 干净拒绝
+- 进度终值 harness：7 / 7 落在 100%（5 个读侧 + gzip 单成员写侧 + gzip 多成员读侧）
+- `lintDebug` **0 error / 271 warning**，与基线逐条比对**零新增**
+- `bash build.sh` 三 ABI 交叉编译通过，`adb install` 成功
+- **用户实机确认**：lzma / brotli 预览正常，壁纸正常显示
 
 ### 待做（装机后，仅剩交互层）
 
-算法层已无已知不确定项（26/26 对 oracle，含两组字节恒等）。剩的只有 UI 观感：
+算法层已无已知不确定项（RGSS/MV 26/26 对 oracle 含两组字节恒等；进度条 484/484
+files4testing）。剩的只有 UI 观感：
 
 1. 360dp 机型上确认 `merge_short` 不再截断
 2. 开两个窗口各预览一个归档 → 合并按钮能选到对方那个；关掉对方窗口的预览 → 按钮转灰
@@ -204,6 +285,9 @@ view 还没挂到 ViewPager 上**，从 root 出发根本走不到它 —— 那
    历史笔迹不变
 4. 预览态切 tab，确认路径栏仍是原目录
 5. 把真 `Game.rgss3a` 封包→改名→放回游戏目录→游戏能启动
+6. **回收站字节进度**：移一个跨盘的大目录（会走 copy+delete 回退）→ 确认进度条按
+   **体积**推进而不是按文件数慢慢爬，文字里的文件计数同步；同一个含大量小文件的
+   目录应能看到条跑得比原来快得多
 
 ## feat(v6.0.0): MV/MZ 封包（自填密钥）+ RGSS 自动命名为 Game.*
 

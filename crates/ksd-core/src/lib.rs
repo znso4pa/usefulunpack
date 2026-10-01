@@ -212,8 +212,34 @@ fn extract_ksd(input: &str, output: &str) -> Result<u32, String> {
 fn compress_ksd(input: &str, output: &str, level: i32) -> Result<u32, String> {
     let text = fs::read_to_string(input).map_err(|e| format!("KSD read {input}: {e}"))?;
     let utf16: Vec<u8> = text.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
-    let mut enc = ZlibEncoder::new(Vec::new(), flate2::Compression::new(level.clamp(0, 9) as u32));
-    enc.write_all(&utf16).map_err(|e| format!("KSD deflate: {e}"))?;
+
+    let name = Path::new(input).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    // total 与喂入量同为 **UTF-16LE 字节数**。
+    //
+    // 旧代码 `reset(text.len())`（字符数）之后**一次都没喂 add_bytes**，整程停在
+    // 0%；而且字符数与字节数在非 ASCII 文本上根本不等，两个口径也对不上。
+    // 现在 total = 实际写进压缩器的字节数，由下面的 Sink 逐批喂入。
+    compress_progress::reset(utf16.len() as u64);
+    compress_progress::set_name(&name);
+    compress_progress::set_file(utf16.len() as u64);
+
+    let mut enc = ZlibEncoder::new(
+        Vec::new(),
+        flate2::Compression::new(level.clamp(0, 9) as u32),
+    );
+    // Feed the **input** byte count in chunks. Counting the sink instead would
+    // count post-deflate output (132 B for a 48 KiB input on this fixture),
+    // which is a different caliber from `total` all over again.
+    let mut off = 0usize;
+    while off < utf16.len() {
+        if compress_progress::cancelled() {
+            return Err("cancelled".to_string());
+        }
+        let n = (utf16.len() - off).min(64 * 1024);
+        enc.write_all(&utf16[off..off + n]).map_err(|e| format!("KSD deflate: {e}"))?;
+        compress_progress::add_bytes(n as u64);
+        off += n;
+    }
     let compressed = enc.finish().map_err(|e| format!("KSD deflate: {e}"))?;
 
     let mut out = Vec::with_capacity(5 + 16 + compressed.len());
@@ -224,13 +250,10 @@ fn compress_ksd(input: &str, output: &str, level: i32) -> Result<u32, String> {
     out.extend_from_slice(&(utf16.len() as i64).to_le_bytes());
     out.extend_from_slice(&compressed);
 
-    let name = Path::new(input).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    compress_progress::reset(text.len() as u64);
-    compress_progress::set_name(&name);
-    compress_progress::set_file(text.len() as u64);
     fs::write(output, &out).map_err(|e| format!("KSD write {output}: {e}"))?;
     Ok(0)
 }
+
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_KsdCore_ksdListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
     let inp = s(&mut e, &i);
@@ -275,12 +298,57 @@ fn compress_ksd(input: &str, output: &str, level: i32) -> Result<u32, String> {
 mod tests {
     use super::*;
 
+    // compress_progress / extract_progress 是**全局静态量**，cargo 默认并行跑测试，
+    // 两个用例各自 reset(total) 会把对方的 total 覆盖掉，断言随机失败。
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn tmp(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("uu_ksd_{}_{}", std::process::id(), tag))
     }
 
+    /// 进度口径防回归：封包全程必须把字节喂进去，且喂的量等于 total。
+    ///
+    /// 旧实现 `reset(total)` 之后从不调 `add_bytes`，进度条整程 0%。
+    /// 这条断言要求 bytes 终值 == total（UTF-16LE 字节数），否则会回退成空转。
+    #[test]
+    fn compress_progress_reaches_total() {
+        let _g = lock();
+        let dir = tmp("prog");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Non-trivial size so a stalled bar is unambiguous.
+        let text = "あいうえお\n".repeat(4096); // multi-byte: char count != byte count
+        let src = dir.join("s.txt");
+        std::fs::write(&src, &text).unwrap();
+        let out = dir.join("s.ksd");
+
+        compress_progress::clear_cancel();
+        compress_ksd(src.to_str().unwrap(), out.to_str().unwrap(), 6).unwrap();
+
+        let expected = (text.encode_utf16().count() * 2) as u64;
+        assert_eq!(
+            compress_progress::total_bytes(), expected,
+            "total must be the UTF-16LE byte count actually fed"
+        );
+        assert_eq!(
+            compress_progress::bytes(), expected,
+            "ksd packing must feed bytes; it used to report 0% for the whole run"
+        );
+        // And the file it produced still decodes back to the original text.
+        let rt = ksd_mode2_decode(&std::fs::read(&out).unwrap()).expect("round-trip must decode");
+        let decoded = String::from_utf16(
+            &rt.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<u16>>(),
+        ).unwrap();
+        assert_eq!(decoded, text, "progress plumbing must not disturb the payload");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn mode2_round_trip() {
+        let _g = lock();
         let dir = tmp("roundtrip");
         std::fs::create_dir_all(&dir).unwrap();
         let txt = "このセーブデータはテストです。\n保存データ：ライン1\nint var = 42;".to_string();
@@ -306,6 +374,7 @@ mod tests {
 
     #[test]
     fn mode0_descramble_vector() {
+        let _g = lock();
         // descramble is (mostly) an involution: known scrambled pair [0x40,0x40,0x43,0x42] → "AB"
         let scrambled = [0x40u8, 0x40, 0x43, 0x42];
         let out = descramble_mode0(&scrambled);
@@ -319,6 +388,7 @@ mod tests {
 
     #[test]
     fn mode1_descramble_vector_and_involution() {
+        let _g = lock();
         // 0x1234 swapped → 0x2138
         let out = descramble_mode1(&[0x34, 0x12]);
         assert_eq!(out, [0x38, 0x21]);
@@ -330,6 +400,7 @@ mod tests {
 
     #[test]
     fn bad_magic_rejected() {
+        let _g = lock();
         let dir = tmp("bad");
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("bad.ksd");
@@ -342,6 +413,7 @@ mod tests {
 
     #[test]
     fn mode2_decompression_bomb_capped() {
+        let _g = lock();
         // declared uncompressed_len huge but actual small — must error on the cap
         let dir = tmp("bomb");
         std::fs::create_dir_all(&dir).unwrap();
@@ -363,6 +435,7 @@ mod tests {
 
     #[test]
     fn mode2_declared_small_actual_big_clamped() {
+        let _g = lock();
         // Declared uncompressed_len = 1 KiB but the deflate stream inflates
         // to 1 MiB: the decoded buffer must be clamped to the declared size
         // (silent truncation, like NSA/YPF), never grow unbounded.
@@ -398,6 +471,7 @@ mod tests {
 
     #[test]
     fn oversize_file_rejected_before_read() {
+        let _g = lock();
         // A sparse file above MAX_MODE2_OUT must be rejected from metadata
         // alone — the whole file is never read into RAM.
         let dir = tmp("oversize");
@@ -429,6 +503,7 @@ mod tests {
 
     #[test]
     fn mode2_probe_rejects_non_text_magic_collision() {
+        let _g = lock();
         // Any ≤16MiB entry passes the XP3 probe's 5-byte magic check; a binary
         // (TGA-style collision) must NOT be "decoded" into garbage. Invalid
         // UTF-16 (lone high surrogate) → None → caller passes bytes through.
@@ -447,6 +522,7 @@ mod tests {
 
     #[test]
     fn mode2_probe_accepts_real_text() {
+        let _g = lock();
         let text: Vec<u8> = "セーブデータ\nテスト\r\nint x = 1;\t".encode_utf16()
             .flat_map(|u| u.to_le_bytes()).collect();
         assert_eq!(ksd_mode2_decode(&wrap_mode2(&text)).unwrap(), text);

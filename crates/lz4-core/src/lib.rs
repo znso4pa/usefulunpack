@@ -121,6 +121,21 @@ pub fn extract_lz4_host(input: &str, output: &str) -> Result<u32, String> {
     decompress_lz4_inner(input, output)
 }
 
+/// Read-only snapshot of the extract progress statics:
+/// `(bytes, total, file_bytes, file_total)`.
+///
+/// Exists for the out-of-tree byte-progress regression harness and
+/// `examples/probe.rs`. Pure accessors with **no side effects** — reading them
+/// cannot perturb the very counters a test is trying to observe.
+pub fn extract_progress_snapshot() -> (u64, u64, u64, u64) {
+    (
+        extract_progress::bytes(),
+        extract_progress::total_bytes(),
+        extract_progress::file_bytes(),
+        extract_progress::file_total(),
+    )
+}
+
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_Lz4Core_lz4ListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
     let inp = s(&mut e, &i);
     match guarded(move || list_lz4_inner(&inp)) { Ok(j) => match e.new_string(&j) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }, Err(er) => { let _ = e.throw_new("java/io/IOException", format!("{er}")); std::ptr::null_mut() } }

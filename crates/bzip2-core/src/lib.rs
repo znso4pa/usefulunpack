@@ -1,7 +1,7 @@
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jstring, jlong, JNI_TRUE, JNI_FALSE};
-use archive_common::{s, json_escape, extract_result_json, ProgressWriter, ProgressReader};
+use archive_common::{s, json_escape, extract_result_json, ProgressReader};
 use archive_common::{extract_progress, compress_progress};
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read};
@@ -33,18 +33,25 @@ fn extract_bz2(input: &str, output: &str) -> Result<u32, String> {
     let name = output_name(input);
     let dest = Path::new(output).join(&name);
     if let Some(p) = dest.parent() { fs::create_dir_all(p).map_err(|e| format!("{e}"))?; }
-    let file = BufReader::new(File::open(input).map_err(|e| format!("bzip2: {e}"))?);
+    let in_file = File::open(input).map_err(|e| format!("bzip2: {e}"))?;
+    let in_len = in_file.metadata().map(|m| m.len()).unwrap_or(0);
+    // The bzip2 header stores no uncompressed size, so a write-side total is
+    // unknowable — feeding OUTPUT bytes with total=0 left the UI on a spinner for
+    // the whole run. Report the **read** side instead: total = archive size and
+    // bytes = archive bytes consumed. The bar then means "how much of the
+    // archive we've chewed through", which is monotonic and reaches 100%.
+    let file = BufReader::new(ProgressReader::extract(in_file));
     let mut dec = bzip2::read::BzDecoder::new(CancelReader(file));
-    // No declared uncompressed size in the bzip2 header → bound output with the
-    // shared hard cap so a crafted bomb can't fill disk.
-    let mut writer = ProgressWriter::extract(
-        archive_common::BoundedWriter::new(
-            File::create(&dest).map_err(|e| format!("{e}"))?,
-            archive_common::DEFAULT_EXTRACT_CAP,
-        ));
-    extract_progress::reset(0);
+    // No declared uncompressed size → bound output with the shared hard cap so a
+    // crafted bomb can't fill disk. Deliberately NOT ProgressWriter::extract:
+    // that would double-count against the read-side bytes fed above.
+    let mut writer = archive_common::BoundedWriter::new(
+        File::create(&dest).map_err(|e| format!("{e}"))?,
+        archive_common::DEFAULT_EXTRACT_CAP,
+    );
+    extract_progress::reset(in_len);
     extract_progress::set_name(&name);
-    extract_progress::set_file(0);
+    extract_progress::set_file(in_len);
     if let Err(e) = io::copy(&mut dec, &mut writer) {
         let _ = fs::remove_file(&dest);
         return Err(format!("bzip2: {e}"));
@@ -82,6 +89,21 @@ fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'st
 #[doc(hidden)]
 pub fn extract_bzip2_host(input: &str, output: &str) -> Result<u32, String> {
     extract_bz2(input, output)
+}
+
+/// Read-only snapshot of the extract progress statics:
+/// `(bytes, total, file_bytes, file_total)`.
+///
+/// Exists for the out-of-tree byte-progress regression harness and
+/// `examples/probe.rs`. Pure accessors with **no side effects** — reading them
+/// cannot perturb the very counters a test is trying to observe.
+pub fn extract_progress_snapshot() -> (u64, u64, u64, u64) {
+    (
+        extract_progress::bytes(),
+        extract_progress::total_bytes(),
+        extract_progress::file_bytes(),
+        extract_progress::file_total(),
+    )
 }
 
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_Bzip2Core_bz2ListEntries(mut e: JNIEnv, _: JClass, i: JString) -> jstring {
@@ -126,6 +148,13 @@ pub fn extract_bzip2_host(input: &str, output: &str) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // extract_progress 是**全局静态量**，cargo 默认并行跑测试，
+    // 两个用例各自 reset(total) 会把对方的 total 覆盖掉，断言随机失败。
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     fn tmp(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("uu_bz2_{}_{}", std::process::id(), tag))
@@ -205,5 +234,47 @@ mod tests {
         extract_bz2(sys_bz.to_str().unwrap(), out_dir.to_str().unwrap()).unwrap();
         assert_eq!(std::fs::read(out_dir.join("sys.bin")).unwrap(), data, "our decoder mismatch");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+
+    /// 字节级进度防回归。
+    ///
+    /// 旧实现喂**输出**字节却拿不到分母（这些流的头部不存未压缩大小）：
+    /// `reset(0)` → UI 只能转圈；brotli 更糟，它拿**压缩后**大小当分母，
+    /// 膨胀比 >1 时写到 ~33% 就满格卡住（Kotlin 的 coerceAtMost(100) 把溢出藏了）。
+    /// 现在统一走读侧：total = 归档大小，喂已消耗的输入字节。
+    #[test]
+    fn extract_progress_total_is_reported() {
+        let _g = lock();
+        let dir = tmp("prog");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 高度可压缩：分母口径错的话 bytes/total 会明显偏离 1.0
+        let body = b"uu-progress-caliber\n".repeat(4096);
+        let src = dir.join("in.bin");
+        let arc = dir.join("in.bin.bz2");
+        let out = dir.join("out");
+        std::fs::write(&src, &body).unwrap();
+        compress_bz2(src.to_str().unwrap(), arc.to_str().unwrap(), 6).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+
+        extract_progress::clear_cancel();
+        extract_bz2(arc.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+
+        let total = extract_progress::total_bytes();
+        assert!(
+            total > 0,
+            "extract must report a non-zero total, else the UI spins forever"
+        );
+        assert_eq!(
+            extract_progress::bytes(),
+            total,
+            "fed bytes must converge to total (read caliber = archive bytes consumed)"
+        );
+        // 载荷必须逐字节不变 —— 证明进度改造没动到解码结果
+        let produced = std::fs::read(out.join("in.bin")).unwrap();
+        assert_eq!(produced.len(), body.len(), "decompressed size must be unchanged");
+        assert_eq!(produced, body, "decompressed bytes must be identical");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -31,10 +31,19 @@ object RecycleBin {
     fun autoCleanDays(prefs: SharedPreferences): Int =
         prefs.getInt("recycle_bin_auto_clean_days", 30)
 
-    /** Per-file progress for the copy fallback of [moveToRecycleBin].
-     *  done/total are files of the CURRENT target (total known after its scan). */
+    /**
+     * Copy-fallback progress for [moveToRecycleBin], scoped to the CURRENT target.
+     *
+     * [doneBytes]/[totalBytes] drive the bar so it moves in proportion to actual
+     * work: a folder of many tiny files would otherwise crawl while gigabytes
+     * stream past. [done]/[total] (file counts) ride along for the label, because
+     * "12/40 files" is what the user actually recognizes.
+     *
+     * `scanTree()` has always computed the byte total ([ScanResult.size]); it
+     * simply wasn't reaching the UI.
+     */
     fun interface MoveProgress {
-        fun onProgress(done: Int, total: Int)
+        fun onProgress(done: Int, total: Int, doneBytes: Long, totalBytes: Long)
     }
 
     private class ScanResult(val size: Long, val fileCount: Int)
@@ -107,6 +116,9 @@ object RecycleBin {
 
                 var copyFailed: Exception? = null
                 var done = 0
+                // Accumulates copied bytes so the bar advances by volume, not by
+                // file count. A failed copy contributes nothing (it didn't land).
+                var doneBytes = 0L
                 if (file.isDirectory) {
                     file.walkTopDown().forEach { f ->
                         if (copyFailed != null) return@forEach
@@ -117,7 +129,8 @@ object RecycleBin {
                             out.parentFile?.mkdirs()
                             val ok = runCatching { f.copyTo(out, overwrite = false) }.isSuccess
                             done++
-                            onProgress?.onProgress(done, scan.fileCount)
+                            if (ok) doneBytes += runCatching { f.length() }.getOrDefault(0L)
+                            onProgress?.onProgress(done, scan.fileCount, doneBytes, scan.size)
                             if (!ok && copyFailed == null) {
                                 copyFailed = java.io.IOException("copy failed: ${f.path}")
                             }
@@ -127,7 +140,9 @@ object RecycleBin {
                     file.deleteRecursively()
                 } else {
                     file.copyTo(dest, overwrite = false)
-                    onProgress?.onProgress(1, 1)
+                    // scanTree already measured it; report the same number rather
+                    // than re-stat'ing, so the bar lands exactly on 100%.
+                    onProgress?.onProgress(1, 1, scan.size, scan.size)
                     file.delete()
                 }
                 updateManifest(dir) { manifest ->

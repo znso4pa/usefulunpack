@@ -244,6 +244,13 @@ class FolderFragment : Fragment() {
         tab.viewsBound = true
         val act2 = activity as? MainActivity
         if (act2 != null) {
+            // 壁纸模式下本 tab 刚创建的 folderRoot/panel/pathBar/bottomBar/previewRoot
+            // 都带不透明底，会把 R.id.root 上的壁纸重新挡死。
+            //
+            // 关键：这里必须遍历**本 fragment 自己的子树**，不能调 act2.refreshBackdrop()。
+            // onCreateView 返回时本 view 还没挂到 ViewPager 上，从 R.id.root 往下走
+            // 根本走不到这里 —— 那样只有第一个窗口透得出壁纸（写过一版，就是这个 bug）。
+            if (act2.hasWallpaper()) applyBackdropInTree(root)
             // Restore an in-tab preview if the tab was previewing before the
             // fragment's view was recreated (swipe far / rebuildPager / rotate);
             // otherwise render the normal browser.

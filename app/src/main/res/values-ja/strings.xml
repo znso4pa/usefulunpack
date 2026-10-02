@@ -95,6 +95,10 @@
     <string name="level_extreme">最高</string>
     <string name="msg_done">完了</string>
     <string name="msg_copied">コピーしました</string>
+    <string name="msg_copying">コピー中…</string>
+    <plurals name="msg_copy_cancelled">
+        <item quantity="other">キャンセルしました — %1$d 件コピー済み</item>
+    </plurals>
     <string name="msg_deleted">削除しました</string>
     <string name="msg_created">作成しました</string>
     <string name="msg_cancelled">キャンセルしました</string>
@@ -256,6 +260,7 @@
     <string name="msg_extracting_file">解凍中——%1$s</string>
     <string name="msg_delete_progress">削除中</string>
     <string name="msg_move_to_recycle">ゴミ箱に移動中</string>
+    <string name="recycle_progress_cleaning">元ファイルを削除中…</string>
     <string name="msg_deleting_file">削除中——%1$s</string>
     <string name="msg_delete_counting">ファイルを数えています…</string>
     <string name="msg_delete_result">削除完了: 成功 %1$d, 失敗 %2$d</string>

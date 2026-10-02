@@ -257,22 +257,181 @@ crates.io 拉官方 `zip`/`rars`，缺我们自己加的 `with_disk_offsets`）�
 另外 zip/7z/rar 的 host 入口返回 `(total, error_count)`，**`Ok` 不等于成功** ——
 wrongpass 走 per-entry 的 `fail += 1`，整包仍返回 `Ok`。最初据此判成「竟然成功」。
 
-### 5. 遗留（未修，需单独决定）
+### 5. rar 条目 CRC 校验（已修）：篡改的条目不再伪装成成功
 
-**rar 从不校验条目 CRC**：`crates/rar-core` 里没有一处 `crc`，所以
-`faults/corrupt-rawfile1.m5.rar` 被当成成功，还留下一个内容已损坏的 `rawfile1.txt`
-（`unrar t` 报 `checksum error`）。`rars::crc32::crc32()` 和 `FileHeader.data_crc32`
-都在，只是没接上；要接就得把 header 穿过 buffered/parallel/streaming 三条写入路径。
-超出本轮范围，未动。
+`crates/rar-core` 里**一次都没校验过条目校验和**（整个文件 grep `crc` 零命中），所以
+`faults/corrupt-rawfile1.m5.rar` 被当成解压成功，还留下一个内容已损坏的
+`rawfile1.txt` —— 而 `unrar t` 对同一个文件报 `checksum error`。这是最糟的失败形状：
+用户被告知成功了，拿到的却是错数据。
 
-### 6. 验证结果
+**「Ok 不等于成功」在这里第二次咬人**：RAR1.5+ 的篡改条目走 per-entry 分支，整包仍
+返回 `Ok((total, errors))`，必须看第二个数；RAR1.3/1.4 则是内建 `verify_checksum`
+直接中断整包。两条路径的契约不同，但都算失败。
 
-- `cargo test --workspace` **213 / 213**（新增 7 条进度断言：5 个单文件流 + ypf + ksd）
-- files4testing **484 / 484**，20 种格式 × 3 层，注入故障 **22 / 23** 干净拒绝
+实现要点（四条写入路径全部覆盖）：
+
+- 顺序路径 `rar_writer`：`CrcGuardWriter` **在 `Drop` 时**校验。这是唯一可用的完成
+  钩子 —— `extract_to_with_options` 只给每条目一个 `Box<dyn Write>`，没有「条目结束」
+  回调。
+- `fast_write_member`（选择集路径 / 并行路径的流式成员）：同样走 `CrcGuardWriter`。
+- `write_buffered_member`（并行路径的批量成员）：数据已在内存，一次 `of_slice` 即可。
+- 计数器必须**共享调用方那个**。`Box<dyn Write + 'static>` 不许借用栈上计数器，所以用
+  `Arc<AtomicU32>`。第一版在 guard 里 `Arc::new(AtomicU32::new(0))` 造了个新计数器 ——
+  那等于把校验变成了静默的 no-op：文件被删了，但条目照报成功。
+
+**两处必须靠真实数据才能发现的算法前提**（都是夹具抓出来的）：
+
+1. **RAR1.3/1.4 的校验和不是 crc32 的低 16 位**，而是一套独立的 16 位算法
+   （`sum(bytes).rotate_left(1)`，vendored 里的 `Rar13Checksum`，原本私有，已公开）。
+   我第一版按 `crc32 & 0xffff` 实现，结果**每一个合法的 RAR1.3/1.4 归档都被误判为
+   损坏**。夹具里那句「pristine archive must still extract」就是为这个准备的。
+2. **分卷条目的校验和只覆盖第一卷那一段**。实测：4 卷 4096 字节的夹具，header 存的是
+   `0x8cb4`（= 前 1024 字节的校验和），而整个成员的校验和是 `0xbf5f`。拿全量数据去比，
+   会拒绝**所有**合法的分卷归档。所以 `member_crc` 对 `is_split_before/after` 的成员
+   返回 `None`，交给 vendored reader 逐卷校验（它本来就在做）。
+
+修完 files4testing **23/23 干净拒绝，0 问题**，484 正向向量零回归。
+
+### 6. 进度条测试的全局 static 竞争（CI 报错，64 处潜在 flaky）
+
+`archive_lzma-core` 的 `extract_progress_total_is_reported` 在 CI 上以
+`left: 327, right: 119` 失败，本地 25/25 通过。原因是它和同 crate 的兄弟测试并发跑在
+**同一个 per-cdylib static 进度 store** 上，兄弟测试用自己的夹具尺寸 `reset(total)`，
+把它的 total 从 327 改成 119 —— 数字完全确定正是竞争的特征。
+
+全仓审计后发现 **17 个 crate、64 个测试**在共享 store 上竞争，只有 lzma 断言了 total
+所以只有它会红。已给全部 64 处加 per-crate 测试锁。
+
+**这个自动化脚本我写砸了三版**，每一版都是同一类错误，记下来免得第四次再犯：
+
+1. 按「相对 mod 起点的字符偏移」插入 → 偏移算错，一个都没落地
+2. 假设「一个 crate 只有一个测试模块」→ lz4 的测试在 `mod compress_tests`、helper 却
+   落在 `mod tests`；nsa 有**两个**测试模块各带一个 `PROGRESS_LOCK`
+3. 用花括号配平找模块边界 → 注释和字符串里的 `{`/`}` 把配平数带偏，插入点落进函数体
+   中间；改用行级处理后，又因为「mod 插入和测试插入分成两段」破坏了全局倒序，
+   高行号的插入顶偏了后面的行号，守卫落到模块层（`let` 不能做全局变量）
+
+最终版是行级处理 + 单一列表按行号倒序 + 插完当场文本校验 + 真实编译把关。
+
+**但脚本给的锁本身可能是错的，加完之后又发现三类"加了等于没加"** —— 这一条比脚本
+怎么写更值得记：
+
+1. **一个 crate 里出现两把锁**。bzip2/lzma/xz/zstd 原本各有一把 `lock()`，脚本又加了
+   一把 `progress_lock()`，两者是**独立的 Mutex** —— 测试各拿一把，等于完全没锁。
+   zstd 的 `extract_progress_total_is_reported` 在 20 轮里还是炸了一次才发现。
+2. **跨测试模块各一把**。nsa 有 `tests` 与 `security_tests`、rgss 有两个模块、
+   sevenz 有两个模块；同一个 crate 的模块共享同一批 per-cdylib static，模块级锁挡不住
+   跨模块竞争。全部收敛到 crate 级一把。
+3. **同一测试拿两把锁 → 死锁**。把 sevenz 的 `progress_lock` 指向 crate 级 `TEST_LOCK`
+   之后，原本同时写 `let _g = progress_lock();` 和 `let _g = crate::TEST_LOCK.lock()`
+   的 7 个测试立刻挂死在非重入 Mutex 上（rgss 上一轮已经犯过一次同样的错，没长记性）。
+   守卫名统一后，又用脚本复查"任何测试体内 lock 变量 > 1"来兜底。
+
+**教训**：机械改造的产出必须复查"语义唯一性"，不能只验证"文本/编译通过" —— 我用文本
+校验和真实编译各把关了一次，绿了，然后真机上还是随机炸。
+
+### 7. 「进度条到了 100% 还会卡一阵」—— 根因与修法
+
+用户追问这个症状。**不是错觉，是真 bug，而且「有的时候」正是它的特征。**
+
+**根因 A：上一次的 100% 被当成本次的进度显示**
+
+`clear_cancel()` 原本只清 CANCEL，不清 `BYTES/TOTAL`（`crates/common/src/lib.rs`），
+于是**上一个操作留下的 `bytes == total` 会活到下一个操作开始之后**。而每个格式都要
+先干重活才 `reset(total)`：
+
+| 格式 | reset 之前的重活 |
+|---|---|
+| zstd | `fs::read()` 把**整个归档**读进内存（reset 在第 89 行，read 在第 67 行）|
+| rar | `ArchiveReader::read_path_with_options` + 遍历全部成员算总量 |
+| tar | pass 1 把**整个外层流解压一遍** |
+| zip / 7z / iso | 读中央目录 / 7z 头 / ISO 目录树 |
+
+`PollingProgressDialog.start()` 一创建就 200ms 轮询，`opH.await()` 一通过立刻开始画
+这些 static。所以**「刚做完一个、紧接着做第二个」时，新操作在 pre-reset 窗口里显示
+的是上一次的 100%** —— 这就是为什么它时有时无：只有「第二个操作跟在第一个后面」才触发。
+
+修法：`clear_cancel()` 归零全部计数。它本来就已在每个操作入口（68 个 JNI 入口，
+已用脚本逐个核验都以它开头）调用，所以不需要新增调用点。`total = 0` 正好是正确信号
+—— `ExtractProgress.kt` 把 `total <= 0` 渲染为不定进度，语义就是「准备中」。
+
+`reset()` 仍然保留 CANCEL：pre-scan 期间按的取消必须活到解压阶段。这两件事**不能合并**，
+各有各的理由，已在代码注释和 AGENTS.md 里写明。
+
+**根因 B：真的有 100% 之后还在干的重活**
+
+回收站的跨盘回退是**读一遍 + 写一遍**（copy 树 + 删原树），原来只按 copy 报 0..100%，
+于是条满之后 `deleteRecursively()` 在一棵大树里磨半天。改成总量 = 2×树大小，两段各占
+一半；删除阶段用 copy 阶段记下的 `(File, Long)` 列表逐个删（同一套遍历，避免符号链接
+目录被走第二次），目录在文件之后按深度倒序删。
+
+**根因 C（未修，已记录）**
+
+- rar 批量并行解码：整批（≤192 MiB / 4 线程）先解码进 RAM 再写，这段不喂总条 → 条一段一段跳
+- 压缩编码器收尾：喂完最后一个输入字节后还有 `enc.finish()` / `zip.finish()` / `sz.finish()`。
+  编码器 flush 处理的不是源数据，**无法用源字节表达**，只能改文案，不做
+
+顺带修掉一个潜在 flaky：`common` 里已有的 `progress_total_adjust_saturates` 会在并行
+测试里把全局 store 的 total 打成 0，与新加的用例抢同一个 static。已加测试锁。
+
+### 8. 复制：进度条 + 可取消 + 半成品清理
+
+用户反馈「复制时文件先出来、最后才 toast『已复制』，分不清在干什么」。两条复制路径
+（`copySingleFile` 单个、`startBatchCopy` 多选）都跑在裸 `thread {}` 上：全程无反馈、
+无法取消，而且**失败的 `copyRecursively` 会把已经写了一半的树留在盘上** —— 对用户和
+之后的「复制成功了吗」检查都像是成功的。
+
+统一到 `fileops/CopyProgress.kt`：
+
+- `OpOverlay` 双条卡：总条 = 全部目标的字节，文件条 = 当前成员，消息行 = 成员名
+- 取消按钮真正生效，**且只删正在复制那个目标的半成品**；已完成的保留
+- `getCopyFileName` 保证目标名是全新的（循环直到不存在），所以删半成品不可能碰到用户
+  原有数据，只删这次刚写的字节
+- 锁用 `OperationLock`（与删除/回收站/扫描一致；复制是文件操作不是归档操作，按
+  AGENTS.md 不变量 6 属于既有例外，不迁移到 OpScheduler）
+
+**「进度条偶尔重来」的根因**：总条喂的是 `doneBytes + fileDone`，而 `fileDone` 是
+**当前这一个文件**的字节，`doneBytes` 只在整个目录复制完才推进 —— 复制多文件目录时，
+每换到一个新文件总条就从该文件大小重新开始，锯齿状反复归零。单文件目标看不出来，
+这正好是「偶尔」。改成由 `copyOneTarget` 持有**目标内累计字节**（跨文件边界不归零）。
+
+两个自己写出来又改掉的缺陷：
+
+1. 取消时把总条强行 `pushOverallProgress(totalBytes, totalBytes)` —— 那是**为做完的
+   工作涂 100%**。改回真实完成量。
+2. 每 256 KB 就 post 两次 UI。1 GB 文件会排 ~8000 个 `runOnUiThread`，UI 线程（还要
+   处理用户点取消的触摸）会变成瓶颈 —— 进度显示反过来拖慢复制。改成**按整百分点节流**。
+
+另外 `scanTreeBytes` 是新加的、跑在复制之前，`File.isDirectory` 会跟随符号链接，所以
+环状链接会让遍历长时间打转；取消检查必须放在**文件级**而不是目标级，否则用户逃不掉，
+而复制线程会一直占着 `OperationLock` 让后续所有文件操作都报「忙」。
+
+### 9. 回收站：2× 字节总量让大小显示翻倍
+
+跨盘回收站是**读一遍 + 写一遍**（copy 树 + 删原树），上一轮把总量设成树大小的 2 倍，
+好让条单调走到 100%（原来复制完就 100%，然后 `deleteRecursively()` 在大树里磨半天）。
+用户实测：3.6 GB 的目录**显示成 7.2 GB**。
+
+条的行为是对的，**文字基准错了**。`MoveProgress` 改为携带两种口径
+（`MoveState(barDone, barTotal, dataTotal)`）：
+
+- `barTotal` = 2× 树大小 → 只喂条，保证单调 0→100%，不重复也不冻结
+- `dataTotal` = 真实树大小 → 只喂文字，3.6 GB 就显示 3.6 GB
+- `cleaningUp = barDone > dataTotal` → 清理阶段消息行改成「正在删除原文件…」，
+  否则会看到「条在动但文字已经 3.6 GB / 3.6 GB 满格」，像卡住
+
+**顺带修掉「偶尔丧失进度」**：rename 快路径**一个数都不上报**，条一直转圈、大小行
+空着。现在立刻上报完成态（`barDone == barTotal == dataTotal`）。
+
+### 10. 验证结果
+
+- `cargo test --workspace` **216 / 216**，并连跑 15 轮无 flaky（进度断言 7 + clear_cancel 不变量 2 + rar CRC 1 + 测试锁收敛）
+- files4testing **484 / 484**，20 种格式 × 3 层，注入故障 **23 / 23** 干净拒绝（本轮补上 rar CRC）
 - 进度终值 harness：7 / 7 落在 100%（5 个读侧 + gzip 单成员写侧 + gzip 多成员读侧）
 - `lintDebug` **0 error / 271 warning**，与基线逐条比对**零新增**
 - `bash build.sh` 三 ABI 交叉编译通过，`adb install` 成功
-- **用户实机确认**：lzma / brotli 预览正常，壁纸正常显示
+- **用户实机确认**：lzma / brotli 预览正常；壁纸正常；复制进度条「重来」已修复；
+  回收站大小显示（3.6 GB 不再显示 7.2 GB）与「丧失进度」已修复
 
 ### 待做（装机后，仅剩交互层）
 

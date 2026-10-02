@@ -37,10 +37,36 @@ macro_rules! progress_store {
                 *FNAME.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
             }
 
-            /// Clears the cancel flag. Call once at the start of each new
-            /// operation (JNI entry, before the pre-scan) so a stale cancel
-            /// from a previous operation can't poison this one.
-            pub fn clear_cancel() { CANCEL.store(false, Ordering::Relaxed); }
+            /// Starts a fresh operation: clears the cancel flag AND zeroes every
+            /// byte counter.
+            ///
+            /// Call once at the start of each new operation (JNI entry, before
+            /// the pre-scan) so a stale cancel from a previous operation can't
+            /// poison this one.
+            ///
+            /// Zeroing the counters here is what makes the **pre-scan phase**
+            /// honest. Every format does real work before its own `reset(total)`
+            /// — zstd `fs::read`s the whole archive, rar opens the reader and
+            /// walks every member, tar decompresses the entire outer stream in
+            /// pass 1 — and the UI poll loop is already painting these statics by
+            /// then. Without the zeroing it rendered the PREVIOUS operation's
+            /// final value, which is almost always `bytes == total` → the bar
+            /// sits at a confident 100% for the whole pre-scan. That is the
+            /// "reached 100% then froze" report, and it only reproduces when a
+            /// second operation follows a first one, which is exactly why it
+            /// felt intermittent.
+            ///
+            /// `total = 0` is the correct signal here: `ExtractProgress.kt`
+            /// treats `total <= 0` as indeterminate, so the phase renders as
+            /// "preparing" rather than as a fabricated percentage.
+            pub fn clear_cancel() {
+                CANCEL.store(false, Ordering::Relaxed);
+                BYTES.store(0, Ordering::Relaxed);
+                TOTAL.store(0, Ordering::Relaxed);
+                FILE_BYTES.store(0, Ordering::Relaxed);
+                FILE_TOTAL.store(0, Ordering::Relaxed);
+                *FNAME.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
+            }
 
             /// Marks the start of a new member: resets the per-file byte
             /// counter and records the member's total size. Feed per-member
@@ -417,6 +443,65 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
+    /// The progress store is per-cdylib **static** state, so any two tests that
+    /// touch it must not run concurrently — Cargo runs tests in parallel by
+    /// default. `progress_total_adjust_saturates` (pre-existing) drives total to
+    /// 0 via `adjust_total(i64::MIN)`, which made this module's own
+    /// "bytes == total" precondition fail nondeterministically. Every test that
+    /// reads or writes the store must take this lock.
+    static PROGRESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn progress_lock() -> std::sync::MutexGuard<'static, ()> {
+        PROGRESS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `clear_cancel` must zero EVERY counter, not just the cancel flag.
+    ///
+    /// This is the invariant behind "the bar showed a confident 100% and then
+    /// froze": each format does real work before its own `reset(total)` (zstd
+    /// `fs::read`s the whole archive, rar walks every member, tar decompresses
+    /// the entire outer stream in pass 1), and the UI poll loop paints these
+    /// statics throughout. If a finished operation's `bytes == total` survives
+    /// into that window, the pre-scan phase renders as a fabricated 100%.
+    ///
+    /// `reset()` still preserves CANCEL on purpose (a cancel pressed during a
+    /// pre-scan must survive into the extraction phase), so it cannot stand in
+    /// for this — hence the separate assertion that CANCEL survives `reset`.
+    #[test]
+    fn clear_cancel_zeroes_progress_so_prescan_never_shows_stale_full() {
+        let _guard = progress_lock();
+        // Simulate a finished operation.
+        extract_progress::reset(4096);
+        extract_progress::set_name("previous.bin");
+        extract_progress::set_file(4096);
+        extract_progress::add_bytes(4096);
+        assert_eq!(extract_progress::bytes(), extract_progress::total_bytes());
+        assert!(extract_progress::bytes() > 0, "precondition: a finished op reads as 100%");
+
+        // Start the next one.
+        extract_progress::clear_cancel();
+
+        assert_eq!(extract_progress::total_bytes(), 0, "total must not leak into the pre-scan window");
+        assert_eq!(extract_progress::bytes(), 0, "bytes must not leak into the pre-scan window");
+        assert_eq!(extract_progress::file_total(), 0);
+        assert_eq!(extract_progress::file_bytes(), 0);
+        assert_eq!(extract_progress::name(), "", "stale file name would label the new operation");
+        // total == 0 is what makes ExtractProgress.kt render "preparing"
+        // (it treats total <= 0 as indeterminate) instead of a wrong percentage.
+    }
+
+    /// `reset()` must NOT clear a cancel pressed during the pre-scan phase.
+    /// Counter-zeroing moved to `clear_cancel()` precisely so this still holds.
+    #[test]
+    fn reset_preserves_cancel_pressed_during_prescan() {
+        let _guard = progress_lock();
+        extract_progress::clear_cancel();
+        extract_progress::cancel();
+        extract_progress::reset(100);
+        assert!(extract_progress::cancelled(), "a pre-scan cancel must survive into the extraction phase");
+        extract_progress::clear_cancel();
+        assert!(!extract_progress::cancelled(), "clear_cancel must un-poison the next operation");
+    }
+
     #[test]
     fn split_volumes_edge_cases() {
         let dir = std::env::temp_dir().join(format!("uu_common_split_{}", std::process::id()));
@@ -524,6 +609,7 @@ mod tests {
 
     #[test]
     fn progress_total_adjust_saturates() {
+        let _guard = progress_lock();
         // adjust_total is generated per-format by the progress_store! macro;
         // exercise the extract instance in place (it is otherwise unused in
         // this crate's tests). The store is per-cdylib static state, so these

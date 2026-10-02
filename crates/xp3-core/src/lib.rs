@@ -411,12 +411,25 @@ pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CompressCancel(_: JNIE
 
 #[cfg(test)]
 mod tests {
+
+    /// 进度 store 是 per-cdylib 的**静态量**，cargo 默认并行跑同一个 crate
+    /// 的测试，两个测试的 `reset(total)` + `add_bytes` 会互相踩：抢在前面的那个
+    /// 会用自己的夹具尺寸改掉 total，后一个断言 total 的测试就红。凡是调了
+    /// extract/compress 入口的测试都必须持这把锁。
+    ///
+    /// 实证：`archive_lzma-core` 的 `extract_progress_total_is_reported` 曾在 CI 上
+    /// 以 `left: 327, right: 119` 失败，本地 25/25 通过。
+    static PROGRESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn progress_lock() -> std::sync::MutexGuard<'static, ()> {
+        PROGRESS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
     use super::*;
 
     fn tmp(tag: &str) -> PathBuf { std::env::temp_dir().join(format!("uu_xp3_{}_{}", std::process::id(), tag)) }
 
     #[test]
     fn pack_round_trip_matches_bytes() {
+    let _g = progress_lock();
         let dir = tmp("roundtrip");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(dir.join("sub")).unwrap();
@@ -435,6 +448,7 @@ mod tests {
 
     #[test]
     fn pack_single_file() {
+    let _g = progress_lock();
         let dir = tmp("single");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("one.dat"), vec![9u8; 5000]).unwrap();
@@ -449,6 +463,7 @@ mod tests {
 
     #[test]
     fn ksd_mode2_wrapped_entry_extracts_as_text() {
+    let _g = progress_lock();
         // A real galgame XP3 stores some text entries as
         //   zlib( KSD mode-2 wrapper `FE FE 02 FF FE` + comp_len/uncomp_len + zlib(text) )
         // The xp3 crate only unwraps the OUTER zlib, so without the KSD unwrap
@@ -479,6 +494,7 @@ mod tests {
 
     #[test]
     fn duplicate_entry_names_are_renamed_not_overwritten() {
+    let _g = progress_lock();
         // XP3 indexes may carry several entries under one name, and /sdcard +
         // FAT are case-insensitive: without the dedup pass the second entry's
         // File::create truncates the first (last-wins) while the result JSON

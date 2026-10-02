@@ -623,6 +623,21 @@ fn vol_refs(vols: &[String]) -> Vec<&str> { vols.iter().map(|s| s.as_str()).coll
 
 #[cfg(test)]
 mod tests {
+
+    /// 进度 store 是 per-cdylib 的**静态量**，cargo 默认并行跑同一个 crate
+    /// 的测试，两个测试的 `reset(total)` + `add_bytes` 会互相踩：抢在前面的那个
+    /// 会用自己的夹具尺寸改掉 total，后一个断言 total 的测试就红。凡是调了
+    /// extract/compress 入口的测试都必须持这把锁。
+    ///
+    /// 实证：`archive_lzma-core` 的 `extract_progress_total_is_reported` 曾在 CI 上
+    /// 以 `left: 327, right: 119` 失败，本地 25/25 通过。
+    /// One lock per crate, not per test module: `crates/sevenz-core` has two
+    /// `#[cfg(test)]` modules and they share the same per-cdylib progress
+    /// statics, so a per-module mutex would let a test in one module race a
+    /// test in the other. Reuses the crate-level [TEST_LOCK].
+    fn progress_lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
     use super::*;
 
     fn make_split_7z() -> (Vec<std::path::PathBuf>, String) {
@@ -773,6 +788,19 @@ mod tests {
 /// `UU_EXPECTED_SHA` (expected sha256 of the extracted file).
 #[cfg(test)]
 mod manual_volumes {
+
+    /// 进度 store 是 per-cdylib 的**静态量**，cargo 默认并行跑同一个 crate
+    /// 的测试，两个测试的 `reset(total)` + `add_bytes` 会互相踩：抢在前面的那个
+    /// 会用自己的夹具尺寸改掉 total，后一个断言 total 的测试就红。凡是调了
+    /// extract/compress 入口的测试都必须持这把锁。
+    ///
+    /// 实证：`archive_lzma-core` 的 `extract_progress_total_is_reported` 曾在 CI 上
+    /// 以 `left: 327, right: 119` 失败，本地 25/25 通过。
+    /// One lock per crate, not per test module: `crates/sevenz-core` has two
+    /// `#[cfg(test)]` modules and they share the same per-cdylib progress
+    /// statics, so a per-module mutex would let a test in one module race a
+    /// test in the other. Reuses the crate-level [TEST_LOCK].
+    // (see the crate-level `progress_lock` above)
     use super::*;
 
     fn sha256_file(path: &std::path::Path) -> Option<String> {

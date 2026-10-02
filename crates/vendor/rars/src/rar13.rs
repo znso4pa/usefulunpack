@@ -851,22 +851,28 @@ impl<W: Write + ?Sized> Write for Rar13ChecksumWriter<'_, W> {
     }
 }
 
-struct Rar13Checksum {
+/// RAR 1.3/1.4's 16-bit file checksum.
+///
+/// Public so rar-core can verify a decoded member: the algorithm is NOT a
+/// truncated CRC-32 (it is `sum(bytes).rotate_left(1)`), so it cannot be
+/// recomputed from the public `crc32` primitives.
+#[derive(Clone, Copy)]
+pub struct Rar13Checksum {
     value: u16,
 }
 
 impl Rar13Checksum {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self { value: 0 }
     }
 
-    fn update(&mut self, input: &[u8]) {
+    pub fn update(&mut self, input: &[u8]) {
         for &byte in input {
             self.value = self.value.wrapping_add(byte as u16).rotate_left(1);
         }
     }
 
-    fn finish(self) -> u16 {
+    pub fn finish(self) -> u16 {
         self.value
     }
 }
@@ -1715,6 +1721,8 @@ fn validate_file_entry(name: &[u8], data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// One-shot RAR 1.3/1.4 checksum. See [Rar13Checksum] for why this exists
+/// separately from the CRC-32 primitives.
 pub fn file_checksum(input: &[u8]) -> u16 {
     let mut checksum = Rar13Checksum::new();
     checksum.update(input);

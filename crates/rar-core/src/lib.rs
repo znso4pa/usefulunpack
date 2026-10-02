@@ -4,6 +4,7 @@ use jni::sys::{jboolean, jstring, jlong, jint, JNI_TRUE, JNI_FALSE};
 use archive_common::{s, json_escape, safe_join, extract_result_json, ProgressWriter, BoundedWriter};
 use archive_common::extract_progress;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -12,6 +13,164 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 #[cfg(test)]
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Which algorithm a family's stored checksum uses.
+///
+/// These are genuinely different, not one truncated the other:
+///   * RAR 1.5 – 5.x: full CRC-32 of the **unpacked** data (`rars::crc32`)
+///   * RAR 1.3 / 1.4: a 16-bit `sum(bytes).rotate_left(1)` (`Rar13Checksum`)
+///
+/// The first implementation of this assumed the 1.3 case was `crc32 & 0xffff`
+/// and therefore rejected **every legitimate RAR 1.3/1.4 archive** while
+/// claiming to verify them. The fixture caught it via a "pristine archive must
+/// still extract" precondition — worth keeping that check for this reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CrcAlgo {
+    Crc32,
+    Rar13,
+}
+
+/// Running checksum for one member: the digest is family-specific.
+enum RunningCrc {
+    Crc32(rars::crc32::Crc32),
+    Rar13(rars::rar13::Rar13Checksum),
+}
+
+impl RunningCrc {
+    fn new(algo: CrcAlgo) -> Self {
+        match algo {
+            CrcAlgo::Crc32 => RunningCrc::Crc32(rars::crc32::Crc32::new()),
+            CrcAlgo::Rar13 => RunningCrc::Rar13(rars::rar13::Rar13Checksum::new()),
+        }
+    }
+    fn update(&mut self, buf: &[u8]) {
+        match self {
+            RunningCrc::Crc32(c) => c.update(buf),
+            RunningCrc::Rar13(c) => c.update(buf),
+        }
+    }
+    /// Finalised digest, widened to u32 for a uniform comparison.
+    fn finish(self) -> u32 {
+        match self {
+            RunningCrc::Crc32(c) => c.finish(),
+            RunningCrc::Rar13(c) => c.finish() as u32,
+        }
+    }
+    /// Same digest without consuming — `Drop` only has `&mut self`.
+    fn peek(&self) -> u32 {
+        match self {
+            RunningCrc::Crc32(c) => c.clone().finish(),
+            RunningCrc::Rar13(c) => c.clone().finish() as u32,
+        }
+    }
+    /// One-shot over a slice that is already in memory.
+    fn of(algo: CrcAlgo, data: &[u8]) -> u32 {
+        let mut c = RunningCrc::new(algo);
+        c.update(data);
+        c.finish()
+    }
+}
+
+/// A member's stored checksum: which algorithm, and the expected value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CrcSpec {
+    algo: CrcAlgo,
+    expected: u32,
+}
+
+impl CrcSpec {
+    fn new(algo: CrcAlgo, expected: u32) -> Self {
+        Self { algo, expected }
+    }
+    fn running(&self) -> RunningCrc {
+        RunningCrc::new(self.algo)
+    }
+    fn matches(&self, digest: u32) -> bool {
+        match self.algo {
+            CrcAlgo::Crc32 => digest == self.expected,
+            CrcAlgo::Rar13 => (digest & 0xffff) as u16 == (self.expected & 0xffff) as u16,
+        }
+    }
+    /// The stored value as reported in an error. For the 16-bit algorithm this
+    /// is the 16-bit field, not a truncated CRC-32.
+    fn expected_u32(&self) -> u32 {
+        self.expected
+    }
+    fn of_slice(&self, data: &[u8]) -> u32 {
+        RunningCrc::of(self.algo, data)
+    }
+}
+
+/// Normalised per-member checksum from any RAR family, or `None` when the
+/// member carries none — or when verifying it here would be **wrong**.
+///
+/// A member split across volumes is the case that matters. For RAR 1.3/1.4 the
+/// header's 16-bit checksum covers only the FIRST volume's slice of the
+/// unpacked data, not the whole member: a 4-volume 4096-byte fixture stores
+/// `0x8cb4` = the checksum of the first 1024 bytes, while the full member checks
+/// to `0xbf5f`. Verifying the reassembled output against that value rejects
+/// every legitimate split archive — verified empirically, not assumed. The
+/// vendored reader already validates each volume's slice as it goes, so
+/// deferring to it is both correct and cheaper.
+fn member_crc(member: &rars::ArchiveMember) -> Option<CrcSpec> {
+    if member.meta.is_split_before || member.meta.is_split_after {
+        return None;
+    }
+    use rars::ArchiveMemberDetail as D;
+    match &member.detail {
+        D::Rar50Plus { crc32, .. } => crc32.map(|v| CrcSpec::new(CrcAlgo::Crc32, v)),
+        D::Rar15To40 { crc32, .. } => Some(CrcSpec::new(CrcAlgo::Crc32, *crc32)),
+        D::Rar13 { file_checksum, .. } => {
+            Some(CrcSpec::new(CrcAlgo::Rar13, *file_checksum as u32))
+        }
+        _ => None,
+    }
+}
+
+/// A `Write` adapter that CRCs everything passing through and, on drop,
+/// compares the digest against [CrcSpec].
+///
+/// Drop is the only completion hook the sequential path gives us:
+/// `extract_to_with_options` hands rars a `Box<dyn Write>` per entry and there
+/// is no "entry finished" callback, so verification rides on the drop. On a
+/// mismatch the half-written file is deleted and the failure counter bumped —
+/// a corrupt member must not survive as a plausible-looking output.
+struct CrcGuardWriter {
+    inner: Box<dyn Write>,
+    crc: RunningCrc,
+    want: CrcSpec,
+    dest: String,
+    /// The CALLER's counter, shared. Two constraints force the Arc:
+    ///   * a fresh `AtomicU32` here would be a silent no-op — the mismatch would
+    ///     delete the file but never surface as a failed entry, and the
+    ///     archive-level result would still read `Ok((total, 0))`;
+    ///   * rars' writer factory signature is `Box<dyn Write + 'static>`, so the
+    ///     guard may not borrow the caller's stack counter.
+    fail: Arc<AtomicU32>,
+}
+
+impl Write for CrcGuardWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.crc.update(&buf[..n]);
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl Drop for CrcGuardWriter {
+    fn drop(&mut self) {
+        // `Crc32::finish` applies the final inversion; the raw `value` is
+        // still pre-final.
+        let digest = self.crc.peek();
+        if !self.want.matches(digest) {
+            let _ = std::fs::remove_file(&self.dest);
+            self.fail.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
 
 fn list_rar_inner(input: &str) -> Result<String, String> {
     list_rar_inner_with_pw(input, "")
@@ -48,9 +207,10 @@ fn list_rar_inner_with_pw(input: &str, password: &str) -> Result<String, String>
 fn rar_writer<'a>(
     sel_set: &'a Option<HashSet<String>>,
     sizes: &'a HashMap<String, u64>,
+    crcs: &'a HashMap<String, CrcSpec>,
     stored: &'a HashSet<String>,
     out_base: &'a str,
-    fail: &'a AtomicU32,
+    fail: Arc<AtomicU32>,
 ) -> impl FnMut(&rars::ExtractedEntryMeta) -> Result<Box<dyn Write>, rars::Error> + 'a {
     move |meta| {
         if extract_progress::cancelled() { return Err(rars::Error::Cancelled); }
@@ -93,11 +253,31 @@ fn rar_writer<'a>(
         let capped = |w: Box<dyn Write>| -> Box<dyn Write> {
             Box::new(BoundedWriter::new(w, size)) as Box<dyn Write>
         };
-        if buffered {
-            Ok(capped(Box::new(ProgressWriter::extract_top(out_file)) as Box<dyn Write>))
+        // Verify the member's stored checksum. Without this a corrupt member
+        // (files4testing's `corrupt-rawfile1.m5.rar`, where `unrar t` reports
+        // "checksum error") is reported as a SUCCESSFUL extraction and leaves a
+        // plausible-looking but wrong file on disk. `CrcGuardWriter` checks on
+        // drop, which is the only completion hook this API offers.
+        let base: Box<dyn Write> = if buffered {
+            Box::new(ProgressWriter::extract_top(out_file))
         } else {
-            Ok(capped(Box::new(ProgressWriter::extract(std::io::BufWriter::with_capacity(256 * 1024, out_file))) as Box<dyn Write>))
-        }
+            Box::new(ProgressWriter::extract(std::io::BufWriter::with_capacity(256 * 1024, out_file)))
+        };
+        let base = capped(base);
+        let want = match crcs.get(&name) {
+            Some(c) => *c,
+            // No stored checksum for this member — nothing to verify against.
+            None => return Ok(base),
+        };
+        Ok(Box::new(CrcGuardWriter {
+            inner: base,
+            crc: want.running(),
+            want,
+            // `dest` is a PathBuf here (safe_join returns one); the guard only
+            // needs it to unlink the file on a mismatch.
+            dest: dest.to_string_lossy().to_string(),
+            fail: fail.clone(),
+        }))
     }
 }
 
@@ -118,7 +298,7 @@ fn rar_opts(pw: Option<&[u8]>) -> rars::ArchiveReadOptions<'_> {
 /// Writes one selected member through the same guards as `rar_writer`
 /// (path safety, fail counting, cancel, per-file progress). Buffered members
 /// count only the OVERALL bar on write; streamed ones count both bars.
-fn fast_write_member<F>(name: &str, size: u64, out_base: &str, fail: &AtomicU32, write: F) -> rars::Result<()>
+fn fast_write_member<F>(name: &str, size: u64, out_base: &str, fail: &Arc<AtomicU32>, want: Option<CrcSpec>, write: F) -> rars::Result<()>
 where
     F: FnOnce(&mut Box<dyn Write>) -> rars::Result<()>,
 {
@@ -150,8 +330,27 @@ where
     } else {
         Box::new(ProgressWriter::extract(std::io::BufWriter::with_capacity(256 * 1024, out_file)))
     };
-    write(&mut out)
+    // The closure wants `Box<dyn Write + 'static>`, so a CRC wrapper may not
+    // borrow a local accumulator. Reuse [CrcGuardWriter]: it owns its CRC state
+    // and verifies on drop, sharing the caller's counter.
+    match want {
+        Some(want) => {
+            let guarded: Box<dyn Write> = Box::new(CrcGuardWriter {
+                inner: out,
+                crc: want.running(),
+                want,
+                dest: dest.to_string_lossy().to_string(),
+                // The CALLER's counter, not a fresh one — a private counter
+                // would delete the corrupt file but report the entry as
+                // successful, i.e. a silent no-op.
+                fail: fail.clone(),
+            });
+            write(&mut { guarded })
+        }
+        None => write(&mut out),
+    }
 }
+
 
 /// True while the parallel full-extract path is running. The progress watcher
 /// (which mirrors rars' single-threaded `decode_progress` into the per-file bar)
@@ -214,7 +413,7 @@ where
 /// Writes an already-decoded buffered member: the per-file bar is set manually
 /// (the decode watcher is disabled while parallel), and the write counts only
 /// the OVERALL bar — matching the sequential buffered path's accounting.
-fn write_buffered_member(name: &str, size: u64, data: &[u8], out_base: &str, fail: &AtomicU32) -> rars::Result<()> {
+fn write_buffered_member(name: &str, size: u64, data: &[u8], out_base: &str, fail: &Arc<AtomicU32>, want: Option<CrcSpec>) -> rars::Result<()> {
     if extract_progress::cancelled() {
         return Err(rars::Error::Cancelled);
     }
@@ -243,6 +442,20 @@ fn write_buffered_member(name: &str, size: u64, data: &[u8], out_base: &str, fai
         fail.fetch_add(1, Ordering::SeqCst);
         return Ok(());
     }
+    // The decoded member is already in RAM, so the checksum is one call — no
+    // wrapper needed. Verify AFTER the write succeeded: a short/failed write is
+    // a different failure and must not be reported as corruption.
+    if let Some(w) = want {
+        let digest = w.of_slice(data);
+        if !w.matches(digest) {
+            let _ = std::fs::remove_file(&dest);
+            fail.fetch_add(1, Ordering::SeqCst);
+            return Err(rars::Error::Crc32Mismatch {
+                expected: w.expected_u32(),
+                actual: digest,
+            });
+        }
+    }
     extract_progress::set_file_bytes(size);
     Ok(())
 }
@@ -257,8 +470,9 @@ fn write_buffered_member(name: &str, size: u64, data: &[u8], out_base: &str, fai
 fn extract_all_parallel(
     archive: &rars::Archive,
     pw: Option<&[u8]>,
+    crcs: &HashMap<String, CrcSpec>,
     out_base: &str,
-    fail: &AtomicU32,
+    fail: &Arc<AtomicU32>,
 ) -> rars::Result<Option<()>> {
     let rars::Archive::Rar50Plus(a) = archive else {
         return Ok(None);
@@ -314,7 +528,8 @@ fn extract_all_parallel(
                 }
                 let data = res?;
                 let name = batch[k].name_lossy().replace('\\', "/").trim_matches('/').to_string();
-                write_buffered_member(&name, batch[k].unpacked_size, &data, out_base, fail)?;
+                let want = crcs.get(&name).copied();
+                write_buffered_member(&name, batch[k].unpacked_size, &data, out_base, fail, want)?;
             }
             i = end;
         }
@@ -324,7 +539,8 @@ fn extract_all_parallel(
                 return Err(rars::Error::Cancelled);
             }
             let name = f.name_lossy().replace('\\', "/").trim_matches('/').to_string();
-            fast_write_member(&name, f.unpacked_size, out_base, fail, |out| {
+            let want = crcs.get(&name).copied();
+            fast_write_member(&name, f.unpacked_size, out_base, fail, want, |out| {
                 f.write_to_with_options(a, rar_opts(pw), out)
             })?;
         }
@@ -347,8 +563,9 @@ fn extract_selected_fast(
     pw: Option<&[u8]>,
     sel_set: &HashSet<String>,
     sizes: &HashMap<String, u64>,
+    crcs: &HashMap<String, CrcSpec>,
     out_base: &str,
-    fail: &AtomicU32,
+    fail: &Arc<AtomicU32>,
 ) -> rars::Result<bool> {
     fn selected(name: &str, sel: &HashSet<String>) -> bool {
         sel.contains(name) || sel.iter().any(|s| name.starts_with(&format!("{s}/")))
@@ -365,7 +582,8 @@ fn extract_selected_fast(
                 if f.is_directory() || name.is_empty() || name.ends_with('/') { continue; }
                 if !selected(&name, sel_set) { continue; }
                 let size = sizes.get(&name).copied().unwrap_or(0);
-                fast_write_member(&name, size, out_base, fail, |out| {
+                let want = crcs.get(&name).copied();
+                fast_write_member(&name, size, out_base, fail, want, |out| {
                     f.write_to_with_options(a, rar_opts(pw), out)
                 })?;
             }
@@ -380,7 +598,8 @@ fn extract_selected_fast(
                 if f.is_directory() || name.is_empty() || name.ends_with('/') { continue; }
                 if !selected(&name, sel_set) { continue; }
                 let size = sizes.get(&name).copied().unwrap_or(0);
-                fast_write_member(&name, size, out_base, fail, |out| f.write_to(a, pw, out))?;
+                let want = crcs.get(&name).copied();
+                fast_write_member(&name, size, out_base, fail, want, |out| f.write_to(a, pw, out))?;
             }
             Ok(true)
         }
@@ -405,6 +624,10 @@ fn extract_rar_inner(input: &str, output: &str, selected: Option<&HashSet<String
     let mut total = 0u32;
     let mut prog_total = 0u64;
     let mut sizes: HashMap<String, u64> = HashMap::new();
+    // Per-member stored checksum, collected in the same pass as `sizes` so the
+    // write paths can verify what they produced. Keyed by the same normalised
+    // name the writer factory looks up.
+    let mut crcs: HashMap<String, CrcSpec> = HashMap::new();
     let mut stored: HashSet<String> = HashSet::new();
     for member in archive.members() {
         if extract_progress::cancelled() { return Err("cancelled".to_string()); }
@@ -418,25 +641,30 @@ fn extract_rar_inner(input: &str, output: &str, selected: Option<&HashSet<String
         if matches {
             total += 1;
             prog_total += member.meta.unpacked_size;
+            if let Some(c) = member_crc(&member) { crcs.insert(name.clone(), c); }
             sizes.insert(name, member.meta.unpacked_size);
         }
     }
     extract_progress::reset(prog_total);
-    let fail = AtomicU32::new(0);
+    // Arc so the CRC guard — which the rars writer factory hands out as a
+    // `Box<dyn Write + 'static>` and therefore may not borrow from — can still
+    // bump the SAME counter. A separate counter would make the mismatch a
+    // silent no-op and the archive result would still read Ok((total, 0)).
+    let fail = Arc::new(AtomicU32::new(0));
     let result = run_with_cancel_monitor(|| {
         // NOTE: must pass rar_opts(pw) here — `extract_to` builds its own
         // default options (rars' 512MB buffered limit) and would silently drop
         // RAR50_BUFFERED_LIMIT, buffering 100-500MB members and freezing the
         // top progress bar for the whole member.
         if let Some(sel) = &sel_set {
-            if extract_selected_fast(&archive, pw, sel, &sizes, &out_base, &fail)? {
+            if extract_selected_fast(&archive, pw, sel, &sizes, &crcs, &out_base, &fail)? {
                 return Ok(());
             }
         }
-        if let Some(()) = extract_all_parallel(&archive, pw, &out_base, &fail)? {
+        if let Some(()) = extract_all_parallel(&archive, pw, &crcs, &out_base, &fail)? {
             return Ok(());
         }
-        archive.extract_to_with_options(rar_opts(pw), rar_writer(&sel_set, &sizes, &stored, &out_base, &fail))
+        archive.extract_to_with_options(rar_opts(pw), rar_writer(&sel_set, &sizes, &crcs, &stored, &out_base, fail.clone()))
     });
     result.map_err(|e| format!("rar: {e}"))?;
     Ok((total, fail.load(Ordering::SeqCst)))
@@ -510,6 +738,10 @@ fn extract_rar_volumes_inner(paths: &[&str], output: &str, selected: Option<&Has
     let mut prog_total = 0u64;
     let mut seen: HashSet<String> = HashSet::new();
     let mut sizes: HashMap<String, u64> = HashMap::new();
+    // Per-member stored checksum, collected in the same pass as `sizes` so the
+    // write paths can verify what they produced. Keyed by the same normalised
+    // name the writer factory looks up.
+    let mut crcs: HashMap<String, CrcSpec> = HashMap::new();
     let mut stored: HashSet<String> = HashSet::new();
     for archive in &archives {
         for member in archive.members() {
@@ -525,14 +757,19 @@ fn extract_rar_volumes_inner(paths: &[&str], output: &str, selected: Option<&Has
             if matches {
                 total += 1;
                 prog_total += member.meta.unpacked_size;
-                sizes.insert(name, member.meta.unpacked_size);
+                if let Some(c) = member_crc(&member) { crcs.insert(name.clone(), c); }
+            sizes.insert(name, member.meta.unpacked_size);
             }
         }
     }
     extract_progress::reset(prog_total);
-    let fail = AtomicU32::new(0);
+    // Arc so the CRC guard — which the rars writer factory hands out as a
+    // `Box<dyn Write + 'static>` and therefore may not borrow from — can still
+    // bump the SAME counter. A separate counter would make the mismatch a
+    // silent no-op and the archive result would still read Ok((total, 0)).
+    let fail = Arc::new(AtomicU32::new(0));
     let result = run_with_cancel_monitor(|| {
-        rars::extract_volumes_to_with_options(&archives, rar_opts(pw), rar_writer(&sel_set, &sizes, &stored, &out_base, &fail))
+        rars::extract_volumes_to_with_options(&archives, rar_opts(pw), rar_writer(&sel_set, &sizes, &crcs, &stored, &out_base, fail.clone()))
     });
     result.map_err(|e| format!("rar: {e}"))?;
     Ok((total, fail.load(Ordering::SeqCst)))
@@ -711,8 +948,17 @@ pub extern "system" fn Java_com_usefulunpacker_RarCore_rarVolumesNeedsPassword(m
 
 #[cfg(test)]
 mod tests {
+
+    /// 进度 store 是 per-cdylib 的**静态量**，cargo 默认并行跑同一个 crate
+    /// 的测试，两个测试的 `reset(total)` + `add_bytes` 会互相踩：抢在前面的那个
+    /// 会用自己的夹具尺寸改掉 total，后一个断言 total 的测试就红。凡是调了
+    /// extract/compress 入口的测试都必须持这把锁。
+    ///
+    /// 实证：`archive_lzma-core` 的 `extract_progress_total_is_reported` 曾在 CI 上
+    /// 以 `left: 327, right: 119` 失败，本地 25/25 通过。
+
     use super::*;
-    use rars::rar13::{write_stored_volumes, StoredEntry, WriterOptions};
+    use rars::rar13::{write_stored_archive, write_stored_volumes, StoredEntry, WriterOptions};
     use rars::features::FeatureSet;
     use rars::version::ArchiveVersion;
 
@@ -740,9 +986,98 @@ mod tests {
         paths
     }
 
+    /// A stored member whose payload was altered must be REJECTED, and must not
+    /// leave the wrong bytes on disk.
+    ///
+    /// Before this, `crates/rar-core` never verified a member checksum at all:
+    /// `faults/corrupt-rawfile1.m5.rar` in files4testing decoded "successfully"
+    /// and left a plausible-looking but corrupt `rawfile1.txt`, while `unrar t`
+    /// on the same file reports `checksum error`. That is the worst failure
+    /// shape: the user is told it worked and gets wrong data.
+    ///
+    /// RAR1.3/1.4 stores only the low 16 bits of the CRC-32
+    /// (`(crc32(&data) & 0xffff) as u16` in the vendored writer), so the spec is
+    /// [CrcSpec::Low16] — a fixture that assumed a full 32-bit compare would
+    /// encode the wrong premise and pass for the wrong reason.
+    #[test]
+    fn corrupt_stored_member_is_rejected_and_leaves_nothing() {
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Single-volume on purpose: `make_volumes()` produces a split archive,
+        // and extracting one volume alone fails with "RAR 1.3 split entry
+        // requires multivolume extraction" — a parse error, which would let this
+        // test pass without ever reaching the checksum.
+        let payload: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        let entry = StoredEntry {
+            name: b"data/file.bin",
+            data: &payload,
+            file_time: 0,
+            file_attr: 0,
+            password: None,
+            file_comment: None,
+        };
+        let opts = WriterOptions::new(ArchiveVersion::Rar14, FeatureSet::store_only());
+        let original = write_stored_archive(&[entry], opts).expect("build single-volume rar");
+        let dir = std::env::temp_dir().join(format!("uu_rar_crc_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("ok.rar");
+        std::fs::write(&src, &original).unwrap();
+
+        // Sanity: the pristine archive extracts cleanly first, otherwise a
+        // broken fixture could make the corrupt-case assertion pass for the
+        // wrong reason.
+        let ok_out = std::env::temp_dir().join(format!("uu_rar_crc_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&ok_out);
+        let ok_s = ok_out.to_string_lossy().to_string();
+        extract_rar_inner(src.to_str().unwrap(), &ok_s, None, "")
+            .expect("pristine archive must extract");
+        assert_eq!(std::fs::read(ok_out.join("data/file.bin")).unwrap().len(), 4096);
+        std::fs::remove_dir_all(&ok_out).ok();
+
+        // Flip a byte well inside the stored payload (past the 7-byte marker and
+        // the first header block) so the archive still PARSES — a parse error
+        // would make this test pass without ever exercising the checksum.
+        let mut blob = original.clone();
+        let at = blob.len() / 2;
+        blob[at] ^= 0xff;
+        let bad = std::env::temp_dir().join(format!("uu_rar_crc_bad_{}", std::process::id()));
+        std::fs::write(&bad, &blob).unwrap();
+
+        // It must still be a readable archive — proof the corruption landed in
+        // the payload, not in the structure.
+        let listed = list_rar_inner(bad.to_str().unwrap()).expect("corrupt archive must still list");
+        assert!(listed.contains("file.bin"), "corruption broke parsing, not the payload: {listed}");
+
+        let out = std::env::temp_dir().join(format!("uu_rar_crc_out_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let out_s = out.to_string_lossy().to_string();
+        // RAR 1.3/1.4 aborts the whole extraction via its own built-in
+        // `verify_checksum`, so the honest contract here is `Err` — the
+        // corruption is detected before any output is considered good. RAR 1.5+
+        // takes the per-entry path instead and reports `Ok((total, errors))`,
+        // which is the "Ok ≠ success" trap; both must be treated as failure by
+        // the caller, and the app's `err > 0 || total == 0` check covers it.
+        let res = extract_rar_inner(bad.to_str().unwrap(), &out_s, None, "");
+        let detected = match &res {
+            Err(_) => true,
+            Ok((_total, err)) => *err > 0,
+        };
+        assert!(
+            detected,
+            "a member that fails its checksum must not be reported as a success, got {res:?}"
+        );
+        assert!(
+            !out.join("data/file.bin").exists(),
+            "a member that failed its checksum must not be left on disk"
+        );
+        std::fs::remove_dir_all(&out).ok();
+        std::fs::remove_file(&bad).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn lists_and_extracts_multivolume_rar() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let vols = make_volumes();
         let paths: Vec<String> = vols.iter().map(|p| p.to_string_lossy().to_string()).collect();
         let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
@@ -768,7 +1103,7 @@ mod tests {
     /// the app prompts for a password instead of silently failing.
     #[test]
     fn needs_password_true_on_unparseable_header() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("uu_rar_np_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -804,7 +1139,7 @@ mod tests {
     /// rars whole-member decode flag.
     #[test]
     fn cancel_aborts_buffered_decode() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("uu_rar_cancel_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let data: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
@@ -839,7 +1174,7 @@ mod tests {
         // An entry named "../evil.txt" must never be written anywhere — the
         // safe_join failure counts the entry as failed and sinks its data
         // (no fallback join that escapes the output directory).
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let data: Vec<u8> = (0..2048u32).map(|i| (i % 251) as u8).collect();
         let entry = StoredEntry {
             name: b"../evil.txt",
@@ -883,6 +1218,15 @@ mod tests {
 /// Skips (passes silently) when the env var is absent.
 #[cfg(test)]
 mod manual_volumes {
+
+    /// 进度 store 是 per-cdylib 的**静态量**，cargo 默认并行跑同一个 crate
+    /// 的测试，两个测试的 `reset(total)` + `add_bytes` 会互相踩：抢在前面的那个
+    /// 会用自己的夹具尺寸改掉 total，后一个断言 total 的测试就红。凡是调了
+    /// extract/compress 入口的测试都必须持这把锁。
+    ///
+    /// 实证：`archive_lzma-core` 的 `extract_progress_total_is_reported` 曾在 CI 上
+    /// 以 `left: 327, right: 119` 失败，本地 25/25 通过。
+
     use super::*;
     use std::time::Instant;
 
@@ -948,7 +1292,7 @@ mod manual_volumes {
 
     #[test]
     fn manual_rar_volumes() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let Ok(parts) = std::env::var("UU_RAR_PARTS") else {
             eprintln!("[manual_rar] skipped: UU_RAR_PARTS not set");
             return;
@@ -1093,7 +1437,7 @@ mod manual_volumes {
     /// member" report with a real 1.1GB galgame archive.
     #[test]
     fn probe_real_archive_progress() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let Ok(probe) = std::env::var("UU_RAR_PROBE") else {
             eprintln!("[probe] skipped: UU_RAR_PROBE not set");
             return;
@@ -1163,7 +1507,7 @@ mod manual_volumes {
     /// instantly instead of decoding the whole archive.
     #[test]
     fn probe_selected_fast() {
-        let _g = crate::TEST_LOCK.lock().unwrap();
+        let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let Ok(probe) = std::env::var("UU_RAR_SEL_PROBE") else {
             eprintln!("[sel] skipped: UU_RAR_SEL_PROBE not set");
             return;

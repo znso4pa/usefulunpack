@@ -721,18 +721,10 @@ class MainActivity : AppCompatActivity() {
 
     // ── Per-tab helpers used by FolderFragment ──────────────────────────
     internal fun copySingleFile(tab: TabState, f: File) {
-        val targetDir = tab.currentDir
-        thread {
-            try {
-                val dest = File(targetDir, getCopyFileName(f, targetDir))
-                if (f.isDirectory) f.copyRecursively(dest, overwrite = false)
-                else f.copyTo(dest, overwrite = false)
-                runOnUiThread { toast(getString(R.string.msg_copied)); refreshTab(tab) }
-            } catch (e: Exception) {
-                // A failed copy must not claim success.
-                runOnUiThread { toast(getString(R.string.err_file_error)) }
-            }
-        }
+        // Routed through the shared copy flow: a bare `thread {}` gave no
+        // feedback, could not be cancelled, and a failed `copyRecursively` left
+        // a half-written tree that looked like a successful copy.
+        copyWithProgress(listOf(f), tab.currentDir) { _, _, _ -> refreshTab(tab) }
     }
 
     internal fun confirmDeleteSingle(tab: TabState, f: File) {

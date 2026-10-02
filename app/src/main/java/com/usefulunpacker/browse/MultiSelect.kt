@@ -156,34 +156,15 @@ internal fun MainActivity.startBatchMove() {
     }
 
 internal fun MainActivity.startBatchCopy() {
-        val tab = activeTab
-        val sel = allSelectedFiles().values.flatten().toList(); if (sel.isEmpty()) return
-        val targetDir = tab.currentDir
-        exitAllMultiSelect()
-        thread {
-            var copied = 0
-            var failed = 0
-            for (src in sel) {
-                try {
-                    val dest = File(targetDir, getCopyFileName(src, targetDir))
-                    if (src.isDirectory) {
-                        src.copyRecursively(dest, overwrite = false)
-                    } else {
-                        src.copyTo(dest, overwrite = false)
-                    }
-                    copied++
-                } catch (e: Exception) {
-                    android.util.Log.e("MultiSelect", "Copy failed: ${src.name}", e)
-                    failed++
-                }
-            }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                if (failed > 0) toast(getString(R.string.msg_copy_result, copied, failed)) else toast(getString(R.string.msg_copied))
-                navTab(tab, targetDir)
-            }
-        }
-    }
+    val tab = activeTab
+    val sel = allSelectedFiles().values.flatten().toList(); if (sel.isEmpty()) return
+    val targetDir = tab.currentDir
+    exitAllMultiSelect()
+    // Shared copy flow: progress card + working cancel + partial-destination
+    // cleanup. The old loop reported nothing until the end and left whatever a
+    // failed `copyRecursively` had already written on disk.
+    copyWithProgress(sel, targetDir)
+}
 
 internal fun MainActivity.getCopyFileName(src: File, targetDir: File): String {
         val name = src.nameWithoutExtension

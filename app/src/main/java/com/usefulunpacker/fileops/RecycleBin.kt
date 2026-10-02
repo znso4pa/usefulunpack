@@ -41,9 +41,40 @@ object RecycleBin {
      *
      * `scanTree()` has always computed the byte total ([ScanResult.size]); it
      * simply wasn't reaching the UI.
+     *
+     * [totalBytes] is **2× the tree size** on the copy-fallback path: moving
+     * across volumes reads the data once (copy) and once more (delete), and both
+     * halves are reported. A bar that reads 100% at the end of the copy is
+     * claiming the work is done while the originals are still being unlinked.
      */
+    /**
+     * A snapshot of the copy-fallback move. The byte numbers come in TWO
+     * calibrations on purpose, because conflating them was a real bug:
+     *
+     *  * [barDone] / [barTotal] drive the **bar**. `barTotal` is 2× [dataTotal]:
+     *    a cross-volume move reads the data once (copy) and once more (delete),
+     *    and both halves are reported so the bar climbs monotonically to 100% and
+     *    only reaches it when the move is genuinely finished. A bar that hit 100%
+     *    at the end of the copy was claiming completion while the originals were
+     *    still being unlinked.
+     *  * [dataTotal] is the **real** size of the tree, for the size text. Using
+     *    `barTotal` for the text made a 3.6 GB tree display "7.2 GB", which is
+     *    work done, not data moved — the user reads that number as "this folder
+     *    is 7 GB".
+     */
+    data class MoveState(
+        val filesDone: Int,
+        val filesTotal: Int,
+        val barDone: Long,
+        val barTotal: Long,
+        val dataTotal: Long
+    ) {
+        /** True once the copy half is finished and the originals are going. */
+        val cleaningUp: Boolean get() = barDone > dataTotal
+    }
+
     fun interface MoveProgress {
-        fun onProgress(done: Int, total: Int, doneBytes: Long, totalBytes: Long)
+        fun onProgress(s: MoveState)
     }
 
     private class ScanResult(val size: Long, val fileCount: Int)
@@ -81,6 +112,13 @@ object RecycleBin {
             // the background afterwards; the copy fallback below scans for
             // totals because its progress bar needs them anyway.
             if (file.renameTo(dest)) {
+                // Report completion even on the instant rename path. The fast path
+                // used to report NOTHING, so the card sat on a spinner with an
+                // empty size line until the whole target finished — which read as
+                // "lost progress" rather than "already done".
+                val n = if (file.isFile) 1 else 0
+                val sz = if (file.isFile) runCatching { file.length() }.getOrDefault(0L) else 0L
+                onProgress?.onProgress(MoveState(maxOf(n, 1), maxOf(n, 1), sz, sz, sz))
                 val meta = baseMeta().apply { put("size", 0L) }
                 File(entryDir, "_meta.json").writeText(meta.toString(2))
                 updateManifest(dir) { manifest ->
@@ -114,12 +152,25 @@ object RecycleBin {
                 val meta = baseMeta().apply { put("size", scan.size) }
                 File(entryDir, "_meta.json").writeText(meta.toString(2))
 
+                // The move is TWO passes over the same volume of data — copy,
+                // then delete the original — so the byte total is 2× and each
+                // pass owns half the bar. Reporting the copy as 0..100% left the
+                // bar confidently full while `deleteRecursively()` ground
+                // through the tree with nothing to show, which reads as "hit
+                // 100% then froze". The bar now reaches 100% only when the move
+                // is actually finished.
+                val totalBytes = scan.size * 2
+                val copyPhaseEnd = scan.size
                 var copyFailed: Exception? = null
                 var done = 0
                 // Accumulates copied bytes so the bar advances by volume, not by
                 // file count. A failed copy contributes nothing (it didn't land).
                 var doneBytes = 0L
                 if (file.isDirectory) {
+                    // Record what we copied so the delete pass removes exactly
+                    // these paths — same traversal as the copy, so no symlinked
+                    // directory can be walked into a second time.
+                    val copied = ArrayList<Pair<File, Long>>()
                     file.walkTopDown().forEach { f ->
                         if (copyFailed != null) return@forEach
                         val rel = try { f.relativeTo(file) } catch (e: Exception) { return@forEach }
@@ -129,21 +180,52 @@ object RecycleBin {
                             out.parentFile?.mkdirs()
                             val ok = runCatching { f.copyTo(out, overwrite = false) }.isSuccess
                             done++
-                            if (ok) doneBytes += runCatching { f.length() }.getOrDefault(0L)
-                            onProgress?.onProgress(done, scan.fileCount, doneBytes, scan.size)
+                            if (done <= 3 || done % 50 == 0) {
+                            }
+                            val len = runCatching { f.length() }.getOrDefault(0L)
+                            if (ok) { doneBytes += len; copied.add(f to len) }
+                            onProgress?.onProgress(MoveState(done, scan.fileCount, doneBytes, totalBytes, scan.size))
                             if (!ok && copyFailed == null) {
                                 copyFailed = java.io.IOException("copy failed: ${f.path}")
                             }
                         }
                     }
                     if (copyFailed != null) throw copyFailed!!
-                    file.deleteRecursively()
+                    // Delete originals child-before-parent, feeding the second
+                    // half of the bar. Directories carry 0 bytes (they're not in
+                    // ScanResult.size) but must still be removed.
+                    var deletedBytes = 0L
+                    fun reportDelete() {
+                        onProgress?.onProgress(
+                            MoveState(done, scan.fileCount, copyPhaseEnd + deletedBytes, totalBytes, scan.size)
+                        )
+                    }
+                    for ((target, len) in copied.asReversed()) {
+                        target.delete()
+                        if (len > 0) deletedBytes += len
+                        reportDelete()
+                    }
+                    // Files first, then the directories that contained them.
+                    // Reversed walkTopDown = deepest first, so a parent is only
+                    // unlinked after its children are gone.
+                    val dirs = ArrayList<File>()
+                    file.walkTopDown().forEach { f -> if (f != file && f.isDirectory) dirs.add(f) }
+                    for (d in dirs.asReversed()) {
+                        d.delete()
+                        reportDelete()
+                    }
+                    file.delete()
+                    // Final report is exact, so the bar lands on 100% even when a
+                    // length() drifted between scan, copy and delete.
+                    onProgress?.onProgress(
+                        MoveState(scan.fileCount, scan.fileCount, totalBytes, totalBytes, scan.size)
+                    )
                 } else {
                     file.copyTo(dest, overwrite = false)
+                    file.delete()
                     // scanTree already measured it; report the same number rather
                     // than re-stat'ing, so the bar lands exactly on 100%.
-                    onProgress?.onProgress(1, 1, scan.size, scan.size)
-                    file.delete()
+                    onProgress?.onProgress(MoveState(1, 1, totalBytes, totalBytes, scan.size))
                 }
                 updateManifest(dir) { manifest ->
                     manifest.getJSONArray("entries").put(meta)
@@ -357,7 +439,6 @@ object RecycleBin {
         val manifest = readManifest(dir) ?: return dir.listFiles()?.count { it.isDirectory && it.name != "." && it.name != ".." } ?: 0
         return manifest.getJSONArray("entries").length()
     }
-
 
     private fun uniqueFile(dir: File, name: String): File {
         var candidate = File(dir, name)

@@ -99,6 +99,10 @@
     <string name="level_extreme">極限</string>
     <string name="msg_done">完成</string>
     <string name="msg_copied">已複製</string>
+    <string name="msg_copying">正在複製…</string>
+    <plurals name="msg_copy_cancelled">
+        <item quantity="other">已取消 — 已複製 %1$d 項</item>
+    </plurals>
     <string name="msg_deleted">已刪除</string>
     <string name="msg_created">已建立</string>
     <string name="msg_cancelled">已取消</string>
@@ -263,6 +267,7 @@
     <string name="msg_extracting_file">正在解壓——%1$s</string>
     <string name="msg_delete_progress">正在刪除</string>
     <string name="msg_move_to_recycle">正在移到回收站</string>
+    <string name="recycle_progress_cleaning">正在刪除原檔案…</string>
     <string name="msg_deleting_file">正在刪除——%1$s</string>
     <string name="msg_delete_counting">正在統計…</string>
     <string name="msg_delete_result">刪除完成: %1$d 成功, %2$d 失敗</string>

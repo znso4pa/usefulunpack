@@ -100,6 +100,11 @@
     <string name="level_extreme">Maximum</string>
     <string name="msg_done">Done</string>
     <string name="msg_copied">Copied</string>
+    <string name="msg_copying">Copying…</string>
+    <plurals name="msg_copy_cancelled">
+        <item quantity="one">Cancelled — %1$d item copied</item>
+        <item quantity="other">Cancelled — %1$d items copied</item>
+    </plurals>
     <string name="msg_deleted">Deleted</string>
     <string name="msg_created">Created</string>
     <string name="msg_cancelled">Cancelled</string>
@@ -273,6 +278,7 @@
     <string name="msg_extracting_file">Extracting — %1$s</string>
     <string name="msg_delete_progress">Deleting</string>
     <string name="msg_move_to_recycle">Moving to recycle bin</string>
+    <string name="recycle_progress_cleaning">Removing originals…</string>
     <string name="msg_deleting_file">Deleting — %1$s</string>
     <string name="msg_delete_counting">Counting files…</string>
     <string name="msg_delete_result">Deleted: %1$d ok, %2$d failed</string>

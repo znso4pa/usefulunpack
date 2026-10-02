@@ -20,6 +20,7 @@ import kotlin.concurrent.thread
  * line carries the `[i/N]` target counter. No cancel button — a partially
  * recycled batch can't be undone.
  */
+
 fun deleteWithProgress(
     activity: AppCompatActivity,
     targets: List<File>,
@@ -53,30 +54,45 @@ fun deleteWithProgress(
             // totals. Bytes (not file count) drive the bar because a folder of
             // many tiny files would crawl while gigabytes stream past; the file
             // count still rides along in the label, which is what users read.
-            val moveCb = RecycleBin.MoveProgress { done, total, doneBytes, totalBytes ->
+            val moveCb = RecycleBin.MoveProgress { st ->
                 activity.runOnUiThread {
                     if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                     val c = card ?: return@runOnUiThread
                     when {
                         // Byte progress available: volume-accurate bar.
-                        totalBytes > 0 -> {
+                        st.barTotal > 0 -> {
                             c.overallBar.isIndeterminate = false
                             c.overallBar.max = 100
                             c.overallBar.progress =
-                                (doneBytes * 100 / totalBytes).coerceIn(0, 100).toInt()
+                                (st.barDone * 100 / st.barTotal).coerceIn(0, 100).toInt()
+                            // The size text uses the REAL tree size, never barTotal:
+                            // barTotal is 2× because the move reads the data twice
+                            // (copy + delete), and showing that as the denominator
+                            // made a 3.6 GB tree read as "7.2 GB".
+                            val shown = if (st.barDone > st.dataTotal) st.dataTotal else st.barDone
                             c.overallText.text = activity.resources.getQuantityString(
-                                R.plurals.recycle_progress_items_bytes, total,
-                                fmt(doneBytes), fmt(totalBytes), done, total
+                                R.plurals.recycle_progress_items_bytes, st.filesTotal,
+                                fmt(shown), fmt(st.dataTotal), st.filesDone, st.filesTotal
                             )
+                            // Once the copy half is done the byte line is at its final
+                            // value, so the message has to say what is still running —
+                            // otherwise a moving bar under a full "3.6 GB / 3.6 GB"
+                            // reads as a stuck bar.
+                            c.msg.text = if (st.cleaningUp) {
+                                activity.getString(R.string.recycle_progress_cleaning)
+                            } else {
+                                activity.getString(R.string.msg_move_to_recycle)
+                            }
                         }
                         // Byte total unknown (e.g. a single file we couldn't stat):
                         // fall back to the file count so the bar still moves.
-                        total > 0 -> {
+                        st.filesTotal > 0 -> {
                             c.overallBar.isIndeterminate = false
-                            c.overallBar.max = total
-                            c.overallBar.progress = done.coerceAtMost(total)
+                            c.overallBar.max = st.filesTotal
+                            c.overallBar.progress = st.filesDone.coerceAtMost(st.filesTotal)
                             c.overallText.text = activity.resources.getQuantityString(
-                                R.plurals.recycle_progress_items, total, done, total
+                                R.plurals.recycle_progress_items, st.filesTotal,
+                                st.filesDone, st.filesTotal
                             )
                         }
                     }

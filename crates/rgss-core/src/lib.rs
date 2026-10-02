@@ -1311,6 +1311,14 @@ pub extern "system" fn Java_com_usefulunpacker_RgssCore_rgssMvCancel(_: JNIEnv, 
 
 #[cfg(test)]
 mod tests {
+
+    /// 进度 store 是 per-cdylib 的**静态量**，cargo 默认并行跑同一个 crate
+    /// 的测试，两个测试的 `reset(total)` + `add_bytes` 会互相踩：抢在前面的那个
+    /// 会用自己的夹具尺寸改掉 total，后一个断言 total 的测试就红。凡是调了
+    /// extract/compress 入口的测试都必须持这把锁。
+    ///
+    /// 实证：`archive_lzma-core` 的 `extract_progress_total_is_reported` 曾在 CI 上
+    /// 以 `left: 327, right: 119` 失败，本地 25/25 通过。
     use super::*;
 
     fn hex(b: &[u8]) -> String { b.iter().map(|x| format!("{x:02x}")).collect() }
@@ -1325,6 +1333,15 @@ mod tests {
     /// scheduling), so it shows up as a flaky suite rather than a clear bug.
     ///
     /// Any new test that calls `create` or `mv_encrypt` must take this guard.
+    /// One lock per crate for the per-cdylib progress statics. Both test modules
+    /// share those statics, so a per-module mutex would let a test in one race a
+    /// test in the other — which is exactly the CI failure
+    /// (`left: 327, right: 119`) this exists to prevent.
+    static PROGRESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn progress_lock() -> std::sync::MutexGuard<'static, ()> {
+        PROGRESS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     static PACK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     fn pack_lock() -> std::sync::MutexGuard<'static, ()> {
         PACK_LOCK.lock().unwrap_or_else(|e| e.into_inner())
@@ -1403,6 +1420,7 @@ mod tests {
 
     #[test]
     fn parses_fixed_v1_bytes() {
+    let _g = progress_lock();
         let dir = tmp("fixed1");
         fs::create_dir_all(&dir).unwrap();
         let arc = dir.join("Game.rgssad");
@@ -1421,6 +1439,7 @@ mod tests {
 
     #[test]
     fn parses_fixed_v3_bytes() {
+    let _g = progress_lock();
         let dir = tmp("fixed3");
         fs::create_dir_all(&dir).unwrap();
         let arc = dir.join("Game.rgss3a");
@@ -1440,6 +1459,7 @@ mod tests {
 
     #[test]
     fn version_two_reads_as_v1_layout() {
+    let _g = progress_lock();
         // The v2 byte is only a version marker; the layout is identical to v1
         // (uuksu, mkxp-z and rgssad-rs all treat .rgssad / .rgss2a alike).
         let mut v = V1_TINY.to_vec();
@@ -1460,6 +1480,7 @@ mod tests {
 
     #[test]
     fn reader_accepts_the_spec_derived_archives() {
+    let _g = progress_lock();
         let dir = tmp("specread");
         fs::create_dir_all(&dir).unwrap();
         let a = dir.join("Game.rgssad");
@@ -1519,7 +1540,7 @@ mod tests {
 
     #[test]
     fn v3_round_trip() {
-        let _guard = pack_lock();
+            let _guard = pack_lock();
         let dir = tmp("rt3");
         let indir = dir.join("in");
         fs::create_dir_all(indir.join("Data")).unwrap();
@@ -1559,7 +1580,7 @@ mod tests {
 
     #[test]
     fn v1_round_trip() {
-        let _guard = pack_lock();
+            let _guard = pack_lock();
         let dir = tmp("rt1");
         let indir = dir.join("in");
         fs::create_dir_all(indir.join("Graphics")).unwrap();
@@ -1601,7 +1622,7 @@ mod tests {
 
     #[test]
     fn selective_extract_matches_dir_prefix() {
-        let _guard = pack_lock();
+            let _guard = pack_lock();
         let dir = tmp("sel");
         let indir = dir.join("in");
         write_tree(&indir, &[("Data/A.rvdata2", b"a"), ("Graphics/B.png", b"bb"), ("Data/sub/C.png", b"c")]);
@@ -1720,6 +1741,7 @@ mod tests {
 
     #[test]
     fn rejects_path_traversal_entries() {
+    let _g = progress_lock();
         let dir = tmp("trav");
         fs::create_dir_all(&dir).unwrap();
         let key: u32 = 3;
@@ -1747,6 +1769,7 @@ mod tests {
 
     #[test]
     fn duplicate_names_do_not_truncate() {
+    let _g = progress_lock();
         // Two index entries can share a name (or differ only in case) — a
         // hostile or hand-edited archive. /sdcard and FAT are case-insensitive,
         // so writing both to the same path would silently destroy one payload.
@@ -1810,7 +1833,7 @@ mod tests {
 
     #[test]
     fn packs_a_single_file() {
-        let _guard = pack_lock();
+            let _guard = pack_lock();
         let dir = tmp("one");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("one.dat"), vec![7u8; 8000]).unwrap();
@@ -2272,7 +2295,7 @@ mod tests {
 
     #[test]
     fn repacked_v3_matches_source_entry_names() {
-        let _guard = pack_lock();
+            let _guard = pack_lock();
         // Extract -> repack -> re-list must reproduce the same path set; this
         // is the preview-workspace "edit and repack" loop users rely on.
         let dir = tmp("repack");

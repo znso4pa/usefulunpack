@@ -225,6 +225,7 @@ mod tests {
 
     #[test]
     fn compress_then_extract_round_trip() {
+    let _g = lock();
         let dir = tmp("rt");
         std::fs::create_dir_all(&dir).unwrap();
         let data: Vec<u8> = (0..80_000u32).map(|i| (i % 251) as u8).collect();
@@ -239,6 +240,7 @@ mod tests {
 
     #[test]
     fn empty_and_truncated_rejected() {
+    let _g = lock();
         let dir = tmp("rej");
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("out");
@@ -253,7 +255,6 @@ mod tests {
         assert!(extract_lzma(bad.to_str().unwrap(), out.to_str().unwrap()).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
-
 
     /// 字节级进度防回归。
     ///

@@ -458,6 +458,18 @@ pub extern "system" fn Java_com_usefulunpacker_IsoCore_isoCreateArchive(mut e: J
 
 #[cfg(test)]
 mod tests {
+
+    /// 进度 store 是 per-cdylib 的**静态量**，cargo 默认并行跑同一个 crate
+    /// 的测试，两个测试的 `reset(total)` + `add_bytes` 会互相踩：抢在前面的那个
+    /// 会用自己的夹具尺寸改掉 total，后一个断言 total 的测试就红。凡是调了
+    /// extract/compress 入口的测试都必须持这把锁。
+    ///
+    /// 实证：`archive_lzma-core` 的 `extract_progress_total_is_reported` 曾在 CI 上
+    /// 以 `left: 327, right: 119` 失败，本地 25/25 通过。
+    static PROGRESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn progress_lock() -> std::sync::MutexGuard<'static, ()> {
+        PROGRESS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
     use super::*;
 
     const SECTOR: usize = 2048;
@@ -513,6 +525,7 @@ mod tests {
 
     #[test]
     fn streams_iso_file_extraction() {
+    let _g = progress_lock();
         let content = b"HELLO ISO!";
         let dir = std::env::temp_dir().join(format!("uu_iso_x_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -532,6 +545,7 @@ mod tests {
     /// create_iso (Level 1 writer) → list + extract round-trips.
     #[test]
     fn create_iso_then_extract_round_trip() {
+    let _g = progress_lock();
         let dir = std::env::temp_dir().join(format!("uu_iso_w_{}", std::process::id()));
         std::fs::create_dir_all(dir.join("src/sub")).unwrap();
         let a = dir.join("src/hello.txt");
@@ -560,6 +574,7 @@ mod tests {
     /// sector allocation is recursive, not limited to two levels.
     #[test]
     fn create_iso_deep_nesting_round_trip() {
+    let _g = progress_lock();
         let dir = std::env::temp_dir().join(format!("uu_iso_deep_{}", std::process::id()));
         std::fs::create_dir_all(dir.join("a/b/c/d")).unwrap();
         std::fs::write(dir.join("a/root.txt"), b"root").unwrap();
@@ -582,6 +597,7 @@ mod tests {
     /// 8.3 collisions get distinct `~N` names so records don't overwrite.
     #[test]
     fn create_iso_dedups_83_collisions() {
+    let _g = progress_lock();
         let dir = std::env::temp_dir().join(format!("uu_iso_dedup_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("longfilename.txt"), b"first").unwrap();
@@ -624,6 +640,7 @@ mod tests {
     /// `~N` name with the `;1` version marker preserved (not a mid-name `;`).
     #[test]
     fn create_iso_dedup_extensionless_collision() {
+    let _g = progress_lock();
         let dir = std::env::temp_dir().join(format!("uu_iso_extless_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Both truncate to "ABCDEFGH;1" under Level 1 (8-char stem, no ext);

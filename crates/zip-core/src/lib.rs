@@ -878,6 +878,18 @@ fn vol_list(vs: &str) -> Vec<String> { vs.lines().filter(|l| !l.is_empty()).map(
 
 #[cfg(test)]
 mod tests {
+
+    /// 进度 store 是 per-cdylib 的**静态量**，cargo 默认并行跑同一个 crate
+    /// 的测试，两个测试的 `reset(total)` + `add_bytes` 会互相踩：抢在前面的那个
+    /// 会用自己的夹具尺寸改掉 total，后一个断言 total 的测试就红。凡是调了
+    /// extract/compress 入口的测试都必须持这把锁。
+    ///
+    /// 实证：`archive_lzma-core` 的 `extract_progress_total_is_reported` 曾在 CI 上
+    /// 以 `left: 327, right: 119` 失败，本地 25/25 通过。
+    static PROGRESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn progress_lock() -> std::sync::MutexGuard<'static, ()> {
+        PROGRESS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
     use super::*;
 
     fn tmp(tag: &str) -> std::path::PathBuf {
@@ -908,6 +920,7 @@ mod tests {
 
     #[test]
     fn concat_reader_lists_and_extracts_split_zip() {
+    let _g = progress_lock();
         let (vols, parts_dir) = make_split_zip();
         let paths: Vec<String> = vols.iter().map(|p| p.to_string_lossy().to_string()).collect();
         let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
@@ -930,6 +943,7 @@ mod tests {
 
     #[test]
     fn concat_reader_selected_extract_split_zip() {
+    let _g = progress_lock();
         let (vols, parts_dir) = make_split_zip();
         let paths: Vec<String> = vols.iter().map(|p| p.to_string_lossy().to_string()).collect();
         let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
@@ -948,6 +962,7 @@ mod tests {
 
     #[test]
     fn compress_with_split_round_trip() {
+    let _g = progress_lock();
         let dir = tmp("splitc");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"split zip compression world").unwrap();
@@ -988,6 +1003,7 @@ mod tests {
     /// Set `UU_ZIP_PARTS` (colon-separated part paths).
     #[test]
     fn manual_zip_volumes() {
+    let _g = progress_lock();
         let Ok(parts) = std::env::var("UU_ZIP_PARTS") else {
             eprintln!("[manual_zip] skipped: UU_ZIP_PARTS not set");
             return;
@@ -1014,6 +1030,7 @@ mod tests {
     /// password+split failure.
     #[test]
     fn password_and_split_round_trips() {
+    let _g = progress_lock();
         let dir = tmp("pw");
         std::fs::create_dir_all(&dir).unwrap();
         let payload: Vec<u8> = (0..400_000u32).map(|i| (i % 251) as u8).collect();
@@ -1078,6 +1095,7 @@ mod tests {
 
     #[test]
     fn password_selected_extracts_only_selected() {
+    let _g = progress_lock();
         let dir = tmp("pws");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"AAA").unwrap();
@@ -1106,6 +1124,7 @@ mod tests {
     /// untouched entry is byte-identical and the archive still extracts.
     #[test]
     fn modify_replace_delete_add_round_trip() {
+    let _g = progress_lock();
         let dir = tmp("mod");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"original a").unwrap();
@@ -1142,6 +1161,7 @@ mod tests {
     /// survive (raw-copy keeps their bytes); a replaced entry re-encrypts.
     #[test]
     fn modify_password_archive_preserves_others() {
+    let _g = progress_lock();
         let dir = tmp("modpw");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"secret a").unwrap();
@@ -1170,6 +1190,7 @@ mod tests {
     /// leaving ciphertext mislabeled as plaintext → corrupt on re-extract).
     #[test]
     fn modify_aes_archive_preserves_untouched_entries() {
+    let _g = progress_lock();
         let dir = tmp("modaes");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"aes payload a").unwrap();
@@ -1278,6 +1299,7 @@ mod tests {
     /// not silently succeed while changing nothing.
     #[test]
     fn modify_missing_path_errors() {
+    let _g = progress_lock();
         let dir = tmp("missing");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"present").unwrap();
@@ -1296,6 +1318,7 @@ mod tests {
     /// Deleting a directory prefix cascades to every entry underneath it.
     #[test]
     fn modify_delete_directory_cascades() {
+    let _g = progress_lock();
         let dir = tmp("deldir");
         std::fs::create_dir_all(dir.join("src/sub")).unwrap();
         std::fs::write(dir.join("src/root.txt"), b"keep root").unwrap();
@@ -1320,6 +1343,7 @@ mod tests {
     /// entry — the directory prefix match must not swallow siblings.
     #[test]
     fn modify_replace_nested_entry_exact() {
+    let _g = progress_lock();
         let dir = tmp("replnested");
         std::fs::create_dir_all(dir.join("src/sub")).unwrap();
         std::fs::write(dir.join("src/sub/a.txt"), b"old a").unwrap();
@@ -1448,6 +1472,7 @@ mod tests {
 
     #[test]
     fn pkware_split_extract_round_trip() {
+    let _g = progress_lock();
         let dir = tmp("pkwext");
         std::fs::create_dir_all(&dir).unwrap();
         let vols = make_pkware_split_zip(&dir);
@@ -1469,6 +1494,7 @@ mod tests {
     /// stream is byte-contiguous and find_content reads through the seam.
     #[test]
     fn pkware_split_cross_disk_entry_extracts() {
+    let _g = progress_lock();
         let dir = tmp("pkx");
         std::fs::create_dir_all(&dir).unwrap();
         // a.txt lives on disk 0 but declares 1000 bytes — disk 0 only holds
@@ -1534,6 +1560,7 @@ mod tests {
     /// must be size-checked.
     #[test]
     fn pkware_split_short_read_fails_entry() {
+    let _g = progress_lock();
         let dir = tmp("pkxshort");
         std::fs::create_dir_all(&dir).unwrap();
         let a: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();

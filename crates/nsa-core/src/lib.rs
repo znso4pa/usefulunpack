@@ -449,7 +449,6 @@ fn create_nsa(input: &str, output: &str, level: i32) -> Result<u32, String> {
     Ok(files.len() as u32)
 }
 
-
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaExtract(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString) -> jstring {
     extract_progress::clear_cancel();
     let inp = s(&mut e, &i); let out = s(&mut e, &o); let _ = fs::create_dir_all(&out);
@@ -523,9 +522,31 @@ fn create_nsa(input: &str, output: &str, level: i32) -> Result<u32, String> {
 }
 #[no_mangle] pub extern "system" fn Java_com_usefulunpacker_NsaCore_nsaCompressCancel(_: JNIEnv, _: JClass) { compress_progress::cancel(); }
 
+/// 进度 store 是 per-cdylib 的**静态量**，cargo 默认并行跑同一个 crate 的测试，
+/// 两个测试的 `reset(total)` + `add_bytes` 会互相踩。凡是调了 extract/compress
+/// 入口的测试都必须持这把锁。
+///
+/// 放在 crate 级而不是各测试模块内：`tests` 与 `security_tests` 原本各有一个
+/// 同名 `PROGRESS_LOCK`，但它们是**两把不同的锁**，跨模块并行跑照样竞争。
+#[cfg(test)]
+static PROGRESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn progress_lock() -> std::sync::MutexGuard<'static, ()> {
+    // 故意用 unwrap_or_else 而不是 unwrap：中毒锁会让**不相关**的测试一起失败。
+    PROGRESS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 #[cfg(test)]
 mod tests {
+
+    /// 进度 store 是 per-cdylib 的**静态量**，cargo 默认并行跑同一个 crate
+    /// 的测试，两个测试的 `reset(total)` + `add_bytes` 会互相踩：抢在前面的那个
+    /// 会用自己的夹具尺寸改掉 total，后一个断言 total 的测试就红。凡是调了
+    /// extract/compress 入口的测试都必须持这把锁。
+    ///
+    /// 实证：`archive_lzma-core` 的 `extract_progress_total_is_reported` 曾在 CI 上
+    /// 以 `left: 327, right: 119` 失败，本地 25/25 通过。
     use super::*;
 
     fn make_nsa(path: &std::path::Path, entries: &[(&str, u8, &[u8])]) {
@@ -650,12 +671,16 @@ mod tests {
 
 #[cfg(test)]
 mod security_tests {
+
+    /// 进度 store 是 per-cdylib 的**静态量**，cargo 默认并行跑同一个 crate
+    /// 的测试，两个测试的 `reset(total)` + `add_bytes` 会互相踩：抢在前面的那个
+    /// 会用自己的夹具尺寸改掉 total，后一个断言 total 的测试就红。凡是调了
+    /// extract/compress 入口的测试都必须持这把锁。
+    ///
+    /// 实证：`archive_lzma-core` 的 `extract_progress_total_is_reported` 曾在 CI 上
+    /// 以 `left: 327, right: 119` 失败，本地 25/25 通过。
     use super::*;
     use std::sync::{LazyLock, Mutex};
-
-    /// Serialise tests that touch the global compress_progress statics to
-    /// prevent parallel interference on the atomic counters.
-    static PROGRESS_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     /// A malicious NSA header declaring a 3GB csize must be rejected cleanly
     /// (no OOM allocation, no crash) before any buffer is allocated.
@@ -690,7 +715,7 @@ mod security_tests {
     /// create_nsa (stored + LZSS) → extract round-trips byte-identically.
     #[test]
     fn create_then_extract_round_trip() {
-        let _lock = PROGRESS_LOCK.lock().unwrap();
+        let _lock = progress_lock();
         let dir = std::env::temp_dir().join(format!("uu_nsa_create_{}", std::process::id()));
         std::fs::create_dir_all(dir.join("src/sub")).unwrap();
         let a = dir.join("src/hello.txt");
@@ -718,7 +743,7 @@ mod security_tests {
     /// raw (no whole-file RAM buffering) and still round-trip.
     #[test]
     fn create_nsa_streams_large_file() {
-        let _lock = PROGRESS_LOCK.lock().unwrap();
+        let _lock = progress_lock();
         let dir = std::env::temp_dir().join(format!("uu_nsa_big_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // 70 MiB of zeros — far above the 64 MiB LZSS threshold → stored raw.
@@ -743,7 +768,7 @@ mod security_tests {
     /// Level 0 stores raw; verify offset math by re-parsing the header.
     #[test]
     fn level0_stores_raw_bytes() {
-        let _lock = PROGRESS_LOCK.lock().unwrap();
+        let _lock = progress_lock();
         let dir = std::env::temp_dir().join(format!("uu_nsa_store_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.bin");
@@ -759,7 +784,7 @@ mod security_tests {
     /// probe read doesn't count) so the bar never exceeds 100%.
     #[test]
     fn compress_progress_not_double_counted() {
-        let _lock = PROGRESS_LOCK.lock().unwrap();
+        let _lock = progress_lock();
         let dir = std::env::temp_dir().join(format!("uu_nsa_prog_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Random-ish data: LZSS won't shrink it → falls back to raw store.

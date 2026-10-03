@@ -3,13 +3,13 @@
 #[cfg(feature = "aes-crypto")]
 use crate::aes::{AesReader, AesReaderValid};
 use crate::compression::{CompressionMethod, Decompressor};
-use crate::cp437::FromCp437;
 use crate::crc32::Crc32Reader;
 use crate::extra_fields::{ExtendedTimestamp, ExtraField, Ntfs};
 use crate::read::zip_archive::{Shared, SharedBuilder};
 use crate::result::invalid;
 use crate::result::{ZipError, ZipResult};
 use crate::spec::{self, CentralDirectoryEndInfo, DataAndPosition, FixedSizeBlock, Pod};
+
 use crate::types::{
     AesMode, AesVendorVersion, DateTime, System, ZipCentralEntryBlock, ZipFileData,
     ZipLocalEntryBlock,
@@ -1308,20 +1308,20 @@ fn central_header_to_zip_file_inner<R: Read>(
     } = block;
 
     let encrypted = flags & 1 == 1;
-    let is_utf8 = flags & (1 << 11) != 0;
+    let flagged_utf8 = flags & (1 << 11) != 0;
     let using_data_descriptor = flags & (1 << 3) != 0;
 
     let file_name_raw = read_variable_length_byte_field(reader, file_name_length as usize)?;
     let extra_field = read_variable_length_byte_field(reader, extra_field_length as usize)?;
     let file_comment_raw = read_variable_length_byte_field(reader, file_comment_length as usize)?;
-    let file_name: Box<str> = match is_utf8 {
-        true => String::from_utf8_lossy(&file_name_raw).into(),
-        false => file_name_raw.clone().from_cp437(),
-    };
-    let file_comment: Box<str> = match is_utf8 {
-        true => String::from_utf8_lossy(&file_comment_raw).into(),
-        false => file_comment_raw.from_cp437(),
-    };
+    let file_name = crate::cp437::decode_name(&file_name_raw, flagged_utf8);
+    let file_comment = crate::cp437::decode_name(&file_comment_raw, flagged_utf8);
+    // Reflect what we actually decoded, not what the flag claimed: the field is
+    // what the writer consults when it re-emits the EFS bit (see
+    // `types.rs`'s `utf8_bit`), so leaving it false after a UTF-8 decode would
+    // emit an archive whose bytes are UTF-8 but whose flag says CP437 — and then
+    // cp437-decode the name again on the next read.
+    let is_utf8 = flagged_utf8 || file_name.as_bytes().iter().any(|b| *b >= 0x80);
 
     // Construct the result
     let mut result = ZipFileData {

@@ -1631,4 +1631,126 @@ mod tests {
         assert!(r.unwrap_err().contains("multi-disk"), "msg must mention multi-disk");
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// 手工构造一个**未设 EFS 位（bit 11 = 0）但名字是 UTF-8** 的 ZIP。
+    ///
+    /// 这不是人造场景：Info-ZIP `zip` 就是这么写的，而 unzip / 7-Zip / Explorer
+    /// 都启发式优先按 UTF-8 解。我们此前照 APPNOTE 字面走 CP437，于是真实归档里
+    /// `第一章`（UTF-8 `E7 AC AC E4 B8 80 E7 AB A0`）被解成 `τ¼¼Σ╕Çτ½á`。
+    ///
+    /// 这里用「写字节」而不是「用写入器生成」是有意的：vendored 写入器对非 ASCII
+    /// 名会自动置 EFS 位，生成不出这个待测形态 —— 而问题恰恰只在这种形态里出现。
+    fn raw_zip_with_name(name: &[u8], data: &[u8]) -> Vec<u8> {
+        let crc = crc32_of(data);
+        let mut out = Vec::new();
+        // local file header
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        out.extend_from_slice(&0u16.to_le_bytes());  // flags: EFS 位**故意**为 0
+        out.extend_from_slice(&0u16.to_le_bytes());  // method: store
+        out.extend_from_slice(&0u16.to_le_bytes());  // time
+        out.extend_from_slice(&0u16.to_le_bytes());  // date
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());  // extra len
+        out.extend_from_slice(name);
+        out.extend_from_slice(data);
+        let cd_off = out.len();
+        // central directory
+        out.extend_from_slice(b"PK\x01\x02");
+        out.extend_from_slice(&20u16.to_le_bytes()); // made by
+        out.extend_from_slice(&20u16.to_le_bytes()); // needed
+        out.extend_from_slice(&0u16.to_le_bytes());  // flags
+        out.extend_from_slice(&0u16.to_le_bytes());  // method
+        out.extend_from_slice(&0u16.to_le_bytes());  // time
+        out.extend_from_slice(&0u16.to_le_bytes());  // date
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // extra
+        out.extend_from_slice(&0u16.to_le_bytes()); // comment
+        out.extend_from_slice(&0u16.to_le_bytes()); // disk
+        out.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
+        out.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+        out.extend_from_slice(&0u32.to_le_bytes()); // local header offset
+        out.extend_from_slice(name);
+        let cd_size = out.len() - cd_off;
+        // EOCD
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&(cd_size as u32).to_le_bytes());
+        out.extend_from_slice(&(cd_off as u32).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    fn crc32_of(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in data {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                let m = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & m);
+            }
+        }
+        !crc
+    }
+
+    #[test]
+    fn unflagged_utf8_entry_name_is_not_cp437_mojibake() {
+        let _g = progress_lock();
+        let dir = tmp("utf8name");
+        std::fs::create_dir_all(&dir).unwrap();
+        let zip = dir.join("cjk.zip");
+        // `第一章/初音ミク.txt` 的 UTF-8 字节，EFS 位为 0。
+        let name = "第一章/初音ミク.txt".as_bytes();
+        std::fs::write(&zip, raw_zip_with_name(name, b"payload")).unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        // listing 走的是**另一个**解析器（types.rs 的本地头路径），UI 直接显示它。
+        // 只修 read.rs 会把这里漏掉，所以两个入口都要断言。
+        let listing = list_zip_host(&zip.to_string_lossy()).expect("listing 应成功");
+        assert!(
+            listing.contains("第一章/初音ミク.txt"),
+            "listing 也必须是 UTF-8 真名，不能是 CP437 乱码: {listing}"
+        );
+        assert!(
+            !listing.contains("τ¼¼"),
+            "listing 里出现了 CP437 乱码: {listing}"
+        );
+        let r = extract_zip_host(&zip.to_string_lossy(), &out.to_string_lossy(), "");
+        assert!(r.is_ok(), "解压应成功: {r:?}");
+        let want = out.join("第一章").join("初音ミク.txt");
+        assert!(want.is_file(), "解出的名字必须是 UTF-8 真名，不是 CP437 乱码; 实际目录: {:?}",
+            std::fs::read_dir(&out).map(|rd| rd.flatten().map(|e| e.file_name()).collect::<Vec<_>>()));
+        assert_eq!(std::fs::read(&want).unwrap(), b"payload");
+        assert_eq!(r.unwrap(), (1, 0));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 回退必须还在：非法 UTF-8 的旧归档仍按 CP437 解。
+    /// 两个方向都测，否则「总是当 UTF-8」这种过度修复也能让上一个测试变绿。
+    #[test]
+    fn invalid_utf8_entry_name_still_decodes_as_cp437() {
+        let _g = progress_lock();
+        let dir = tmp("cp437name");
+        std::fs::create_dir_all(&dir).unwrap();
+        let zip = dir.join("cp437.zip");
+        // 0x82 在 CP437 是 `é`；单个 0x82 不是合法 UTF-8。
+        std::fs::write(&zip, raw_zip_with_name(&[b'a', 0x82, b'.', b't', b'x', b't'], b"x")).unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let r = extract_zip_host(&zip.to_string_lossy(), &out.to_string_lossy(), "");
+        assert!(r.is_ok(), "解压应成功: {r:?}");
+        let want = out.join("a\u{e9}.txt");
+        assert!(want.is_file(), "非法 UTF-8 必须回退 CP437（é）; 实际: {:?}",
+            std::fs::read_dir(&out).map(|rd| rd.flatten().map(|e| e.file_name()).collect::<Vec<_>>()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

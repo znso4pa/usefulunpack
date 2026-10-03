@@ -112,11 +112,62 @@ impl CrcSpec {
 /// every legitimate split archive — verified empirically, not assumed. The
 /// vendored reader already validates each volume's slice as it goes, so
 /// deferring to it is both correct and cheaper.
+///
+/// **Encrypted RAR 5 is the case that shipped broken.** Its `crc32` is not a
+/// checksum of the unpacked data at all: for a password-protected member the
+/// stored value is a *keyed MAC* of the CRC (`keys.mac_crc32(crc32(data))`),
+/// exactly as the vendored reader's `verify_integrity_with_keys` does. Comparing
+/// it against a plain `crc32(unpacked)` therefore mismatches on EVERY encrypted
+/// RAR 5 archive — measured on `rar` 7.23 output: stored `0x14c7d4b9`, plaintext
+/// `0x2364528c`, which is also exactly what the decoder produced, i.e. the
+/// plaintext was right and only the comparison was wrong. Since the reader
+/// verifies the MAC itself during extraction (and raises `Crc32Mismatch`, which
+/// the cleanup path already handles), the correct move is to stand down here.
+///
+/// RAR 1.5–4.x is deliberately NOT skipped: its `crc32` really is the CRC of the
+/// unpacked data even when encrypted — verified against `readme_154_password.rar`,
+/// where stored and computed both read `0x509e5e3c`. `uses_hash_mac()` exists
+/// only in the RAR 5 module, which is why the distinction is per-family.
+fn verify_here(family: Family, is_encrypted: bool, is_split: bool) -> bool {
+    if is_split {
+        // The stored value covers only the first volume's slice (see [member_crc]).
+        return false;
+    }
+    match family {
+        // The reader applies `keys.mac_crc32()` for encrypted RAR 5 and verifies the
+        // MAC itself; comparing the stored value against a plain CRC of the unpacked
+        // data rejects every password-protected RAR 5 archive.
+        Family::Rar50Plus => !is_encrypted,
+        // RAR 1.5–4.x stores the CRC of the unpacked data **even when encrypted**
+        // (`readme_154_password.rar`: stored and computed both read 0x509e5e3c), so
+        // these stay ours to check — `uses_hash_mac()` exists only in the RAR 5 module.
+        Family::Rar15To40 | Family::Rar13 => true,
+    }
+}
+
+/// Archive family, as far as checksum semantics are concerned.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Family {
+    Rar13,
+    Rar15To40,
+    Rar50Plus,
+}
+
 fn member_crc(member: &rars::ArchiveMember) -> Option<CrcSpec> {
-    if member.meta.is_split_before || member.meta.is_split_after {
+    use rars::ArchiveMemberDetail as D;
+    let family = match &member.detail {
+        D::Rar50Plus { .. } => Family::Rar50Plus,
+        D::Rar15To40 { .. } => Family::Rar15To40,
+        D::Rar13 { .. } => Family::Rar13,
+        _ => return None,
+    };
+    if !verify_here(
+        family,
+        member.meta.is_encrypted,
+        member.meta.is_split_before || member.meta.is_split_after,
+    ) {
         return None;
     }
-    use rars::ArchiveMemberDetail as D;
     match &member.detail {
         D::Rar50Plus { crc32, .. } => crc32.map(|v| CrcSpec::new(CrcAlgo::Crc32, v)),
         D::Rar15To40 { crc32, .. } => Some(CrcSpec::new(CrcAlgo::Crc32, *crc32)),
@@ -204,6 +255,64 @@ fn list_rar_inner_with_pw(input: &str, password: &str) -> Result<String, String>
     Ok(format!("[{}]", items.join(",")))
 }
 
+/// Normalised entry name, matching what [rar_writer] computes for its `dest`.
+///
+/// The vendored error carries the RAW name (`tmp\dir\file.bin`) while the
+/// writer factory uses `name_lossy()` with separators normalised to `/`, so a
+/// raw comparison would never match and the corrupt file would survive.
+fn normalized_entry_name(raw: &[u8]) -> String {
+    String::from_utf8_lossy(raw).replace('\\', "/").trim_matches('/').to_string()
+}
+
+/// Delete the destination of the entry that failed verification.
+///
+/// Scoped to the one entry on purpose: `unrar` on a 17-member archive with one
+/// corrupt member leaves the other **16** files, so wiping the whole output
+/// directory would be more destructive than the reference implementation.
+///
+/// A non-`AtEntry` error (archive-level failure before/after any member) has no
+/// entry to attribute, so nothing is removed — deleting blindly could destroy a
+/// good extraction.
+fn cleanup_failed_entry(
+    err: &rars::Error,
+    written: &Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let list = written.lock().unwrap_or_else(|e| e.into_inner());
+    match err {
+        rars::Error::AtEntry { name, .. } => {
+            // Exactly one member failed its checksum → remove that member only.
+            // unrar keeps the members that verified, so wiping the whole output
+            // would be MORE destructive than the reference implementation.
+            let want = normalized_entry_name(name);
+            for path in list.iter().rev() {
+                let base = Path::new(path).file_name().map(|n| n.to_string_lossy().to_string());
+                if base.as_deref() == Some(want.as_str()) || path.ends_with(&want) {
+                    let _ = std::fs::remove_file(path);
+                    return;
+                }
+            }
+        }
+        rars::Error::AtArchiveOffset { .. } => {
+            // A HEADER checksum failed. unrar recovers from this and still
+            // extracts the members it can; we abort the archive and produce
+            // nothing at all. That is stricter than the reference, not less safe,
+            // so there is nothing to clean up.
+        }
+        _ => {
+            // Unattributable, and it means what we wrote cannot be vouched for:
+            // `WrongPasswordOrCorruptData` / `NeedPassword` are returned by the
+            // vendored `entry_error` WITHOUT an `AtEntry` wrapper, so the bytes we
+            // already wrote are undecryptable garbage. unrar leaves zero files
+            // here; measured on 8 encrypted split mutations we left the member
+            // behind. Nothing that verifies positively exists in this run, so
+            // removing every destination is the safe reading.
+            for path in list.iter() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
 fn rar_writer<'a>(
     sel_set: &'a Option<HashSet<String>>,
     sizes: &'a HashMap<String, u64>,
@@ -211,6 +320,16 @@ fn rar_writer<'a>(
     stored: &'a HashSet<String>,
     out_base: &'a str,
     fail: Arc<AtomicU32>,
+    // `written` records every destination this factory created, in creation order.
+    //
+    // The per-member checksum is verified *inside* the vendored reader, i.e. AFTER
+    // this factory created the file and the decoded bytes were written. The error
+    // then propagates out with nothing unlinking the destination, so `unrar x`
+    // leaves zero files on a corrupt member while we left the corrupt bytes
+    // behind. The registry lets the extraction loop delete exactly the entry named
+    // in `rars::Error::AtEntry` — the loop knows which entry failed, whereas a
+    // `Drop` on the writer cannot tell "failed" from "reached EOF".
+    written: &'a Arc<std::sync::Mutex<Vec<String>>>,
 ) -> impl FnMut(&rars::ExtractedEntryMeta) -> Result<Box<dyn Write>, rars::Error> + 'a {
     move |meta| {
         if extract_progress::cancelled() { return Err(rars::Error::Cancelled); }
@@ -236,6 +355,12 @@ fn rar_writer<'a>(
             Err(_) => { fail.fetch_add(1, Ordering::SeqCst); return Ok(Box::new(std::io::sink()) as Box<dyn Write>); }
         };
         if let Some(p) = Path::new(&dest).parent() { std::fs::create_dir_all(p).ok(); }
+        // Registered BEFORE the write: a decoder that fails mid-member still
+        // needs its destination on record so the caller can unlink it.
+        written
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(dest.to_string_lossy().to_string());
         let out_file = match std::fs::File::create(&dest) {
             Ok(f) => f,
             Err(_) => { fail.fetch_add(1, Ordering::SeqCst); return Ok(Box::new(std::io::sink()) as Box<dyn Write>); }
@@ -651,6 +776,8 @@ fn extract_rar_inner(input: &str, output: &str, selected: Option<&HashSet<String
     // bump the SAME counter. A separate counter would make the mismatch a
     // silent no-op and the archive result would still read Ok((total, 0)).
     let fail = Arc::new(AtomicU32::new(0));
+    // Hoisted OUT of the closure so the failure path below can inspect it.
+    let written = Arc::new(std::sync::Mutex::new(Vec::new()));
     let result = run_with_cancel_monitor(|| {
         // NOTE: must pass rar_opts(pw) here — `extract_to` builds its own
         // default options (rars' 512MB buffered limit) and would silently drop
@@ -664,8 +791,11 @@ fn extract_rar_inner(input: &str, output: &str, selected: Option<&HashSet<String
         if let Some(()) = extract_all_parallel(&archive, pw, &crcs, &out_base, &fail)? {
             return Ok(());
         }
-        archive.extract_to_with_options(rar_opts(pw), rar_writer(&sel_set, &sizes, &crcs, &stored, &out_base, fail.clone()))
+        archive.extract_to_with_options(rar_opts(pw), rar_writer(&sel_set, &sizes, &crcs, &stored, &out_base, fail.clone(), &written))
     });
+    if let Err(ref e) = result {
+        cleanup_failed_entry(e, &written);
+    }
     result.map_err(|e| format!("rar: {e}"))?;
     Ok((total, fail.load(Ordering::SeqCst)))
 }
@@ -768,9 +898,13 @@ fn extract_rar_volumes_inner(paths: &[&str], output: &str, selected: Option<&Has
     // bump the SAME counter. A separate counter would make the mismatch a
     // silent no-op and the archive result would still read Ok((total, 0)).
     let fail = Arc::new(AtomicU32::new(0));
+    let written = Arc::new(std::sync::Mutex::new(Vec::new()));
     let result = run_with_cancel_monitor(|| {
-        rars::extract_volumes_to_with_options(&archives, rar_opts(pw), rar_writer(&sel_set, &sizes, &crcs, &stored, &out_base, fail.clone()))
+        rars::extract_volumes_to_with_options(&archives, rar_opts(pw), rar_writer(&sel_set, &sizes, &crcs, &stored, &out_base, fail.clone(), &written))
     });
+    if let Err(ref e) = result {
+        cleanup_failed_entry(e, &written);
+    }
     result.map_err(|e| format!("rar: {e}"))?;
     Ok((total, fail.load(Ordering::SeqCst)))
 }
@@ -999,6 +1133,93 @@ mod tests {
     /// (`(crc32(&data) & 0xffff) as u16` in the vendored writer), so the spec is
     /// [CrcSpec::Low16] — a fixture that assumed a full 32-bit compare would
     /// encode the wrong premise and pass for the wrong reason.
+    /// `cleanup_failed_entry` must delete exactly what each error kind implies.
+    ///
+    /// The defect: the per-member checksum is verified INSIDE the vendored
+    /// reader — after [rar_writer]'s factory created the destination and the
+    /// decoded bytes were written — so the error propagates out with nothing
+    /// unlinking the file. Measured against `unrar 7.23` over 70
+    /// oracle-detectable split-member mutations: unrar leaves **zero** files on a
+    /// corrupt member, we used to leave the corrupt bytes in 55 of them.
+    ///
+    /// Scope note, because it would be easy to over-claim here: this unit test
+    /// exercises the cleanup decision directly. An END-TO-END in-repo test is not
+    /// possible because the vendored fork ships **no RAR3/RAR5 writer** — and
+    /// those are exactly the families that write before verifying. RAR 1.3/1.4
+    /// (the only family the vendored writer can build) verifies *before* handing
+    /// bytes to the writer, so a checksum failure there never creates a file and
+    /// cannot reproduce the bug. The end-to-end proof lives in the out-of-tree
+    /// harness, which drives 70 real mutations across all three families.
+    #[test]
+    fn cleanup_removes_exactly_what_the_error_kind_implies() {
+        let dir = std::env::temp_dir().join(format!("uu_rar_cleanup_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = |n: &str| {
+            let f = dir.join(n);
+            std::fs::write(&f, b"payload").unwrap();
+            f.to_string_lossy().to_string()
+        };
+        let reg = |v: Vec<String>| Arc::new(std::sync::Mutex::new(v));
+
+        // 1. AtEntry → that member only. unrar keeps the members that verified
+        //    (16 of 17 on a real 17-member fixture), so deleting the whole set
+        //    would be MORE destructive than the reference implementation.
+        let good = p("good.bin");
+        let bad = p("bad.bin");
+        let written = reg(vec![good.clone(), bad.clone()]);
+        cleanup_failed_entry(
+            &rars::Error::AtEntry {
+                name: b"bad.bin".to_vec(),
+                operation: "verifying",
+                source: Box::new(rars::Error::Crc32Mismatch { expected: 1, actual: 2 }),
+            },
+            &written,
+        );
+        assert!(Path::new(&good).exists(), "a verified member must survive");
+        assert!(!Path::new(&bad).exists(), "the failing member must be deleted");
+
+        // 2. Windows-style raw name must still match the normalised destination.
+        let nested = dir.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        let deep = nested.join("c.bin");
+        std::fs::write(&deep, b"payload").unwrap();
+        let deep_s = deep.to_string_lossy().to_string();
+        let written = reg(vec![deep_s]);
+        cleanup_failed_entry(
+            &rars::Error::AtEntry {
+                name: b"a\\b\\c.bin".to_vec(),
+                operation: "verifying",
+                source: Box::new(rars::Error::Crc32Mismatch { expected: 1, actual: 2 }),
+            },
+            &written,
+        );
+        assert!(!deep.exists(), "a\\b\\c.bin must match dest a/b/c.bin");
+
+        // 3. WrongPasswordOrCorruptData is returned by the vendored
+        //    `entry_error` WITHOUT an AtEntry wrapper, so there is no entry to
+        //    attribute — and what we wrote is undecryptable garbage. unrar
+        //    leaves zero files here.
+        let e1 = p("enc1.bin");
+        let e2 = p("enc2.bin");
+        let written = reg(vec![e1.clone(), e2.clone()]);
+        cleanup_failed_entry(&rars::Error::WrongPasswordOrCorruptData, &written);
+        assert!(!Path::new(&e1).exists() && !Path::new(&e2).exists());
+
+        // 4. A HEADER checksum failure: unrar recovers and still extracts, we
+        //    abort and produce nothing. Nothing to clean up — and deleting here
+        //    would throw away output we never created.
+        let keep = p("keep.bin");
+        let written = reg(vec![keep.clone()]);
+        cleanup_failed_entry(
+            &rars::Error::AtArchiveOffset { offset: 8, source: Box::new(rars::Error::InvalidHeader("crc")) },
+            &written,
+        );
+        assert!(Path::new(&keep).exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn corrupt_stored_member_is_rejected_and_leaves_nothing() {
         let _g = crate::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1538,5 +1759,35 @@ mod manual_volumes {
         let f = std::path::Path::new(&out_s).join(&pick);
         eprintln!("[sel] file exists={} size={}", f.exists(), f.metadata().map(|m| m.len()).unwrap_or(0));
         std::fs::remove_dir_all(&out).ok();
+    }
+
+    /// The rule that produced a shipping bug, asserted directly.
+    ///
+    /// On `rar` 7.23 output, an encrypted RAR 5 entry stored `0x14c7d4b9` while the
+    /// correct plaintext CRC'd to `0x2364528c` — and `0x2364528c` was exactly what
+    /// the decoder produced, i.e. the plaintext was right and the *comparison* was
+    /// wrong. Verifying the encrypted case against a plain CRC made **every
+    /// password-protected RAR 5 archive** — the most common galgame distribution
+    /// shape — fail to extract.
+    ///
+    /// This cannot be reproduced with a fixture: the vendored fork has no RAR3/RAR5
+    /// writer, so no encrypted RAR 5 archive can be built in-tree, and
+    /// `ArchiveMemberMeta` is `#[non_exhaustive]`. So the rule is factored into
+    /// [verify_here] and tested there; the end-to-end proof lives in the out-of-tree
+    /// matrix (22 combinations built by `rar` 7.23, compared against `unrar` 7.23).
+    #[test]
+    fn checksum_verification_is_deferred_for_encrypted_rar5_only() {
+        // The regression: RAR 5 + encrypted must NOT be verified here.
+        assert!(!verify_here(Family::Rar50Plus, true, false));
+        // Everything else keeps its previous behaviour.
+        assert!(verify_here(Family::Rar50Plus, false, false));
+        assert!(verify_here(Family::Rar15To40, true, false));
+        assert!(verify_here(Family::Rar15To40, false, false));
+        assert!(verify_here(Family::Rar13, true, false));
+        // Split members are never verified here, in any family.
+        for f in [Family::Rar13, Family::Rar15To40, Family::Rar50Plus] {
+            assert!(!verify_here(f, false, true));
+            assert!(!verify_here(f, true, true));
+        }
     }
 }

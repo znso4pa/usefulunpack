@@ -1,3 +1,89 @@
+## fix(v6.0.0): 壁纸切换横竖屏被拉伸 —— 旋转后重新适配 root 尺寸
+
+### 1. 症状
+
+壁纸在竖屏、横屏各自都正常，但**一旋转就被拉伸变形**（不是等比缩放，是画面被压扁/抻长）。
+
+### 2. 根因
+
+`AndroidManifest.xml` 声明了 `configChanges="orientation|screenSize|screenLayout|smallestScreenSize"`，
+所以旋转时 Activity **不重建**，`onCreate` 里的壁纸恢复（`MainActivity.kt`）**不会重跑**，
+也没有任何 `onConfigurationChanged` 或布局监听。
+
+而 `applyBackgroundImage()`（`ui/AppSettings.kt`）只在**选图那一刻**按当时的 `root` 尺寸做
+等比裁剪，得到一个正好贴合该方向 aspect ratio 的位图，交给 `BitmapDrawable`（默认
+`FILL` gravity）。旋转后 `root` 尺寸变了、位图还是旧方向的裁剪结果，`FILL` 直接把它
+非等比铺满 → 拉伸。
+
+### 3. 修法
+
+- 解码时保留**母图** `bgSourceBitmap`，并按屏幕**长边**取样（原实现按当前方向的两个边取样，
+  旋转后可能不够大），保证任一方向都够用，且不必因旋转重新从 URI 解码（persistable
+  权限可能已失效）。
+- 抽出 `fitBackgroundToRoot()`：从母图重新「等比放大到覆盖 + 居中裁剪到 root 的
+  aspect ratio」，因此 `FILL` 永不产生形变。
+- `installBgRootListener()` 在 `R.id.root` 上挂 `OnLayoutChangeListener`，**尺寸变化时重跑
+  适配**（旋转 / 分屏 / 多窗口改尺寸都覆盖）。用「上次尺寸」做门闩，避免设置背景触发的
+  重排形成回环。
+- 原来首帧没量到尺寸时 `root.post{}` 重试一次的逻辑，改由布局监听自然接管。
+- 删除壁纸时释放母图、摘掉监听，避免之后旋转又把壁纸「复活」。
+
+### 4. 验证
+
+- `:app:compileDebugKotlin` 通过
+- 真机（CHG_W60，812dp 宽）debug 包装入，塞入一张非对称横长条壁纸（1600×900，含竖条
+  条纹与正中圆环，拉伸一眼可辨）：竖屏、横屏各自正常，**旋转后不再拉伸**
+- 旋转前后 `logcat` 无 `FATAL` / `recycled bitmap`
+
+## fix(v6.0.0): 设置页挡住 tab 栏 + 宽屏预览两栏右下重叠
+
+### 1. 设置页占用 tab 栏，开着设置就没法切窗口
+
+**根因**：设置页不是 fragment/ViewPager 页，而是一串模态 `AlertDialog`
+（`settings()` + 六个子页 + 帮助 + 免责声明）。窗口默认**触摸模态**（指针落在
+tab 栏上会被对话框窗口吃掉），主题又开了 `backgroundDimEnabled=true / dimAmount=0.6`
+把整屏压暗 —— tab 栏既不可点也不可见，等于被设置「占住」。
+
+仓库里其实早有绕法：归档预览 `PreviewFlow.kt` 与批量预览 `BatchExtract.kt` 早已
+底部对齐到 tab 栏之下 + 局部暗化。但设置这条线**一处都没用**。
+
+**修法**：新增 `MainActivity.keepTabBarTappable(dlg)`，对窗口做两件事，不改动对话框
+外观与位置：
+- 加 `FLAG_NOT_TOUCH_MODAL` —— 对话框内容之外的触摸**透传给下方的 tab 栏**；
+- 清 `FLAG_DIM_BEHIND` + `setDimAmount(0f)` —— 去掉整屏压暗，tab 栏保持明亮；
+- 顺带挂 `resetPagerInputOnDialogDismiss(dlg)`（Honor/EMUI 关闭后 ViewPager 手势
+  失效的已知坑，原来只接在预览对话框上）。
+
+接入点：`AppSettings.kt` 全部 15 处 `.show()` 与 `HelpDialog.kt` 的 `dlg.show()`；
+`showDisclaimer` **仅在 `fromSettings=true` 时**接入 —— 首次启动的免责声明是刻意的
+拦截门（此时还没有 tab，且必须先同意），保持模态。
+
+### 2. 宽屏 FAB 预览后左右两栏在右侧重叠
+
+**根因**：宽屏 master-detail 只做了一半。`folder_view.xml` 里左栏 `panel` 永远
+`start→parent + end→parent`（满宽）；`applyWidePreviewPane()` 只把右栏 `previewRoot`
+的 `startToStart` 移到 45% 的 `guidelineSplit`，**`panel` 没有跟着收窄**。于是文件列表
+在物理上延伸到右栏底下，右侧 45% 两栏重叠，只靠 `previewRoot` 的不透明背景遮盖。
+
+**触发条件**：设了壁纸后，`applyBackdropInTree()` 把 `panel`/`previewRoot`（都在
+`BACKDROP_TRANSPARENT` 表里）的背景清空，遮盖消失；两个 ListView 的行又都是透明选择器
+→ 左栏行直接叠在右栏行上。所以这是 `5b699af`（背景让位表）之后才显形的回归 —— **不是**
+某个旧版本做对过，master-detail 从一开始就是「叠加式」而非真分栏；此前只是被不透明
+背景掩盖着。
+
+**修法**：`applyWidePreviewPane(root, tab)` 改为**两栏一起调**（同一处，遵循「一处真相」）。
+宽屏时 `panel.endToEnd = guidelineSplit`，让左栏真正止于 45%；窄屏恢复满宽覆盖。
+这样重叠被**消除**而不是被遮住，壁纸模式下也不会复发。
+
+### 3. 验证
+
+- `./gradlew :app:compileDebugKotlin` 通过
+- `./gradlew lintDebug` → 0 error / 271 warning，与基线一致
+- **未做真机验证**：无设备连接。两处都是触摸/布局行为，需装机确认：
+  - 开着设置能点其它 tab 且不被压暗
+  - 宽屏（sw600dp，平板/横屏）FAB 预览后左栏文件列表与右栏预览不重叠
+  - 未设壁纸 / 已设壁纸两种情况下都要看
+
 ## feat(v6.0.0): 真机回归（真语料）+ 合并跨窗口目标 + 画笔透明度修复
 
 ### 1. 真机回归：拉真语料对 oracle，抓出 3 个合成夹具永远发现不了的 bug

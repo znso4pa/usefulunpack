@@ -104,4 +104,5 @@ internal fun MainActivity.showHelpDialog() {
     val (hw, hh) = cappedDialogSize(0.92f, 0.88f)
     dlg.window?.setLayout(hw, hh)
     dlg.show()
+    keepTabBarTappable(dlg)
 }

@@ -1,5 +1,4 @@
 //! Types that specify what is contained in a ZIP.
-use crate::cp437::FromCp437;
 use crate::write::{FileOptionExtension, FileOptions};
 use path::{Component, Path, PathBuf};
 use std::cmp::Ordering;
@@ -788,7 +787,7 @@ impl ZipFileData {
         }
 
         /* flags & (1 << 1) != 0 */
-        let is_utf8: bool = flags & (1 << 11) != 0;
+        let flagged_utf8: bool = flags & (1 << 11) != 0;
         let compression_method = crate::CompressionMethod::parse_from_u16(compression_method);
         let file_name_length: usize = file_name_length.into();
         let extra_field_length: usize = extra_field_length.into();
@@ -798,10 +797,7 @@ impl ZipFileData {
         let mut extra_field = vec![0u8; extra_field_length];
         reader.read_exact(&mut extra_field)?;
 
-        let file_name: Box<str> = match is_utf8 {
-            true => String::from_utf8_lossy(&file_name_raw).into(),
-            false => file_name_raw.clone().from_cp437().into(),
-        };
+        let file_name = crate::cp437::decode_name(&file_name_raw, flagged_utf8);
 
         let system: u8 = (version_made_by >> 8).try_into().unwrap();
         Ok(ZipFileData {
@@ -810,7 +806,9 @@ impl ZipFileData {
             version_made_by: version_made_by as u8,
             encrypted,
             using_data_descriptor,
-            is_utf8,
+            // 反映实际解码结果：写入端据此决定是否置 EFS 位（见 `utf8_bit`）。
+            is_utf8: flagged_utf8
+                || file_name.as_bytes().iter().any(|b| *b >= 0x80),
             compression_method,
             compression_level: None,
             last_modified_time: DateTime::try_from_msdos(last_mod_date, last_mod_time).ok(),

@@ -425,7 +425,7 @@ wrongpass 走 per-entry 的 `fail += 1`，整包仍返回 `Ok`。最初据此判
 
 ### 10. 验证结果
 
-- `cargo test --workspace` **216 / 216**，并连跑 15 轮无 flaky（进度断言 7 + clear_cancel 不变量 2 + rar CRC 1 + 测试锁收敛）
+- `cargo test --workspace` **217 / 217**，并连跑 15 轮无 flaky（进度断言 7 + clear_cancel 不变量 2 + rar CRC 1 + 测试锁收敛）
 - files4testing **484 / 484**，20 种格式 × 3 层，注入故障 **23 / 23** 干净拒绝（本轮补上 rar CRC）
 - 进度终值 harness：7 / 7 落在 100%（5 个读侧 + gzip 单成员写侧 + gzip 多成员读侧）
 - `lintDebug` **0 error / 271 warning**，与基线逐条比对**零新增**
@@ -447,6 +447,329 @@ files4testing）。剩的只有 UI 观感：
 6. **回收站字节进度**：移一个跨盘的大目录（会走 copy+delete 回退）→ 确认进度条按
    **体积**推进而不是按文件数慢慢爬，文字里的文件计数同步；同一个含大量小文件的
    目录应能看到条跑得比原来快得多
+
+## feat(v6.0.0): RAR 真语料回归（三个家族）+ 分卷损坏矩阵 —— 找出 1 个真缺陷
+
+### 1. 为什么要做：files4testing 的 rar 向量 **100% 是 RAR 5**
+
+上一轮给 rar-core 加了条目校验和，涉及**三条**算法路径，但真实文件覆盖是：
+
+| 家族 | 我的 CRC 路径 | files4testing | 真实文件覆盖 |
+|---|---|---|---|
+| RAR 1.3/1.4 | `Rar13`（16 位 `sum().rotate_left(1)`）| 0 | **0** |
+| RAR 1.5–4.x | `Crc32` via `Rar15To40` | 0 | **0，连合成的都没有** |
+| RAR 5 | `Crc32` via `Rar50Plus` | 65 | 有 |
+
+也就是说**两条路径从未被任何真实归档检验过**。而上一版 RAR1.3 的实现正是把算法
+想当然写成 `crc32 & 0xffff` —— 会拒绝**每一个**合法的 RAR 1.4 归档。
+
+语料来源：本地 cargo registry 里 `rars` crate **自带**的测试夹具，一直躺在
+`~/.cargo/registry/src/*/rars-0.4.9/tests/fixtures/`，从没被用过：
+
+| 目录 | 文件数 | 内容 |
+|---|---|---|
+| `rar13/` | 18 | **真实 RAR 1.4**：分卷（`MULTIVOL.R00`）、solid、加密、SFX、多文件、带目录 |
+| `rar15_40/` | 92 | **RAR 1.5–4.x**：rar154/202/250/300/420、加密、头加密、PPMd、RARVM 滤镜、recovery volume |
+| `rar50/` | 53 | RAR 5（作为对照基准组）|
+
+加密夹具口令统一是 `password`（已用 `unrar t -p` 逐个反查确认，不是猜的）。
+
+### 2. 一致性比对：123 个样本，**0 个真实缺陷**
+
+新建仓外 harness（`raroracle`），以 `unrar 7.23` 为**独立 oracle**，同一份文件分别问
+两边，比对「接受/拒绝」+ 产出内容：
+
+| 结果 | 数量 |
+|---|---|
+| ✅ 一致 | **119 / 123** |
+| 🔴 误拒合法归档（unrar 接受，我们拒绝）| **0** |
+| 🟡 我们比 unrar 宽松 | 4 |
+
+**上一轮修的 RAR1.3 算法经真实 RAR 1.4 归档验证是对的**（16/16 一致）。四条分歧
+逐一甄别后全部不是我们的缺陷：
+
+- **3 条**（`comment_nopsw` / `comment_psw` / `comments`）：unrar 报
+  `The archive comment is corrupt`，而两个数据成员都是 `OK`。我们**不提取归档注释**，
+  所以接受数据是设计内行为。
+- **1 条**（`rarvm/generic_delta_padding_mutation.rar`）：unrar 报
+  `itanium_synthetic_bundles.bin - checksum error` 并拒绝产出，但我们解出的 1 MiB
+  数据 CRC32 = `0x39086451`，**与归档自己存的值一致**，也与 `rars` 自己的回归测试
+  期望一致：
+
+  ```rust
+  assert_eq!(files[0].file_crc, 0x3908_6451);
+  assert_eq!(crc32(&extracted[0].data), 0x3908_6451);   // 期望成功
+  ```
+
+  这是 **unrar 与 rars 在非标准 VM 滤镜程序上的分歧**，我们和归档自己站一边。
+
+### 3. harness 自己犯了 5 次错，全部会让报告变成假结论
+
+这一节比结论更值钱——**每一次都产出了「看起来像产品缺陷」的结果**：
+
+1. **语料目录硬编码** → harness 只能跑一个语料，所以「换语料测 RAR3」这件事一直没做。
+   改成 `UU_CORPUS_DIR` 环境变量。
+2. **`volume_set` 不认 `.r00` 旧命名**（只认 `.001` / `.part`），也不排除 `.rev`
+   recovery volume。
+3. **旧命名分组差一错误**：判「是不是旧命名首卷」时检查了 `stem.len()+1 == '.'`，
+   而 `.` 在 `stem.len()` 位置 → 所有旧命名组都没被识别，喂给提取器的只有首卷。
+4. **旧命名卷序错**：只按「是不是 `.rNN`」分两档排序，`.r00/.r01/.r02` 之间落进
+   `read_dir` 的任意顺序 → **5 条假的「误拒合法归档」**，报的还是
+   `match distance out of range` / `checksum mismatch` 这种和真解码器 bug 一模一样的错。
+   正解是按 `(letter - 'r') * 100 + digits` 排。修好后误拒归零。
+5. **oracle 调用传了整个卷集合**：unrar 收到多余路径会当成 glob，返回 exit=10
+   （"no files matching"）→ 看起来像「unrar 拒绝」。正解是**只传首卷**，unrar 会
+   自己按名字发现兄弟卷。同理，变异体必须写在**同名同目录**下，否则 unrar 读的是
+   原始兄弟卷 —— 修这一条之前，损坏矩阵只能命中第 1 卷。
+
+### 4. 🔴 真缺陷：解压失败后**把损坏文件留在盘上**
+
+分卷损坏矩阵：对 26 个多分卷组、90 个卷各翻一个字节（多种 bit 模式），**先问 oracle
+这个变异它检不检测得到**，只把「unrar 从接受变成拒绝」的落点算作有效变异。
+
+| 结果 | 数量 |
+|---|---|
+| 尝试变异 | 90 卷 |
+| oracle 确认可检测 | **70 处** |
+| 🔴 **漏检**（unrar 拒绝，我们接受）| **0** ✅ |
+| 🟡 **拒绝了，但输出目录留下产物** | **55 处** |
+| ✅ 一致拒绝且无残留 | 15 处 |
+
+**「0 漏检」实证了一个此前的判断**：让 `member_crc()` 对 `is_split_before/after`
+的成员返回 `None`（因为分卷条目 header 的校验和只覆盖首卷那一段）是对的 —— 校验
+由 vendored reader 逐卷完成，三个路径（stored / buffered / streaming）都真的在校验。
+
+**但清理没做**。最小复现（`stored_multivol_rar300` 的 `.r00` 偏移 100 翻一个字节）：
+
+| | 行为 |
+|---|---|
+| 我们 | 返回正确的 `Err("checksum mismatch: expected 0x4a832ebd, got 0xe3bb78a8")`，**但留下 `stored-volume.txt` 3360 字节损坏数据** |
+| unrar | 拒绝，**0 个文件** |
+
+RAR 5 的加密/多卷/solid 变体还会留下 2 个产物。覆盖三个家族、单卷与分卷、stored 与
+压缩全部形态。
+
+**成因**：条目校验和的校验发生在 vendored reader 内部，**在写入方 `File::create` 并
+写完解码字节之后**；校验失败时错误向上抛，但没人删除目标文件。rar-core 自己的两条
+路径（`write_buffered_member` / `fast_write_member`）在错误时会 `remove_file`，所以
+部分场景是干净的；走 `rar_writer`（顺序路径）和 `extract_volumes_to_with_options`
+（分卷路径）的都不清。
+
+**这是既有缺陷，不是上一轮引入的** —— vendored reader 一直在校验，也一直不清。
+但上一轮让校验更容易触发（分卷损坏现在必然报错），把它从「少见」变成「必然出现」，
+所以值得单独修。
+
+**用户可见后果**：解压失败弹出错误提示，**同时**输出目录里躺着一个看起来正常的损坏
+文件；用户或后续任何工具都可能把它当成解压结果拿走。
+
+### 5. 修好了：按错误种类分流清理，残留与 unrar 完全一致
+
+`rar_writer` 拿到一个共享的产出登记表（`Arc<Mutex<Vec<String>>>`），提取循环在拿到
+`Err` 后按**错误种类**决定清什么：
+
+| 错误 | 清理范围 | 依据 |
+|---|---|---|
+| `AtEntry { name }` | **只删那一个条目** | unrar 在 17 成员归档上只删坏的那一个、留下另外 16 个。全删会比参照实现更破坏 |
+| `WrongPasswordOrCorruptData` 等不可归类 | 删掉本次登记的全部 | vendored 的 `entry_error` 对这个错误**不包 `AtEntry`**，所以无法归因到具体条目；而我们写出去的是无法解密验证的垃圾，unrar 此处留 0 个文件 |
+| `AtArchiveOffset { .. }`（头部 CRC）| 不清 | unrar 会恢复并继续解出成员，我们整体中止、什么都没产出 —— 这是更严不是更不安全，清它反而会丢东西 |
+
+条目名归一化后再比对：vendored 错误带的是**原始名**（`tmp\dir\file.bin`），而写入
+工厂用的是 `name_lossy()` + 分隔符转 `/`，直接比字符串永远匹配不上。
+
+**修完的实测**（同一个损坏矩阵，判定标准也从「有任何残留」改成「残留集合与 unrar
+相同」——因为 unrar 自己也会保留校验通过的成员，要求零残留等于要求我们比参照实现
+更破坏）：
+
+| | 修前 | 修后 |
+|---|---|---|
+| 与 unrar 一致（拒绝 + 残留集合相同）| 15 / 70 | **60 / 70** |
+| 🔴 多留（比 unrar 脏 = 真实缺陷）| 55 | **0** |
+| 🔴 漏检 | 0 | **0** |
+| 🟡 少留（比 unrar 严）| — | 10 |
+
+剩下 10 处「少留」全是头部 CRC 错误时我们整体中止而 unrar 会恢复 —— 属另一个功能
+（从头部损坏中恢复），不是数据安全问题。
+
+**测试的诚实边界**：单测直接验证清理决策，而不是端到端。原因是 vendored fork **没有
+RAR3/RAR5 写入器**，而这两个家族恰恰是「先写后校验」的；唯一能造的 RAR 1.3/1.4 是
+**先校验再写**，校验失败时压根不产生文件、复现不出这个 bug。端到端证明放在仓外矩阵里
+（70 处真实变异、覆盖三个家族）。
+
+测试经双向 sabotage 验证有效：把清理改成空操作 → 红；改成无条件全删 → 也红
+（`a verified member must survive`）。第一版 sabotage 只删掉了 `return` 而 `if` 守卫
+还在，测试纹丝不动 —— 提醒「sabotage 必须真的改变语义，否则验的是假的」。
+
+### 5.1 修法细节
+
+`rar_writer` 是顺序路径与分卷路径共用的写入工厂，它返回 `Box<dyn Write>` 给
+vendored reader，而**校验发生在 reader 内部**——也就是在 `File::create` 与写完
+解码字节之后。错误向上抛，但工厂没有任何机会知道「这个条目的校验没过」。
+
+不能靠 `Drop` 去猜：writer 被 drop 时解码可能已经失败，但也可能只是正常读到末尾，
+两者在 drop 那一刻长得一模一样。
+
+可行做法是让 writer 自己持有一份「实际写出了多少字节 + 期望值」，并在 drop 时
+**结合调用方传回的最终结果**判定 —— 但 `Box<dyn Write>` 没有「条目结束」回调，
+所以更稳的路径是让 `rar_writer` 额外维护一个 `Arc<Mutex<Option<String>>>` 记录目标
+路径，由**提取循环**在拿到 `Err` 后统一清理该路径。这样清理的时机与「知道失败了」
+严格同刻，不会误删正常完成的条目。
+
+涉及两处：
+- `extract_rar_inner` 的顺序分支：`extract_to_with_options` 返回 `Err` 后清理本条目
+- `extract_rar_volumes_inner` 的分卷分支：`extract_volumes_to_with_options` 同理
+
+单条目损坏时清理该条目即可；整包失败时清理本次登记过的全部路径。
+
+## fix(v6.0.0): 带密码的 RAR 5 全部解不出来 —— 上一次的校验和修复本身就是 bug
+
+### 1. 症状：用真实 rar 7.23 生成的加密归档，unrar 秒解，我们全拒
+
+`rar` 7.23 CLI 一直都在本地，之前只拿它当 oracle、没拿它当生成器，于是矩阵里
+**一个由本机参考实现生成的加密归档都没有**。补上生成器后立刻全红：
+
+| 样本 | unrar | 我们 |
+|---|---|---|
+| `pw_data.rar`（内容加密） | 解出 16 条目 | `Err(checksum mismatch: expected 0x14c7d4b9, got 0x2364528c)` |
+| `pw_mixed.rar`（逐文件加密） | 16 条目 | `Err(checksum mismatch: expected 0xc58138dc, got 0x2364528c)` |
+| `pw_append.rar`（旧式追加） | 5 条目 | `Err(checksum mismatch: expected 0x924c6cde, got 0x73dd81a9)` |
+| `pw_timelock.rar`（时间锁） | 5 条目 | `Err(checksum mismatch: expected 0x11dcdd33, got 0x73dd81a9)` |
+
+**影响面**：所有带密码的 RAR 5 归档 —— 也就是 galgame 最常见的分发形态 —— 全部无法解压。
+
+### 2. 根因：`crc32` 的**覆盖对象**在加密时变了
+
+`0x2364528c` 正是正确明文的 CRC32 —— 也就是说**我们的解密完全正确**，错的只是比对。
+
+拿 unrar 自己报出的 MAC 做判别：存储值 `0x14c7d4b9`，明文 CRC32 `0x2364528c`，两者不等；
+再对整个文件暴力扫描任意长度、任意偏移的连续字节段，没有一段的 CRC32 等于存储值 ——
+说明它压根不是文件里某段明文的校验和。vendored reader 自己给出了答案：
+
+```rust
+let actual = crc32(data);
+let actual = if self.uses_hash_mac() { keys.mac_crc32(actual) } else { actual };
+if actual != expected { return Err(Error::Crc32Mismatch { .. }) }
+```
+
+即**加密条目的 `crc32` 是 `keys.mac_crc32(crc32(明文))`，一个带密钥的 MAC**。
+公开的 `verify_crc32()` 遇到 `uses_hash_mac()` 直接返回错误，它明确拒绝这种用法；
+而 `verify_integrity_with_keys()`（抽取路径实际走的那个）才做 MAC 变换。
+上一轮我按前者（明文 CRC）的语义在 rar-core 里**重复实现**了一遍，漏了变换。
+
+**这不是 RAR 5 独有**：`readme_154_password.rar`（RAR 4 加密）存储值与明文 CRC 都是
+`0x509e5e3c` —— RAR 1.5–4.x 的 `crc32` 加密时**仍是明文 CRC**。所以让位是**按家族**的，
+判据就是 `uses_hash_mac()` 的作用域 —— 它只存在于 rar50 模块。
+
+### 3. 修法
+
+把判定从 `member_crc` 里抽成纯函数 `verify_here(family, is_encrypted, is_split)`：
+
+| 家族 | 加密 | 校验归属 |
+|---|---|---|
+| RAR 5 | 是 | **交回读取器**（它自己按 MAC 校验） |
+| RAR 5 | 否 | 本层校验 |
+| RAR 1.5–4.x | 是 / 否 | 本层校验 |
+| RAR 1.3/1.4 | 是 / 否 | 本层校验（除分卷） |
+| 任意 | 分卷 | 不校验（存储值只覆盖首卷切片） |
+
+抽成纯函数是因为**这个 bug 无法用夹具复现**：vendored fork 没有 RAR3/RAR5 写入器，
+造不出加密 RAR5 归档；而 `ArchiveMemberMeta` 是 `#[non_exhaustive]`，仓外无法构造。
+单测按 家族 × 加密 × 分卷 断言这条规则本身，端到端证明放在仓外矩阵。
+
+### 4. 🔴 更严重的是：我的 123 样本回归**根本没测这批归档**
+
+原 `raroracle` 判断某归档是否加密，方法是看「不带口令 `unrar lb` 能否列目录」。
+但**数据加密、文件头可见**的归档不需要口令就能列目录 —— 于是被判成「无需口令」，
+接着 unrar 没口令拒绝解、我们也拒绝解，**两边一起失败被判成「一致」**。
+
+症状正是这个 bug 本身：`password_crc32.rar` 明明解不出来，那轮回归却报 119/123 一致。
+整类数据加密归档（主流形态）从未被真正执行过。files4testing 同样漏：
+`wrongpass-rawfile1.m5.rar` 只测**错误**口令，从没测过**正确**口令。
+
+改判据：读归档**自身的标志位**（`unrar vt` 的 `Flags: encrypted`），
+而不是看某个无认证操作是否碰巧成功。
+修正后 sabotage 验证：把 bug 改回去，回归从 119/123 掉到 118/123 并直接点名该文件。
+
+### 5. 生成器本身也骗了我两次
+
+`rar`/`zip`/`7z` 对「合法但完全空」的归档**不报任何错**：
+
+1. 素材脚本 `open('big/x.bin','wb')` 不创建 `big/`，Python 在那抛异常退出，后面的素材
+   一个都没生成，而 `rar a` 照样给每个目标产出合法空归档 → 矩阵退化成「零样本全绿」。
+   第一次我只看到断言结果、没看到 traceback（被 `tail -30` 截掉了）。
+2. 所谓「12 MiB 不可压缩」实际是同一个 64 KiB 块重复 192 次，LZ77 一次压到 27 KB，
+   于是 `-v2m` 永远达不到分卷阈值，**分卷测试一次都没真正运行**，rar 安静地不拆卷。
+   报错还被 `>/dev/null 2>&1` 吞掉了。
+
+修：素材自检 + 逐归档断言条目数/最小体积 + 用 `zlib` 断言不可压缩率 + 断言卷真的拆开了。
+
+### 6. 修后
+
+`rar` 7.23 生成的 22 组合矩阵（压缩级别 × solid × 五种加密 × 恢复卷 × 两种分卷命名 ×
+快速打开 × 1GB 字典 × 条目类型边界 × 错误口令）**22/22 与 unrar 完全一致**，
+**240 个条目逐字节相同**（含 CJK/全角/emoji/西里尔/阿拉伯文件名、含空格与制表符的文件名）。
+`cargo test --workspace` 218/218 · `raroracle` 119/123（4 条分歧逐条甄别后都不是缺陷）·
+损坏矩阵无漏检无多留 · files4testing 484/484 + 23/23。
+
+### 7. 边界说明（不含糊其辞）
+
+## fix(v6.0.0): ZIP 里未设 UTF-8 标志的 CJK 文件名全部解成乱码
+
+### 1. 症状
+
+用真实 `zip`（Info-ZIP）生成的归档，`unzip` 解出的名字正确，我们解出乱码：
+
+| 正确（unzip 6.00） | 我们 |
+|---|---|
+| `mix/第一章/初音ミク.png` | `mix/τ¼¼Σ╕Çτ½á/σê¥Θƒ│πâƒπé».png` |
+| `mix/第一章/恋と選挙.dat` | `mix/τ¼¼Σ╕Çτ½á/µüïπü¿Θü╕µîÖ.dat` |
+
+`第一章` 的 UTF-8 是 `E7 AC AC E4 B8 80 E7 AB A0`，按 CP437 重新解释正好得到
+`τ¼¼Σ╕Çτ½á` —— 不是别的什么编码问题，就是这一条。所有 CJK 名（含目录）全中。
+对 galgame 应用来说，解出来的文件名全废。
+
+### 2. 根因：照 APPNOTE 字面走，真实工具不这么做
+
+APPNOTE 规定 bit 11（EFS）为 0 就是 CP437，vendored reader 照做了：
+
+```rust
+let is_utf8 = flags & (1 << 11) != 0;
+match is_utf8 { true => utf8_lossy(raw), false => raw.from_cp437() }
+```
+
+但 **Info-ZIP `zip` 会写 UTF-8 字节却不置 EFS 位**，而 `unzip` / 7-Zip / Explorer
+都会启发式优先按 UTF-8 解。规范在这里与实际生态相反，照规范反而破坏了数据。
+
+### 3. 修法：未置位时先试 UTF-8，非法才回退 CP437
+
+`cp437.rs` 里唯一实现 `decode_name(raw, flagged_utf8)`：EFS 置位 ⇒ UTF-8；
+否则先试 UTF-8，`from_utf8` 失败才 CP437。纯 ASCII 两种解码一致，所以旧归档零影响。
+
+### 4. 两个解码点，必须一起改
+
+`read.rs`（中央目录）与 `types.rs`（本地头，公开流式 API `read_zipfile_from_stream`）
+各有一处同样的解码。helper 放 `cp437.rs` 供两处共用，避免再次漂移。
+
+**清单要诚实**：sabotage 证明 `types.rs` 那处**不被本项目任何入口走到**
+（我们只用 `ZipArchive` 的中央目录路径），所以它是「为公开流式 API 顺手修好」，
+**不算被测试覆盖**。测试覆盖的是 `read.rs`，且同时断言 `extract_zip_host`
+与 `list_zip_host` —— 这是两条不同路径，只修一条会让 listing 继续显示乱码。
+
+### 5. 测试双向 sabotage 有效
+
+- 退回「无条件 CP437」→ 红，失败信息直接打印 `["τ¼¼Σ╕Çτ½á"]`
+- 过度修复成「无条件 UTF-8」→ 也红（会丢掉合法的 CP437 旧归档，`aé.txt` 变 `a�.txt`）
+
+测试用手写字节构造 ZIP，而不是用写入器生成：vendored 写入器对非 ASCII 名会自动置
+EFS 位，**生成不出这个待测形态** —— 而问题恰恰只在这种形态里出现。
+
+### 6. 边界说明（不含糊其辞）
+
+
+
+- **RAR 1.3/1.4 的真实归档基本绝迹**（1990 年代格式，`rar` 7.23 也不生成）。`rars` 的
+  `rar13/` 是目前唯一真实来源，只有 14 个、只覆盖 RAR **1.4**、没有 1.3。若这 14 个
+  全过，应表述为「RAR1.4 路径已由真实归档验证，RAR1.3 仅由合成夹具覆盖」。
+- harness 与语料都在仓外（`/tmp` 与临时目录），repo 一个字节未动。
 
 ## feat(v6.0.0): MV/MZ 封包（自填密钥）+ RGSS 自动命名为 Game.*
 

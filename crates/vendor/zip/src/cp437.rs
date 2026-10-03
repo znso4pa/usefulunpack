@@ -1,5 +1,39 @@
 //! Convert a string in IBM codepage 437 to UTF-8
 
+/// Decode a ZIP name or comment field.
+///
+/// APPNOTE says bit 11 (EFS) clear ⇒ CP437. **Real tools do not follow that**,
+/// and following it literally corrupts filenames rather than being conservative:
+/// Info-ZIP `zip` writes UTF-8 bytes **without** setting EFS, and `unzip`,
+/// 7-Zip and Explorer all heuristically prefer UTF-8 for the unflagged case.
+/// Decoding those as CP437 turns every CJK name into mojibake — e.g. `第一章`
+/// (UTF-8 `E7 AC AC E4 B8 80 E7 AB A0`) came out as `τ¼¼Σ╕Çτ½á` on a real
+/// archive. Measured against `unzip` 6.00: three entries (`第一章/`,
+/// `第一章/初音ミク.png`, `第一章/恋と選挙.dat`) were all CP437-decoded by us and
+/// all UTF-8-decoded by the reference.
+///
+/// So: EFS set ⇒ UTF-8. Otherwise try UTF-8, fall back to CP437 when the bytes
+/// are not valid UTF-8. Pure ASCII is valid UTF-8 and decodes identically under
+/// both, so nothing that used to work changes.
+///
+/// Lives here, not in `read.rs`, because **two** parsers decode names — the
+/// central-directory reader in `read.rs` (which every entry point in this
+/// project uses: listing, extraction, split archives) and the local-header
+/// reader in `types.rs` behind the public `read_zipfile_from_stream`. A fix
+/// applied to only one leaves the other emitting mojibake. Note the second one
+/// is **not** reachable from this project's callers (verified: sabotaging it
+/// alone turns nothing red), so it is fixed for the streaming API's sake and is
+/// not claimed as covered by the tests here.
+pub(crate) fn decode_name(raw: &[u8], flagged_utf8: bool) -> Box<str> {
+    if flagged_utf8 {
+        return String::from_utf8_lossy(raw).into();
+    }
+    match std::str::from_utf8(raw) {
+        Ok(s) => s.into(),
+        Err(_) => raw.to_vec().from_cp437().into(),
+    }
+}
+
 /// Trait to convert IBM codepage 437 to the target type
 pub trait FromCp437 {
     /// Target type

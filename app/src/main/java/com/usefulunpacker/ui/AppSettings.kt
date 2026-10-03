@@ -61,7 +61,7 @@ internal fun MainActivity.showCompressionSettings() {
                 .setTitle(title)
                 .setSingleChoiceItems(labels, checked) { _, w -> onPick(w) }
                 .setPositiveButton(getString(R.string.action_confirm), null)
-                .show()
+                .show().also { keepTabBarTappable(it) }
         }
 
         val zipVal = rowZip.findViewById<TextView>(R.id.settings_row_value)
@@ -102,7 +102,7 @@ internal fun MainActivity.showCompressionSettings() {
                     } else toast(getString(R.string.split_invalid))
                 }
                 .setNegativeButton(getString(R.string.action_cancel), null)
-                .show()
+                .show().also { keepTabBarTappable(it) }
         }
 
         bindRow(rowZip, "ZIP " + getString(R.string.settings_compress), levelLabel(ZIP_VALS, ZIP_LABELS, zipLevel)) {
@@ -169,7 +169,7 @@ internal fun MainActivity.showCompressionSettings() {
                 if (m == 0) { bottomBar.visibility = View.GONE; btnExtract.text = getString(R.string.msg_extract_title); btnExtract.setOnClickListener { extract() }; activeTab.btnFolderNext?.visibility = View.GONE; selectedFile = null }
             }
             .setNegativeButton(getString(R.string.action_cancel), null)
-            .show()
+            .show().also { keepTabBarTappable(it) }
     }
 
 internal fun MainActivity.showGeneralSettings() {
@@ -202,7 +202,7 @@ internal fun MainActivity.showGeneralSettings() {
                     d.dismiss()
                 }
                 .setNegativeButton(getString(R.string.action_cancel), null)
-                .show()
+                .show().also { keepTabBarTappable(it) }
         }
 
         val body = LinearLayout(this).apply {
@@ -224,7 +224,7 @@ internal fun MainActivity.showGeneralSettings() {
                         recreate()
                     }
                     .setNegativeButton(getString(R.string.action_cancel), null)
-                    .show()
+                    .show().also { keepTabBarTappable(it) }
             })
             addView(divider())
             lateinit var textEncRow: TextView
@@ -276,7 +276,7 @@ internal fun MainActivity.showGeneralSettings() {
                         d.dismiss()
                     }
                     .setNegativeButton(getString(R.string.action_cancel), null)
-                    .show()
+                    .show().also { keepTabBarTappable(it) }
             }
             addView(parallelRow)
             addView(divider())
@@ -306,7 +306,7 @@ internal fun MainActivity.showGeneralSettings() {
                         d.dismiss()
                     }
                     .setNegativeButton(getString(R.string.action_cancel), null)
-                    .show()
+                    .show().also { keepTabBarTappable(it) }
             }
             addView(sortRow)
             addView(divider())
@@ -330,7 +330,7 @@ internal fun MainActivity.showGeneralSettings() {
                         d.dismiss()
                     }
                     .setNegativeButton(getString(R.string.action_cancel), null)
-                    .show()
+                    .show().also { keepTabBarTappable(it) }
             }
             addView(pickerRow)
             addView(divider())
@@ -360,7 +360,7 @@ internal fun MainActivity.showGeneralSettings() {
             .setTitle(getString(R.string.settings_general))
             .setView(body)
             .setPositiveButton(getString(R.string.action_close), null)
-            .show()
+            .show().also { keepTabBarTappable(it) }
     }
 
 internal fun MainActivity.settings() {
@@ -380,7 +380,7 @@ internal fun MainActivity.settings() {
                 }
             }
             .setNegativeButton(getString(R.string.action_close), null)
-            .show()
+            .show().also { keepTabBarTappable(it) }
     }
 
 internal fun MainActivity.showOtherSettings() {
@@ -425,7 +425,7 @@ internal fun MainActivity.showOtherSettings() {
             prefs.edit().putBoolean("restore_session", switchRestore.isChecked).apply()
         }
         .setNegativeButton(getString(R.string.action_cancel), null)
-        .show()
+        .show().also { keepTabBarTappable(it) }
     }
 
 internal fun MainActivity.showRecycleBinSettings() {
@@ -519,7 +519,7 @@ internal fun MainActivity.showRecycleBinSettings() {
                 tvAutoClean.text = "${getString(R.string.recycle_auto_clean)} ${daysLabels[w]}"
             }
             .setPositiveButton(getString(R.string.action_confirm), null)
-            .show()
+            .show().also { keepTabBarTappable(it) }
     }
 
     btnEmpty.setOnClickListener {
@@ -540,7 +540,7 @@ internal fun MainActivity.showRecycleBinSettings() {
                 }
             }
             .setNegativeButton(getString(R.string.action_cancel), null)
-            .show()
+            .show().also { keepTabBarTappable(it) }
     }
 
     AlertDialog.Builder(this)
@@ -551,7 +551,7 @@ internal fun MainActivity.showRecycleBinSettings() {
             prefs.edit().putInt("recycle_bin_auto_clean_days", autoCleanDays).apply()
         }
         .setNegativeButton(getString(R.string.action_cancel), null)
-        .show()
+        .show().also { keepTabBarTappable(it) }
 }
 
 internal fun MainActivity.showUISettings() {
@@ -607,6 +607,13 @@ internal fun MainActivity.showUISettings() {
         btnPickBg.setOnClickListener { bgImageLauncher?.launch("image/*") }
         btnClearBg.setOnClickListener {
             prefs.edit().remove("bg_image_uri").apply()
+            // Drop the master so a later rotation cannot resurrect the wallpaper,
+            // and detach the listener that would re-fit it.
+            bgRootListener?.let { findViewById<View>(R.id.root)?.removeOnLayoutChangeListener(it) }
+            bgRootListener = null
+            bgSourceBitmap?.recycle()
+            bgSourceBitmap = null
+            bgLastW = -1; bgLastH = -1
             // root 在 activity_main.xml 里的底是 bg_file_list（不是 bg_surface）
             findViewById<View>(R.id.root)?.setBackgroundResource(R.color.bg_file_list)
             restoreBackdropInTree(findViewById(R.id.root) ?: return@setOnClickListener)
@@ -623,7 +630,7 @@ internal fun MainActivity.showUISettings() {
                 prefs.getString("bg_image_uri", null)?.let { applyBackgroundImage(Uri.parse(it)) }
             }
             .setNegativeButton(getString(R.string.action_cancel), null)
-            .show()
+            .show().also { keepTabBarTappable(it) }
     }
 
 // ─── 背景图（壁纸）让位表 ─────────────────────────────────────────────────
@@ -700,14 +707,20 @@ internal fun MainActivity.applyBackgroundImage(uri: Uri) {
             thread {
                 val bmp = runCatching {
                     contentResolver.openInputStream(uri)?.use { ins ->
-                        // Sample down to roughly the root size before decoding.
                         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                         BitmapFactory.decodeStream(ins, null, bounds)
                         if (bounds.outWidth > 0) {
-                            val screenW = resources.displayMetrics.widthPixels
-                            val screenH = resources.displayMetrics.heightPixels
+                            // Size for the LONG side so the same decoded master is
+                            // enough for either orientation — rotation must not force
+                            // a re-decode from the URI (which may have lost its
+                            // persistable permission) nor upscale a too-small copy.
+                            val need = maxOf(
+                                resources.displayMetrics.widthPixels,
+                                resources.displayMetrics.heightPixels,
+                            )
+                            val longSide = maxOf(bounds.outWidth, bounds.outHeight)
                             var sample = 1
-                            while (bounds.outWidth / (sample * 2) >= screenW && bounds.outHeight / (sample * 2) >= screenH) sample *= 2
+                            while (longSide / (sample * 2) >= need) sample *= 2
                             val opt = BitmapFactory.Options().apply { inSampleSize = sample }
                             contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opt) }
                         } else {
@@ -715,36 +728,16 @@ internal fun MainActivity.applyBackgroundImage(uri: Uri) {
                         }
                     }
                 }.getOrNull() ?: return@thread
-                val root = findViewById<View>(R.id.root) ?: return@thread
-                val alpha = prefs.getInt("bg_image_alpha", 20).coerceIn(1, 100)
-                fun placeOnRoot() {
-                    val rw = root.width; val rh = root.height
-                    if (rw <= 0 || rh <= 0) return          // 还没量到尺寸，调用方负责重试
-                    val bmpW = bmp.width; val bmpH = bmp.height
-                    val scale = maxOf(rw.toFloat() / bmpW, rh.toFloat() / bmpH)
-                    val sw = (bmpW * scale).toInt(); val sh = (bmpH * scale).toInt()
-                    // createScaledBitmap/createBitmap 在尺寸恰好相等时会返回【源
-                    // 对象本身】——无脑 recycle 源图就会把正在用的位图标记回收，
-                    // 下一帧绘制即抛 recycled bitmap。按身份判断再回收。
-                    val scaled = if (sw == bmpW && sh == bmpH) bmp
-                        else android.graphics.Bitmap.createScaledBitmap(bmp, sw, sh, true)
-                    if (scaled !== bmp) bmp.recycle()
-                    val x = maxOf((sw - rw) / 2, 0); val y = maxOf((sh - rh) / 2, 0)
-                    val cw = minOf(rw, sw); val ch = minOf(rh, sh)
-                    val cropped = if (x == 0 && y == 0 && cw == scaled.width && ch == scaled.height) scaled
-                        else android.graphics.Bitmap.createBitmap(scaled, x, y, cw, ch)
-                    if (cropped !== scaled) scaled.recycle()
-                    val dr = android.graphics.drawable.BitmapDrawable(resources, cropped)
-                    dr.alpha = (alpha * 255 / 100).coerceIn(1, 255)
-                    root.background = dr
-                    refreshBackdrop()
-                }
                 runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
-                    placeOnRoot()
-                    // 首帧可能还没量到尺寸，那样会**静默什么都不做** —— 壁纸永远
-                    // 不出现，而且没有任何日志可查。挂一帧重试。
-                    if (root.width <= 0 || root.height <= 0) root.post { placeOnRoot() }
+                    if (isFinishing || isDestroyed) { bmp.recycle(); return@runOnUiThread }
+                    // The new image becomes the master; drop the previous one.
+                    if (bgSourceBitmap !== bmp) bgSourceBitmap?.recycle()
+                    bgSourceBitmap = bmp
+                    bgLastW = -1; bgLastH = -1
+                    installBgRootListener()
+                    fitBackgroundToRoot()
+                    // If the root is not measured yet this is a no-op and the
+                    // layout listener does the first fit once it is.
                 }
             }
             // Make surfaces transparent so the bg shows through everywhere
@@ -753,3 +746,63 @@ internal fun MainActivity.applyBackgroundImage(uri: Uri) {
             window?.statusBarColor = 0xBB000000.toInt()
         } catch (_: Exception) {}
     }
+
+/**
+ * Re-fit the master wallpaper to the current `root` size.
+ *
+ * Scales to COVER the root (aspect preserved), then centre-crops to the root's
+ * exact aspect ratio so `BitmapDrawable`'s default FILL gravity never distorts
+ * the image. Called on first application and again on every root size change
+ * (rotation, split-screen, multi-window resize) — see [installBgRootListener].
+ *
+ * Only the intermediate bitmaps are recycled here; the master (`bgSourceBitmap`)
+ * must survive so the next re-fit still has full-resolution pixels.
+ */
+internal fun MainActivity.fitBackgroundToRoot() {
+    val root = findViewById<View>(R.id.root) ?: return
+    val bmp = bgSourceBitmap ?: return
+    if (bmp.isRecycled) return
+    val rw = root.width; val rh = root.height
+    if (rw <= 0 || rh <= 0) return
+    val alpha = prefs.getInt("bg_image_alpha", 20).coerceIn(1, 100)
+    val bmpW = bmp.width; val bmpH = bmp.height
+    val scale = maxOf(rw.toFloat() / bmpW, rh.toFloat() / bmpH)
+    val sw = (bmpW * scale).toInt(); val sh = (bmpH * scale).toInt()
+    // createScaledBitmap/createBitmap 在尺寸恰好相等时会返回【源对象本身】——
+    // 无脑 recycle 源图就会把正在用的位图标记回收，下一帧绘制即抛 recycled bitmap。
+    // 按身份判断再回收；母图永不回收。
+    val scaled = if (sw == bmpW && sh == bmpH) bmp
+        else android.graphics.Bitmap.createScaledBitmap(bmp, sw, sh, true)
+    val x = maxOf((sw - rw) / 2, 0); val y = maxOf((sh - rh) / 2, 0)
+    val cw = minOf(rw, sw); val ch = minOf(rh, sh)
+    val cropped = if (x == 0 && y == 0 && cw == scaled.width && ch == scaled.height) scaled
+        else android.graphics.Bitmap.createBitmap(scaled, x, y, cw, ch)
+    if (cropped !== scaled && scaled !== bmp) scaled.recycle()
+    val dr = android.graphics.drawable.BitmapDrawable(resources, cropped)
+    dr.alpha = (alpha * 255 / 100).coerceIn(1, 255)
+    root.background = dr
+    refreshBackdrop()
+}
+
+/**
+ * Watch `root` for size changes and re-fit the wallpaper.
+ *
+ * Installed once. Guarded by the last seen size so setting the background (which
+ * does not change the root's size) cannot re-enter. Without this, rotation —
+ * which does NOT recreate the Activity because of `configChanges` — left the
+ * wallpaper scaled for the previous orientation and visibly stretched.
+ */
+internal fun MainActivity.installBgRootListener() {
+    if (bgRootListener != null) return
+    val root = findViewById<View>(R.id.root) ?: return
+    val l = android.view.View.OnLayoutChangeListener { _, l0, t0, r0, b0, _, _, _, _ ->
+        val w = r0 - l0; val h = b0 - t0
+        if (w != bgLastW || h != bgLastH) {
+            bgLastW = w; bgLastH = h
+            fitBackgroundToRoot()
+        }
+    }
+    root.addOnLayoutChangeListener(l)
+    bgRootListener = l
+}
+

@@ -744,7 +744,7 @@ class MainActivity : AppCompatActivity() {
 
     internal fun showDisclaimer(fromSettings: Boolean = false) {
         if (!fromSettings && prefs.getBoolean("disclaimer_accepted_v2", false)) return
-        AlertDialog.Builder(this)
+        val dlg = AlertDialog.Builder(this)
             .setTitle(getString(R.string.title_disclaimer))
             .setMessage(getString(R.string.disclaimer_body))
             .setPositiveButton(getString(R.string.msg_disclaimer_agree)) { _, _ ->
@@ -753,9 +753,24 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(getString(R.string.action_close)) { _, _ -> if (!fromSettings) finish() }
             .setCancelable(fromSettings)
             .show()
+        // Only when reached from settings: at first launch the disclaimer is a
+        // deliberate gate (no tabs exist yet and the user must accept), so it
+        // stays modal there.
+        if (fromSettings) keepTabBarTappable(dlg)
     }
 
     internal var bgImageLauncher: androidx.activity.result.ActivityResultLauncher<String>? = null
+
+    /** Master wallpaper bitmap, decoded once at a resolution big enough for the
+     *  long side of the screen. Kept so the wallpaper can be re-fit whenever the
+     *  window size changes: the manifest declares `configChanges` for orientation,
+     *  so rotation does NOT recreate the Activity and no restart path re-applies
+     *  the image. Without re-fitting, the pre-cropped (old-orientation) bitmap is
+     *  stretched by `BitmapDrawable`'s default FILL gravity. */
+    internal var bgSourceBitmap: android.graphics.Bitmap? = null
+    internal var bgRootListener: android.view.View.OnLayoutChangeListener? = null
+    internal var bgLastW: Int = -1
+    internal var bgLastH: Int = -1
 
     internal fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
 
@@ -770,6 +785,31 @@ class MainActivity : AppCompatActivity() {
             viewPager.setUserInputEnabled(false)
             viewPager.setUserInputEnabled(true)
         }
+    }
+
+    /** Let the tab strip stay bright and tappable while a settings dialog is open.
+     *
+     *  A plain `AlertDialog` is touch-modal (its window consumes pointers outside
+     *  its own bounds and discards them) and the dialog theme dims the whole
+     *  screen, so the tab bar cannot be tapped and every tab switch is dead while
+     *  settings is up — the dialog "occupies" the tab strip.
+     *
+     *  Two window flags fix that without moving or restyling the dialog:
+     *   * `FLAG_NOT_TOUCH_MODAL` — touches outside the dialog's content go to
+     *     whatever is beneath (the tab strip), instead of being swallowed;
+     *   * clear `FLAG_DIM_BEHIND` — the theme's 60% dim is also removed, so the
+     *     strip stays visible rather than looking disabled.
+     *  The pager input re-arm rides along, because the same dismiss can leave
+     *  ViewPager2 unable to swipe (see [resetPagerInputOnDialogDismiss]). */
+    internal fun keepTabBarTappable(dlg: android.app.Dialog) {
+        dlg.window?.let { w ->
+            w.addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            )
+            w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            w.setDimAmount(0f)
+        }
+        resetPagerInputOnDialogDismiss(dlg)
     }
 
     companion object {

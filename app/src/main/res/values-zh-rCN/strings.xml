@@ -429,6 +429,8 @@
         <item>编码与乱码\n每个预览/编辑器都有编码行：点它切换 UTF-8/SHIFT-JIS/GBK/UTF-16，文本立即重渲染；带 BOM 的 UTF-16/UTF-8 文件自动按正确编码打开；用错的非 UTF-8 编码读文件时会提示「看起来是 UTF-8」</item>
         <item>滚动与自动刷新\n长列表右侧有常显可拖把手（抓住拖动即可跳转）；文本预览/编辑器也有可拖滚动条。当前目录内容变化（重命名/移动/删除/解压/压缩或 USB 等外部改动）时文件列表自动刷新</item>
         <item>回收站\n删除操作默认将文件移到回收站而非直接永久删除（可在设置中关闭）。点工具栏回收站图标查看、恢复或永久删除项目。自动清理可设置保留天数（7/14/30/60/90天或从不）。回收站中的文件占用存储空间。注意：回收站存储在应用私有目录，卸载应用时会清除</item>
+        <item>终端与 uu 命令
+工具栏 ⋋ 打开全屏终端，扎根于当前窗口：切走隐藏、切回时输出/历史/cd 原样还在。输入 "uu help" 查看命令集：uu fmt（支持的格式）、uu info &lt;文件&gt;（单行格式 key）、uu l &lt;归档&gt; [-a]（列条目）、uu scan &lt;文件&gt;（签名扫描）。每个扫描命中注册为 fN 字节区间描述符（f3、f4…）——"uu l f3" 无需落盘直接列内嵌 ZIP；宿主文件被改动后描述符失效。内建命令：ls / pwd / cd（导航扎根的窗口）/ help；其余命令由系统 shell 执行。"uu x"（解压）与 "uu c"（封包）即将到来</item>
     </string-array>
 
 
@@ -544,4 +546,48 @@
     <string name="rgss_game_naming_note">放回游戏目录即可覆盖原包</string>
     <string name="rpgmv_key_title">XOR 密钥 / encryptionKey</string>
     <string name="rpgmv_key_hint">32 位十六进制 = 直接使用该 XOR 密钥流；其他任意文本 = 作为 encryptionKey 交给 RPG Maker 做 MD5；留空则用默认密钥（即 encryptionKey 未设置时的结果）</string>
+
+    <!-- ═══ v6.0 CLI 终端层 + uu 命令集 ═══ -->
+    <string name="terminal_clear">清屏</string>
+    <string name="terminal_close">关闭</string>
+    <string name="terminal_banner">UsefulUnpack 终端 — 输入 \"uu help\" 查看 uu 命令集，\"help\" 查看内建命令。</string>
+    <string name="cli_unknown_command">未知命令：%1$s（试试 \"uu help\"）</string>
+    <string name="cli_help_intro">uu 命令集（内建：ls / pwd / cd / help；其余命令由 sh 执行）</string>
+    <string name="cli_help_examples">示例：\n  uu info game.dat          → pfs\n  uu l game.xp3             → 列条目\n  uu scan video.mp4         → f3、f4 …\n  uu l f3                   → 列内嵌 ZIP</string>
+    <string name="cli_need_file">%1$s：缺少文件路径</string>
+    <string name="cli_pick_file_title">%1$s：选择一个文件</string>
+    <string name="cli_pick_folder_title">%1$s：选择一个目录</string>
+    <string name="cli_pick_keep">保留当前目录</string>
+    <string name="cli_pick_keep_sub">%1$s</string>
+    <string name="cli_pick_switch">选择其他目录…</string>
+    <string name="cli_pick_switch_sub">打开目录选择器</string>
+    <string name="cli_not_found">找不到：%1$s</string>
+    <string name="cli_failed">失败：%1$s</string>
+    <string name="cli_not_yet">%1$s 尚未实现</string>
+    <string name="cli_unclosed_quote">引号未闭合：%1$s</string>
+    <string name="cli_list_header">%1$s — %2$s 个条目，%3$s</string>
+    <string name="cli_list_dir_mark">&lt;目录&gt;</string>
+    <string name="cli_list_enc_mark">🔒</string>
+    <string name="cli_list_failed">无法列出 %1$s</string>
+    <string name="cli_list_empty">%1$s 为空</string>
+    <string name="cli_list_truncated">…还有 %1$s 条（加 -a 显示全部）</string>
+    <string name="cli_scan_failed">扫描失败：%1$s</string>
+    <string name="cli_scan_none">%1$s 中未发现签名</string>
+    <string name="cli_scan_header">%1$s — %2$s 个命中</string>
+    <string name="cli_scan_entries">%1$s 个文件</string>
+    <string name="cli_scan_fd_hint">%1$s 个命中已注册为 f3、f4、… — 试试：uu l f3 / dd if=f3 of=part.bin</string>
+    <string name="cli_fd_not_archive">%1$s 不是归档（%2$s）— 只能用 dd 保存</string>
+    <string name="cli_fd_stale">%1$s 已失效（宿主文件已变化）— 请重新 uu scan</string>
+    <string name="cli_no_such_fd">无此 FD：%1$s</string>
+    <string name="cli_needs_activity">该命令需要应用 UI 环境</string>
+    <string name="cli_extract_ok">%1$s：共 %2$s，成功 %3$s，出错 %4$s</string>
+    <string name="cli_extract_cancelled">已取消</string>
+    <string name="cli_extract_pwd_cancelled">已取消密码输入</string>
+    <string name="cli_extract_bad_format">不是可解压的归档：%1$s</string>
+    <string name="cli_pack_ambiguous_ext">扩展名 %1$s 有歧义 — 请用 -f 指定（%2$s）</string>
+    <string name="cli_pack_no_key_for_ext">没有封包格式匹配扩展名 %1$s</string>
+    <string name="cli_pack_unknown_key">未知格式 key：%1$s（见 uu fmt）</string>
+    <string name="cli_pack_split_unsupported">%1$s 不支持分卷</string>
+    <string name="cli_pack_ok">已封包：%1$s</string>
+    <string name="cli_pack_failed">封包失败：%1$s</string>
 </resources>

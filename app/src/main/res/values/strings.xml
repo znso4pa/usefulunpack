@@ -438,6 +438,8 @@
         <item>Encoding &amp; garbled text\nEvery preview/editor shows an encoding row — tap it to switch UTF-8/Shift-JIS/GBK/UTF-16 and the text re-renders instantly. UTF-16/UTF-8 files with a byte-order mark open with the right encoding automatically; a "looks like UTF-8" hint appears when a file was read with a wrong non-UTF-8 encoding</item>
         <item>Scrolling &amp; refresh\nLong lists have an always-visible draggable handle on the right (grab and drag to jump); the text preview/editor have a draggable scrollbar too. The file list refreshes automatically when the current folder changes (rename/move/delete/extract/compress or external changes such as USB)</item>
         <item>Recycle bin\nDelete moves files to the recycle bin instead of permanently deleting them (configurable). Tap the recycle bin icon in the toolbar to view, restore, or permanently delete items. Auto-clean removes items after a configurable period (7/14/30/60/90 days or never). Files in the recycle bin count against storage space. Note: the recycle bin is stored in app internal storage and is cleared when the app is uninstalled</item>
+        <item>Terminal &amp; uu commands
+The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the current window: switch tabs and it hides, switch back and the session (output, history, cd) is untouched. Type "uu help" for the command set: uu fmt (supported formats), uu info &lt;file&gt; (one-line format key), uu l &lt;archive&gt; [-a] (list entries), uu scan &lt;file&gt; (signature scan). Each scan hit registers as an fN byte-range descriptor (f3, f4…) — "uu l f3" lists an embedded ZIP without carving it out first; the descriptor goes stale if the host file changes. Built-ins: ls / pwd / cd (navigates the rooted window) / help; any other line runs in the system shell. "uu x" (extract) and "uu c" (pack) are coming next</item>
     </string-array>
 
 
@@ -545,4 +547,48 @@
     <string name="rgss_game_naming_note">Put it in the game folder to replace the original</string>
     <string name="rpgmv_key_title">XOR key / encryption key</string>
     <string name="rpgmv_key_hint">32 hex digits = the XOR keystream as-is. Any other text = the encryptionKey that RPG Maker hashes (MD5). Leave empty for the default key, which is what an unset encryptionKey produces.</string>
+
+    <!-- ═══ v6.0 CLI terminal layer + uu command set ═══ -->
+    <string name="terminal_clear">Clear</string>
+    <string name="terminal_close">Close</string>
+    <string name="terminal_banner">UsefulUnpack terminal — type \"uu help\" for the uu command set, \"help\" for built-ins.</string>
+    <string name="cli_unknown_command">Unknown command: %1$s (try \"uu help\")</string>
+    <string name="cli_help_intro">uu commands (built-ins: ls / pwd / cd / help; anything else runs in sh)</string>
+    <string name="cli_help_examples">Examples:\n  uu info game.dat          → pfs\n  uu l game.xp3             → list entries\n  uu scan video.mp4         → f3, f4 …\n  uu l f3                   → list an embedded ZIP</string>
+    <string name="cli_need_file">%1$s: missing a file path</string>
+    <string name="cli_pick_file_title">%1$s: choose a file</string>
+    <string name="cli_pick_folder_title">%1$s: choose a folder</string>
+    <string name="cli_pick_keep">Keep current folder</string>
+    <string name="cli_pick_keep_sub">%1$s</string>
+    <string name="cli_pick_switch">Choose another folder…</string>
+    <string name="cli_pick_switch_sub">Open the folder picker</string>
+    <string name="cli_not_found">Not found: %1$s</string>
+    <string name="cli_failed">Failed: %1$s</string>
+    <string name="cli_not_yet">%1$s is not implemented yet</string>
+    <string name="cli_unclosed_quote">Unclosed quote: %1$s</string>
+    <string name="cli_list_header">%1$s — %2$s entries, %3$s</string>
+    <string name="cli_list_dir_mark">&lt;dir&gt;</string>
+    <string name="cli_list_enc_mark">🔒</string>
+    <string name="cli_list_failed">Cannot list %1$s</string>
+    <string name="cli_list_empty">%1$s is empty</string>
+    <string name="cli_list_truncated">… and %1$s more (add -a to show all)</string>
+    <string name="cli_scan_failed">Scan failed: %1$s</string>
+    <string name="cli_scan_none">No signatures found in %1$s</string>
+    <string name="cli_scan_header">%1$s — %2$s hits</string>
+    <string name="cli_scan_entries">%1$s files</string>
+    <string name="cli_scan_fd_hint">%1$s hits registered as f3, f4, … — try: uu l f3 / dd if=f3 of=part.bin</string>
+    <string name="cli_fd_not_archive">%1$s is not an archive (%2$s) — only dd can save it</string>
+    <string name="cli_fd_stale">%1$s is stale (the host file changed) — run uu scan again</string>
+    <string name="cli_no_such_fd">No such FD: %1$s</string>
+    <string name="cli_needs_activity">This command needs the app UI environment</string>
+    <string name="cli_extract_ok">%1$s: %2$s total, %3$s ok, %4$s errors</string>
+    <string name="cli_extract_cancelled">Cancelled</string>
+    <string name="cli_extract_pwd_cancelled">Password prompt cancelled</string>
+    <string name="cli_extract_bad_format">Not an extractable archive: %1$s</string>
+    <string name="cli_pack_ambiguous_ext">Ambiguous extension %1$s — pick a key with -f (%2$s)</string>
+    <string name="cli_pack_no_key_for_ext">No pack format matches extension %1$s</string>
+    <string name="cli_pack_unknown_key">Unknown format key: %1$s (see uu fmt)</string>
+    <string name="cli_pack_split_unsupported">Split volumes are not supported for %1$s</string>
+    <string name="cli_pack_ok">Packed: %1$s</string>
+    <string name="cli_pack_failed">Pack failed: %1$s</string>
 </resources>

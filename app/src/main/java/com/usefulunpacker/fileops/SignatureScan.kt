@@ -41,8 +41,13 @@ fun parseScanHits(json: String?): List<ScanHit> {
     } catch (_: Exception) { emptyList() }
 }
 
-/** hit label → archive format key (null = not an archive → save the segment only). */
-private val ARCHIVE_LABELS = mapOf(
+/** hit label → archive format key (null = not an archive → save the segment only).
+ *
+ *  `internal` 而非 private：uu CLI 的 fdN 需要同一张 label→key 表来判定
+ *  命中能否当归档列/解。手抄的第二张表当场就漂了（多了 ypf、少了 POSIX tar），
+ *  所以只有这一份，共享。
+ */
+internal val ARCHIVE_LABELS = mapOf(
     "7-zip archive" to "7z",
     "ZIP archive" to "zip",
     "RAR archive" to "rar",

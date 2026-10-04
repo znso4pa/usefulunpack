@@ -468,15 +468,14 @@ internal class TerminalPanel(private val act: MainActivity) {
             choice(
                 str(R.string.cli_pick_keep), str(R.string.cli_pick_keep_sub, vm.cwd.absolutePath)
             ) { rerunWith(vm.cwd) }
-        // 强制对话框式选择器：终端按 tab 扎根（切走 GONE），「新窗口」模式开的
-        // picker tab 会把终端藏掉、选完再弹回来 —— 打断会话显示。对话框式选择
-        // 器与终端并存，不切窗。showFolderPickerDialog 永远弹对话框。
+        // 跟随设置里的「路径选择方式」：终端按 tab 扎根后，新窗口模式开的
+        // picker tab 会让终端 GONE 让位（选完切回自动恢复），不再需要强制对话框。
             choice(str(R.string.cli_pick_switch), str(R.string.cli_pick_switch_sub)) {
-                showFolderPickerDialog(act, vm.cwd, false) { picked -> rerunWith(picked) }
+                showFolderPicker(act, vm.cwd, false) { picked -> rerunWith(picked) }
             }
         } else {
             choice(str(R.string.action_choose_dir), str(R.string.cli_pick_switch_sub)) {
-                showFolderPickerDialog(act, vm.cwd, true) { picked -> rerunWith(picked) }
+                showFolderPicker(act, vm.cwd, true) { picked -> rerunWith(picked) }
             }
         }
 

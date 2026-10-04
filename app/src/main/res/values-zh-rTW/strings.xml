@@ -424,6 +424,8 @@
         <item>編碼與亂碼\n每個預覽/編輯器都有編碼行：點它切換 UTF-8/SHIFT-JIS/GBK/UTF-16，文字立即重渲染；帶 BOM 的 UTF-16/UTF-8 檔自動按正確編碼開啟；用錯的非 UTF-8 編碼讀檔時會提示「看起來是 UTF-8」</item>
         <item>捲動與自動重新整理\n長列表右側有常顯可拖把手（抓住拖動即可跳轉）；文字預覽/編輯器也有可拖捲軸。目前目錄內容變化（重新命名/移動/刪除/解壓/壓縮或 USB 等外部改動）時檔案列表自動重新整理</item>
         <item>回收站\n抽屜裡的回收站保留刪除前的副本（可設定保留天數）；支援復原與清空，並依檔案大小與原路徑顯示</item>
+        <item>終端機與 uu 命令
+工具列 ⋋ 開啟全螢幕終端機，紮根於目前視窗：切走隱藏、切回時輸出/歷史/cd 原樣還在。輸入 "uu help" 查看命令集：uu fmt（支援的格式）、uu info &lt;檔案&gt;（單行格式 key）、uu l &lt;封包&gt; [-a]（列條目）、uu scan &lt;檔案&gt;（簽名掃描）。每個掃描命中註冊為 fN 位元組區間描述符（f3、f4…）——"uu l f3" 無需落盤直接列內嵌 ZIP；宿主檔案被改動後描述符失效。內建命令：ls / pwd / cd（導航紮根的視窗）/ help；其餘命令由系統 shell 執行。"uu x"（解壓）與 "uu c"（封包）即將到來</item>
     </string-array>
 
 
@@ -539,4 +541,48 @@
     <string name="rgss_game_naming_note">放回遊戲目錄即可覆蓋原封包</string>
     <string name="rpgmv_key_title">XOR 金鑰 / encryptionKey</string>
     <string name="rpgmv_key_hint">32 位十六進位 = 直接使用該 XOR 金鑰流；其他任意文字 = 作為 encryptionKey 交給 RPG Maker 做 MD5；留空則用預設金鑰（即 encryptionKey 未設定時的結果）</string>
+
+    <!-- ═══ v6.0 CLI 終端層 + uu 命令集 ═══ -->
+    <string name="terminal_clear">清屏</string>
+    <string name="terminal_close">關閉</string>
+    <string name="terminal_banner">UsefulUnpack 終端機 — 輸入 \"uu help\" 查看 uu 命令集，\"help\" 查看內建命令。</string>
+    <string name="cli_unknown_command">未知命令：%1$s（試試 \"uu help\"）</string>
+    <string name="cli_help_intro">uu 命令集（內建：ls / pwd / cd / help；其餘命令由 sh 執行）</string>
+    <string name="cli_help_examples">範例：\n  uu info game.dat          → pfs\n  uu l game.xp3             → 列條目\n  uu scan video.mp4         → f3、f4 …\n  uu l f3                   → 列內嵌 ZIP</string>
+    <string name="cli_need_file">%1$s：缺少檔案路徑</string>
+    <string name="cli_pick_file_title">%1$s：選擇一個檔案</string>
+    <string name="cli_pick_folder_title">%1$s：選擇一個目錄</string>
+    <string name="cli_pick_keep">保留目前目錄</string>
+    <string name="cli_pick_keep_sub">%1$s</string>
+    <string name="cli_pick_switch">選擇其他目錄…</string>
+    <string name="cli_pick_switch_sub">開啟目錄選擇器</string>
+    <string name="cli_not_found">找不到：%1$s</string>
+    <string name="cli_failed">失敗：%1$s</string>
+    <string name="cli_not_yet">%1$s 尚未實作</string>
+    <string name="cli_unclosed_quote">引號未閉合：%1$s</string>
+    <string name="cli_list_header">%1$s — %2$s 個條目，%3$s</string>
+    <string name="cli_list_dir_mark">&lt;目錄&gt;</string>
+    <string name="cli_list_enc_mark">🔒</string>
+    <string name="cli_list_failed">無法列出 %1$s</string>
+    <string name="cli_list_empty">%1$s 為空</string>
+    <string name="cli_list_truncated">…還有 %1$s 條（加 -a 顯示全部）</string>
+    <string name="cli_scan_failed">掃描失敗：%1$s</string>
+    <string name="cli_scan_none">%1$s 中未發現簽名</string>
+    <string name="cli_scan_header">%1$s — %2$s 個命中</string>
+    <string name="cli_scan_entries">%1$s 個檔案</string>
+    <string name="cli_scan_fd_hint">%1$s 個命中已註冊為 f3、f4、… — 試試：uu l f3 / dd if=f3 of=part.bin</string>
+    <string name="cli_fd_not_archive">%1$s 不是封包（%2$s）— 只能用 dd 儲存</string>
+    <string name="cli_fd_stale">%1$s 已失效（宿主檔案已變化）— 請重新 uu scan</string>
+    <string name="cli_no_such_fd">無此 FD：%1$s</string>
+    <string name="cli_needs_activity">該命令需要應用 UI 環境</string>
+    <string name="cli_extract_ok">%1$s：共 %2$s，成功 %3$s，出錯 %4$s</string>
+    <string name="cli_extract_cancelled">已取消</string>
+    <string name="cli_extract_pwd_cancelled">已取消密碼輸入</string>
+    <string name="cli_extract_bad_format">不是可解壓的封包：%1$s</string>
+    <string name="cli_pack_ambiguous_ext">副檔名 %1$s 有歧義 — 請用 -f 指定（%2$s）</string>
+    <string name="cli_pack_no_key_for_ext">沒有封包格式匹配副檔名 %1$s</string>
+    <string name="cli_pack_unknown_key">未知格式 key：%1$s（見 uu fmt）</string>
+    <string name="cli_pack_split_unsupported">%1$s 不支援分割</string>
+    <string name="cli_pack_ok">已封包：%1$s</string>
+    <string name="cli_pack_failed">封包失敗：%1$s</string>
 </resources>

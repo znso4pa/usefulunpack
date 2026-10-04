@@ -108,6 +108,11 @@ class MainActivity : AppCompatActivity() {
     // Views delegated to the active tab. Read-only — per-tab views are written
     // through the tab's own fields (tab.tvPath etc.), never assigned here.
     internal val tvPath: TextView get() = activeTab.tvPath
+
+    /** 终端层按需创建；持有它是为了「开/关」和 back 拦截用同一实例。 */
+    private var _terminalPanel: TerminalPanel? = null
+    internal val terminalPanel: TerminalPanel
+        get() = _terminalPanel ?: TerminalPanel(this).also { _terminalPanel = it }
     internal val tvCount: TextView get() = activeTab.tvCount
     internal val tvSelected: TextView get() = activeTab.tvSelected
     internal val tvEmpty: TextView get() = activeTab.tvEmpty
@@ -245,6 +250,8 @@ class MainActivity : AppCompatActivity() {
                 // Dialogs opened from a tab are rooted to it: hide the ones that
                 // don't belong to the now-active tab, restore the ones that do.
                 syncRootedDialogs()
+                // 终端层按 tab 扎根：切走 GONE 隐藏，切回 owner tab 自动恢复。
+                _terminalPanel?.onTabChanged(tabs.getOrNull(position)?.tabId ?: -1)
                 // OpOverlay cards are scoped to their owning window — switching
                 // tabs sends the running progress "to background".
                 OpOverlay.onActiveTabChanged(
@@ -375,7 +382,17 @@ class MainActivity : AppCompatActivity() {
         thread { com.usefulunpacker.fileops.RecycleBin.autoClean(this, prefs) }
     }
 
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // 清单声明了 configChanges：旋转不重建视图树，终端层按像素算的
+        // 顶部偏移（状态栏高度横竖屏不同）必须手动重算。
+        _terminalPanel?.relayout()
+    }
+
     override fun onBackPressed() {
+        // 终端层最顶：back 先关终端（必须排在 previewActive 之前 —— 预览态下
+        // 开着终端时，back 的预期是收起终端而不是退出预览）。
+        if (_terminalPanel?.onBackPressed() == true) return
         // An in-tab archive preview intercepts back to exit the preview first,
         // rather than closing the whole activity.
         if (activeTab.previewActive) {
@@ -545,7 +562,7 @@ class MainActivity : AppCompatActivity() {
                     popup.menu.add(0, 2, 2, getString(R.string.nav_bookmarks))
                     popup.menu.add(0, 3, 3, getString(R.string.settings))
                     popup.setOnMenuItemClickListener { item ->
-                        when (item.itemId) { 0 -> showTerminal(this@MainActivity, currentDir) { nav(it) }; 1 -> globalSearch(); 2 -> drawer.open(); 3 -> settings() }
+                        when (item.itemId) { 0 -> terminalPanel.show(); 1 -> globalSearch(); 2 -> drawer.open(); 3 -> settings() }
                         true
                     }
                     popup.show()
@@ -697,6 +714,9 @@ class MainActivity : AppCompatActivity() {
         tabs.removeAt(idx)
         if (activeTabIndex > idx) activeTabIndex--
         if (activeTabIndex >= tabs.size) activeTabIndex = tabs.size - 1
+        // 终端扎根的 tab 可能刚被关掉：owner 不在了就彻底移除。onPageSelected
+        // 在 index 不变时不触发，必须在这里显式走一次。
+        _terminalPanel?.onTabChanged(tabs.getOrNull(activeTabIndex)?.tabId ?: -1)
         // Rebuild the pager so every fragment re-binds to the (shifted) tabs by
         // position — FragmentStateAdapter would otherwise reuse a stale fragment
         // that still points at the removed tab.

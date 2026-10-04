@@ -3,4 +3,7 @@
     <!-- Floating operation-progress layer (OpOverlay) -->
     <item name="op_overlay_host" type="id" />
     <item name="op_overlay_cards" type="id" />
+    <!-- 全屏终端层 (TerminalPanel) -->
+    <item name="terminal_root" type="id" />
+    <item name="terminal_cwd" type="id" />
 </resources>

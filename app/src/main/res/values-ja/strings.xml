@@ -417,6 +417,8 @@
         <item>エンコーディングと文字化け\n各プレビュー/エディタにエンコーディング行があります：タップで UTF-8/SHIFT-JIS/GBK/UTF-16 を切替、テキストは即座に再描画；BOM 付きの UTF-16/UTF-8 ファイルは正しいエンコーディングで自動オープン；非 UTF-8 の誤ったエンコーディングで読むと「UTF-8 に見えます」とヒント</item>
         <item>スクロールと自動更新\n長いリストの右側に常時表示のドラッグハンドル（掴んでドラッグで移動）；テキストプレビュー/エディタにもドラッグ可能なスクロールバー。現在のフォルダに変更（名前変更/移動/削除/解凍/圧縮、USB 等の外部変更）があるとファイル一覧が自動更新されます</item>
         <item>ごみ箱\nドロワーのごみ箱は削除前の複製を保持（保持日数を設定可）。復元と全消去に対応し、サイズと元のパスで表示される</item>
+        <item>ターミナルと uu コマンド
+ツールバーの ⋋ でフルスクリーン ターミナルを開きます。現在のウィンドウに紐づき：タブを切り替えると隠れ、戻ると出力/履歴/cd はそのまま。"uu help" でコマンド一覧：uu fmt（対応形式）、uu info &lt;ファイル&gt;（1 行の形式キー）、uu l &lt;アーカイブ&gt; [-a]（エントリ一覧）、uu scan &lt;ファイル&gt;（シグネチャスキャン）。スキャンヒットは fN バイト範囲記述子（f3、f4…）として登録——"uu l f3" で carve せずに埋め込み ZIP を直接一覧；ホストファイルが変わると記述子は無効化。内蔵コマンド：ls / pwd / cd（紐づくウィンドウを移動）/ help；それ以外はシステムシェルで実行。"uu x"（解凍）と "uu c"（圧縮）は次回</item>
     </string-array>
 
 
@@ -539,4 +541,48 @@
     <string name="rgss_game_naming_note">ゲームフォルダーに戻せば元のと置き換えられます</string>
     <string name="rpgmv_key_title">XOR キー / encryptionKey</string>
     <string name="rpgmv_key_hint">32 桁の 16 進数 = その XOR キーストリームをそのまま使用。それ以外の文字 = encryptionKey として RPG Maker が MD5 を計算。空欄ならデフォルトキー（encryptionKey 未設定時と同じ）</string>
+
+    <!-- ═══ v6.0 CLI ターミナル層 + uu コマンドセット ═══ -->
+    <string name="terminal_clear">クリア</string>
+    <string name="terminal_close">閉じる</string>
+    <string name="terminal_banner">UsefulUnpack ターミナル — \"uu help\" で uu コマンド一覧、\"help\" で内蔵コマンドを表示。</string>
+    <string name="cli_unknown_command">未知のコマンド：%1$s（\"uu help\" を参照）</string>
+    <string name="cli_help_intro">uu コマンドセット（内蔵：ls / pwd / cd / help。それ以外は sh で実行）</string>
+    <string name="cli_help_examples">例：\n  uu info game.dat          → pfs\n  uu l game.xp3             → エントリ一覧\n  uu scan video.mp4         → f3、f4 …\n  uu l f3                   → 埋め込み ZIP を一覧</string>
+    <string name="cli_need_file">%1$s：ファイルパスがありません</string>
+    <string name="cli_pick_file_title">%1$s：ファイルを選択</string>
+    <string name="cli_pick_folder_title">%1$s：フォルダを選択</string>
+    <string name="cli_pick_keep">現在のフォルダを使う</string>
+    <string name="cli_pick_keep_sub">%1$s</string>
+    <string name="cli_pick_switch">別のフォルダを選択…</string>
+    <string name="cli_pick_switch_sub">フォルダピッカーを開く</string>
+    <string name="cli_not_found">見つかりません：%1$s</string>
+    <string name="cli_failed">失敗：%1$s</string>
+    <string name="cli_not_yet">%1$s は未実装です</string>
+    <string name="cli_unclosed_quote">閉じていない引用符：%1$s</string>
+    <string name="cli_list_header">%1$s — %2$s 項目、%3$s</string>
+    <string name="cli_list_dir_mark">&lt;dir&gt;</string>
+    <string name="cli_list_enc_mark">🔒</string>
+    <string name="cli_list_failed">%1$s を一覧できません</string>
+    <string name="cli_list_empty">%1$s は空です</string>
+    <string name="cli_list_truncated">…他 %1$s 件（-a で全表示）</string>
+    <string name="cli_scan_failed">スキャン失敗：%1$s</string>
+    <string name="cli_scan_none">%1$s にシグネチャは見つかりませんでした</string>
+    <string name="cli_scan_header">%1$s — %2$s 件ヒット</string>
+    <string name="cli_scan_entries">%1$s ファイル</string>
+    <string name="cli_scan_fd_hint">%1$s 件を f3、f4、… に登録済み — 例：uu l f3 / dd if=f3 of=part.bin</string>
+    <string name="cli_fd_not_archive">%1$s はアーカイブではありません（%2$s）— dd での保存のみ可能</string>
+    <string name="cli_fd_stale">%1$s は無効です（ホストファイルが変更されました）— uu scan をやり直してください</string>
+    <string name="cli_no_such_fd">その FD は存在しません：%1$s</string>
+    <string name="cli_needs_activity">このコマンドにはアプリの UI 環境が必要です</string>
+    <string name="cli_extract_ok">%1$s：計 %2$s、成功 %3$s、エラー %4$s</string>
+    <string name="cli_extract_cancelled">キャンセルしました</string>
+    <string name="cli_extract_pwd_cancelled">パスワード入力をキャンセルしました</string>
+    <string name="cli_extract_bad_format">解凍可能なアーカイブではありません：%1$s</string>
+    <string name="cli_pack_ambiguous_ext">拡張子 %1$s は曖昧です — -f で指定してください（%2$s）</string>
+    <string name="cli_pack_no_key_for_ext">拡張子 %1$s に一致する圧縮形式がありません</string>
+    <string name="cli_pack_unknown_key">未知の形式キー：%1$s（uu fmt を参照）</string>
+    <string name="cli_pack_split_unsupported">%1$s は分割に対応していません</string>
+    <string name="cli_pack_ok">圧縮完了：%1$s</string>
+    <string name="cli_pack_failed">圧縮失敗：%1$s</string>
 </resources>

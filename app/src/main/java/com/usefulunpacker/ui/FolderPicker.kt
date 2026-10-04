@@ -113,8 +113,7 @@ internal fun showFolderPickerDialog(activity: AppCompatActivity, startDir: File,
     // Size the window BEFORE show so the first layout is already the final
     // size (resizing in onShow causes a visible jump/flash during the enter
     // animation).
-    val metrics = activity.resources.displayMetrics
-    val (fw, fh) = activity.cappedDialogSize(0.92f, 0.75f)
-    dlg.window?.setLayout(fw, fh)
+    // Tall picker (capped 0.75h) — bottom-anchor below the tab strip.
+    dlg.belowTabs()
     dlg.show()
 }

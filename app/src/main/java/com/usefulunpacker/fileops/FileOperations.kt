@@ -43,9 +43,9 @@ fun showRenameDialog(activity: AppCompatActivity, f: File, currentDir: File, boo
                         1 -> { val u = uniqueFile(f.parentFile!!, newName); val ok = f.renameTo(u); Toast.makeText(activity, if (ok) activity.getString(R.string.msg_renamed_to, u.name) else activity.getString(R.string.err_file_error), Toast.LENGTH_SHORT).show(); if (ok) onSaved() }
                         2 -> { compareFiles(activity, f, dst, bookmarks, currentDir, onSaved) }
                     }
-                }.setNegativeButton(activity.getString(R.string.action_cancel), null).show()
+                }.setNegativeButton(activity.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
         }
-        .setNegativeButton(activity.getString(R.string.action_cancel), null).show()
+        .setNegativeButton(activity.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
 }
 
 fun compareFiles(activity: AppCompatActivity, a: File, b: File, bookmarks: MutableList<String>, currentDir: File, onSaved: () -> Unit) {
@@ -62,7 +62,7 @@ fun compareFiles(activity: AppCompatActivity, a: File, b: File, bookmarks: Mutab
         .setPositiveButton(if (canPreview) activity.getString(R.string.preview_both) else activity.getString(R.string.action_confirm)) { _, _ ->
             if (canPreview) { previewLocalFile(activity, a); previewLocalFile(activity, b) }
         }
-        .setNegativeButton(activity.getString(R.string.action_cancel), null).show()
+        .setNegativeButton(activity.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
 }
 
 fun calcDirSize(activity: AppCompatActivity, dir: File) {
@@ -74,6 +74,7 @@ fun calcDirSize(activity: AppCompatActivity, dir: File) {
         setCancelable(false)
         show()
     }
+    pd.keepTabsTappable()
     thread {
         var total = 0L
         var processed = 0
@@ -91,7 +92,7 @@ fun calcDirSize(activity: AppCompatActivity, dir: File) {
                 .setTitle(dir.name)
                 .setMessage(activity.getString(R.string.msg_calc_result, fmt(total), processed))
                 .setPositiveButton(activity.getString(R.string.action_confirm), null)
-                .show()
+                .show().also { it.keepTabsTappable() }
         }
     }
 }

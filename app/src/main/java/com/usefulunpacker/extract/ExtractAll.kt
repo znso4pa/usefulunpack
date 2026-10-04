@@ -125,7 +125,7 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                                     }
                                 }
                                 .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> cleanupCancelledOutput(destFile, existedBefore) }
-                                .show()
+                                .show().also { it.keepTabsTappable() }
                         } else toast(friendlyExtractError(this, finalResult?.error ?: ""))
                     }
                 }
@@ -150,5 +150,5 @@ internal fun MainActivity.showExtractSuccess(srcName: String, outName: String, c
             .setTitle("✓ ${getString(R.string.msg_extract_complete)}")
             .setView(layout)
             .setPositiveButton(getString(R.string.action_confirm), null)
-            .show()
+            .show().also { it.keepTabsTappable() }
     }

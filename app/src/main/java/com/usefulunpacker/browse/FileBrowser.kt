@@ -141,7 +141,7 @@ internal fun MainActivity.extract(tab: TabState) {
                 .setTitle(getString(R.string.title_extract_failed))
                                 .setMessage(getString(R.string.err_not_archive))
                 .setPositiveButton(getString(R.string.action_confirm), null)
-                .show()
+                .show().also { it.keepTabsTappable() }
             return
         }
         showFormatPicker(this, getString(R.string.title_select_format)) { format ->
@@ -231,7 +231,7 @@ internal fun MainActivity.select(tab: TabState, f: File) {
                         0 -> previewLocalFile(this, f)
                         1 -> showFileInfoDialog(f)
                     }
-                }.setNegativeButton(getString(R.string.action_cancel), null).show()
+                }.setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
             return
         }
 
@@ -255,7 +255,7 @@ internal fun MainActivity.showExtractOptions(src: File, format: String) {
                     1 -> showDirectExtractDialog(src, format, parent, outDir)
                     2 -> convertIso(src, toCso = true)
                 }
-            }.setNegativeButton(getString(R.string.action_cancel), null).show()
+            }.setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
     }
 
 internal fun MainActivity.showDirectExtractDialog(src: File, format: String, parent: File, outDir: File) {
@@ -270,7 +270,7 @@ internal fun MainActivity.showDirectExtractDialog(src: File, format: String, par
                     }
                 }
             }.setNegativeButton(getString(R.string.action_cancel), null)
-            .show()
+            .show().also { it.keepTabsTappable() }
     }
 
 /**
@@ -315,7 +315,7 @@ internal fun MainActivity.installApk(f: File) {
         .setTitle(f.name)
         .setView(body)
         .setNegativeButton(getString(R.string.action_cancel), null)
-        .show()
+        .show().also { it.keepTabsTappable(rootToTab = false) }
 }
 
 private fun MainActivity.doInstallApk(f: File, keepCopy: Boolean) {
@@ -361,6 +361,7 @@ private fun MainActivity.installViaPackageInstaller(f: File) {
         setCancelable(false)
         show()
     }
+    pd.keepTabsTappable(rootToTab = false)
     thread {
         try {
             val pm = packageManager
@@ -401,7 +402,7 @@ private fun MainActivity.installViaPackageInstaller(f: File) {
                         } catch (e: Exception) { android.util.Log.e("FileBrowser", "APK backup failed", e) }
                     }
                     .setNegativeButton(getString(R.string.action_cancel), null)
-                    .show()
+                    .show().also { it.keepTabsTappable(rootToTab = false) }
             }
         } catch (e: Exception) {
             runOnUiThread {
@@ -411,7 +412,7 @@ private fun MainActivity.installViaPackageInstaller(f: File) {
                     .setTitle(getString(R.string.title_install_failed))
                     .setMessage(getString(R.string.err_install_apk, e.message ?: ""))
                     .setPositiveButton(getString(R.string.action_confirm), null)
-                    .show()
+                    .show().also { it.keepTabsTappable(rootToTab = false) }
             }
         }
     }

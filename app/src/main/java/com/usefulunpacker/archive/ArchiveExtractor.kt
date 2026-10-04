@@ -273,9 +273,11 @@ fun promptPasswordSync(activity: AppCompatActivity, message: String = ""): Strin
                 .setPositiveButton(activity.getString(R.string.action_confirm)) { _, _ -> holder[0] = inp.text.toString(); latch.countDown() }
                 .setNegativeButton(activity.getString(R.string.action_cancel)) { _, _ -> latch.countDown() }
                 .create()
-            dlg.setOnDismissListener { latch.countDown() }
             if (message.isNotEmpty()) dlg.setMessage(message)
             dlg.show()
+            // `also` keeps the latch release on dismiss while the helper also
+            // re-arms the pager (a dismiss listener set here would clobber it).
+            dlg.keepTabsTappable { latch.countDown() }
         } catch (_: Exception) {
             // BadTokenException / WindowManager errors: never leave the
             // caller blocked on the latch.
@@ -361,7 +363,7 @@ fun showPasswordDialog(
             }
         }
         .setNegativeButton(activity.getString(R.string.action_cancel), null)
-        .show()
+        .show().also { it.keepTabsTappable() }
 }
 
 fun tryExtractWithPassword(
@@ -488,7 +490,7 @@ fun tryExtractWithPassword(
                         }
                     }
                     .setNegativeButton(activity.getString(R.string.action_cancel), null)
-                    .show()
+                    .show().also { it.keepTabsTappable() }
             } else { onResult(finalResult!!) }
         }
     }

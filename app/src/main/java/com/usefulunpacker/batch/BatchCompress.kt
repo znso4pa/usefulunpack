@@ -20,7 +20,7 @@ internal fun MainActivity.startBatchCompress() {
                     0 -> compressMerged(items)
                     1 -> compressSeparate(items)
                 }
-            }.setNegativeButton(getString(R.string.action_cancel), null).show()
+            }.setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
     }
 
 internal fun MainActivity.compressMerged(items: List<File>) {
@@ -136,7 +136,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                         true
                     }
                 }
-                .setNegativeButton(getString(R.string.action_cancel), null).show()
+                .setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
         }
     }
 

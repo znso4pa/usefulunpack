@@ -190,11 +190,9 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         // Size the window BEFORE show so the first layout pass is already the
         // final size — setting it in onShow resizes after the enter animation
         // starts, causing a flash/jump and an empty-results bottom bar that
-        // isn't pinned to the window bottom. Capped so tablets/landscape don't
-        // stretch edge-to-edge.
-        val metrics = this.resources.displayMetrics
-        val (gw, gh) = cappedDialogSize(0.94f, 0.85f)
-        searchDialog.window?.setLayout(gw, gh)
+        // isn't pinned to the window bottom.
+        // Tall search window (capped 0.85h) — bottom-anchor below the tab strip.
+        searchDialog.belowTabs()
         searchDialog.show()
 
         // Launch search
@@ -317,7 +315,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                         doSearch(queryText, 1, bytes)
                     }
                     .setNegativeButton(getString(R.string.action_cancel), null)
-                    .show()
+                    .show().also { it.keepTabsTappable() }
             } else {
                 doSearch(queryText, 0, Long.MAX_VALUE)
             }

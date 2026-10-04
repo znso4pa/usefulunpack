@@ -141,7 +141,7 @@ internal fun MainActivity.confirmBatchDelete() {
                     exitAllMultiSelect(); navTab(tab, tab.currentDir)
                 }
             }
-            .setNegativeButton(getString(R.string.action_cancel), null).show()
+            .setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
     }
 
 internal fun MainActivity.startBatchMove() {

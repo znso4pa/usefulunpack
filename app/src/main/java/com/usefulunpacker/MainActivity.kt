@@ -242,6 +242,9 @@ class MainActivity : AppCompatActivity() {
         viewPager.registerOnPageChangeCallback(object : androidx.viewpager2.widget.ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
                 activeTabIndex = position
+                // Dialogs opened from a tab are rooted to it: hide the ones that
+                // don't belong to the now-active tab, restore the ones that do.
+                syncRootedDialogs()
                 // OpOverlay cards are scoped to their owning window — switching
                 // tabs sends the running progress "to background".
                 OpOverlay.onActiveTabChanged(
@@ -323,7 +326,7 @@ class MainActivity : AppCompatActivity() {
                         else toast(getString(R.string.title_compress_failed))
                     }
                     .setNegativeButton(getString(R.string.action_cancel), null)
-                    .show()
+                    .show().also { it.keepTabsTappable() }
             }
         }
         findViewById<androidx.constraintlayout.widget.ConstraintLayout>(R.id.root)?.addView(btnAddFolder)
@@ -622,7 +625,7 @@ class MainActivity : AppCompatActivity() {
                 tabAdapter.notifyDataSetChanged()
             }
             .setNegativeButton(getString(R.string.action_cancel), null)
-            .show()
+            .show().also { it.keepTabsTappable() }
     }
 
     /**
@@ -676,7 +679,7 @@ class MainActivity : AppCompatActivity() {
                     closeTabNow(tab)
                 }
                 .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> closeTabNow(tab) }
-                .show()
+                .show().also { it.keepTabsTappable() }
             return
         }
         closeTabNow(tab)
@@ -687,6 +690,8 @@ class MainActivity : AppCompatActivity() {
         val idx = tabs.indexOf(tab)
         if (idx < 0) return
         tab.stopObserver()
+        // Any dialog this tab opened goes with it.
+        dismissRootedDialogsFor(tab.tabId)
         // Drop any archive the closed tab had open so its keys free up.
         OpenArchiveRegistry.releaseTab(tab)
         tabs.removeAt(idx)
@@ -739,7 +744,7 @@ class MainActivity : AppCompatActivity() {
                     refreshTab(tab)
                 }
             }
-            .setNegativeButton(getString(R.string.action_cancel), null).show()
+            .setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
     }
 
     internal fun showDisclaimer(fromSettings: Boolean = false) {
@@ -756,7 +761,7 @@ class MainActivity : AppCompatActivity() {
         // Only when reached from settings: at first launch the disclaimer is a
         // deliberate gate (no tabs exist yet and the user must accept), so it
         // stays modal there.
-        if (fromSettings) keepTabBarTappable(dlg)
+        if (fromSettings) keepTabBarTappable(dlg, rootToTab = false)
     }
 
     internal var bgImageLauncher: androidx.activity.result.ActivityResultLauncher<String>? = null
@@ -787,6 +792,68 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ── Per-tab dialog rooting ───────────────────────────────────────────
+    // A tab-safe dialog is a window on the *Activity*, owned by no tab, so
+    // without this it stayed floating over whichever tab you switched to. Every
+    // dialog opened from a tab is registered to that tab and hidden while a
+    // different tab is active; returning to its tab shows it again with its
+    // state (search results, editor text, ...) intact. Progress cards already
+    // do this via OpOverlay and are not affected.
+    private class RootedDialog(val dlg: android.app.Dialog, val ownerTabId: Int) {
+        var hidden = false
+    }
+
+    private val rootedDialogs = mutableListOf<RootedDialog>()
+
+    /** Pin [dlg] to the tab that is active right now. Safe before or after `show()`. */
+    internal fun rootDialogToTab(dlg: android.app.Dialog) {
+        if (tabs.isEmpty()) return
+        val entry = RootedDialog(dlg, activeTab.tabId)
+        rootedDialogs.add(entry)
+        dlg.window?.decorView?.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {}
+            override fun onViewDetachedFromWindow(v: View) {
+                rootedDialogs.remove(entry)
+                v.removeOnAttachStateChangeListener(this)
+            }
+        })
+    }
+
+    /** Hide rooted dialogs whose tab is no longer active and re-show the ones
+     *  whose tab just came back. Called from the pager's onPageSelected. */
+    internal fun syncRootedDialogs() {
+        if (tabs.isEmpty()) return
+        val activeId = activeTab.tabId
+        for (entry in rootedDialogs) {
+            val shouldShow = entry.ownerTabId == activeId
+            if (shouldShow == !entry.hidden) continue
+            setRootedDialogHidden(entry.dlg, !shouldShow)
+            entry.hidden = !shouldShow
+        }
+    }
+
+    private fun setRootedDialogHidden(dlg: android.app.Dialog, hidden: Boolean) {
+        val w = dlg.window ?: return
+        val decor = w.decorView
+        if (hidden) {
+            // Hide the decor AND make the window untouchable, otherwise the
+            // invisible window would still swallow taps in its frame on the tab
+            // now in front of it.
+            w.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+            decor.visibility = View.GONE
+        } else {
+            decor.visibility = View.VISIBLE
+            w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+        }
+    }
+
+    /** Dismiss every dialog rooted to a closed tab. */
+    internal fun dismissRootedDialogsFor(tabId: Int) {
+        val doomed = rootedDialogs.filter { it.ownerTabId == tabId }
+        rootedDialogs.removeAll { it.ownerTabId == tabId }
+        doomed.forEach { runCatching { it.dlg.dismiss() } }
+    }
+
     /** Let the tab strip stay bright and tappable while a settings dialog is open.
      *
      *  A plain `AlertDialog` is touch-modal (its window consumes pointers outside
@@ -800,8 +867,12 @@ class MainActivity : AppCompatActivity() {
      *   * clear `FLAG_DIM_BEHIND` — the theme's 60% dim is also removed, so the
      *     strip stays visible rather than looking disabled.
      *  The pager input re-arm rides along, because the same dismiss can leave
-     *  ViewPager2 unable to swipe (see [resetPagerInputOnDialogDismiss]). */
-    internal fun keepTabBarTappable(dlg: android.app.Dialog) {
+     *  ViewPager2 unable to swipe (see [resetPagerInputOnDialogDismiss]).
+     *
+     *  `rootToTab` (default) pins the dialog to the current tab; pass false for
+     *  app-global dialogs (settings / help / recycle bin / installer) that should
+     *  stay put across tab switches. */
+    internal fun keepTabBarTappable(dlg: android.app.Dialog, rootToTab: Boolean = true, also: (() -> Unit)? = null) {
         dlg.window?.let { w ->
             w.addFlags(
                 android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
@@ -809,7 +880,83 @@ class MainActivity : AppCompatActivity() {
             w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
             w.setDimAmount(0f)
         }
-        resetPagerInputOnDialogDismiss(dlg)
+        // The whole point is that an outside tap belongs to the UI behind (the
+        // tab strip), so the dialog must never treat it as "tap outside to
+        // dismiss". On some ROMs (Honor/EMUI) the outside-down still raises
+        // ACTION_OUTSIDE and dismisses while the tab click is lost — the dialog
+        // vanished but the window never switched. Explicitly disable it.
+        dlg.setCanceledOnTouchOutside(false)
+        if (rootToTab) rootDialogToTab(dlg)
+        resetPagerInputOnDialogDismiss(dlg, also)
+    }
+
+    /** Bottom-anchored variant of [keepTabBarTappable] for **tall** dialogs.
+     *
+     *  A centered dialog capped at `dialog_max_height` can still reach and cover
+     *  the tab strip on shorter screens, so `FLAG_NOT_TOUCH_MODAL` alone is not
+     *  enough — the window has to be physically kept below the strip. This moves
+     *  the dialog to the bottom and sizes it to the space under
+     *  status+toolbar+tabs, with a local scrim instead of the system dim (which
+     *  would darken the strip too). Mirrors what `PreviewFlow`/`BatchExtract`
+     *  used to hand-roll; those two now call this so the geometry cannot drift.
+     *
+     *  `swipeArea` keeps some of the pager visible above the sheet so the user
+     *  can still swipe between windows. */
+    internal fun belowTabBar(
+        dlg: android.app.Dialog,
+        swipeAreaDp: Float = 130f,
+        fitContent: Boolean = false,
+        rootToTab: Boolean = true,
+        also: (() -> Unit)? = null,
+    ) {
+        dlg.window?.let { w ->
+            val dm = resources.displayMetrics
+            val density = dm.density
+            val topInset = viewPager?.takeIf { it.top > 0 }?.top
+                ?: (24f * density).toInt() + (106f * density).toInt()  // status 24dp + toolbar 56dp + tabs 50dp
+            val swipeArea = (swipeAreaDp * density).toInt()
+            val sheetW = minOf(dm.widthPixels, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
+            val sheetH = (dm.heightPixels - topInset - swipeArea).coerceAtLeast(0)
+            w.setGravity(android.view.Gravity.BOTTOM)
+            // Same as keepTabBarTappable: a bottom-anchored window is still
+            // touch-MODAL by default, so taps on the tab strip above it get
+            // swallowed instead of reaching the tabs. The physical offset is not
+            // enough on its own — without this flag Global Search / a non-empty
+            // recycle bin block window switching while the terminal (which uses
+            // keepTabsTappable) did not.
+            w.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+            w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            w.setDimAmount(0f)
+            w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0x99000000.toInt()))
+            if (fitContent) {
+                // Short content must hug its own height — a 1-entry recycle bin
+                // must not open a near-full-screen sheet with a big empty area —
+                // while tall content still has to stop below the tab strip.
+                //
+                // Measure the decor BEFORE show and set an EXACT height. Leaving
+                // the window at WRAP_CONTENT lets the WindowManager position it
+                // at (0,0) for the first frame (gravity cannot be resolved until
+                // the wrapped height is known), which reads as a top-left flash
+                // and swallows tab taps for that instant. Measuring first makes
+                // the very first frame the final one. AlertDialogLayout measures
+                // the custom panel against windowHeight − title − buttons, so a
+                // scrolling child (which MUST be wrap_content, not height=0 +
+                // weight) gets the leftover height and scrolls.
+                val decor = w.decorView
+                val widthSpec = View.MeasureSpec.makeMeasureSpec(sheetW, View.MeasureSpec.AT_MOST)
+                val heightSpec = View.MeasureSpec.makeMeasureSpec(sheetH, View.MeasureSpec.AT_MOST)
+                decor.measure(widthSpec, heightSpec)
+                val measured = decor.measuredHeight
+                w.setLayout(sheetW, if (measured in 1 until sheetH) measured else sheetH)
+            } else {
+                w.setLayout(sheetW, sheetH)
+            }
+        }
+        // Same reason as keepTabBarTappable: outside taps go to the tab strip,
+        // never "dismiss this dialog".
+        dlg.setCanceledOnTouchOutside(false)
+        if (rootToTab) rootDialogToTab(dlg)
+        resetPagerInputOnDialogDismiss(dlg, also)
     }
 
     companion object {
@@ -817,6 +964,42 @@ class MainActivity : AppCompatActivity() {
         private const val GIB_F = 1024f * 1024f * 1024f
         private const val MIB_F = 1024f * 1024f
     }
+}
+
+/** Unwrap `ContextWrapper`s to reach the hosting [MainActivity], if any. */
+private fun android.content.Context.findMainActivity(): MainActivity? {
+    var c: android.content.Context? = this
+    while (c is android.content.ContextWrapper) {
+        if (c is MainActivity) return c
+        c = c.baseContext
+    }
+    return if (c is MainActivity) c else null
+}
+
+/**
+ * Tab-safe variants callable from anywhere a [android.app.Dialog] is in scope,
+ * regardless of the receiver's static type. Dispatch to the [MainActivity]
+ * members so a free function taking `AppCompatActivity` (e.g. FormatPicker) does
+ * not have to cast. Falling back to plain [android.app.Dialog.show] semantics
+ * when no MainActivity hosts the dialog keeps these safe to call unconditionally.
+ */
+internal fun android.app.Dialog.keepTabsTappable(rootToTab: Boolean = true, also: (() -> Unit)? = null) {
+    context.findMainActivity()?.keepTabBarTappable(this, rootToTab, also)
+}
+
+/**
+ * Bottom-anchored variant for tall dialogs; see `MainActivity.belowTabBar`.
+ * `fitContent = true` makes the sheet hug short content (capped below the tab
+ * strip) instead of always taking the full available height. `rootToTab`
+ * (default) pins the dialog to the tab that opened it; false keeps it global.
+ */
+internal fun android.app.Dialog.belowTabs(
+    swipeAreaDp: Float = 130f,
+    fitContent: Boolean = false,
+    rootToTab: Boolean = true,
+    also: (() -> Unit)? = null,
+) {
+    context.findMainActivity()?.belowTabBar(this, swipeAreaDp, fitContent, rootToTab, also)
 }
 
 /**

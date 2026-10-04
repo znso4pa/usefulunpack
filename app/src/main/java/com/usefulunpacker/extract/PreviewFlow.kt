@@ -29,6 +29,7 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
             setCancelable(false)
             show()
         }
+        pd.keepTabsTappable()
         thread {
             // Ask for the password up front so header-encrypted 7z can be
             // listed and entry previews reuse it (no "wrong password" toast).
@@ -52,7 +53,7 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
                         .setMessage(msg)
                         .setPositiveButton(getString(R.string.title_select_format)) { _, _ -> extract() }
                         .setNegativeButton(getString(R.string.action_cancel), null)
-                        .show()
+                        .show().also { it.keepTabsTappable() }
                 }
                 return@thread
             }
@@ -238,7 +239,7 @@ internal fun MainActivity.previewZipManage(tab: TabState) {
                             zipDeleteEntries(src, sel, pwd, tab)
                         }
                         .setNegativeButton(getString(R.string.action_cancel), null)
-                        .show()
+                        .show().also { it.keepTabsTappable() }
                 }
                 1 -> {
                     showFolderPicker(this, tab.currentDir, true) { picked ->
@@ -260,13 +261,13 @@ internal fun MainActivity.previewZipManage(tab: TabState) {
                                 zipAddEntry(src, name, picked, pwd, tab)
                             }
                             .setNegativeButton(getString(R.string.action_cancel), null)
-                            .show()
+                            .show().also { it.keepTabsTappable() }
                     }
                 }
             }
         }
         .setNegativeButton(getString(R.string.action_cancel), null)
-        .show()
+        .show().also { it.keepTabsTappable() }
 }
 
 /** Rebuilds the in-tab preview list from the tab's entries + selection. */
@@ -485,7 +486,7 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                                             zipDeleteEntries(src, sel, pwd, ownerTab)
                                         }
                                         .setNegativeButton(getString(R.string.action_cancel), null)
-                                        .show()
+                                        .show().also { it.keepTabsTappable() }
                                 }
                                 1 -> {
                                     // Pick a local file, then name the entry.
@@ -508,13 +509,13 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                                                 zipAddEntry(src, name, picked, pwd, ownerTab)
                                             }
                                             .setNegativeButton(getString(R.string.action_cancel), null)
-                                            .show()
+                                            .show().also { it.keepTabsTappable() }
                                     }
                                 }
                             }
                         }
                         .setNegativeButton(getString(R.string.action_cancel), null)
-                        .show()
+                        .show().also { it.keepTabsTappable() }
                 }
             }
             titleBar.addView(btnZipManage)
@@ -546,27 +547,12 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
             .setNeutralButton(getString(R.string.extract_all), null)
             .setNegativeButton(getString(R.string.action_cancel), null)
             .create()
-        // Honor/EMUI touch-state bug: a dismissed dialog (its fast-scroll list)
-        // can leave the ViewPager2 unable to intercept horizontal swipes, so tab
-        // switching dies until restart. Reset the pager's input state on dismiss.
-        resetPagerInputOnDialogDismiss(dlg) { openKey?.let { OpenArchiveRegistry.unregister(it) } }
-        // Preview should not hide the tab strip: bottom-align the dialog below
-        // status bar + toolbar + tab bar so the user can still tap a different
-        // window while an archive preview is open.
-        dlg.window?.let { w ->
-            val dm = resources.displayMetrics
-            val density = dm.density
-            val tabBarH = 50f * density    // tab bar height (now at the very top)
-            val toolbarH = 56f * density   // ?attr/actionBarSize (Material default)
-            val swipeArea = 130f * density // keep this much ViewPager visible for swiping windows
-            w.setGravity(Gravity.BOTTOM)
-            val sheetW = minOf(dm.widthPixels, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
-            w.setLayout(sheetW, (dm.heightPixels - tabBarH - toolbarH - swipeArea).toInt().coerceAtLeast(0))
-            // Local dim: dim only the window's own area (tab bar + toolbar stay
-            // bright and tappable above it) — system FLAG_DIM_BEHIND would dim the
-            // whole screen including the tab strip.
-            w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0x99000000.toInt()))
-        }
+        // Keep the tab strip usable: bottom-anchor below status+toolbar+tabs. The
+        // helper also resets the pager's input state on dismiss (Honor/EMUI
+        // touch-state bug: a dismissed fast-scroll list can leave ViewPager2
+        // unable to intercept horizontal swipes, killing tab switching), and the
+        // `also` callback releases this dialog's open-archive slot.
+        belowTabBar(dlg) { openKey?.let { OpenArchiveRegistry.unregister(it) } }
         dlg.setOnShowListener {
             dlg.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
                 val sel = selectedPaths.filter { p -> selectedPaths.none { o -> o != p && o.startsWith(p + "/") } }
@@ -603,7 +589,7 @@ internal fun MainActivity.showOutputDirDialog(src: File, selectedPaths: List<Str
                     3 -> showMergeTargetPicker(src, selectedPaths, format, pwd, ownerTab)
                 }
             }.setNegativeButton(getString(R.string.action_cancel), null)
-            .show()
+            .show().also { it.keepTabsTappable() }
     }
 
 /**
@@ -632,6 +618,7 @@ internal fun MainActivity.showMergeTargetPicker(src: File, selectedPaths: List<S
         this, getString(R.string.merge_select_target),
         groups = groups.map { it.first to it.second.map { c -> c.file.absolutePath } },
         labels = labels,
+        columns = 1,
     ) { path ->
         val target = File(path)
         // Re-resolve here rather than trusting the list: the directory can have
@@ -931,10 +918,9 @@ private fun MainActivity.showEditScriptList(src: File, format: String, editDir: 
         globalSearch(editDir)
     }
     dlg = builder.create()
-    dlg.setOnDismissListener { OpenArchiveRegistry.unregister(openKey) }
-    val metrics = resources.displayMetrics
-    val (pw, ph) = cappedDialogSize(0.92f, 0.8f)
-    dlg.window?.setLayout(pw, ph)
+    // Tall script list (capped 0.8h) — bottom-anchor below the tab strip; the
+    // helper also re-arms the pager on dismiss, and `also` releases the slot.
+    dlg.belowTabs { OpenArchiveRegistry.unregister(openKey) }
     dlg.show()
 }
 
@@ -1121,7 +1107,7 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
                                         }
                                     }
                                     .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> cleanupCancelledOutput(out, existedBefore) }
-                                    .show()
+                                    .show().also { it.keepTabsTappable() }
                             }
                         }
                     } finally {
@@ -1145,7 +1131,7 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
                     openNestedArchive(archive, entry, format, pwd, nestedFmt)
                 }
                 .setNegativeButton(getString(R.string.action_cancel), null)
-                .show()
+                .show().also { it.keepTabsTappable() }
             return
         }
         if (ext !in PREVIEW_EXTS) {

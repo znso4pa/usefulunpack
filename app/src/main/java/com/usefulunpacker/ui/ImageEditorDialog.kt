@@ -32,6 +32,7 @@ fun showImageEditor(activity: AppCompatActivity, file: File) {
         val editorView = ImageEditorView(activity)
         val pd = android.app.ProgressDialog(activity)
         pd.setMessage(activity.getString(R.string.msg_loading)); pd.setCancelable(false); pd.show()
+        pd.keepTabsTappable()
         thread {
             val bmp = decodeBitmapCapped(file, IMG_EDIT_MAX_PX)
             activity.runOnUiThread {
@@ -59,7 +60,7 @@ fun showImageEditor(activity: AppCompatActivity, file: File) {
             .setMessage(activity.getString(R.string.img_edit_restore_msg))
             .setPositiveButton(activity.getString(R.string.editor_restore)) { _, _ -> open() }
             .setNegativeButton(activity.getString(R.string.editor_discard)) { _, _ -> tempFile.delete(); open() }
-            .show()
+            .show().also { it.keepTabsTappable() }
     } else open()
 }
 
@@ -241,8 +242,6 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
         .setView(container)
         .setNegativeButton(act.getString(R.string.action_close), null)
         .create()
-    val (w, h) = act.cappedDialogSize(0.95f, 0.9f)
-    dlg.window?.setLayout(w, h)
 
     // Autosave edits to cache for rotation/restore (throttled by the view).
     // 单线程执行器串行化：400ms 节流会在慢 PNG 编码期间放行第二次触发，
@@ -258,6 +257,8 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
         }
     }
 
+    // Full-size editor (capped 0.9h) — bottom-anchor below the tab strip.
+    dlg.belowTabs()
     dlg.show()
 }
 

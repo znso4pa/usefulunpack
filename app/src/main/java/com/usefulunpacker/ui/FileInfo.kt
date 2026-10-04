@@ -55,6 +55,7 @@ internal fun MainActivity.showFileInfoDialog(f: File) {
             .setPositiveButton(getString(R.string.action_confirm), null)
             .create()
         dlg.show()
+        dlg.keepTabsTappable()
 
         thread {
             try {

@@ -176,7 +176,8 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
                 .setView(root)
                 .setPositiveButton(activity.getString(R.string.action_close), null)
                 .create()
-            (activity as? MainActivity)?.resetPagerInputOnDialogDismiss(d)
+            // Full-image preview is tall — bottom-anchor below the tab strip.
+            d.belowTabs()
             d.show()
         }
     }
@@ -189,6 +190,7 @@ fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int 
     val pd = android.app.ProgressDialog(activity).apply {
         setMessage(activity.getString(R.string.msg_loading)); setCancelable(false); show()
     }
+    pd.keepTabsTappable()
     thread {
         val prefs = (activity as? MainActivity)?.prefs
         val data = runCatching { readPrefix(file, 1 shl 20) }.getOrNull()
@@ -259,7 +261,7 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
                     refreshContent()
                 }
                 .setNegativeButton(activity.getString(R.string.action_cancel), null)
-                .show()
+                .show().also { it.keepTabsTappable() }
         }
     }
 
@@ -458,10 +460,9 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
     // cache temp copy that a save wouldn't repack (the 编辑 flow handles that).
     if (showEdit) builder.setNeutralButton(activity.getString(R.string.action_edit)) { _, _ -> showTextEditor(activity, file, onSaved = onEdited) }
     val dlg = builder.create()
-    (activity as? MainActivity)?.resetPagerInputOnDialogDismiss(dlg)
-    val metrics = activity.resources.displayMetrics
-    val (tw, th) = activity.cappedDialogSize(0.92f, 0.85f)
-    dlg.window?.setLayout(tw, th)
+    // Tall (capped 0.85h) — bottom-anchor below the tab strip instead of just
+    // freeing touches, or the window would still cover the strip on short screens.
+    dlg.belowTabs()
     dlg.show()
 }
 
@@ -498,7 +499,7 @@ fun showTextEditor(activity: AppCompatActivity, file: File, onSaved: (() -> Unit
                 loadAndOpenEditor(activity, file, tempFile, onSaved, useTempContent = false)
             }
             .setNeutralButton(activity.getString(R.string.action_cancel), null)
-            .show()
+            .show().also { it.keepTabsTappable() }
     } else {
         loadAndOpenEditor(activity, file, tempFile, onSaved, useTempContent = false)
     }
@@ -511,6 +512,7 @@ private fun loadAndOpenEditor(activity: AppCompatActivity, file: File, tempFile:
     val pd = android.app.ProgressDialog(activity).apply {
         setMessage(activity.getString(R.string.msg_loading)); setCancelable(false); show()
     }
+    pd.keepTabsTappable()
     thread {
         val data = runCatching { file.readBytes() }.getOrNull()
         val tempContent = if (useTempContent) runCatching { tempFile.readText() }.getOrNull() else null
@@ -634,7 +636,7 @@ private fun openEditorWithContent(
                     d.dismiss()
                 }
                 .setNegativeButton(activity.getString(R.string.action_cancel), null)
-                .show()
+                .show().also { it.keepTabsTappable() }
         }
     }
     
@@ -723,9 +725,7 @@ private fun openEditorWithContent(
     // back 键退出时【不】清理临时文件：它是自动保存的恢复副本，下次打开同一
     // 文件时会弹「恢复上次编辑」引导（用户可选恢复或放弃，那里负责真正清理）。
     // 此前这里无条件删除，保存失败后对话框一关恢复副本就没了。
-    val metrics = activity.resources.displayMetrics
-    val (tw, th) = activity.cappedDialogSize(0.92f, 0.85f)
-    dlg.window?.setLayout(tw, th)
+    dlg.belowTabs()
     dlg.show()
 }
 
@@ -748,6 +748,7 @@ fun playAudio(activity: AppCompatActivity, file: File) {
         m?.currentMediaPlayer?.let { cur -> m.currentMediaPlayer = null; cur.release() }
         if (m?.currentAudioDialog === dlg) m.currentAudioDialog = null
     }
+    dlg.keepTabsTappable()
     dlg.show()
     m?.currentAudioDialog = dlg
 

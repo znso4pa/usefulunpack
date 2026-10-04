@@ -125,7 +125,7 @@ val ARCHIVE_EXTS = setOf(
 val FORMAT_LABELS = mapOf(
     "xp3" to "XP3", "pfs" to "PFS/PF6/PF8", "nsa" to "NSA/SAR", "iso" to "ISO", "ypf" to "YPF",
     "rgss" to "RGSS (.rgssad/.rgss2a/.rgss3a)",
-    "rpgmv" to "RPG Maker MV/MZ (.rpgmvp/.rpgmvo/.rpgmvm)",
+    "rpgmv" to "RPG Maker MV/MZ",
     "zip" to "ZIP", "7z" to "7z", "rar" to "RAR", "lz4" to "LZ4",
     "tar" to "TAR (.tar/.tgz/.tar.gz/.tbz2/.txz)", "gz" to "GZIP (.gz)", "bz2" to "BZIP2 (.bz2)",
     "xz" to "XZ (.xz)", "zst" to "ZSTD (.zst)", "lzma" to "LZMA (.lzma)",
@@ -178,12 +178,13 @@ val COMPRESS_LABELS = mapOf(
     "gz" to "GZIP (.gz)", "bz2" to "BZIP2 (.bz2)", "xz" to "XZ (.xz)",
     "zst" to "ZSTD (.zst)", "lzma" to "LZMA (.lzma)", "lz4" to "LZ4 (.lz4)",
     "br" to "BROTLI (.br)", "ksd" to "KSD (.ksd)",
-    // The source type is in the label because the key is the type: RPG Maker
-    // picks the loader from the obfuscated extension, so a JPEG behind
-    // foo.rpgmvp would load as a broken picture. mvExtMismatch refuses it.
-    "rpgmvp" to "RPG Maker MV picture (.rpgmvp) — from .png",
-    "rpgmvo" to "RPG Maker MV sound (.rpgmvo) — from .ogg",
-    "rpgmvm" to "RPG Maker MV movie (.rpgmvm) — from .m4a",
+    // Kept short for the 3-column picker. The source-type rule (rpgmvp←.png,
+    // rpgmvo←.ogg, rpgmvm←.m4a) is still enforced before packing by
+    // mvExtMismatch, which toasts the required extension; it is no longer
+    // spelled out in the label.
+    "rpgmvp" to "rpgm picture（rpgmvp）",
+    "rpgmvo" to "rpgm sound（rpgmvo）",
+    "rpgmvm" to "rpgm movie（rpgmvm）",
 )
 
 val TEXT_SEARCH_EXTS = setOf(

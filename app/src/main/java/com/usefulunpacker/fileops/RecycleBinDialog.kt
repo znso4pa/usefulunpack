@@ -10,6 +10,8 @@ import android.widget.TextView
 import android.widget.Button
 import android.widget.Toast
 import com.usefulunpacker.C
+import com.usefulunpacker.keepTabsTappable
+import com.usefulunpacker.belowTabs
 import com.usefulunpacker.MainActivity
 import com.usefulunpacker.R
 import com.usefulunpacker.fmt
@@ -72,7 +74,7 @@ private class RecycleEntryAdapter(
                             .setTitle(activity.getString(R.string.title_recycle_bin))
                             .setMessage(activity.getString(R.string.recycle_empty))
                             .setPositiveButton(activity.getString(R.string.action_confirm), null)
-                            .show()
+                            .show().also { it.keepTabsTappable(rootToTab = false) }
                     }
                 }
             }
@@ -96,13 +98,13 @@ private class RecycleEntryAdapter(
                                     .setTitle(activity.getString(R.string.title_recycle_bin))
                                     .setMessage(activity.getString(R.string.recycle_empty))
                                     .setPositiveButton(activity.getString(R.string.action_confirm), null)
-                                    .show()
+                                    .show().also { it.keepTabsTappable(rootToTab = false) }
                             }
                         }
                     }
                 }
                 .setNegativeButton(activity.getString(R.string.action_cancel), null)
-                .show()
+                .show().also { it.keepTabsTappable(rootToTab = false) }
         }
 
         return view
@@ -117,7 +119,7 @@ fun showRecycleBinDialog(activity: MainActivity) {
             .setTitle(activity.getString(R.string.title_recycle_bin))
             .setMessage(activity.getString(R.string.recycle_disabled_message))
             .setPositiveButton(activity.getString(R.string.action_confirm), null)
-            .show()
+            .show().also { it.keepTabsTappable(rootToTab = false) }
         return
     }
 
@@ -130,6 +132,7 @@ fun showRecycleBinDialog(activity: MainActivity) {
         setCancelable(false)
         show()
     }
+    pd.keepTabsTappable(rootToTab = false)
     thread {
         val entries = RecycleBin.listEntries(activity)
         activity.runOnUiThread {
@@ -140,7 +143,7 @@ fun showRecycleBinDialog(activity: MainActivity) {
                     .setTitle(activity.getString(R.string.title_recycle_bin))
                     .setMessage(activity.getString(R.string.recycle_empty))
                     .setPositiveButton(activity.getString(R.string.action_confirm), null)
-                    .show()
+                    .show().also { it.keepTabsTappable(rootToTab = false) }
                 return@runOnUiThread
             }
 
@@ -169,9 +172,14 @@ fun showRecycleBinDialog(activity: MainActivity) {
             val container = android.widget.LinearLayout(activity).apply {
                 orientation = android.widget.LinearLayout.VERTICAL
                 addView(tvHeader)
+                // wrap_content, not height=0 + weight=1: the sheet is now fit-to-
+                // content (belowTabs(fitContent = true, rootToTab = false)), so the list must hug a
+                // short bin and only scroll once the entries outgrow the capped
+                // sheet. A weighted child would fill the whole available height
+                // and bring back the 1-entry-but-full-screen bug.
                 addView(listView, android.widget.LinearLayout.LayoutParams(
                     android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                    0, 1f
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
                 ))
             }
 
@@ -194,10 +202,10 @@ fun showRecycleBinDialog(activity: MainActivity) {
                             }
                         }
                         .setNegativeButton(activity.getString(R.string.action_cancel), null)
-                        .show()
+                        .show().also { it.keepTabsTappable(rootToTab = false) }
                 }
                 .setNegativeButton(activity.getString(R.string.action_close), null)
-                .show()
+                .show().also { it.belowTabs(fitContent = true, rootToTab = false) }
         }
     }
 }

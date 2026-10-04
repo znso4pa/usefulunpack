@@ -3,7 +3,6 @@ package com.usefulunpacker
 import android.app.AlertDialog
 import android.app.ProgressDialog
 import android.graphics.drawable.ColorDrawable
-import android.view.Gravity
 import android.view.View
 import android.widget.*
 import java.io.File
@@ -35,7 +34,7 @@ internal fun MainActivity.startBatchExtract() {
                         0 -> batchPreview(archives, fmt)
                         1 -> batchDirectExtract(archives, fmt)
                     }
-                }.setNegativeButton(getString(R.string.action_cancel), null).show()
+                }.setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
         }
     }
 
@@ -124,7 +123,7 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
                         }
                     }
                 }
-            }.setNegativeButton(getString(R.string.action_cancel), null).show()
+            }.setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
     }
 
 internal fun MainActivity.batchPreview(archives: List<File>, fmt: String) {
@@ -142,6 +141,7 @@ internal fun MainActivity.batchPreview(archives: List<File>, fmt: String) {
             return
         }
         val pd = ProgressDialog(this).apply { setTitle(getString(R.string.reading)); setMessage(getString(R.string.reading_archives, filtered.size)); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
+        pd.keepTabsTappable()
         thread {
             // Shared password state: asked once for all archives; a cancel stops
             // further prompts (and further listing) instead of silently failing.
@@ -456,16 +456,8 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                 }
             }
             .setNegativeButton(getString(R.string.action_cancel), null).create()
-        // Keep the tab strip tappable while batch preview is open (bottom-align
+        // Keep the tab strip tappable while batch preview is open (bottom-anchor
         // below toolbar + tab bar), so the user can still switch windows.
-        dlg.window?.let { w ->
-            val dm = resources.displayMetrics
-            val density = dm.density
-            val top = 50f * density + 56f * density + 130f * density
-            w.setGravity(Gravity.BOTTOM)
-            val sheetW = minOf(dm.widthPixels, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
-            w.setLayout(sheetW, (dm.heightPixels - top).toInt().coerceAtLeast(0))
-            w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0x99000000.toInt()))
-        }
+        belowTabBar(dlg)
         dlg.show()
     }

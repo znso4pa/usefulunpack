@@ -97,6 +97,7 @@ fun showTerminal(activity: AppCompatActivity, currentDir: File, onNavigate: (Fil
             showTerminalHelp(activity, inp) { cmd -> inp.setText(cmd); exec(cmd) }
         }
     }
+    dlg.keepTabsTappable()
     dlg.show()
 }
 
@@ -136,5 +137,5 @@ fun showTerminalHelp(activity: AppCompatActivity, inp: EditText, onApply: (Strin
         }
         .setNegativeButton(activity.getString(R.string.action_close), null)
         .create()
-        .show()
+        .also { it.show(); it.keepTabsTappable(rootToTab = false) }
 }

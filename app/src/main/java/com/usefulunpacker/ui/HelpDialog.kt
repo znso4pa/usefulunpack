@@ -100,9 +100,8 @@ internal fun MainActivity.showHelpDialog() {
         .setView(scroller)
         .setNegativeButton(getString(R.string.action_close), null)
         .create()
-    val metrics = this.resources.displayMetrics
-    val (hw, hh) = cappedDialogSize(0.92f, 0.88f)
-    dlg.window?.setLayout(hw, hh)
+    // Tall help viewer (capped ~0.88h) — bottom-anchor below the tab strip.
+    // App-global: keep it visible across tab switches (rootToTab = false).
+    dlg.belowTabs(rootToTab = false)
     dlg.show()
-    keepTabBarTappable(dlg)
 }

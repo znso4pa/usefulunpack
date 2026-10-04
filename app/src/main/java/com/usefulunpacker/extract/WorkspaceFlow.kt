@@ -56,7 +56,7 @@ internal fun MainActivity.openWorkspaceFromPreview(tab: TabState, selectedOnly: 
                 startWorkspaceExtract(tab, src, format, pwd, sel, wsDir)
             }
             .setNegativeButton(getString(R.string.action_cancel), null)
-            .show()
+            .show().also { it.keepTabsTappable() }
         return
     }
     startWorkspaceExtract(tab, src, format, pwd, sel, wsDir)

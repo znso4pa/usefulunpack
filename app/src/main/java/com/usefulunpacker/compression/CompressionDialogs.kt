@@ -159,7 +159,7 @@ fun showCompressOptionsDialog(
                 } else Toast.makeText(activity, activity.getString(R.string.split_invalid), Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton(activity.getString(R.string.action_cancel), null)
-            .show()
+            .show().also { it.keepTabsTappable() }
     }
 
     fun row(text: String, onClick: () -> Unit) = android.widget.TextView(activity).apply {
@@ -181,7 +181,7 @@ fun showCompressOptionsDialog(
                     d.dismiss()
                 }
                 .setNegativeButton(activity.getString(R.string.action_cancel), null)
-                .show()
+                .show().also { it.keepTabsTappable() }
         }
         addView(levelRow)
         if (canSplit) {
@@ -211,7 +211,7 @@ fun showCompressOptionsDialog(
                         d.dismiss()
                     }
                     .setNegativeButton(activity.getString(R.string.action_cancel), null)
-                    .show()
+                    .show().also { it.keepTabsTappable() }
             }
             addView(splitRow)
         }
@@ -278,7 +278,7 @@ fun showCompressOptionsDialog(
             if (!onResolved(levelVals[level], chosenSplit, artemisNaming, gameNaming, mvKey)) return@setPositiveButton
         }
         .setNegativeButton(activity.getString(R.string.action_cancel), null)
-        .show()
+        .show().also { it.keepTabsTappable() }
 }
 
 private fun runCompress(

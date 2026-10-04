@@ -226,7 +226,7 @@ class FolderFragment : Fragment() {
                                             .setTitle(act.getString(R.string.action_file_info))
                                             .setMessage(act.getString(R.string.msg_calc_dir_size_prompt, f.name, fileCount, eta, eta + 3))
                                             .setPositiveButton(act.getString(R.string.calc_size)) { _, _ -> calcDirSize(act, f) }
-                                            .setNegativeButton(act.getString(R.string.action_cancel), null).show()
+                                            .setNegativeButton(act.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
                                     }
                                 }
                             } else {
@@ -235,7 +235,7 @@ class FolderFragment : Fragment() {
                         }
                         7 -> act.showSignatureScan(f)
                     }
-                }.show()
+                }.setNegativeButton(act.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
             true
         }
 

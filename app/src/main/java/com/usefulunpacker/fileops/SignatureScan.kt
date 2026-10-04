@@ -155,6 +155,7 @@ internal fun MainActivity.showSignatureScan(f: File) {
         setOnCancelListener { ScanCore.scanCancel() }
         show()
     }
+    pd.keepTabsTappable()
     // Poll the JNI progress statics every 100ms and update the bar.
     val poller = thread {
         while (!Thread.currentThread().isInterrupted) {
@@ -254,9 +255,8 @@ private fun MainActivity.showScanResultDialog(f: File, hits: List<ScanHit>, elap
         .setView(root)
         .setNegativeButton(getString(R.string.action_close), null)
         .create()
-    val metrics = this.resources.displayMetrics
-    val (sw, sh) = cappedDialogSize(0.94f, 0.85f)
-    dlg.window?.setLayout(sw, sh)
+    // Tall scan-result list — bottom-anchor below the tab strip.
+    dlg.belowTabs()
     dlg.show()
 }
 
@@ -382,7 +382,7 @@ private fun MainActivity.showSeparateDestDialog(f: File, hit: ScanHit, extract: 
         .setTitle(getString(R.string.separate))
         .setView(body)
         .setNegativeButton(getString(R.string.action_cancel), null)
-        .show()
+        .show().also { it.keepTabsTappable() }
 }
 
 /** Magic internal offset: bytes BEFORE the magic where the container itself
@@ -439,6 +439,7 @@ private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File
         setOnCancelListener { carveThread?.interrupt() }
         show()
     }
+    pd.keepTabsTappable()
     carveThread = thread {
         if (!OperationLock.acquire()) {
             runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.msg_op_in_progress)) }
@@ -493,6 +494,7 @@ private fun MainActivity.separateToFile(f: File, hit: ScanHit, destDir: File) {
         setCancelable(false)
         show()
     }
+    pd.keepTabsTappable()
     thread {
         try {
             carveToFile(f, carveOffset, carveLen, out) { n ->

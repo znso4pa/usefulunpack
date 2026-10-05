@@ -25,8 +25,8 @@ internal class TerminalViewModel : ViewModel() {
     /** `cd -` 的上一个目录。 */
     var lastDir: File? = null
 
-    /** `uu scan` 建立的 FD 表（跨命令保留，因为 fd3 要留给后续的 dd / x 用）。 */
-    val fds = FdTable()
+    /** FD 表：**进程级单例**（大退才清，跨 tab/终端开关/旋转保留），ls 与 scan 共用。 */
+    val fds = FdTable.GLOBAL
 
     private val history = ArrayList<String>()
 

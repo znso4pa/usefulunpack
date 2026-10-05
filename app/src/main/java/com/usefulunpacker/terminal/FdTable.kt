@@ -3,30 +3,22 @@ package com.usefulunpacker
 import java.io.File
 
 /**
- * 扫描会话的**文件描述符表**。
+ * 会话级**文件描述符表**（进程单例，见 [Companion.GLOBAL]）。
  *
- * `uu scan` 不只打印结果，还把宿主的每一段命中注册成一个伪 FD（`f3`、`f4`…），
- * 之后 `uu l f3` / `dd if=f3 of=x.zip` / `uu x f3` 都能直接引用，
- * **不必把片段先落盘**。
+ * 两种条目共用一张表、统一 `fN` 编号（**从 0 开始**）：
+ *  - **整文件**（`ls` 注册）：`ls` 按应用当前排序方式给目录里的**每个文件**发一个
+ *    `fN`（目录不编号），同一文件重复 ls 复用同一编号；
+ *  - **字节区间**（`uu scan` 注册）：宿主的每段命中一个 `fN`，`uu l fN` / `uu x fN` /
+ *    `dd if=fN` 直接引用，不必先落盘。
  *
- * 编号：**f0 / f1 / f2 保留**给 stdin/stdout/stderr（POSIX fd 语义），第一个命中是 `f3` ——
- * 与真 POSIX 对齐，也让输出里的编号和用户直觉一致。
- *
- * 生命周期：进程内，**会话级**。关掉终端层不清（用户还要回来用 `dd`）；
- * 重新 `uu scan` 同一文件时整表重建。
+ * 生命周期：**进程级**——大退（进程结束）才清；跨 tab、跨终端层开关、旋转都保留。
+ * 表只增不清：同一文件/同一命中再次注册时**复用**既有编号，所以编号是稳定的。
  *
  * 失效检查：注册时记下宿主的 `size` + `mtime`，每次取用前比对。宿主被改过或
  * 删掉的 FD **宁可报错也不要静默读出垃圾** —— 偏移量已经不再指向原来的字节。
  */
 internal class FdTable {
 
-    /**
-     * @param host 宿主文件
-     * @param offset 片段在宿主中的起始偏移
-     * @param length 片段长度；null = 到宿主末尾
-     * @param label scan-core 给的标签
-     * @param archiveKey 该命中能否当归档读（由 `ARCHIVE_LABELS` 判定）；null = 非归档
-     */
     class Entry(
         val fd: Int,
         val host: File,
@@ -36,6 +28,8 @@ internal class FdTable {
         val archiveKey: String?,
         val hostSize: Long,
         val hostMtime: Long,
+        /** true = 整文件条目（ls 注册，offset=0，使用时直接读 host）；false = 扫描区间。 */
+        val wholeFile: Boolean = false,
     ) {
         fun isArchive() = archiveKey != null
 
@@ -53,37 +47,53 @@ internal class FdTable {
 
     private val entries = LinkedHashMap<Int, Entry>()
 
-    /** 保留区，刻意不注册。 */
-    private fun isReserved(n: Int) = n in 0..2
-
     // 下面所有访问表的方法都 @Synchronized：每条命令行跑在自己的线程上，
-    // `uu scan` 整表重建（clear + 重新填）可能和另一条 `uu l f3` 撞上，
-    // 无锁读 LinkedHashMap 正在被写会抛 ConcurrentModificationException。
+    // 注册（ls / scan）可能和另一条 `uu l fN` 撞上，无锁读 LinkedHashMap
+    // 正在被写会抛 ConcurrentModificationException。
+
+    private fun nextFd(): Int = (entries.keys.maxOrNull() ?: -1) + 1
 
     /**
-     * 整表重建：同一次扫描的所有命中。
-     * @return fd 编号列表（从 3 开始）
+     * `ls` 用：按调用方排好的顺序给**每个文件**发 fN（目录由调用方过滤掉）。
+     * 同一绝对路径的整文件条目已存在 → 复用其编号（编号跨 ls 调用稳定）。
+     * @return 与输入等长的 fd 编号列表
      */
     @Synchronized
-    fun register(host: File, hits: List<ScanHit>, hostSize: Long, hostMtime: Long, keyOf: (String) -> String?): List<Int> {
-        entries.clear()
-        var next = FIRST_FD
-        val fds = ArrayList<Int>(hits.size)
-        for (h in hits) {
-            val e = Entry(
-                fd = next++,
-                host = host,
-                offset = h.offset,
-                length = h.size,
-                label = h.label,
-                archiveKey = keyOf(h.label),
-                hostSize = hostSize,
-                hostMtime = hostMtime,
-            )
-            entries[e.fd] = e
-            fds.add(e.fd)
+    fun registerFiles(files: List<File>): List<Int> = files.map { f ->
+        val existing = entries.entries.firstOrNull {
+            it.value.wholeFile && it.value.host.absolutePath == f.absolutePath
         }
-        return fds
+        existing?.key ?: run {
+            val fd = nextFd()
+            entries[fd] = Entry(
+                fd = fd, host = f, offset = 0L, length = null, label = f.name,
+                archiveKey = null, hostSize = f.length(), hostMtime = f.lastModified(),
+                wholeFile = true,
+            )
+            fd
+        }
+    }
+
+    /**
+     * `uu scan` 用：宿主的每段命中注册为区间条目。表**不清空**（进程级累积）；
+     * 同一宿主同偏移同长度的命中已存在 → 复用编号。
+     * @return 与 hits 等长的 fd 编号列表
+     */
+    @Synchronized
+    fun register(host: File, hits: List<ScanHit>, hostSize: Long, hostMtime: Long, keyOf: (String) -> String?): List<Int> = hits.map { h ->
+        val existing = entries.entries.firstOrNull {
+            !it.value.wholeFile && it.value.host.absolutePath == host.absolutePath &&
+                it.value.offset == h.offset && it.value.length == h.size
+        }
+        existing?.key ?: run {
+            val fd = nextFd()
+            entries[fd] = Entry(
+                fd = fd, host = host, offset = h.offset, length = h.size,
+                label = h.label, archiveKey = keyOf(h.label),
+                hostSize = hostSize, hostMtime = hostMtime,
+            )
+            fd
+        }
     }
 
     /** 解析用户输入的 `fN`。非 FD 名一律返回 null，让调用方按普通路径处理。 */
@@ -91,19 +101,16 @@ internal class FdTable {
     fun looksLikeFd(arg: String): Boolean = FD_PREFIX_REGEX.matches(arg)
 
     @Synchronized
-    fun get(n: Int): Entry? = if (isReserved(n)) null else entries[n]
+    fun get(n: Int): Entry? = entries[n]
 
     @Synchronized
     fun all(): List<Entry> = entries.values.toList()
 
     @Synchronized
-    fun clear() = entries.clear()
-
-    @get:Synchronized
-    val size: Int get() = entries.size
+    fun size(): Int = entries.size
 
     /**
-     * 取用前校验宿主是否还是扫描时那个样子。
+     * 取用前校验宿主是否还是注册时那个样子。
      * 宿主被改写/删除后 offset 已无意义 —— 报 stale，而不是读出错位的内容。
      */
     fun checkFresh(e: Entry): Rejected? {
@@ -115,7 +122,13 @@ internal class FdTable {
     }
 
     companion object {
-        const val FIRST_FD = 3
+        /**
+         * 进程级单例：大退才清，跨 tab / 跨终端层开关 / 旋转保留。
+         * （终端的 cwd/历史在 ViewModel 里，FD 表刻意不放那里 —— 它的生命周期
+         * 按「软件大退」算，不按 Activity 算。）
+         */
+        val GLOBAL: FdTable = FdTable()
+
         private val FD_PREFIX_REGEX = Regex("^f\\d+$")
     }
 }

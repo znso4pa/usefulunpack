@@ -513,20 +513,59 @@ internal class TerminalPanel(private val act: MainActivity) {
 
     // ─── 内建命令 ────────────────────────────────────────────────────────
 
-    /** `ls` 带参数时原本被忽略（只列 cwd），这里让参数真正生效。 */
+    /**
+     * `ls` 支持通配符（`ls *.zip` / `ls sub/bg??.png`）与多参数；目录照旧列内容。
+     * **每个文件都注册一个 fN 描述符**（全局表，进程存活期内稳定可引用），编号
+     * 顺序 = 应用「排序方式」设置排出来的顺序（目录不编号），f 从 0 开始。
+     */
     private fun lsOutcome(args: List<String>, cwd: File): Outcome {
         if (args.isEmpty()) return Outcome.NeedPath("ls", UuCommands.Picker.FOLDER)
-        val dir = UuText.resolve(cwd, args[0])
-        if (!dir.isDirectory) return Outcome.Text(str(R.string.terminal_not_found, args[0]))
-        return Outcome.Text(doLs(dir))
+        val sections = args.map { arg ->
+            val resolved = UuText.resolve(cwd, arg)
+            val parent = resolved.parentFile ?: cwd
+            when {
+                CliGlob.hasWildcards(resolved.name) -> {
+                    val re = CliGlob.toRegex(resolved.name)
+                    val files = parent.listFiles { f -> re.matches(f.name) }
+                        ?.toList()?.let { sortLikeBrowser(it) } ?: emptyList()
+                    arg to if (files.isEmpty()) str(R.string.terminal_not_found, arg)
+                           else renderWithFds(files)
+                }
+                resolved.isDirectory -> arg to renderWithFds(sortLikeBrowser(
+                    resolved.listFiles()?.toList().orEmpty()))
+                resolved.isFile -> arg to renderWithFds(listOf(resolved))
+                else -> arg to str(R.string.terminal_not_found, arg)
+            }
+        }
+        return Outcome.Text(
+            if (sections.size == 1) sections[0].second
+            else sections.joinToString("\n\n") { (title, body) -> "$title:\n$body" }
+        )
     }
 
-    private fun doLs(cwd: File): String {
-        val files = cwd.listFiles()?.sortedBy { it.name.lowercase() } ?: return str(R.string.terminal_empty)
+    /** 与文件浏览器同一套排序（sort_mode 设置），目录优先只对 name 系生效。 */
+    private fun sortLikeBrowser(files: List<File>): List<File> {
+        val mode = act.prefs.getString("sort_mode", "name_asc") ?: "name_asc"
+        return files.sortedWith(when (mode) {
+            "name_desc" -> compareBy<File> { !it.isDirectory }.thenByDescending { it.name.lowercase() }
+            "size_asc" -> compareBy { it.length() }
+            "size_desc" -> compareByDescending { it.length() }
+            "date_asc" -> compareBy { it.lastModified() }
+            "date_desc" -> compareByDescending { it.lastModified() }
+            else -> compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() }
+        })
+    }
+
+    /** 渲染 + 给全部**文件**注册 fN（目录不编号），输出行首带 `fN` 标签。 */
+    private fun renderWithFds(files: List<File>): String {
         if (files.isEmpty()) return str(R.string.terminal_empty)
+        val realFiles = files.filter { it.isFile }
+        val fds = fds.registerFiles(realFiles)
+        val fdOf = if (realFiles.isNotEmpty()) realFiles.zip(fds).toMap() else emptyMap()
         return files.joinToString("\n") { f ->
-            val size = if (f.isDirectory) "/" else "  ${fmt(fileSize(f))}"
-            "  ${f.name}$size"
+            val fdTag = fdOf[f]?.let { "f$it" }?.padStart(5) ?: "     "
+            val size = if (f.isDirectory) "/" else fmt(fileSize(f))
+            "  $fdTag  ${f.name}  $size"
         }
     }
 

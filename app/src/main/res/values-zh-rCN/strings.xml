@@ -596,4 +596,5 @@
     <string name="cli_copy_done">已复制：%1$s → %2$s</string>
     <string name="cli_rename_done">已重命名：%1$s → %2$s</string>
     <string name="cli_all_set">✔ 全部完成</string>
+    <string name="recycle_progress_cleaning_bytes">清理中：已删除 %1$s / %2$s（%3$d/%4$d 项）</string>
 </resources>

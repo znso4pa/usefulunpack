@@ -52,6 +52,12 @@ internal class TerminalPanel(private val act: MainActivity) {
     private var ownerTabId: Int = -1
     private var out: TextView? = null
     private var scroller: ScrollView? = null
+
+    /**
+     * 独立的**单行进度视图**（输出区与输入行之间）：x/c 的进度每 200ms 刷这里，
+     * 大输出区完全不动 —— 之前整块输出 setText 5 次/秒，最大 200KB，真机抽帧。
+     */
+    private var progressView: TextView? = null
     private var input: EditText? = null
     private var cwdView: TextView? = null
     private var pinnedToBottom = true
@@ -195,6 +201,17 @@ internal class TerminalPanel(private val act: MainActivity) {
             setBackgroundColor(C["nav_bg"]!!)
             addView(header, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(TextView(act).apply {
+                progressView = this
+                visibility = View.GONE
+                setTextColor(C["accent"]!!)
+                textSize = 11f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setPadding(dp(12), dp(4), dp(12), dp(4))
+                setBackgroundColor(C["surface_dim"]!!)
+                isSingleLine = true
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(inputStack, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
 
@@ -259,6 +276,7 @@ internal class TerminalPanel(private val act: MainActivity) {
     fun hide() {
         val r = root
         root = null; out = null; scroller = null; input = null; cwdView = null
+        progressView = null
         (r?.parent as? ViewGroup)?.removeView(r)
     }
 
@@ -377,6 +395,7 @@ internal class TerminalPanel(private val act: MainActivity) {
      * 在这里 setText 会抛 CalledFromWrongThreadException 并杀掉整个进程。
      */
     private fun runTokens(line: String, tokens: List<String>, cwd: File) {
+        progressView?.post { progressView?.visibility = View.GONE }
         val outcome = when (val argv = tokens.firstOrNull()) {
             null -> Outcome.Text("")
             "ls" -> lsOutcome(tokens.drop(1), cwd)
@@ -411,15 +430,19 @@ internal class TerminalPanel(private val act: MainActivity) {
         str = ctxStr(),
         fds = fds,
         cacheDir = act.cacheDir,
-        // 长命令（x/c）的进度：整行替换输出区最后一条进度行，**不弹对话框**
-        //（产品要求：进度只写在 CLI 窗口内）。
+        // 长命令（x/c）的进度：只刷独立单行视图，**不弹对话框**也不重排大输出区
+        //（产品要求：进度只写在 CLI 窗口内；整块 setText 5 次/秒会抽帧）。
         progress = { line ->
             act.runOnUiThread {
                 if (act.isFinishing || act.isDestroyed) return@runOnUiThread
-                sess.progress(line)
-                render()
+                progressView?.apply {
+                    visibility = View.VISIBLE
+                    text = line
+                }
             }
         },
+        // x/c 不加路径时的默认输出位置（单独路径，产品要求）
+        defaultOutDir = File(android.os.Environment.getExternalStorageDirectory(), "uu_cli"),
     )
 
     private fun runUu(rest: List<String>, cwd: File): Outcome {
@@ -495,6 +518,19 @@ internal class TerminalPanel(private val act: MainActivity) {
         // picker tab 会让终端 GONE 让位（选完切回自动恢复），不再需要强制对话框。
             choice(str(R.string.cli_pick_switch), str(R.string.cli_pick_switch_sub)) {
                 showFolderPicker(act, sess.cwd, false) { picked -> rerunWith(picked) }
+            }
+        } else if (kind == UuCommands.Picker.FILE_OR_FOLDER) {
+            // `uu c` 的源：先看当前目录（最常见 = 打包整个 cwd，不弹任何选择器），
+            // 再给「选文件夹」（带 ✓ 选此目录入口）和「选文件」两个入口——
+            // 之前 FILE 模式的选择器没有选文件夹入口，用户导航到目录里却选不了它。
+            choice(
+                str(R.string.cli_pick_keep), str(R.string.cli_pick_keep_sub, sess.cwd.absolutePath)
+            ) { rerunWith(sess.cwd) }
+            choice(str(R.string.cli_pick_switch), str(R.string.cli_pick_switch_sub)) {
+                showFolderPicker(act, sess.cwd, false) { picked -> rerunWith(picked) }
+            }
+            choice(str(R.string.action_choose_dir), str(R.string.cli_pick_switch_sub)) {
+                showFolderPicker(act, sess.cwd, true) { picked -> rerunWith(picked) }
             }
         } else {
             choice(str(R.string.action_choose_dir), str(R.string.cli_pick_switch_sub)) {

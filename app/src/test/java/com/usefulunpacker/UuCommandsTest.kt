@@ -280,8 +280,90 @@ class UuCommandsTest {
         assertTrue(r.text.contains("PARAMETERS"))
         assertTrue(r.text.contains("-p <password>"))
         assertTrue(r.text.contains("fN"))
-        // 列宽契约：最长的 usage（uu c，62 字符）后面至少留 2 空格，禁止与说明粘连
-        assertTrue(r.text.contains("[-p pw]  Pack a file or folder"))
+        // 列宽契约：最长的 usage（uu c，68 字符）后面至少留 2 空格，禁止与说明粘连
+        assertTrue(r.text.contains("[-p pw]  Pack files or folders"))
+    }
+
+    // ── Round 1：参数缺口回归 ──
+
+    @Test
+    fun flagMissingValueErrorsInsteadOfEmptyPassword() {
+        val dir = tmp.root.resolve("flagmiss").apply { mkdirs() }
+        File(dir, "a.zip").writeBytes(ByteArray(8))
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        // `-p` 在末尾无值：必须报「缺值」，而不是变成空密码吞掉弹窗
+        val r = UuCommands.dispatch(listOf("x", "a.zip", "-p"), c)
+        assertEquals(1, r.exitCode)
+        assertTrue(r.text.contains("!str:"))
+        assertTrue(r.text.contains("[-p]"))
+    }
+
+    @Test
+    fun unknownFlagRejectedInsteadOfBecomingPath() {
+        val dir = tmp.root.resolve("unkflag").apply { mkdirs() }
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("mkdir", "-p", "a"), c)
+        assertEquals(1, r.exitCode)
+        assertTrue(r.text.contains("[-p]"))
+        assertFalse("flag must not become a dir", File(dir, "-p").exists())
+        assertFalse("mkdir must not run", File(dir, "a").exists())
+    }
+
+    @Test
+    fun hashHandlesMultipleArguments() {
+        val dir = tmp.root.resolve("hashmulti").apply { mkdirs() }
+        File(dir, "a.txt").writeText("abc")
+        File(dir, "b.txt").writeText("abc")
+        val c = UuCommands.Ctx(prefs = null, cwd = dir)
+        val r = UuCommands.dispatch(listOf("hash", "a.txt", "b.txt"), c)
+        assertEquals(0, r.exitCode)
+        // 两个文件都产出（各自带头部行），abc 的已知向量出现两次
+        assertEquals(2, Regex("900150983cd24fb0d6963f7d28e17f72").findAll(r.text).count())
+        assertTrue(r.text.contains("a.txt:"))
+        assertTrue(r.text.contains("b.txt:"))
+    }
+
+    @Test
+    fun infoHandlesMultipleArguments() {
+        val dir = tmp.root.resolve("infomulti").apply { mkdirs() }
+        File(dir, "a.bin").writeBytes(ByteArray(4))
+        File(dir, "b.bin").writeBytes(ByteArray(4))
+        val c = UuCommands.Ctx(prefs = null, cwd = dir)
+        val r = UuCommands.dispatch(listOf("info", "a.bin", "b.bin"), c)
+        assertEquals(0, r.exitCode)
+        // 两个非归档各输出一个空行 → 两行
+        assertEquals(2, r.text.split("\n").size)
+    }
+
+    @Test
+    fun duSumsMultipleArguments() {
+        val dir = tmp.root.resolve("dumulti").apply { mkdirs() }
+        File(dir, "a.bin").writeBytes(ByteArray(100))
+        File(dir, "b.bin").writeBytes(ByteArray(50))
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("du", "a.bin", "b.bin"), c)
+        assertEquals(0, r.exitCode)
+        assertTrue(r.text.contains("[150 B][2]"))  // 汇总行
+    }
+
+    @Test
+    fun listConsumesDashPFlagInsteadOfTreatingItAsArchive() {
+        val dir = tmp.root.resolve("listp").apply { mkdirs() }
+        File(dir, "a.zip").writeBytes(ByteArray(8))
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        // 无 activity 时列表失败（listFailed），但绝不能是「找不到 -p」
+        val r = UuCommands.dispatch(listOf("l", "-p", "secret", "a.zip"), c)
+        assertFalse(r.text.contains("[-p]"))
+    }
+
+    @Test
+    fun packRejectsThreePositionalsWithoutFlags() {
+        val dir = tmp.root.resolve("c3pos").apply { mkdirs() }
+        for (n in listOf("a.txt", "b.txt", "c.txt")) File(dir, n).writeText("x")
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("c", "a.txt", "b.txt", "c.txt"), c)
+        assertEquals(1, r.exitCode)
+        assertTrue(r.text.contains("!str:"))  // cli_pack_multi_needs_flag
     }
 
 }

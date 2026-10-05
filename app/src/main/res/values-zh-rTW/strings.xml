@@ -611,4 +611,7 @@
     <string name="cli_grep_result">%1$s 處符合，來自 %2$s 個檔案</string>
     <string name="cli_grep_none">沒有符合</string>
     <string name="terminal_docs">文檔</string>
+    <string name="cli_flag_missing_value">%1$s 缺少取值</string>
+    <string name="cli_unknown_flag">未知參數：%1$s</string>
+    <string name="cli_x_outdir_is_file">%1$s 是檔案 — 請用 -o &lt;輸出目錄&gt;（每次只解一個封包）</string>
 </resources>

@@ -617,4 +617,7 @@
     <string name="cli_grep_result">%1$s matches in %2$s files</string>
     <string name="cli_grep_none">No matches</string>
     <string name="terminal_docs">Docs</string>
+    <string name="cli_flag_missing_value">%1$s needs a value</string>
+    <string name="cli_unknown_flag">Unknown flag: %1$s</string>
+    <string name="cli_x_outdir_is_file">%1$s is a file — use -o &lt;outdir&gt; (one archive per call)</string>
 </resources>

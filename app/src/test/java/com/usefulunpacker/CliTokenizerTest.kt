@@ -1,6 +1,7 @@
 package com.usefulunpacker
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -107,4 +108,28 @@ class CliTokenizerTest {
     fun adjacentQuotedSpansJoinIntoOneToken() {
         assertEquals(listOf("a1b2"), tok("\"a1\"\"b2\""))
     }
+    // ── CliGlob 线性匹配（含病态模式不再指数回溯）──
+
+    @Test
+    fun globMatchesBasicWildcards() {
+        assertTrue(CliGlob.matches("1.zip", "*.zip"))
+        assertTrue(CliGlob.matches("bg01.png", "bg??.png"))
+        assertTrue(CliGlob.matches("anything.txt", "*"))
+        assertFalse(CliGlob.matches("a.zip", "*.rar"))
+        assertFalse(CliGlob.matches("ac", "a?c"))   // ? 必须恰好吃一个字符
+        assertTrue(CliGlob.matches("aXc", "a?c"))
+        assertTrue(CliGlob.matches("abc", "a?c"))   // ? 匹配任意字符,包括 b 本身
+        assertTrue(CliGlob.matches("", ""))
+        assertFalse(CliGlob.matches("abc", ""))
+    }
+
+    @Test
+    fun globPathologicalPatternTerminates() {
+        // 旧正则版在这种模式下指数回溯；线性匹配器必须立即返回
+        val pathological = "*a" .repeat(8) + "b"
+        val name = "z".repeat(255)
+        assertEquals(false, CliGlob.matches(name, pathological))
+        assertTrue(CliGlob.matches("a" + "x".repeat(50) + "b", "a*b"))
+    }
+
 }

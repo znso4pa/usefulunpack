@@ -594,4 +594,5 @@
     <string name="recycle_progress_cleaning_bytes">清理中：已刪除 %1$s / %2$s（%3$d/%4$d 項）</string>
     <string name="cli_pack_need_format">請用 -f 指定封包格式（見 uu fmt）</string>
     <string name="cli_pack_partial">%1$s 個失敗</string>
+    <string name="cli_pack_multi_needs_flag">多個源需要 -c（合併）或 -s（分別壓縮）</string>
 </resources>

@@ -600,4 +600,5 @@ The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the curre
     <string name="recycle_progress_cleaning_bytes">Cleaning up: %1$s / %2$s removed (%3$d/%4$d items)</string>
     <string name="cli_pack_need_format">Specify the pack format with -f (see uu fmt)</string>
     <string name="cli_pack_partial">%1$s failed</string>
+    <string name="cli_pack_multi_needs_flag">Multiple sources need -c (merge) or -s (separate)</string>
 </resources>

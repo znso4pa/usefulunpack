@@ -162,4 +162,14 @@ class UuCommandsTest {
         dir.deleteRecursively()
     }
 
+    @Test
+    fun copyRefusesDirectoryIntoItself() {
+        val outer = tmp.newFolder("mydir")
+        File(outer, "f.txt").writeText("v")
+        // cp mydir mydir/inner → 必须拒绝而不是无限自嵌套
+        val r = UuCommands.dispatch(argv("cp", "mydir", "mydir/inner"), ctx(tmp.root))
+        assertTrue(r.exitCode != 0)
+        assertEquals("v", File(outer, "f.txt").readText())
+    }
+
 }

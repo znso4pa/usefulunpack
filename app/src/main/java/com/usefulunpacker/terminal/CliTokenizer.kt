@@ -77,11 +77,22 @@ internal class CliTokenizer {
 internal object CliGlob {
     fun hasWildcards(s: String): Boolean = s.contains('*') || s.contains('?')
 
-    fun toRegex(glob: String): Regex = buildString {
-        for (c in glob) when (c) {
-            '*' -> append(".*")
-            '?' -> append('.')
-            else -> append(Regex.escape(c.toString()))
+    /**
+     * 双指针通配匹配（线性回溯，经典算法）：正则版 `.*.*.*b` 在长文件名上是
+     * 指数回溯，粘一个病态 glob 就能把命令线程卡死。
+     */
+    fun matches(name: String, glob: String): Boolean {
+        var si = 0; var gi = 0
+        var starG = -1; var starS = 0
+        while (si < name.length) {
+            when {
+                gi < glob.length && (glob[gi] == '?' || glob[gi] == name[si]) -> { si++; gi++ }
+                gi < glob.length && glob[gi] == '*' -> { starG = gi; starS = si; gi++ }
+                starG != -1 -> { gi = starG + 1; starS++; si = starS }
+                else -> return false
+            }
         }
-    }.toRegex()
+        while (gi < glob.length && glob[gi] == '*') gi++
+        return gi == glob.length
+    }
 }

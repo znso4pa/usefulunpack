@@ -61,6 +61,8 @@ internal class TerminalPanel(private val act: MainActivity) {
     private var input: EditText? = null
     private var cwdView: TextView? = null
     private var pinnedToBottom = true
+    /** 手指是否正按在输出区拖动（只有真实拖动才改变跟随状态）。 */
+    private var userScrolling = false
     private var historyIdx = -1
 
     private fun str(id: Int, vararg a: Any) = act.getString(id, *a)
@@ -92,6 +94,9 @@ internal class TerminalPanel(private val act: MainActivity) {
     private fun mount(tabId: Int) {
         sess = vm.session(tabId)
         ownerTabId = tabId
+        // 面板级状态跟会话走：换 tab 重挂后不残留上一个会话的滚动/历史游标
+        historyIdx = -1
+        pinnedToBottom = true
         // 首次打开时把 cwd 对齐到当前 tab 的目录（之后再由 cd 自己维护，
         // 重开终端不能把用户 cd 过去的位置重置掉）
         if (!sess.cwdInitialized) {
@@ -288,6 +293,8 @@ internal class TerminalPanel(private val act: MainActivity) {
      * 时彻底移除 —— 它永远回不来了。
      */
     fun onTabChanged(newActiveTabId: Int) {
+        // 顺带清掉已关闭 tab 的会话（防累积）
+        vm.retainSessions(act.tabs.map { it.tabId })
         val r = root ?: return
         val ownerAlive = act.tabs.any { it.tabId == ownerTabId }
         if (!ownerAlive) { hide(); return }
@@ -350,11 +357,31 @@ internal class TerminalPanel(private val act: MainActivity) {
         cwdView?.text = sess.cwd.name.ifEmpty { "/" }
         if (pinnedToBottom) sv?.post { sv.fullScroll(View.FOCUS_DOWN) }
         else sv?.post { sv.scrollTo(0, scrollY) }
-        // 上滑浏览时不要强拉回底部
-        sv?.setOnScrollChangeListener { _, _, scrollYNew, _, _ ->
+        // 跟随状态**只由用户真实拖动改变**：键盘弹出/收起、setText、布局变化都会
+        // 触发 scroll-change，早期实现把它们当作用户上滑，一次误判就永久卡在
+        // 半空（真机反馈：输出继续走，视图不再跟底）。
+        fun recomputePinned() {
             val h = sv?.getChildAt(0)?.height ?: 0
             val range = h - (sv?.height ?: 0)
-            pinnedToBottom = range <= 0 || scrollYNew >= range - 8
+            pinnedToBottom = range <= 0 || (sv?.scrollY ?: 0) >= range - 8
+        }
+        sv?.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> userScrolling = true
+                android.view.MotionEvent.ACTION_UP,
+                android.view.MotionEvent.ACTION_CANCEL -> {
+                    userScrolling = false
+                    sv.post { recomputePinned() }
+                }
+            }
+            false
+        }
+        sv?.setOnScrollChangeListener { _, _, _, _, _ ->
+            if (userScrolling) recomputePinned()
+        }
+        // 布局变化（键盘开合/旋屏）：跟随时保持贴底
+        sv?.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+            if (pinnedToBottom) v.post { sv.fullScroll(View.FOCUS_DOWN) }
         }
     }
 
@@ -374,14 +401,19 @@ internal class TerminalPanel(private val act: MainActivity) {
                 } else {
                     UuText.failed(ctxStr(), reason.toString())
                 }
-                postOut(msg)
+                postOut(msg, sess)
                 return
             }
             is CliTokenizer.Out.Ok -> t.tokens
         }
         val cwd = sess.cwd       // 主线程读：dispatch 里的 cd 会写它
+        // 捕获当前会话/进度视图/归属 tab：命令期间用户可能切 tab 甚至打开别的
+        // 终端 —— 结果必须回到发起它的那个会话，不能读活字段串台。
+        val s = sess
+        val pv = progressView
+        val owner = ownerTabId
         append(PROMPT + line)
-        thread { runTokens(line, tokens, cwd) }
+        thread { runTokens(line, tokens, cwd, s, pv, owner) }
     }
 
     /** 一行命令的产出：要么是文本，要么是「缺路径，请用户选一个」。 */
@@ -394,38 +426,47 @@ internal class TerminalPanel(private val act: MainActivity) {
      * 后台执行。**只算字符串 / 只改 ViewModel，绝不碰 View** ——
      * 在这里 setText 会抛 CalledFromWrongThreadException 并杀掉整个进程。
      */
-    private fun runTokens(line: String, tokens: List<String>, cwd: File) {
-        progressView?.post { progressView?.visibility = View.GONE }
+    private fun runTokens(
+        line: String, tokens: List<String>, cwd: File,
+        s: TerminalViewModel.Session, pv: TextView?, owner: Int
+    ) {
         val outcome = when (val argv = tokens.firstOrNull()) {
             null -> Outcome.Text("")
             "ls" -> lsOutcome(tokens.drop(1), cwd)
             "pwd" -> Outcome.Text(cwd.absolutePath)
-            "cd" -> cdOutcome(tokens.drop(1), cwd)
-            "help" -> Outcome.Text(UuCommands.renderHelp(ctx()))
-            "uu" -> runUu(tokens.drop(1), cwd)
+            "cd" -> cdOutcome(tokens.drop(1), s, owner)
+            "help" -> Outcome.Text(UuCommands.renderHelp(ctx(s, pv, owner)))
+            "uu" -> runUu(tokens.drop(1), ctx(s, pv, owner))
             else -> Outcome.Text(runShell(line, cwd))   // §7.3：绝不把 cwd 插值进 shell 字符串
         }
+        // 命令完成：收起**发起时刻的**进度视图（结果行已进 scrollback）
+        act.runOnUiThread {
+            if (act.isFinishing || act.isDestroyed) return@runOnUiThread
+            if (ownerTabId == owner) pv?.visibility = View.GONE
+        }
         when (outcome) {
-            is Outcome.Text -> if (outcome.s.isNotEmpty()) postOut(outcome.s)
+            is Outcome.Text -> if (outcome.s.isNotEmpty()) postOut(outcome.s, s)
             is Outcome.NeedPath -> act.runOnUiThread {
                 if (act.isFinishing || act.isDestroyed) return@runOnUiThread
-                askPath(line, outcome.cmd, outcome.kind)
+                askPath(line, outcome.cmd, outcome.kind, s, pv, owner)
             }
         }
     }
 
-    private fun postOut(text: String) = act.runOnUiThread {
+    /** 结果进捕获的会话；仅当终端仍显示该会话时才刷新视图。 */
+    private fun postOut(text: String, s: TerminalViewModel.Session) = act.runOnUiThread {
         if (act.isFinishing || act.isDestroyed) return@runOnUiThread
-        append(text)
+        s.append(text)
+        if (sess === s) render()
     }
 
     private fun ctxStr(): StrFn = { id, args ->
         if (args.isEmpty()) act.getString(id) else act.getString(id, *args)
     }
 
-    private fun ctx() = UuCommands.Ctx(
+    private fun ctx(s: TerminalViewModel.Session, pv: TextView?, owner: Int) = UuCommands.Ctx(
         prefs = act.prefs,
-        cwd = sess.cwd,
+        cwd = s.cwd,
         activity = act,
         str = ctxStr(),
         fds = fds,
@@ -435,7 +476,9 @@ internal class TerminalPanel(private val act: MainActivity) {
         progress = { line ->
             act.runOnUiThread {
                 if (act.isFinishing || act.isDestroyed) return@runOnUiThread
-                progressView?.apply {
+                // 只写发起时刻的进度视图；切 tab 后（owner 变了）静默丢弃，
+                // 不污染别的 tab 的终端。
+                if (ownerTabId == owner) pv?.apply {
                     visibility = View.VISIBLE
                     text = line
                 }
@@ -445,9 +488,9 @@ internal class TerminalPanel(private val act: MainActivity) {
         defaultOutDir = File(android.os.Environment.getExternalStorageDirectory(), "uu_cli"),
     )
 
-    private fun runUu(rest: List<String>, cwd: File): Outcome {
-        if (rest.isEmpty()) return Outcome.Text(UuCommands.renderHelp(ctx()))
-        val r = UuCommands.dispatch(rest, ctx())
+    private fun runUu(rest: List<String>, c: UuCommands.Ctx): Outcome {
+        if (rest.isEmpty()) return Outcome.Text(UuCommands.renderHelp(c))
+        val r = UuCommands.dispatch(rest, c)
         val p = r.picker
         return if (p != null) Outcome.NeedPath(rest[0], p) else Outcome.Text(r.text)
     }
@@ -457,6 +500,9 @@ internal class TerminalPanel(private val act: MainActivity) {
     /** 选中之后要重跑的那一行（`uu l` → `uu l /选中的路径`）。只在主线程读写。 */
     private var pendingLine: String = ""
     private var pendingTokens: List<String> = emptyList()
+    private var pendingSession: TerminalViewModel.Session? = null
+    private var pendingPv: TextView? = null
+    private var pendingOwner: Int = -1
 
     /**
      * 命令缺路径时的统一入口。
@@ -469,9 +515,16 @@ internal class TerminalPanel(private val act: MainActivity) {
      * 手机上靠键盘敲长中文路径很难用，而 UU 的强项本来就是浏览文件，
      * 所以缺参时给选择器比报一行 usage 有用。
      */
-    private fun askPath(line: String, cmd: String, kind: UuCommands.Picker) {
+    private fun askPath(
+        line: String, cmd: String, kind: UuCommands.Picker,
+        s: TerminalViewModel.Session, pv: TextView?, owner: Int
+    ) {
         pendingLine = line
         pendingTokens = tokenizer.tokenize(line).let { (it as? CliTokenizer.Out.Ok)?.tokens ?: emptyList() }
+        // 会话快照：选完目录回来时，即使终端已切到别的 tab，命令结果仍进原会话
+        pendingSession = s
+        pendingPv = pv
+        pendingOwner = owner
         val title = if (kind == UuCommands.Picker.FILE) {
             str(R.string.cli_pick_file_title, cmd)
         } else {
@@ -512,29 +565,29 @@ internal class TerminalPanel(private val act: MainActivity) {
 
         if (kind == UuCommands.Picker.FOLDER) {
             choice(
-                str(R.string.cli_pick_keep), str(R.string.cli_pick_keep_sub, sess.cwd.absolutePath)
-            ) { rerunWith(sess.cwd) }
+                str(R.string.cli_pick_keep), str(R.string.cli_pick_keep_sub, s.cwd.absolutePath)
+            ) { rerunWith(s.cwd, s, pv, owner) }
         // 跟随设置里的「路径选择方式」：终端按 tab 扎根后，新窗口模式开的
         // picker tab 会让终端 GONE 让位（选完切回自动恢复），不再需要强制对话框。
             choice(str(R.string.cli_pick_switch), str(R.string.cli_pick_switch_sub)) {
-                showFolderPicker(act, sess.cwd, false) { picked -> rerunWith(picked) }
+                showFolderPicker(act, s.cwd, false) { picked -> rerunWith(picked, s, pv, owner) }
             }
         } else if (kind == UuCommands.Picker.FILE_OR_FOLDER) {
             // `uu c` 的源：先看当前目录（最常见 = 打包整个 cwd，不弹任何选择器），
             // 再给「选文件夹」（带 ✓ 选此目录入口）和「选文件」两个入口——
             // 之前 FILE 模式的选择器没有选文件夹入口，用户导航到目录里却选不了它。
             choice(
-                str(R.string.cli_pick_keep), str(R.string.cli_pick_keep_sub, sess.cwd.absolutePath)
-            ) { rerunWith(sess.cwd) }
+                str(R.string.cli_pick_keep), str(R.string.cli_pick_keep_sub, s.cwd.absolutePath)
+            ) { rerunWith(s.cwd, s, pv, owner) }
             choice(str(R.string.cli_pick_switch), str(R.string.cli_pick_switch_sub)) {
-                showFolderPicker(act, sess.cwd, false) { picked -> rerunWith(picked) }
+                showFolderPicker(act, s.cwd, false) { picked -> rerunWith(picked, s, pv, owner) }
             }
             choice(str(R.string.action_choose_dir), str(R.string.cli_pick_switch_sub)) {
-                showFolderPicker(act, sess.cwd, true) { picked -> rerunWith(picked) }
+                showFolderPicker(act, s.cwd, true) { picked -> rerunWith(picked, s, pv, owner) }
             }
         } else {
             choice(str(R.string.action_choose_dir), str(R.string.cli_pick_switch_sub)) {
-                showFolderPicker(act, sess.cwd, true) { picked -> rerunWith(picked) }
+                showFolderPicker(act, s.cwd, true) { picked -> rerunWith(picked, s, pv, owner) }
             }
         }
 
@@ -550,15 +603,19 @@ internal class TerminalPanel(private val act: MainActivity) {
     }
 
     /** 把选中的路径接到原命令后面重跑一次。 */
-    private fun rerunWith(picked: File) {
+    private fun rerunWith(
+        picked: File, s: TerminalViewModel.Session, pv: TextView?, owner: Int
+    ) {
         val tokens = pendingTokens
         pendingTokens = emptyList()
         if (tokens.isEmpty()) return
         val next = tokens + picked.absolutePath
         val echo = next.joinToString(" ") { if (it.contains(' ')) "\"$it\"" else it }
-        val cwd = sess.cwd
-        append(PROMPT + echo)
-        thread { runTokens(echo, next, cwd) }
+        val cwd = s.cwd
+        // 结果仍进发起会话：append 直写快照，视图仅在终端还显示它时刷新
+        s.append(PROMPT + echo)
+        if (sess === s) render()
+        thread { runTokens(echo, next, cwd, s, pv, owner) }
     }
 
     // ─── 内建命令 ────────────────────────────────────────────────────────
@@ -575,8 +632,7 @@ internal class TerminalPanel(private val act: MainActivity) {
             val parent = resolved.parentFile ?: cwd
             when {
                 CliGlob.hasWildcards(resolved.name) -> {
-                    val re = CliGlob.toRegex(resolved.name)
-                    val files = parent.listFiles { f -> re.matches(f.name) }
+                    val files = parent.listFiles { f -> CliGlob.matches(f.name, resolved.name) }
                         ?.toList()?.let { sortLikeBrowser(it) } ?: emptyList()
                     arg to if (files.isEmpty()) str(R.string.terminal_not_found, arg)
                            else renderWithFds(files)
@@ -620,16 +676,17 @@ internal class TerminalPanel(private val act: MainActivity) {
     }
 
     /** §7.4：原来的实现只认 `..` / 绝对 / 单段；这里补多段归一化、`~`、无参数回 cwd。 */
-    private fun cdOutcome(args: List<String>, cwd: File): Outcome {
+    private fun cdOutcome(args: List<String>, s: TerminalViewModel.Session, owner: Int): Outcome {
         if (args.isEmpty()) return Outcome.NeedPath("cd", UuCommands.Picker.FOLDER)
-        return Outcome.Text(doCd(args, cwd))
+        return Outcome.Text(doCd(args, s, owner))
     }
 
-    private fun doCd(args: List<String>, cwd: File): String {
-        val target = args.firstOrNull() ?: return cwd.absolutePath
+    private fun doCd(args: List<String>, s: TerminalViewModel.Session, owner: Int): String {
+        val target = args.firstOrNull() ?: return s.cwd.absolutePath
+        val cwd = s.cwd
         val dest = when {
             target == "~" -> android.os.Environment.getExternalStorageDirectory()
-            target == "-" -> sess.lastDir.takeIf { it != null } ?: cwd
+            target == "-" -> s.lastDir.takeIf { it != null } ?: cwd
             target.startsWith("/") -> File(target)
             else -> File(cwd, target)
         }
@@ -645,12 +702,12 @@ internal class TerminalPanel(private val act: MainActivity) {
         }
         val norm = File("/" + parts.joinToString("/"))
         if (!norm.isDirectory) return str(R.string.terminal_not_found, target)
-        sess.lastDir = cwd
-        sess.cwd = norm
-        // 联动 tab（§2 硬约束）：导航**终端扎根的 tab**。终端隐藏期间不可输入，
-        // 所以可见时 owner tab 就是眼前这个窗口 —— 目录切换就发生在用户眼前。
-        // 不在后台线程读 activeTab：它的值随时可能因为切窗而变。
-        val ownerTab = act.tabs.firstOrNull { it.tabId == ownerTabId } ?: act.activeTab
+        s.lastDir = cwd
+        s.cwd = norm
+        // 联动 tab（§2 硬约束）：导航**终端扎根的 tab**。owner 已被关闭时不退化
+        // 到 activeTab（那是别的窗口，不该被动导航）——报错即可。
+        val ownerTab = act.tabs.firstOrNull { it.tabId == owner }
+            ?: return str(R.string.terminal_not_found, "$target (${owner})")
         act.runOnUiThread {
             if (act.isFinishing || act.isDestroyed) return@runOnUiThread
             act.navTab(ownerTab, norm)

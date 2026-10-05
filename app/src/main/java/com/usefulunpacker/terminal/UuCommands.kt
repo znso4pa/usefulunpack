@@ -67,10 +67,6 @@ internal object UuCommands {
     /** 需要文件参数的命令缺参时用它。 */
     private fun needFile(p: Picker = Picker.FILE) = Result("", 2, p)
 
-    /** 参数够不着（如 `uu c <src>` 缺产物名）：直接回显用法，不弹选择器。 */
-    private fun usage(cmd: String, ctx: Ctx): Result =
-        Result(table.first { it.name == cmd }.usage, 2)
-
     /** x/c 不加路径时的默认输出位置（单独路径，产品要求）。 */
     private fun defaultOut(ctx: Ctx): File = (ctx.defaultOutDir ?: ctx.cwd).apply { mkdirs() }
 
@@ -179,8 +175,9 @@ internal object UuCommands {
                 return Result(UuText.fdNotArchive(ctx.str, spec, fd.label), 2)
             }
             ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
-            val carved = ctx.cacheDir?.let { File(it, "uufd/f${fd.fd}-${fd.label.hashCode()}") }
-                ?: return Result(UuText.needsActivity(ctx.str), 2)
+            val carved = ctx.cacheDir?.let {
+                File(it, "uufd/f${fd.fd}-${fd.label.hashCode()}-${System.nanoTime()}")
+            } ?: return Result(UuText.needsActivity(ctx.str), 2)
             try {
                 carved.parentFile?.mkdirs()
                 carveToFile(fd.host, fd.offset, fd.length, carved) {}
@@ -261,8 +258,11 @@ internal object UuCommands {
             ?: return SrcSpec.Path(UuText.resolve(ctx.cwd, spec))
         ctx.fds.checkFresh(fd)?.let { return SrcSpec.Fail(Result(staleMsg(ctx.str, it), 1)) }
         if (fd.wholeFile) return SrcSpec.Fd(fd.host, null)
-        val carved = ctx.cacheDir?.let { File(it, "uufd/f${fd.fd}-${fd.label.hashCode()}") }
-            ?: return SrcSpec.Fail(Result(UuText.needsActivity(ctx.str), 2))
+        // 每次调用唯一化：hash/cp 不占调度槽，两条命令并发引用同一 fN 时
+        // 确定性文件名会互踩（truncate 中的文件被读 → 哈希错 / 被先完成方删除）。
+        val carved = ctx.cacheDir?.let {
+            File(it, "uufd/f${fd.fd}-${fd.label.hashCode()}-${System.nanoTime()}")
+        } ?: return SrcSpec.Fail(Result(UuText.needsActivity(ctx.str), 2))
         carved.parentFile?.mkdirs()
         carveToFile(fd.host, fd.offset, fd.length, carved) {}
         return SrcSpec.Fd(carved, carved)
@@ -282,9 +282,17 @@ internal object UuCommands {
         }
         try {
             var dst = UuText.resolve(ctx.cwd, args[1])
-            // dst 是已存在的目录 → 拷到它里面、沿用 src 名字（cp 语义）
-            if (dst.isDirectory) dst = File(dst, src.name)
+            // dst 是已存在的目录 → 拷到它里面（区间 fd 的临时名是哈希,退化为
+            // "carved" 命名;整文件/目录沿用原名）
+            if (dst.isDirectory) {
+                val name = if (srcTemp != null) "carved" else src.name
+                dst = File(dst, name)
+            }
             if (dst.exists()) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
+            // 目录拷贝进自己（cp mydir mydir/inner）→ 无限自嵌套直到路径爆掉
+            if (src.isDirectory && dst.canonicalPath.startsWith(src.canonicalPath + File.separator)) {
+                return Result(ctx.text(R.string.cli_failed, dst.path), 1)
+            }
             if (src.isDirectory) src.copyRecursively(dst, overwrite = false)
             else {
                 dst.parentFile?.mkdirs()
@@ -338,8 +346,9 @@ internal object UuCommands {
             } else {
                 if (!fd.isArchive()) return Result(UuText.fdNotArchive(ctx.str, spec, fd.label), 2)
                 ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
-                val carved = ctx.cacheDir?.let { File(it, "uufd/f${fd.fd}-${fd.label.hashCode()}") }
-                    ?: return Result(UuText.needsActivity(ctx.str), 2)
+                val carved = ctx.cacheDir?.let {
+                    File(it, "uufd/f${fd.fd}-${fd.label.hashCode()}-${System.nanoTime()}")
+                } ?: return Result(UuText.needsActivity(ctx.str), 2)
                 carved.parentFile?.mkdirs()
                 carveToFile(fd.host, fd.offset, fd.length, carved) {}
                 carvedTemp = carved
@@ -373,14 +382,14 @@ internal object UuCommands {
 
             // outdir：不加路径 → 默认单独路径（uu_cli/<归档名>/，产品要求）；
             // 显式给了就以该路径为最终输出（已存在则必须是目录，直接解进去）。
-            val outDir: File = if (pos.size >= 2) {
+            // 显式路径先行校验（快速失败）；默认目录的唯一化**拿到槽位后再解析**
+            //（不变量：排队的两次解压不能在入队时撞名）。
+            val outDirExplicit: File? = if (pos.size >= 2) {
                 val d = UuText.resolve(ctx.cwd, pos[1])
                 if (d.exists() && !d.isDirectory) return Result(ctx.text(R.string.cli_exists, d.path), 1)
                 d.mkdirs()
                 d
-            } else {
-                uniqueFile(defaultOut(ctx), src0.nameWithoutExtension.ifEmpty { "extracted" })
-            }
+            } else null
             val selected = pos.drop(2).joinToString("\n")
 
             val act = ctx.activity
@@ -389,6 +398,8 @@ internal object UuCommands {
                 // await()==false = 排队期被取消：必须中止，不能带着取消标记开跑
                 //（Rust 入口的 clear_cancel 会把它清掉）。
                 if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+                val outDir = outDirExplicit
+                    ?: uniqueFile(defaultOut(ctx), src0.nameWithoutExtension.ifEmpty { "extracted" })
                 val accessors = extractAccessors(fmt)
                 val done = AtomicBoolean(false)
                 val poller = if (ctx.progress != null) thread {
@@ -464,8 +475,13 @@ internal object UuCommands {
                 if (it !in COMPRESS_EXT.keys) return Result(UuText.packUnknownKey(ctx.str, it), 1)
                 it
             } ?: return Result(ctx.text(R.string.cli_pack_need_format), 1)
-            val level = ctx.prefs?.getInt("generic_level", 6) ?: 6
+            // zip 的等级 GUI 走 zip_level（generic_level 不是它的档位）
+            val level = ctx.prefs?.let { if (fmt == "zip") it.getInt("zip_level", 5) else it.getInt("generic_level", 6) } ?: 6
             val ext = COMPRESS_EXT[fmt]!!
+            if (merge && fmt in setOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "br", "ksd")) {
+                // 单文件流格式没有「合并多文件」语义，提前拒绝而不是在 Rust 层深处失败
+                return Result(UuText.failed(ctx.str, "-c: $fmt"), 1)
+            }
             val outDir = defaultOut(ctx)
             val opH = ctx.activity?.let { tryStartOperation(it, fmt) }
             try {
@@ -483,7 +499,7 @@ internal object UuCommands {
                 try {
                     if (merge) {
                         // 合并：暂存目录 + 重名去重，一个产物
-                        val staging = ctx.cacheDir?.let { File(it, "uu_pack/merge_${System.currentTimeMillis()}") }
+                        val staging = ctx.cacheDir?.let { File(it, "uu_pack/merge_${System.nanoTime()}") }
                             ?: return Result(UuText.needsActivity(ctx.str), 2)
                         try {
                             staging.mkdirs()
@@ -517,7 +533,7 @@ internal object UuCommands {
                             if (!src.exists()) { failCount++; continue }
                             val outF = uniqueFile(outDir, src.name + "." + ext)
                             val wrap = src.isFile && fmt in setOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")
-                            val wrapDir = if (wrap) File(ctx.cacheDir, "uu_pack/wrap_${System.currentTimeMillis()}") else null
+                            val wrapDir = if (wrap) File(ctx.cacheDir, "uu_pack/wrap_${System.nanoTime()}") else null
                             try {
                                 if (wrap) {
                                     wrapDir!!.mkdirs()
@@ -549,6 +565,11 @@ internal object UuCommands {
         }
 
         // ── 单源模式 ──
+        // 多源必须 -c/-s：否则 "uu c a.txt b.zip c.zip" 会把 b.zip 当产物、
+        // c.zip 当等级，静默打出错误的包。
+        if (pos.size > 3 || (pos.size == 3 && pos[2].toIntOrNull() == null)) {
+            return Result(ctx.text(R.string.cli_pack_multi_needs_flag), 1)
+        }
         val src = UuText.resolve(ctx.cwd, pos[0])
         if (!src.exists()) return Result(UuText.notFound(ctx.str, pos[0]), 1)
 
@@ -603,7 +624,7 @@ internal object UuCommands {
 
             // zip/7z/tar 系的 Rust 端 read_dir 不接受单文件输入：单文件需临时目录包裹
             val wrap = src.isFile && fmt in setOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")
-            val wrapDir = if (wrap) File(ctx.cacheDir, "uu_pack/wrap_${System.currentTimeMillis()}") else null
+            val wrapDir = if (wrap) File(ctx.cacheDir, "uu_pack/wrap_${System.nanoTime()}") else null
             val ok = try {
                 if (wrap) {
                     wrapDir!!.mkdirs()

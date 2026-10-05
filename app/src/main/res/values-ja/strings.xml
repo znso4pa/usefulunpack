@@ -417,7 +417,7 @@
         <item>エンコーディングと文字化け\n各プレビュー/エディタにエンコーディング行があります：タップで UTF-8/SHIFT-JIS/GBK/UTF-16 を切替、テキストは即座に再描画；BOM 付きの UTF-16/UTF-8 ファイルは正しいエンコーディングで自動オープン；非 UTF-8 の誤ったエンコーディングで読むと「UTF-8 に見えます」とヒント</item>
         <item>スクロールと自動更新\n長いリストの右側に常時表示のドラッグハンドル（掴んでドラッグで移動）；テキストプレビュー/エディタにもドラッグ可能なスクロールバー。現在のフォルダに変更（名前変更/移動/削除/解凍/圧縮、USB 等の外部変更）があるとファイル一覧が自動更新されます</item>
         <item>ごみ箱\nドロワーのごみ箱は削除前の複製を保持（保持日数を設定可）。復元と全消去に対応し、サイズと元のパスで表示される</item>
-        <item>ターミナルと uu コマンド\nツールバーの ⋋ でフルスクリーン ターミナルを開きます。現在のウィンドウに紐づき：タブを切り替えると隠れ、戻ると出力/履歴/cd はそのまま。"uu help" でコマンド一覧：uu fmt（対応形式）、uu info &lt;ファイル&gt;（1 行の形式キー）、uu l &lt;アーカイブ&gt; [-a]（エントリ一覧）、uu scan &lt;ファイル&gt;（シグネチャスキャン）。ls はアプリの並び順で各ファイルに fN タグを付与（ファイルのみ）；スキャンヒットは fN バイト範囲記述子として登録——"uu l f0" で carve せずに埋め込み ZIP を直接一覧；ホストファイルが変わると記述子は無効化。内蔵コマンド：ls / pwd / cd（紐づくウィンドウを移動）/ help；それ以外はシステムシェルで実行。"uu x &lt;アーカイブ&gt; [出力先] [エントリ] [-p pw]" で解凍（進捗はターミナル内に直接描画——動くバー + バイト数/現在ファイル/項目カウンタ、ダイアログなし）、完了時に all set を表示；"uu c &lt;src&gt; &lt;out.ext&gt; [-f key] [level] [splitMB] [-p pw]" で圧縮（out.pfs は -f pfs か -f pf6 が必要）。uu hash は MD5 + SHA-256；uu cp / mv / rn / rm（rm はゴミ箱、-f で完全削除）；uu cat でアーカイブ内テキスト表示、uu grep -i でフォルダ/アーカイブ内検索、uu set でエントリ差し替え（-cn コピー保存）；tree / du / stat / mkdir / cso ほか、ワイルドカードも全コマンドで利用可（uu x *.zip）。パイプと連結にも対応：「uu l a.zip | grep main」「uu l a.zip > list.txt」「cd sub &amp;&amp; uu x *.zip」、および「uu run script.txt」で行単位スクリプト実行。実行中は進捗行タップでキャンセル可</item>
+        <item>ターミナルと uu コマンド\nツールバーの ⋋ でフルスクリーン ターミナルを開きます。現在のウィンドウに紐づき：タブを切り替えると隠れ、戻ると出力/履歴/cd はそのまま。"uu help" でコマンド一覧：uu fmt（対応形式）、uu info &lt;ファイル&gt;（1 行の形式キー）、uu l &lt;アーカイブ&gt; [-a]（エントリ一覧）、uu scan &lt;ファイル&gt;（シグネチャスキャン）。ls はアプリの並び順で各ファイルに fN タグを付与（ファイルのみ）；スキャンヒットは fN バイト範囲記述子として登録——"uu l f0" で carve せずに埋め込み ZIP を直接一覧；ホストファイルが変わると記述子は無効化。内蔵コマンド：ls / pwd / cd（紐づくウィンドウを移動）/ help；それ以外はシステムシェルで実行。"uu x &lt;アーカイブ&gt; [出力先] [エントリ] [-p pw]" で解凍（進捗はターミナル内に直接描画——動くバー + バイト数/現在ファイル/項目カウンタ、ダイアログなし）、完了時に all set を表示；"uu c &lt;src&gt; &lt;out.ext&gt; [-f key] [level] [splitMB] [-p pw]" で圧縮（out.pfs は -f pfs か -f pf6 が必要）。uu hash は MD5 + SHA-256；uu cp / mv / rn / rm（rm はゴミ箱、-f で完全削除）；uu cat でアーカイブ内テキスト表示、uu grep -i でフォルダ/アーカイブ内検索、uu set でエントリ差し替え（-cn コピー保存）；tree / du / stat / mkdir / cso ほか、ワイルドカードも全コマンドで利用可（uu x *.zip）。パイプと連結にも対応：「uu l a.zip | grep main」「uu l a.zip > list.txt」「cd sub &amp;&amp; uu x *.zip」、および「uu run script.uut」で UUT スクリプトを実行できます——変数（"set v = text"）、出力キャプチャ（"set v = $(uu info a.zip)" → "if v = xp3 then uu x a.zip"）、ループ（"for a in *.zip" … "end"）。スクリプト内で使えるのは uu / ls / cd / pwd / help / echo のみで、シェルにはなりません。エラーで停止（"-k" で続行）、各行はエコーされます。"am start --es uut /sdcard/x.uut" で文字入力なしにヘッドレス実行でき、&lt;script&gt;.log も残ります。実行中は進捗行タップでキャンセル可</item>
     </string-array>
 
 
@@ -626,6 +626,10 @@
     <string name="cli_pipe_filter_only">パイプは grep / head / tail / wc のみ対応 — それ以外はシステムシェルを使用</string>
     <string name="cli_redirect_path">%1$s の後にリダイレクト先がありません</string>
     <string name="cli_saved_to">→ %1$s に保存しました</string>
+    <string name="cli_one_src_only">%1$s は 1 つのソースと 1 つの宛先のみ受け付けます。一括処理は UUT の for ループで</string>
+    <string name="cli_need_explicit_path">%1$s：この文脈ではパス選択を開けません。パスを明示してください</string>
+    <string name="cli_uut_parse">UUT 解析エラー：%1$s（%2$s 行目）</string>
+    <string name="cli_uut_cmd_not_allowed">UUT：許可されないコマンド：%1$s</string>
     <string name="cli_run_summary">スクリプト：%1$s 行実行、終了コード %2$s</string>
     <string name="cli_run_stopped">スクリプトは %3$s 行目で停止（%1$s 行実行、終了コード %2$s）</string>
 </resources>

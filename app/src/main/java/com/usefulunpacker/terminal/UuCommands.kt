@@ -232,9 +232,18 @@ internal object UuCommands {
         sb.append("  |             ").append("pipe into a filter: grep / head / tail / wc — uu l a.zip | grep main\n")
         sb.append("  > >>          ").append("redirect output to a file (>> appends) — uu l a.zip > list.txt\n")
         sb.append("  && ;          ").append("chain commands (&& stops on failure) — cd sub && uu x *.zip\n")
-        sb.append("  uu run <file> ").append("run a script line by line (# comments; -k keeps going)\n")
+        sb.append("  uu run <file> ").append("run a UUT script (# comments; -k keeps going) — see below\n")
         sb.append("  progress line ").append("tap to cancel a running uu x / c / set / cso operation\n")
         sb.append("  ls pwd cd help").append(" builtins; anything else runs in the system shell\n")
+        sb.append('\n')
+        sb.append("UUT SCRIPT (uu run <file.uut>)\n")
+        sb.append("-".repeat(8)).append('\n')
+        sb.append("  set v = text        ").append("assign a variable (\"\$v\" expands in later lines)\n")
+        sb.append("  set v = \$(uu info x) ").append("capture a command's output into v\n")
+        sb.append("  if v = xp3 then ...  ").append("one-line branch; also \"if v != \"\" then ...\"\n")
+        sb.append("  for a in *.zip ... end").append(" loop over wildcard matches (nestable)\n")
+        sb.append("  only uu / ls / cd / pwd / help / echo").append(" are allowed — no arbitrary shell\n")
+        sb.append("  errors stop the script (-k continues); each line is echoed; \"\$\" escapes only variables\n")
         sb.append('\n')
         sb.append("Default output dir (x/c without a path): /storage/emulated/0/uu_cli\n")
         return sb.toString().trimEnd('\n')
@@ -399,6 +408,9 @@ internal object UuCommands {
     private fun copy(args: List<String>, ctx: Ctx): Result {
         rejectUnknownFlags(ctx, args)?.let { return it }
         if (args.size < 2) return needFile()
+        // 多出来的位置参数此前被**静默忽略**：`uu cp a.txt b.txt dst/` 会把
+        // `b.txt` 当成目标、报"已存在"，a.txt 一个都没拷 —— 脚本里这是隐形杀手。
+        if (args.size > 2) return Result(ctx.text(R.string.cli_one_src_only, "cp"), 2)
         var srcTemp: File? = null
         val src: File = when (val r = resolveSource(args[0], ctx)) {
             is SrcSpec.Fail -> return r.result
@@ -1033,9 +1045,16 @@ internal object UuCommands {
         if (!target.exists()) return Result(UuText.notFound(ctx.str, pos[1]), 1)
 
         var tempDir: File? = null
+        // 显式指定的**纯文本文件**直接搜它。此前一律按归档处理，`uu grep alpha
+        // a.txt` 会报"不是可解压的归档：-"，等于把合法用法判死（`-` 还是占位符，
+        // 用户根本看不出说的是哪个文件）。
+        var explicitFile = false
         val root: File = if (target.isFile) {
             val fmt = detectFormat(target) ?: detectFormatByMagic(target)
-                ?: return Result(UuText.extractBadFormat(ctx.str, "-"), 1)
+            if (fmt == null) {
+                explicitFile = true
+                target
+            } else {
             val d = ctx.cacheDir?.let { File(it, "uu_grep/${System.nanoTime()}") }
                 ?: return Result(UuText.needsActivity(ctx.str), 2)
             tempDir = d
@@ -1051,6 +1070,7 @@ internal object UuCommands {
                     ?: throw IllegalStateException("prefs required"), gpw)
             }
             d
+            }
         } else target
 
         try {
@@ -1059,8 +1079,9 @@ internal object UuCommands {
             val sb = StringBuilder()
             root.walkTopDown().forEach { f ->
                 if (!f.isFile) return@forEach
-                // 目录搜索只查文本类；归档解出的临时内容已是白名单
-                if (tempDir == null && f.extension.lowercase() !in TEXT_SEARCH_EXTS) return@forEach
+                // 目录搜索只查文本类；归档解出的临时内容已是白名单；
+                // 用户显式点名的文件不设白名单（shell 的 `grep pat file` 语义）
+                if (!explicitFile && tempDir == null && f.extension.lowercase() !in TEXT_SEARCH_EXTS) return@forEach
                 if (f.length() > GREP_MAX_FILE_BYTES) return@forEach
                 val bytes = runCatching { readPrefix(f, GREP_MAX_FILE_BYTES) }.getOrNull() ?: return@forEach
                 val enc = detectBestEncoding(bytes) ?: return@forEach
@@ -1132,6 +1153,7 @@ internal object UuCommands {
     private fun mv(args: List<String>, ctx: Ctx): Result {
         rejectUnknownFlags(ctx, args)?.let { return it }
         if (args.size < 2) return needFile()
+        if (args.size > 2) return Result(ctx.text(R.string.cli_one_src_only, "mv"), 2)
         val src = UuText.resolve(ctx.cwd, args[0])
         if (!src.exists()) return Result(UuText.notFound(ctx.str, args[0]), 1)
         var dst = UuText.resolve(ctx.cwd, args[1])
@@ -1725,11 +1747,11 @@ internal object UuCommands {
      * **无匹配保留原样**（错误信息里能看到用户输入的模式）。目录部分不参与
      * 匹配（带子目录的模式先拆 parent 再匹配文件名）。
      */
-    fun expandGlobs(tokens: List<String>, cwd: File): List<String> {
+    fun expandGlobs(tokens: List<String>, cwd: File, skip: Set<Int> = emptySet()): List<String> {
         if (tokens.size <= 1) return tokens
         val out = ArrayList<String>(tokens.size)
         for ((i, t) in tokens.withIndex()) {
-            if (i == 0 || !CliGlob.hasWildcards(t)) { out.add(t); continue }
+            if (i == 0 || i in skip || !CliGlob.hasWildcards(t)) { out.add(t); continue }
             val f = UuText.resolve(cwd, t)
             val dir = f.parentFile ?: cwd
             val matches = dir.listFiles { c -> CliGlob.matches(c.name, f.name) }
@@ -1737,6 +1759,26 @@ internal object UuCommands {
             if (matches.isEmpty()) out.add(t) else matches.forEach { out.add(it.absolutePath) }
         }
         return out
+    }
+
+    /**
+     * 通配展开的**位置排除集**：这些位置参数是"模式"而不是"路径"，展开会把模式
+     * 换成命中文件本身，语义直接反转 —— `uu find . *.txt` 会变成
+     * `uu find . /dir/a.txt`，于是 find 去匹配字面名 `a.txt` 的**直接父路径**，
+     * 报"没有匹配 a.txt 的文件"（实测踩过）。find 的所有位置参数、grep 的
+     * pattern 都属此类。
+     */
+    fun globSkipIndices(tokens: List<String>): Set<Int> = when (tokens.firstOrNull()) {
+        // 真实命令行首 token 是 `uu`，子命令在它后面 —— 只按裸命令名匹配过
+        // 一次，结果 `uu find . *.txt` 照旧被展开（实测踩过）。
+        "uu" -> when (tokens.getOrNull(1)) {
+            "find" -> (2 until tokens.size).toSet()
+            "grep" -> setOf(if (tokens.getOrNull(2) == "-i") 3 else 2)
+            else -> emptySet()
+        }
+        "find" -> (1 until tokens.size).toSet()
+        "grep" -> setOf(if (tokens.getOrNull(1) == "-i") 2 else 1)
+        else -> emptySet()
     }
 
     // ─── 内部常量 / 辅助 ──────────────────────────────────────────────────

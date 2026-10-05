@@ -615,4 +615,5 @@
     <string name="cli_cso_bad_ext">不是 ISO/CSO 文件：%1$s</string>
     <string name="cli_grep_result">%1$s 处匹配，来自 %2$s 个文件</string>
     <string name="cli_grep_none">没有匹配</string>
+    <string name="terminal_docs">文档</string>
 </resources>

@@ -72,7 +72,7 @@ internal object UuCommands {
     private fun defaultOut(ctx: Ctx): File = (ctx.defaultOutDir ?: ctx.cwd).apply { mkdirs() }
 
     internal enum class Kind {
-        LIST_FORMATS, HELP, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
+        LIST_FORMATS, HELP, DOCS, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
         TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO
     }
 
@@ -86,6 +86,7 @@ internal object UuCommands {
     private val table: List<Cmd> = listOf(
         Cmd("fmt",    Kind.LIST_FORMATS, "List every supported format",                    "uu fmt"),
         Cmd("help",   Kind.HELP,         "Show this help",                                 "uu help"),
+        Cmd("docs",   Kind.DOCS,         "Full command & parameter reference (table)",      "uu docs"),
         Cmd("info",   Kind.INFO,         "Print the detected format of a file",            "uu info <file>"),
         Cmd("l",      Kind.LIST,         "List the entries of an archive",                 "uu l <archive> [-a]"),
         Cmd("cat",    Kind.CAT,          "Print a text entry from an archive",             "uu cat <archive> <entry> [-p pw]"),
@@ -119,6 +120,7 @@ internal object UuCommands {
             when (cmd.kind) {
                 Kind.LIST_FORMATS -> listFormats(ctx)
                 Kind.HELP -> help(ctx)
+                Kind.DOCS -> docs(ctx)
                 Kind.INFO -> info(args, ctx)
                 Kind.LIST -> list(args, ctx)
                 Kind.CAT -> cat(args, ctx)
@@ -165,6 +167,48 @@ internal object UuCommands {
         }
         sb.append('\n').append(UuText.helpExamples(ctx.str))
         return Result(sb.toString().trimEnd('\n'))
+    }
+
+    /**
+     * `uu docs` / 终端头「文档」按钮：完整命令表 + 子参数参考。
+     * **从同一张 [table] 派生**（单一来源，不手抄第二份）。
+     */
+    private fun docs(ctx: Ctx): Result = Result(renderDocs())
+
+    fun renderDocs(): String {
+        val sb = StringBuilder()
+        sb.append("UU CLI reference\n")
+        sb.append("=".repeat(96)).append("\n")
+        sb.append("COMMAND".padEnd(8)).append("USAGE".padEnd(64)).append("DESCRIPTION\n")
+        sb.append("-".repeat(8)).append(' ').append("-".repeat(63)).append(' ').append("-".repeat(30)).append('\n')
+        for (c in table) {
+            sb.append(c.name.padEnd(8))
+                .append(c.usage.padEnd(64))
+                .append(c.summary).append('\n')
+        }
+        sb.append('\n')
+        sb.append("PARAMETERS\n")
+        sb.append("-".repeat(10)).append('\n')
+        val params = listOf(
+            "-a            " to "list all entries (uu l; default caps at 500)",
+            "-p <password> " to "archive password (uu x / c / cat / set / l)",
+            "-f <key>      " to "explicit format key (uu c / set; see uu fmt)",
+            "-c / -s       " to "merge into one archive / separate per source (uu c, multi-source)",
+            "-f            " to "permanent delete instead of recycle bin (uu rm)",
+            "-i            " to "case-insensitive search (uu grep)",
+            "<level>       " to "compression level (uu c, single source)",
+            "<splitMB>     " to "split size in MB (uu c, zip/7z only)",
+        )
+        for ((k, v) in params) sb.append("  ").append(k).append(v).append('\n')
+        sb.append('\n')
+        sb.append("SPECIALS\n")
+        sb.append("-".repeat(8)).append('\n')
+        sb.append("  fN            ").append("descriptor from \"ls\" / \"uu scan\" — uu l f0 / uu x f0 / uu cp f0 out.zip\n")
+        sb.append("  * ?           ").append("wildcards expand in the current dir — uu x *.zip / uu hash *.png\n")
+        sb.append("  ls pwd cd help").append(" builtins; anything else runs in the system shell\n")
+        sb.append('\n')
+        sb.append("Default output dir (x/c without a path): /storage/emulated/0/uu_cli\n")
+        return sb.toString().trimEnd('\n')
     }
 
     /**

@@ -147,6 +147,9 @@ internal class TerminalPanel(private val act: MainActivity) {
                     .apply { marginStart = dp(8) }
                 also { cwdView = it }
             })
+            addView(action(R.string.terminal_docs) {
+                append(UuCommands.renderDocs())
+            })
             addView(action(R.string.terminal_clear) { sess.clearOutput(); render() })
             addView(action(R.string.terminal_close) { hide() })
         }

@@ -610,4 +610,5 @@
     <string name="cli_cso_bad_ext">ISO/CSO ファイルではありません：%1$s</string>
     <string name="cli_grep_result">%1$s 件一致、%2$s ファイル</string>
     <string name="cli_grep_none">一致なし</string>
+    <string name="terminal_docs">ドキュメント</string>
 </resources>

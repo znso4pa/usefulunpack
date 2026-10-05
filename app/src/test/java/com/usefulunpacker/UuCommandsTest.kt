@@ -267,4 +267,21 @@ class UuCommandsTest {
         assertTrue(r3.text.contains("!str:"))  // cli_grep_none stub
     }
 
+    @Test
+    fun docsListsEveryCommandAndParameters() {
+        val dir = tmp.root.resolve("docs").apply { mkdirs() }
+        val c = UuCommands.Ctx(prefs = null, cwd = dir)
+        val r = UuCommands.dispatch(listOf("docs"), c)
+        assertEquals(0, r.exitCode)
+        // 表格派生自同一张命令表:抽查若干命令都在
+        for (name in listOf("cat", "grep", "rm", "set", "mv", "tree", "du", "stat", "mkdir", "cso")) {
+            assertTrue("missing $name", r.text.contains("uu $name"))
+        }
+        assertTrue(r.text.contains("PARAMETERS"))
+        assertTrue(r.text.contains("-p <password>"))
+        assertTrue(r.text.contains("fN"))
+        // 列宽契约：最长的 usage（uu c，62 字符）后面至少留 2 空格，禁止与说明粘连
+        assertTrue(r.text.contains("[-p pw]  Pack a file or folder"))
+    }
+
 }

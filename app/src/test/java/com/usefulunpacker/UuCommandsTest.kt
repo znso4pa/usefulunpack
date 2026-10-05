@@ -594,4 +594,26 @@ class UuCommandsTest {
         assertEquals("text=" + r.text, 0, r.exitCode)
         assertTrue(r.text.contains("!str:"))
     }
+
+    // ─── 第六批：uu l -j（脚本接口） ──────────────────────────────────────
+
+    @Test
+    fun jsonListingRefusesMultipleArchives() {
+        val dir = tmp.root.resolve("jsonl").apply { mkdirs() }
+        File(dir, "a.zip").writeBytes(ByteArray(8))
+        File(dir, "b.zip").writeBytes(ByteArray(8))
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("l", "-j", "a.zip", "b.zip"), c)
+        assertEquals(2, r.exitCode)
+        assertTrue(r.text, r.text.contains("[2]"))
+    }
+
+    @Test
+    fun jsonListingOnNonArchiveStillReportsFormatError() {
+        // -j 不是绕过错误处理的开关：非归档照旧报错、退出码 1
+        val dir = tmp.root.resolve("jsonl2").apply { mkdirs() }
+        File(dir, "x.bin").writeBytes(ByteArray(8) { 1 })
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        assertEquals(1, UuCommands.dispatch(listOf("l", "-j", "x.bin"), c).exitCode)
+    }
 }

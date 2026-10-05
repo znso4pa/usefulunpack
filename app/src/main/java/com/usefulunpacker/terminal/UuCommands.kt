@@ -97,7 +97,7 @@ internal object UuCommands {
         Cmd("help",   Kind.HELP,         "Show this help",                                 "uu help"),
         Cmd("docs",   Kind.DOCS,         "Full command & parameter reference (table)",      "uu docs"),
         Cmd("info",   Kind.INFO,         "Print detected format key(s), one per line",            "uu info <file>"),
-        Cmd("l",      Kind.LIST,         "List the entries of an archive",                 "uu l <archive> [-a]"),
+        Cmd("l",      Kind.LIST,         "List the entries of an archive (-j = raw JSON)",  "uu l <archive> [-a] [-j] [-p pw]"),
         Cmd("cat",    Kind.CAT,          "Print a text entry from an archive",             "uu cat <archive> <entry> [-p pw]"),
         Cmd("hash",   Kind.HASH,         "Print the MD5 and SHA-256 of files",            "uu hash <file>"),
         Cmd("grep",   Kind.GREP,         "Search text inside a folder or archive",         "uu grep [-i] <pattern> <path>"),
@@ -226,6 +226,7 @@ internal object UuCommands {
             "-o <outdir>   " to "output directory (uu x; entries then follow unambiguously)",
             "-f            " to "permanent delete instead of recycle bin (uu rm)",
             "-i            " to "case-insensitive search (uu grep)",
+            "-j            " to "raw entry JSON for scripts (uu l): n/s/d/e keys",
         )
         for ((k, v) in params) sb.append("  ").append(k).append(v).append('\n')
         sb.append('\n')
@@ -249,6 +250,10 @@ internal object UuCommands {
         sb.append("  if v = xp3 / else / end").append(" block branch (nestable, else optional)\n")
         sb.append("  for a in *.zip ... end").append(" loop over wildcard matches (nestable)\n")
         sb.append("  return [code]        ").append("stop this script with an exit code\n")
+        sb.append("  for i in 1..5        ").append("counted loop (descending 5..1 works too)\n")
+        sb.append("  if exist path / not exist path").append(" file & directory test (no wildcards)\n")
+        sb.append("  \$? / \$errorlevel  ").append("exit code of the previous command\n")
+        sb.append("  uu l -j <archive>    ").append("raw JSON: [{\"n\":name,\"s\":size,\"d\":isDir,\"e\":encrypted}] (one archive)\n")
         sb.append("  only uu / ls / cd / pwd / help / echo").append(" are allowed — no arbitrary shell\n")
         sb.append("  errors stop the script (-k continues); each line is echoed; \"\$\" escapes only variables\n")
         sb.append('\n')
@@ -273,12 +278,16 @@ internal object UuCommands {
     }
 
     private fun list(args: List<String>, ctx: Ctx): Result {
-        val pa = splitFlags(args, listOf("-p"), listOf("-a"))
+        val pa = splitFlags(args, listOf("-p"), listOf("-a", "-j"))
         missingValueError(ctx, pa)?.let { return it }
         // -a = 打印全部条目；默认截断（有些归档几十万条，刷屏且吃光 scrollback）
         val showAll = "-a" in pa.bools
+        // -j = 输出原始条目 JSON（脚本接口：n/s/d/e 四个键，见 uu docs）。
+        // 只接受**一个**归档：多份 JSON 拼在一起没有合法解析方式。
+        val asJson = "-j" in pa.bools
         val pw = pa.values["-p"]?.takeIf { it.isNotEmpty() } ?: ctx.password ?: ""
         if (pa.pos.isEmpty()) return needFile()
+        if (asJson && pa.pos.size > 1) return Result(ctx.text(R.string.cli_json_one_file, pa.pos.size.toString()), 2)
         // 多归档（通配展开）逐个列出，各带一行标题
         if (pa.pos.size > 1) {
             val out = StringBuilder()
@@ -288,17 +297,17 @@ internal object UuCommands {
             }
             return Result(out.toString().trimEnd('\n'))
         }
-        return listOne(pa.pos[0], showAll, pw, ctx)
+        return listOne(pa.pos[0], showAll, pw, ctx, asJson)
     }
 
-    private fun listOne(spec: String, showAll: Boolean, pwd: String, ctx: Ctx): Result {
+    private fun listOne(spec: String, showAll: Boolean, pwd: String, ctx: Ctx, asJson: Boolean = false): Result {
         // fN → 整文件条目（ls 注册的）直接读 host；区间条目（scan 注册的）先
         // 临时 carve 出来再列
         val fd = ctx.fds?.get(spec.removePrefix("f").toIntOrNull() ?: -1)
         if (fd != null) {
             if (fd.wholeFile) {
                 ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
-                return listEntries(fd.host, fd.host.name, showAll, pwd, ctx)
+                return listEntries(fd.host, fd.host.name, showAll, pwd, ctx, asJson)
             }
             if (!fd.isArchive()) {
                 return Result(UuText.fdNotArchive(ctx.str, spec, fd.label), 2)
@@ -311,7 +320,7 @@ internal object UuCommands {
                 carved.parentFile?.mkdirs()
                 carveToFile(fd.host, fd.offset, fd.length, carved) {}
                 // 展示名用 scan 的 label；临时文件名是一串哈希没有信息量。
-                return listEntries(carved, fd.label, showAll, pwd, ctx)
+                return listEntries(carved, fd.label, showAll, pwd, ctx, asJson)
             } finally {
                 carved.deleteRecursively()
             }
@@ -319,16 +328,21 @@ internal object UuCommands {
 
         val f = UuText.resolve(ctx.cwd, spec)
         if (!f.isFile) return Result(UuText.notFound(ctx.str, spec), 1)
-        return listEntries(f, f.name, showAll, pwd, ctx)
+        return listEntries(f, f.name, showAll, pwd, ctx, asJson)
     }
 
-    private fun listEntries(f: File, displayName: String, showAll: Boolean, pwd: String, ctx: Ctx): Result {
+    private fun listEntries(
+        f: File, displayName: String, showAll: Boolean, pwd: String, ctx: Ctx, asJson: Boolean = false,
+    ): Result {
         val fmt = detectFormat(f) ?: detectFormatByMagic(f)
             ?: return Result(UuText.extractBadFormat(ctx.str, "-"), 1)
         // 密码：先试空密码（大多数包没密码），失败再让用户加 -p。
         // 不弹模态 —— 模态在终端里很怪，而且可阻塞 30s 会冻住输出区。
         val json = listEntriesJsonFor(ctx, fmt, f, pwd)
             ?: return Result(UuText.listFailed(ctx.str, f.name), 1)
+        // 脚本接口：原样给 JNI 的那份 JSON（契约 [{"n":名字,"s":大小,"d":是否目录,"e":是否加密}]），
+        // 不做截断也不加表头 —— 可解析性优先于好看。
+        if (asJson) return Result(json)
         if (json == "[]") return Result(UuText.listEmpty(ctx.str, displayName))
 
         val entries = parseEntries(json)

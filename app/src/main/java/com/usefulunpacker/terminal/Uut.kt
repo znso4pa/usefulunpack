@@ -95,8 +95,13 @@ internal class UutParseException(val line: Int, val reason: String) : Exception(
 
 internal object UutParser {
 
-    /** 允许出现在脚本里的命令名（第一个 token）。 */
-    val ALLOWED_COMMANDS = setOf("uu", "ls", "cd", "pwd", "help", "echo")
+    /**
+     * 允许出现在脚本里的命令名（第一个 token）。`break` / `return` 是 UUT 语句，
+     * 但它们可以出现在**行内**（`if x then break`、`a ; return 1`）—— 执行器的
+     * 片段循环要在白名单检查之前拦截它们，否则会被当成 shell 命令拒掉
+     *（真机踩过："UUT 不允许的命令：break"）。
+     */
+    val ALLOWED_COMMANDS = setOf("uu", "ls", "cd", "pwd", "help", "echo", "break", "return")
 
     fun parse(text: String): List<UutStmt> = BlockParser(text.lines()).parseAll()
 

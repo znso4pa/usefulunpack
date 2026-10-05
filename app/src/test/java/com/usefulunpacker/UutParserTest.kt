@@ -154,7 +154,7 @@ class UutParserTest {
 
     @Test
     fun whitelistAllowsTerminalCommandsOnly() {
-        for (ok in listOf("uu", "ls", "cd", "pwd", "help", "echo")) {
+        for (ok in listOf("uu", "ls", "cd", "pwd", "help", "echo", "break", "return")) {
             assertTrue(ok, UutParser.commandAllowed(ok))
         }
         for (bad in listOf("rm", "sh", "su", "curl", "cat", "uuu")) {

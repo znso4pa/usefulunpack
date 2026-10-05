@@ -749,6 +749,16 @@ internal class TerminalPanel(private val act: MainActivity) {
                             return UutRun(ran + 1, 1, st.line)
                         }
                         if (toks.isEmpty()) continue
+                        // 行内 break / return：是 UUT 语句而不是 shell 命令，
+                        // 必须在白名单检查之前拦截（否则 if x then break 直接被拒）
+                        when (toks[0]) {
+                            "break" -> return UutRun(ran, exit, 0, broke = true)
+                            "return" -> {
+                                val code = UutParser.expandVars(toks.drop(1).joinToString(" "), vars)
+                                    .trim().toIntOrNull() ?: 0
+                                return UutRun(ran, code, 0, returned = true)
+                            }
+                        }
                         if (!UutParser.commandAllowed(toks[0])) {
                             ec.emit(str(R.string.cli_uut_cmd_not_allowed, toks[0]))
                             if (!keepGoing) return UutRun(ran + 1, 1, st.line)
@@ -792,6 +802,17 @@ internal class TerminalPanel(private val act: MainActivity) {
                         val toks = tokenizeLine(expanded) ?: run {
                             ec.emit(str(R.string.cli_unclosed_quote, "'"))
                             return UutRun(ran + 1, 1, st.line)
+                        }
+                        if (toks.isNotEmpty()) when (toks[0]) {
+                            // 行内 break / return（与 Cmd 片段循环同一套拦截：
+                            // 漏了这边的话 `if x then break` 会落进 shell 兜底，
+                            // 静默返回 0、循环跑满 —— 真机实测）
+                            "break" -> return UutRun(ran, exit, 0, broke = true)
+                            "return" -> {
+                                val code = UutParser.expandVars(toks.drop(1).joinToString(" "), vars)
+                                    .trim().toIntOrNull() ?: 0
+                                return UutRun(ran, code, 0, returned = true)
+                            }
                         }
                         if (toks.isNotEmpty() && !UutParser.commandAllowed(toks[0])) {
                             ec.emit(str(R.string.cli_uut_cmd_not_allowed, toks[0]))

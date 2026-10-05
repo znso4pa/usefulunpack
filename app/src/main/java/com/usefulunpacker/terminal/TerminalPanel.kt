@@ -407,6 +407,32 @@ internal class TerminalPanel(private val act: MainActivity) {
 
     // ─── 执行 ────────────────────────────────────────────────────────────
 
+    /**
+     * 外部入口（`am start --es uut <脚本路径>`）：不依赖 UI 输入地跑一个 UUT
+     * 脚本 —— 供自动化/CI 驱动（`adb` 注入文本会被输入法吞掉，见 Uut.kt）。
+     * 输出进该 tab 的会话缓冲（用户打开终端可见）；脚本可用 `> <路径>` 自行
+     * 落盘，外部读取结果即完成闭环。owner=-1 / pv=null：不碰任何视图。
+     */
+    fun runExternal(path: String) {
+        val s = vm.session(act.activeTab.tabId)
+        // 与会话首次挂载同一套初始化（cwd 是衍生状态，不能留成 File("/")）
+        if (!s.cwdInitialized) {
+            s.cwd = act.currentDir
+            s.cwdInitialized = true
+        }
+        // 同时落一份 `<脚本>.log`：外部驱动者读它拿结果（adb pull/cat 即可），
+        // 会话缓冲也收到同样内容（用户打开终端能看到刚才跑了什么）。
+        val log = File(UuText.resolve(s.cwd, path).absolutePath + ".log")
+        thread {
+            runCatching { log.parentFile?.mkdirs(); log.writeText("") }
+            runScript(listOf(path), ExecCtx(s, null, -1, sink = { line ->
+                postOut(line, s)
+                runCatching { log.appendText(line + "\n") }
+            }, echo = true), 0)
+            runCatching { log.appendText("[exit]\n") }
+        }
+    }
+
     private fun run0() {
         val line = input?.text?.toString()?.trim().orEmpty()
         if (line.isEmpty()) return
@@ -432,7 +458,7 @@ internal class TerminalPanel(private val act: MainActivity) {
         val pv = progressView
         val owner = ownerTabId
         append(PROMPT + line)
-        thread { runTokens(line, tokens, s, pv, owner) }
+        thread { runTokens(line, tokens, ExecCtx(s, pv, owner)) }
     }
 
     /** 一行命令的产出：要么是文本，要么是「缺路径，请用户选一个」。 */
@@ -447,32 +473,46 @@ internal class TerminalPanel(private val act: MainActivity) {
     private class SegAsk(val cmd: String, val kind: UuCommands.Picker) : SegResult
 
     /**
+     * 执行上下文：会话 + 进度视图 + 归属 + 输出汇。
+     * [sink] == null → 正常交互（写终端）；非 null → `$(...)` 捕获（只收文本,
+     * 不碰视图、不弹选择器、不写进度）。
+     */
+    private inner class ExecCtx(
+        val s: TerminalViewModel.Session,
+        val pv: TextView?,
+        val owner: Int,
+        val sink: ((String) -> Unit)? = null,
+        /** 是否回显脚本行。外部运行也回显（落日志便于事后排查）。 */
+        val echo: Boolean = sink == null,
+    ) {
+        val interactive: Boolean get() = sink == null
+        fun emit(text: String) { if (sink != null) sink(text) else postOut(text, s) }
+    }
+
+    /**
      * 后台执行。**只算字符串 / 只改 ViewModel，绝不碰 View** ——
      * 在这里 setText 会抛 CalledFromWrongThreadException 并杀掉整个进程。
      * 支持 `&&` / `;` 链、`|` 管道（过滤段仅 grep/head/tail/wc）、`>` / `>>`
-     * 重定向与 `uu run <脚本>`；返回最后一段的退出码（0 成功 / 1 失败 / 2 缺参）。
+     * 重定向与 `uu run <UUT 脚本>`；返回最后一段的退出码（0 成功 / 1 失败 / 2 缺参）。
      */
-    private fun runTokens(
-        line: String, tokens0: List<String>,
-        s: TerminalViewModel.Session, pv: TextView?, owner: Int, depth: Int = 0
-    ): Int {
+    private fun runTokens(line: String, tokens0: List<String>, ec: ExecCtx, depth: Int = 0): Int {
         var exit = 0
         for (seg in UuCommands.splitSegments(tokens0)) {
             if (seg.andAlso && exit != 0) break
             if (seg.tokens.isEmpty()) continue
-            when (val r = runSegment(line, seg.tokens, s, pv, owner, depth)) {
+            when (val r = runSegment(line, seg.tokens, ec, depth)) {
                 is SegDone -> exit = r.exit
                 is SegAsk -> {
-                    hideProgressView(pv, owner)
+                    hideProgressView(ec.pv, ec.owner)
                     act.runOnUiThread {
                         if (act.isFinishing || act.isDestroyed) return@runOnUiThread
-                        askPath(line, r.cmd, r.kind, s, pv, owner)
+                        askPath(line, r.cmd, r.kind, ec.s, ec.pv, ec.owner)
                     }
                     return exit
                 }
             }
         }
-        hideProgressView(pv, owner)
+        hideProgressView(ec.pv, ec.owner)
         return exit
     }
 
@@ -485,17 +525,14 @@ internal class TerminalPanel(private val act: MainActivity) {
     }
 
     /** 一段：可选重定向 + 管道链；首段正常执行，后续段必须是内部过滤器。 */
-    private fun runSegment(
-        line: String, tokens: List<String>,
-        s: TerminalViewModel.Session, pv: TextView?, owner: Int, depth: Int
-    ): SegResult {
+    private fun runSegment(line: String, tokens: List<String>, ec: ExecCtx, depth: Int): SegResult {
         var toks = tokens
         var redir: Pair<String, Boolean>? = null
         val ri = toks.indexOfFirst { it == ">" || it == ">>" }
         if (ri >= 0) {
             val path = toks.getOrNull(ri + 1)
             if (path == null) {
-                postOut(ctxStr()(R.string.cli_redirect_path, arrayOf(toks[ri])), s)
+                ec.emit(ctxStr()(R.string.cli_redirect_path, arrayOf(toks[ri])))
                 return SegDone(2)
             }
             redir = path to (toks[ri] == ">>")
@@ -507,11 +544,12 @@ internal class TerminalPanel(private val act: MainActivity) {
         for ((i, stage) in stages.withIndex()) {
             if (stage.isEmpty()) continue
             if (i == 0) {
-                when (val o = runStage(stage, s, pv, owner, depth)) {
+                when (val o = runStage(stage, ec, depth, capture = redir != null)) {
                     is Outcome.NeedPath -> {
-                        if (stages.size == 1 && redir == null) return SegAsk(o.cmd, o.kind)
-                        // 管道/重定向语境不能弹选择器
-                        postOut(ctxStr()(R.string.cli_pipe_filter_only, arrayOf()), s)
+                        if (stages.size == 1 && redir == null && ec.interactive) return SegAsk(o.cmd, o.kind)
+                        // 管道/重定向/捕获语境不能弹选择器：说清楚要显式给路径，
+                        // 而不是笼统报"只支持过滤器"（那是 pipe 的错，不是这里的病）
+                        ec.emit(ctxStr()(R.string.cli_need_explicit_path, arrayOf(o.cmd)))
                         return SegDone(2)
                     }
                     is Outcome.Text -> { text = o.s; exit = o.exitCode }
@@ -519,7 +557,7 @@ internal class TerminalPanel(private val act: MainActivity) {
             } else {
                 val f = UuCommands.pipeFilter(stage, text)
                 if (f == null) {
-                    postOut(ctxStr()(R.string.cli_pipe_filter_only, arrayOf()), s)
+                    ec.emit(ctxStr()(R.string.cli_pipe_filter_only, arrayOf()))
                     return SegDone(2)
                 }
                 text = f.first
@@ -527,41 +565,53 @@ internal class TerminalPanel(private val act: MainActivity) {
             }
         }
         if (redir != null) {
-            val f = UuText.resolve(s.cwd, redir.first)
+            val f = UuText.resolve(ec.s.cwd, redir.first)
             val ok = runCatching {
                 f.parentFile?.mkdirs()
                 if (redir.second) f.appendText(text + "\n") else f.writeText(text + "\n")
                 true
             }.getOrDefault(false)
-            postOut(
+            ec.emit(
                 if (ok) ctxStr()(R.string.cli_saved_to, arrayOf(f.name))
                 else UuText.failed({ id, a -> if (a.isEmpty()) act.getString(id) else act.getString(id, *a) },
-                    redir.first),
-                s
+                    redir.first)
             )
             return SegDone(if (ok) exit else 1)
         }
-        if (text.isNotEmpty()) postOut(text, s)
+        if (text.isNotEmpty()) ec.emit(text)
         return SegDone(exit)
     }
 
-    /** 单段分发（含 `uu run` 内建；shell 兜底用 token 重建命令）。 */
-    private fun runStage(
-        tokens: List<String>, s: TerminalViewModel.Session,
-        pv: TextView?, owner: Int, depth: Int
-    ): Outcome {
-        val cwd = s.cwd
+    /**
+     * 单段分发（含 `uu run` 脚本；shell 兜底用 token 重建命令）。
+     * [capture]：本段带重定向 —— 需要把**整棵子树**的输出收进返回值，因为
+     * `uu run inner.uut > out.txt` 里的子脚本是直接 emit 的，不经过 text；
+     * 不特判的话重定向写出一个空文件（实测踩过：日志说"已保存到"，文件是空的）。
+     */
+    private fun runStage(tokens: List<String>, ec: ExecCtx, depth: Int, capture: Boolean = false): Outcome {
+        val cwd = ec.s.cwd
         // 通配符展开(所有命令共用): uu x *.zip / uu c *.ks -c / uu hash *.png…
-        val ex = UuCommands.expandGlobs(tokens, cwd)
+        // 模式参数位置排除（find 的 glob / grep 的 pattern，见 globSkipIndices）
+        val ex = UuCommands.expandGlobs(tokens, cwd, UuCommands.globSkipIndices(tokens))
         return when (val argv = ex.firstOrNull()) {
             null -> Outcome.Text("")
             "ls" -> lsOutcome(ex.drop(1), cwd)
             "pwd" -> Outcome.Text(cwd.absolutePath)
-            "cd" -> cdOutcome(ex.drop(1), s, owner)
-            "help" -> Outcome.Text(UuCommands.renderHelp(ctx(s, pv, owner)))
+            "cd" -> cdOutcome(ex.drop(1), ec.s, ec.owner)
+            "help" -> Outcome.Text(UuCommands.renderHelp(ctx(ec.s, ec.pv, ec.owner)))
             "uu" -> {
-                if (ex.getOrNull(1) == "run") Outcome.Text("", runScript(ex.drop(2), s, pv, owner, depth))
-                else runUu(ex.drop(1), ctx(s, pv, owner))
+                if (ex.getOrNull(1) == "run") {
+                    if (capture) {
+                        // 子脚本 + 它再嵌套的一切输出都收进来（echo 保留，便于读日志）
+                        val sb = StringBuilder()
+                        val capEc = ExecCtx(ec.s, null, -1, sink = { sb.append(it).append('\n') }, echo = true)
+                        // 先跑完再取字符串：写成 Outcome.Text(sb.toString(), runScript(...))
+                        // 是错的 —— Kotlin 从左到右求值，sb 还没被填就已经 toString 了
+                        //（实测：重定向出来是个空文件，且子脚本输出整个消失）。
+                        val code = runScript(ex.drop(2), capEc, depth)
+                        Outcome.Text(sb.toString().trimEnd('\n'), code)
+                    } else Outcome.Text("", runScript(ex.drop(2), ec, depth))
+                } else runUu(ex.drop(1), ctx(ec.s, ec.pv, ec.owner))
             }
             else -> {
                 val cmdLine = ex.joinToString(" ") { UuCommands.shellQuote(it) }
@@ -571,63 +621,153 @@ internal class TerminalPanel(private val act: MainActivity) {
         }
     }
 
-    /** `uu run <file> [-k]`：逐行执行迷你脚本（# 注释/空行；行内管道重定向可用）。 */
-    private fun runScript(
-        args: List<String>, s: TerminalViewModel.Session,
-        pv: TextView?, owner: Int, depth: Int
-    ): Int {
+    /** 行分词（引号未闭合返回 null）。 */
+    private fun tokenizeLine(text: String): List<String>? = when (val t = tokenizer.tokenize(text)) {
+        is CliTokenizer.Out.Ok -> t.tokens
+        is CliTokenizer.Out.Bad -> null
+    }
+
+    /** `uu run <file> [-k]`：UUT 脚本——解析 AST 后逐句执行（行内管道/重定向可用）。 */
+    private fun runScript(args: List<String>, ec: ExecCtx, depth: Int): Int {
         if (depth >= SCRIPT_MAX_DEPTH) {
-            postOut(str(R.string.cli_run_stopped, "0", "1", "depth>${SCRIPT_MAX_DEPTH - 1}"), s)
+            ec.emit(str(R.string.cli_run_stopped, "0", "1", "depth>${SCRIPT_MAX_DEPTH - 1}"))
             return 1
         }
         val keepGoing = args.any { it == "-k" }
         val path = args.firstOrNull { !it.startsWith("-") }
         if (path == null) {
-            postOut("uu run <file> [-k]", s)
+            ec.emit("uu run <file> [-k]")
             return 2
         }
-        val f = UuText.resolve(s.cwd, path)
+        val f = UuText.resolve(ec.s.cwd, path)
         if (!f.isFile) {
-            postOut(str(R.string.cli_not_found, path), s)
+            ec.emit(str(R.string.cli_not_found, path))
             return 1
         }
-        val bytes = runCatching { readPrefix(f, SCRIPT_MAX_BYTES) }.getOrNull()
-            ?: return 1
+        val bytes = runCatching { readPrefix(f, SCRIPT_MAX_BYTES) }.getOrNull() ?: return 1
         val enc = detectBestEncoding(bytes)
         val text = if (enc != null) decodeTextStrict(bytes, enc) else String(bytes, Charsets.UTF_8)
-        var ran = 0
-        var lastExit = 0
-        var stoppedLine = -1
-        for ((li, ln) in UuCommands.scriptLines(text)) {
-            postOut(PROMPT + ln, s)
-            val toks = when (val t = tokenizer.tokenize(ln)) {
-                is CliTokenizer.Out.Bad -> {
-                    postOut(UuText.unclosedQuote({ id, a -> if (a.isEmpty()) act.getString(id) else act.getString(id, *a) },
-                        (t.reason as? CliTokenizer.Reason.UnclosedQuote)?.quote ?: '"'), s)
-                    lastExit = 1
-                    ran++
-                    if (!keepGoing) { stoppedLine = li; break }
-                    continue
-                }
-                is CliTokenizer.Out.Ok -> t.tokens
-            }
-            lastExit = runTokens(ln, toks, s, pv, owner, depth + 1)
-            ran++
-            if (lastExit != 0 && !keepGoing) { stoppedLine = li; break }
+        val ast = try {
+            UutParser.parse(text)
+        } catch (e: UutParseException) {
+            ec.emit(str(R.string.cli_uut_parse, e.reason, e.line.toString()))
+            return 2
         }
-        postOut(
-            if (stoppedLine >= 0) str(R.string.cli_run_stopped, ran.toString(), lastExit.toString(), stoppedLine.toString())
-            else str(R.string.cli_run_summary, ran.toString(), lastExit.toString()),
-            s
+        val vars = HashMap<String, String>()
+        val r = execUut(ast, vars, ec, depth, keepGoing)
+        ec.emit(
+            if (r.stoppedLine > 0) str(R.string.cli_run_stopped, r.ran.toString(), r.exit.toString(), r.stoppedLine.toString())
+            else str(R.string.cli_run_summary, r.ran.toString(), r.exit.toString())
         )
-        return lastExit
+        return r.exit
+    }
+
+    /** UUT 执行统计。 */
+    private class UutRun(val ran: Int = 0, val exit: Int = 0, val stoppedLine: Int = 0)
+
+    private fun execUut(
+        stmts: List<UutStmt>, vars: HashMap<String, String>, ec: ExecCtx, depth: Int, keepGoing: Boolean
+    ): UutRun {
+        var ran = 0
+        var exit = 0
+        for (st in stmts) {
+            when (st) {
+                is UutStmt.Cmd -> {
+                    val expanded = UutParser.expandVars(st.raw, vars)
+                    if (ec.echo) ec.emit(PROMPT + expanded)
+                    val toks = tokenizeLine(expanded) ?: run {
+                        ec.emit(str(R.string.cli_unclosed_quote, "'"))
+                        return UutRun(ran + 1, 1, st.line)
+                    }
+                    if (toks.isEmpty()) continue
+                    if (!UutParser.commandAllowed(toks[0])) {
+                        ec.emit(str(R.string.cli_uut_cmd_not_allowed, toks[0]))
+                        if (!keepGoing) return UutRun(ran + 1, 1, st.line)
+                        ran++; exit = 1; continue
+                    }
+                    exit = runTokens(expanded, toks, ec, depth + 1)
+                    ran++
+                    if (exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
+                }
+                is UutStmt.Set -> {
+                    val expanded = UutParser.expandVars(st.rawValue, vars).trim()
+                    val cap = UutParser.captureInner(expanded)
+                    vars[st.name] = if (cap != null) captureCmd(cap, vars, ec, depth) else expanded
+                }
+                is UutStmt.IfInline -> {
+                    val cur = vars[st.varName] ?: ""
+                    val ok = if (st.negate) cur != st.value else cur == st.value
+                    if (ok) {
+                        val expanded = UutParser.expandVars(st.rawCmd, vars)
+                        if (ec.echo) ec.emit(PROMPT + expanded)
+                        val toks = tokenizeLine(expanded) ?: run {
+                            ec.emit(str(R.string.cli_unclosed_quote, "'"))
+                            return UutRun(ran + 1, 1, st.line)
+                        }
+                        if (toks.isNotEmpty() && !UutParser.commandAllowed(toks[0])) {
+                            ec.emit(str(R.string.cli_uut_cmd_not_allowed, toks[0]))
+                            if (!keepGoing) return UutRun(ran + 1, 1, st.line)
+                            ran++; exit = 1
+                        } else if (toks.isNotEmpty()) {
+                            exit = runTokens(expanded, toks, ec, depth + 1)
+                            ran++
+                            if (exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
+                        }
+                    }
+                }
+                is UutStmt.For -> {
+                    val patterns = UutParser.expandVars(st.rawPatterns, vars)
+                        .trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+                    if (patterns.isEmpty()) continue
+                    // 复用通配展开。expandGlobs 约定 token0 是命令名（不展开），
+                    // 这里没有命令，补一个占位首 token 再丢掉，否则 `for a in *.txt`
+                    // 永远匹配不到（实测踩过：报"没有匹配"且循环体整个不跑）。
+                    val files = UuCommands.expandGlobs(listOf("for") + patterns, ec.s.cwd)
+                        .drop(1)
+                        .filterNot { it.contains('*') || it.contains('?') }
+                    if (files.isEmpty()) {
+                        ec.emit(str(R.string.cli_find_none, patterns.joinToString(" ")))
+                        continue
+                    }
+                    for (f in files) {
+                        vars[st.varName] = f
+                        val sub = execUut(st.body, vars, ec, depth, keepGoing)
+                        ran += sub.ran
+                        exit = sub.exit
+                        if (sub.stoppedLine > 0) return UutRun(ran, exit, sub.stoppedLine)
+                        if (sub.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
+                    }
+                }
+            }
+        }
+        return UutRun(ran, exit, 0)
+    }
+
+    /** `$(...)` 捕获：跑一条白名单命令，收集输出文本（不碰视图）。 */
+    private fun captureCmd(inner: String, vars: Map<String, String>, ec: ExecCtx, depth: Int): String {
+        val expanded = UutParser.expandVars(inner, vars)
+        val toks = tokenizeLine(expanded) ?: return ""
+        if (toks.isEmpty() || !UutParser.commandAllowed(toks[0])) return ""
+        val sb = StringBuilder()
+        val capEc = ExecCtx(ec.s, null, -1, sink = { sb.append(it).append('\n') })
+        runTokens(expanded, toks, capEc, depth + 1)
+        return sb.toString().trim()
     }
 
     /** 结果进捕获的会话；仅当终端仍显示该会话时才刷新视图。 */
     private fun postOut(text: String, s: TerminalViewModel.Session) = act.runOnUiThread {
         if (act.isFinishing || act.isDestroyed) return@runOnUiThread
         s.append(text)
-        if (sess === s) render()
+        refreshIfCurrent(s)
+    }
+
+    /**
+     * 仅当面板正显示 [s] 时才重绘。`sess` 是 lateinit：外部入口
+     *（`--es uut`，见 [runExternal]）不挂视图就执行，直接 `sess === s`
+     * 会抛 UninitializedPropertyAccessException 并杀掉进程（实测踩过）。
+     */
+    private fun refreshIfCurrent(s: TerminalViewModel.Session) {
+        if (::sess.isInitialized && sess === s) render()
     }
 
     private fun ctxStr(): StrFn = { id, args ->
@@ -785,8 +925,8 @@ internal class TerminalPanel(private val act: MainActivity) {
         val echo = next.joinToString(" ") { if (it.contains(' ')) "\"$it\"" else it }
         // 结果仍进发起会话：append 直写快照，视图仅在终端还显示它时刷新
         s.append(PROMPT + echo)
-        if (sess === s) render()
-        thread { runTokens(echo, next, s, pv, owner) }
+        refreshIfCurrent(s)
+        thread { runTokens(echo, next, ExecCtx(s, pv, owner)) }
     }
 
     // ─── 内建命令 ────────────────────────────────────────────────────────
@@ -797,8 +937,9 @@ internal class TerminalPanel(private val act: MainActivity) {
      * 顺序 = 应用「排序方式」设置排出来的顺序（目录不编号），f 从 0 开始。
      */
     private fun lsOutcome(args: List<String>, cwd: File): Outcome {
-        if (args.isEmpty()) return Outcome.NeedPath("ls", UuCommands.Picker.FOLDER)
-        val sections = args.map { arg ->
+        // `ls` 不给参数 = 列当前目录（shell 语义；脚本里 `ls > r1.txt` 依赖它）。
+        // 空参数**不弹**选择器：要选目录请显式写路径或用 uu l（后者保留选择器）。
+        val sections = (if (args.isEmpty()) listOf(".") else args).map { arg ->
             val resolved = UuText.resolve(cwd, arg)
             val parent = resolved.parentFile ?: cwd
             when {
@@ -878,11 +1019,14 @@ internal class TerminalPanel(private val act: MainActivity) {
         s.cwd = norm
         // 联动 tab（§2 硬约束）：导航**终端扎根的 tab**。owner 已被关闭时不退化
         // 到 activeTab（那是别的窗口，不该被动导航）——报错即可。
-        val ownerTab = act.tabs.firstOrNull { it.tabId == owner }
-            ?: return str(R.string.terminal_not_found, "$target (${owner})") to 1
-        act.runOnUiThread {
-            if (act.isFinishing || act.isDestroyed) return@runOnUiThread
-            act.navTab(ownerTab, norm)
+        // owner < 0 = 外部入口（--es uut）：只改会话 cwd，不导航任何窗口
+        if (owner >= 0) {
+            val ownerTab = act.tabs.firstOrNull { it.tabId == owner }
+                ?: return str(R.string.terminal_not_found, "$target (${owner})") to 1
+            act.runOnUiThread {
+                if (act.isFinishing || act.isDestroyed) return@runOnUiThread
+                act.navTab(ownerTab, norm)
+            }
         }
         return "→ ${norm.absolutePath}" to 0
     }

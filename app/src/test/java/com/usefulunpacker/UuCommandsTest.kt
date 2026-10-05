@@ -282,6 +282,11 @@ class UuCommandsTest {
         assertTrue(r.text.contains("fN"))
         // 列宽契约：最长的 usage（uu c，68 字符）后面至少留 2 空格，禁止与说明粘连
         assertTrue(r.text.contains("[-p pw]  Pack files or folders"))
+        // UUT 段落必须在使用文档里（`uu run` 的语法只有这一处可查）
+        assertTrue(r.text.contains("UUT SCRIPT"))
+        for (kw in listOf("set v = text", "if v = xp3 then", "for a in *.zip", "only uu / ls / cd")) {
+            assertTrue("missing UUT doc: $kw", r.text.contains(kw))
+        }
     }
 
     // ── Round 1：参数缺口回归 ──
@@ -497,4 +502,53 @@ class UuCommandsTest {
         assertEquals(5 to "uu c a -f zip", lines[1])
     }
 
+    // ─── 通配展开的位置排除（模式参数不能被展成命中文件） ──────────────────
+
+    @Test
+    fun copyAndMvRejectExtraPositionalArgs() {
+        // 多源被静默忽略过一次：`uu cp a.txt b.txt dst/` 报"已存在 b.txt"，
+        // 用户以为两个都拷了。必须明确报用法错。
+        val c = UuCommands.Ctx(prefs = null, cwd = tmp.root)
+        assertEquals(2, UuCommands.dispatch(listOf("cp", "a.txt", "b.txt", "dst"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("mv", "a.txt", "b.txt", "dst"), c).exitCode)
+    }
+
+    @Test
+    fun globSkipUnderstandsUuPrefixedCommands() {
+        // 真实命令行首 token 是 uu（`uu find . *.txt 1`），子命令在 index 1
+        assertEquals(setOf(2, 3, 4), UuCommands.globSkipIndices(listOf("uu", "find", ".", "*.txt", "1")))
+        assertEquals(setOf(2), UuCommands.globSkipIndices(listOf("uu", "grep", "alpha", "*.txt")))
+        assertEquals(setOf(3), UuCommands.globSkipIndices(listOf("uu", "grep", "-i", "alpha", "*.txt")))
+        assertEquals(emptySet<Int>(), UuCommands.globSkipIndices(listOf("uu", "x", "*.zip")))
+    }
+
+    @Test
+    fun globSkipCoversFindGlobAndGrepPattern() {
+        // find 的位置参数全是模式语境（单参形态下 token1 就是 glob）
+        assertEquals(setOf(1, 2, 3), UuCommands.globSkipIndices(listOf("find", ".", "*.txt", "2")))
+        assertEquals(setOf(1), UuCommands.globSkipIndices(listOf("find", "*.txt")))
+        // grep：pattern 在 -i 之后顺延一位
+        assertEquals(setOf(1), UuCommands.globSkipIndices(listOf("grep", "abc", "*.txt")))
+        assertEquals(setOf(2), UuCommands.globSkipIndices(listOf("grep", "-i", "abc", "*.txt")))
+        // 其余命令不排除任何位置（x/c/hash 的路径参数照常展开）
+        assertEquals(emptySet<Int>(), UuCommands.globSkipIndices(listOf("hash", "*.png")))
+        assertEquals(emptySet<Int>(), UuCommands.globSkipIndices(emptyList()))
+    }
+
+    @Test
+    fun expandGlobsHonorsSkipSet() {
+        val dir = tmp.root
+        File(dir, "a.txt").writeText("a")
+        File(dir, "b.txt").writeText("b")
+        // 不排除：token1 展开成两个绝对路径
+        val all = UuCommands.expandGlobs(listOf("x", "*.txt"), dir)
+        assertEquals(3, all.size)
+        // 排除 token1：模式原样保留（find/grep 的语义）
+        val kept = UuCommands.expandGlobs(listOf("x", "*.txt"), dir, setOf(1))
+        assertEquals(listOf("x", "*.txt"), kept)
+        // token0 永不展开（那是命令名，即使含通配符也原样保留）
+        val head = UuCommands.expandGlobs(listOf("*.txt", "*.txt"), dir)
+        assertEquals("*.txt", head[0])
+        assertEquals(3, head.size)
+    }
 }

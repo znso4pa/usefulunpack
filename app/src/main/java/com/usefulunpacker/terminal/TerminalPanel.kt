@@ -484,9 +484,18 @@ internal class TerminalPanel(private val act: MainActivity) {
         val sink: ((String) -> Unit)? = null,
         /** 是否回显脚本行。外部运行也回显（落日志便于事后排查）。 */
         val echo: Boolean = sink == null,
+        /**
+         * 每**段**执行完的回调（`&&`/`;` 串联里逐段触发）。UUT 用它维护 `$?`：
+         * 只在整行结束后记账的话，`uu l nope.zip ; echo rc=$?` 会打印上一行的
+         * 退出码 —— 而 shell 里这就是"看前一条命令结果"的标准写法（实测踩过）。
+         */
+        val onExit: ((Int) -> Unit)? = null,
     ) {
         val interactive: Boolean get() = sink == null
         fun emit(text: String) { if (sink != null) sink(text) else postOut(text, s) }
+
+        /** 复制一份带退出码钩子的上下文（会话/进度/归属不变）。 */
+        fun withExitHook(hook: (Int) -> Unit) = ExecCtx(s, pv, owner, sink, echo, hook)
     }
 
     /**
@@ -501,7 +510,10 @@ internal class TerminalPanel(private val act: MainActivity) {
             if (seg.andAlso && exit != 0) break
             if (seg.tokens.isEmpty()) continue
             when (val r = runSegment(line, seg.tokens, ec, depth)) {
-                is SegDone -> exit = r.exit
+                is SegDone -> {
+                    exit = r.exit
+                    ec.onExit?.invoke(r.exit)
+                }
                 is SegAsk -> {
                     hideProgressView(ec.pv, ec.owner)
                     act.runOnUiThread {
@@ -682,6 +694,25 @@ internal class TerminalPanel(private val act: MainActivity) {
         return r.exit
     }
 
+    /** 求值一个 UUT 条件（变量比较 / 文件测试）。 */
+    private fun evalCond(cond: UutCond, vars: Map<String, String>, cwd: File): Boolean = when (cond) {
+        is UutCond.VarEq -> {
+            val cur = vars[cond.name] ?: ""
+            if (cond.negate) cur != cond.value else cur == cond.value
+        }
+        is UutCond.Exists -> {
+            val p = UutParser.expandVars(cond.rawPath, vars)
+            val exists = UuText.resolve(cwd, p).exists()
+            if (cond.negate) !exists else exists
+        }
+    }
+
+    /** 每条命令执行完记下退出码：`$?` / `$errorlevel` 都能取（bat 的 errorlevel 习惯）。 */
+    private fun noteExit(vars: MutableMap<String, String>, code: Int) {
+        vars["?"] = code.toString()
+        vars["errorlevel"] = code.toString()
+    }
+
     /** UUT 执行统计。[returned] = 脚本里执行了 `return`（只结束当前这一层）。 */
     private class UutRun(
         val ran: Int = 0, val exit: Int = 0, val stoppedLine: Int = 0, val returned: Boolean = false,
@@ -695,20 +726,34 @@ internal class TerminalPanel(private val act: MainActivity) {
         for (st in stmts) {
             when (st) {
                 is UutStmt.Cmd -> {
-                    val expanded = UutParser.expandVars(st.raw, vars)
-                    if (ec.echo) ec.emit(PROMPT + expanded)
-                    val toks = tokenizeLine(expanded) ?: run {
-                        ec.emit(str(R.string.cli_unclosed_quote, "'"))
-                        return UutRun(ran + 1, 1, st.line)
+                    // 逐段展开 / 逐段执行（见 UutParser.splitChain 的说明）：
+                    // 这样 `a ; echo rc=$?` 的 $? 看到的是 a 的退出码。
+                    var lastExit = 0
+                    var anyRan = false
+                    for ((piece, joiner) in UutParser.splitChain(st.raw)) {
+                        if (joiner == "&&" && lastExit != 0) continue   // && 短路
+                        val expanded = UutParser.expandVars(piece, vars)
+                        if (ec.echo) ec.emit(PROMPT + expanded)
+                        val toks = tokenizeLine(expanded) ?: run {
+                            ec.emit(str(R.string.cli_unclosed_quote, "'"))
+                            return UutRun(ran + 1, 1, st.line)
+                        }
+                        if (toks.isEmpty()) continue
+                        if (!UutParser.commandAllowed(toks[0])) {
+                            ec.emit(str(R.string.cli_uut_cmd_not_allowed, toks[0]))
+                            if (!keepGoing) return UutRun(ran + 1, 1, st.line)
+                            anyRan = true; lastExit = 1; exit = 1
+                            continue
+                        }
+                        lastExit = runTokens(expanded, toks, ec.withExitHook { noteExit(vars, it) }, depth + 1)
+                        noteExit(vars, lastExit)
+                        anyRan = true
+                        // 注意：**不在这里**判错退出 —— `a ; b` 的语义就是 b 必须跑
+                        //（停下要等整行结束；否则 `uu l nope.zip ; echo rc=$?` 的
+                        // 第二段永远执行不到，退出码也读不出来）
                     }
-                    if (toks.isEmpty()) continue
-                    if (!UutParser.commandAllowed(toks[0])) {
-                        ec.emit(str(R.string.cli_uut_cmd_not_allowed, toks[0]))
-                        if (!keepGoing) return UutRun(ran + 1, 1, st.line)
-                        ran++; exit = 1; continue
-                    }
-                    exit = runTokens(expanded, toks, ec, depth + 1)
-                    ran++
+                    exit = lastExit
+                    if (anyRan) ran++
                     if (exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
                 }
                 is UutStmt.Set -> {
@@ -717,9 +762,7 @@ internal class TerminalPanel(private val act: MainActivity) {
                     vars[st.name] = if (cap != null) captureCmd(cap, vars, ec, depth) else expanded
                 }
                 is UutStmt.IfInline -> {
-                    val cur = vars[st.varName] ?: ""
-                    val ok = if (st.negate) cur != st.value else cur == st.value
-                    if (ok) {
+                    if (evalCond(st.cond, vars, ec.s.cwd)) {
                         val expanded = UutParser.expandVars(st.rawCmd, vars)
                         if (ec.echo) ec.emit(PROMPT + expanded)
                         val toks = tokenizeLine(expanded) ?: run {
@@ -731,7 +774,8 @@ internal class TerminalPanel(private val act: MainActivity) {
                             if (!keepGoing) return UutRun(ran + 1, 1, st.line)
                             ran++; exit = 1
                         } else if (toks.isNotEmpty()) {
-                            exit = runTokens(expanded, toks, ec, depth + 1)
+                            exit = runTokens(expanded, toks, ec.withExitHook { noteExit(vars, it) }, depth + 1)
+                            noteExit(vars, exit)
                             ran++
                             if (exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
                         }
@@ -741,6 +785,21 @@ internal class TerminalPanel(private val act: MainActivity) {
                     val patterns = UutParser.expandVars(st.rawPatterns, vars)
                         .trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
                     if (patterns.isEmpty()) continue
+                    // 单个 `1..N` = 计数循环（纯数字列表，不做通配展开）
+                    val range = UutParser.rangeValues(patterns[0])
+                    if (range != null) {
+                        if (range.isEmpty()) continue      // 超上限保护：什么都不做
+                        for (n in range) {
+                            vars[st.varName] = n
+                            val b = execUut(st.body, vars, ec, depth, keepGoing)
+                            ran += b.ran; exit = b.exit
+                            if (b.returned || b.stoppedLine > 0) {
+                                return UutRun(ran, exit, b.stoppedLine, b.returned)
+                            }
+                            if (b.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
+                        }
+                        continue
+                    }
                     // 复用通配展开。expandGlobs 约定 token0 是命令名（不展开），
                     // 这里没有命令，补一个占位首 token 再丢掉，否则 `for a in *.txt`
                     // 永远匹配不到（实测踩过：报"没有匹配"且循环体整个不跑）。
@@ -763,9 +822,7 @@ internal class TerminalPanel(private val act: MainActivity) {
                     }
                 }
                 is UutStmt.If -> {
-                    val cur = vars[st.varName] ?: ""
-                    val ok = if (st.negate) cur != st.value else cur == st.value
-                    val body = if (ok) st.thenBody else st.elseBody
+                    val body = if (evalCond(st.cond, vars, ec.s.cwd)) st.thenBody else st.elseBody
                     // 空分支是合法的（`if x` … `end` 什么都不做）
                     if (body.isNotEmpty()) {
                         val sub = execUut(body, vars, ec, depth, keepGoing)
@@ -789,12 +846,15 @@ internal class TerminalPanel(private val act: MainActivity) {
     }
 
     /** `$(...)` 捕获：跑一条白名单命令，收集输出文本（不碰视图）。 */
-    private fun captureCmd(inner: String, vars: Map<String, String>, ec: ExecCtx, depth: Int): String {
+    private fun captureCmd(inner: String, vars: MutableMap<String, String>, ec: ExecCtx, depth: Int): String {
         val expanded = UutParser.expandVars(inner, vars)
         val toks = tokenizeLine(expanded) ?: return ""
         if (toks.isEmpty() || !UutParser.commandAllowed(toks[0])) return ""
         val sb = StringBuilder()
-        val capEc = ExecCtx(ec.s, null, -1, sink = { sb.append(it).append('\n') })
+        val capEc = ExecCtx(
+            ec.s, null, -1, sink = { sb.append(it).append('\n') },
+            onExit = { noteExit(vars, it) },
+        )
         runTokens(expanded, toks, capEc, depth + 1)
         return sb.toString().trim()
     }

@@ -53,18 +53,20 @@ class UutParserTest {
     @Test
     fun ifInlineEquality() {
         val st = UutParser.parse("if answer = xp3 then uu x a.xp3")[0] as UutStmt.IfInline
-        assertEquals("answer", st.varName)
-        assertFalse(st.negate)
-        assertEquals("xp3", st.value)
+        val c = st.cond as UutCond.VarEq
+        assertEquals("answer", c.name)
+        assertFalse(c.negate)
+        assertEquals("xp3", c.value)
         assertEquals("uu x a.xp3", st.rawCmd)
     }
 
     @Test
     fun ifInlineNegatedAcceptsDollarPrefixAndQuotes() {
         val st = UutParser.parse("if \$v != \"0\" then echo hi")[0] as UutStmt.IfInline
-        assertEquals("v", st.varName)
-        assertTrue(st.negate)
-        assertEquals("0", st.value)
+        val c = st.cond as UutCond.VarEq
+        assertEquals("v", c.name)
+        assertTrue(c.negate)
+        assertEquals("0", c.value)
     }
 
     @Test(expected = UutParseException::class)
@@ -194,9 +196,10 @@ class UutParserTest {
             end
         """.trimIndent()
         val st = UutParser.parse(src)[0] as UutStmt.If
-        assertEquals("v", st.varName)
-        assertFalse(st.negate)
-        assertEquals("x", st.value)
+        val c = st.cond as UutCond.VarEq
+        assertEquals("v", c.name)
+        assertFalse(c.negate)
+        assertEquals("x", c.value)
         assertEquals(1, st.thenBody.size)
         assertEquals(2, st.elseBody.size)
         assertEquals(1, st.line)
@@ -214,7 +217,7 @@ class UutParserTest {
         val outer = UutParser.parse(src)[0] as UutStmt.If
         assertTrue(outer.elseBody.isEmpty())
         val inner = outer.thenBody[0] as UutStmt.If
-        assertTrue(inner.negate)
+        assertTrue((inner.cond as UutCond.VarEq).negate)
         assertEquals(1, inner.thenBody.size)
     }
 
@@ -249,5 +252,110 @@ class UutParserTest {
             thrown = true
         }
         assertTrue("for without end must throw", thrown)
+    }
+
+    // ─── v3：exist 条件 / $? / 计数区间 ────────────────────────────────────
+
+    @Test
+    fun existConditionInlineAndBlock() {
+        val inline = UutParser.parse("if exist out.txt then uu x a.zip")[0] as UutStmt.IfInline
+        val c1 = inline.cond as UutCond.Exists
+        assertEquals("out.txt", c1.rawPath)
+        assertFalse(c1.negate)
+
+        val blk = UutParser.parse("if not exist out/\n  uu mkdir out/\nend\n")[0] as UutStmt.If
+        val c2 = blk.cond as UutCond.Exists
+        assertEquals("out/", c2.rawPath)
+        assertTrue(c2.negate)
+        assertEquals(1, blk.thenBody.size)
+    }
+
+    @Test(expected = UutParseException::class)
+    fun existWithoutPathThrows() {
+        UutParser.parse("if exist\nend\n")
+    }
+
+    @Test
+    fun dollarQuestionExpandsToLastExitCode() {
+        assertEquals("0", UutParser.expandVars("$?", emptyMap()))          // 未见命令 = 成功
+        assertEquals("[1]", UutParser.expandVars("[${'$'}?]", mapOf("?" to "1")))
+        // 与命名变量/位置参数互不干扰
+        assertEquals("1-a", UutParser.expandVars("$?-$1", mapOf("?" to "1", "1" to "a")))
+        assertEquals("cost$", UutParser.expandVars("cost$", emptyMap()))
+    }
+
+    @Test
+    fun rangeValuesCoverAscendingDescendingAndRejects() {
+        assertEquals(listOf("1", "2", "3"), UutParser.rangeValues("1..3"))
+        assertEquals(listOf("3", "2", "1"), UutParser.rangeValues("3..1"))
+        assertEquals(listOf("7"), UutParser.rangeValues("7..7"))
+        assertNull(UutParser.rangeValues("*.zip"))
+        assertNull(UutParser.rangeValues("1..a"))
+        assertNull(UutParser.rangeValues("1...3"))
+        // 上限保护：跨度超限 → 空（宁可不跑也不生成百万行把终端卡死）
+        assertTrue(UutParser.rangeValues("1..999999")!!.isEmpty())
+    }
+
+    // ─── v3：`;` / `&&` 的原文切分（$? 逐段的前提） ────────────────────────
+
+    @Test
+    fun splitChainSeparatesSemicolonAndAndAlso() {
+        assertEquals(listOf("a" to "", "b" to ";"), UutParser.splitChain("a ; b"))
+        assertEquals(listOf("a" to "", "b" to "&&"), UutParser.splitChain("a && b"))
+        assertEquals(
+            listOf("a" to "", "b" to ";", "c" to "&&"),
+            UutParser.splitChain("a ; b && c")
+        )
+        // 单段：连接符为空
+        assertEquals(listOf("uu l a.zip" to ""), UutParser.splitChain("uu l a.zip"))
+        // 空段与首尾分隔符都被丢掉
+        assertEquals(listOf("a" to "", "b" to ";"), UutParser.splitChain("  ; a ;; ; b ; "))
+        assertEquals(emptyList<Pair<String, String>>(), UutParser.splitChain("   ;  "))
+    }
+
+    @Test
+    fun splitChainKeepsQuotedAndEscapedSeparators() {
+        // 引号里的分隔符是文件名的一部分，绝不能切（期望是 (文本, 连接符) 对）
+        assertEquals(listOf("echo \"a;b\"" to ""), UutParser.splitChain("echo \"a;b\""))
+        assertEquals(listOf("echo 'x && y'" to ""), UutParser.splitChain("echo 'x && y'"))
+        // \; 转义同理
+        assertEquals(listOf("echo a\\;b" to ""), UutParser.splitChain("echo a\\;b"))
+        // 单个 & 不是分隔符（留给 shell 兜底命令）
+        assertEquals(listOf("echo a & b" to ""), UutParser.splitChain("echo a & b"))
+    }
+
+    // ─── v3：段尾块头（`uu mkdir d ; if exist d`） ────────────────────────
+
+    @Test
+    fun blockHeaderAfterSemicolonParsesAsCommandPlusBlock() {
+        // 真机抓到：解析器只认行首的 if/for，`cmd ; if …` 会被当普通命令，
+        // 随后的 `end` 报"没有块的 end"且指错行号
+        val src = """
+            uu mkdir d ; if exist d
+              echo ok > z.txt
+            end
+        """.trimIndent()
+        val ast = UutParser.parse(src)
+        assertEquals(2, ast.size)
+        assertEquals("uu mkdir d", (ast[0] as UutStmt.Cmd).raw)
+        val blk = ast[1] as UutStmt.If
+        assertEquals("d", (blk.cond as UutCond.Exists).rawPath)
+        assertEquals(1, blk.thenBody.size)
+    }
+
+    @Test
+    fun blockHeaderAfterAndAlsoParsesAsForLoop() {
+        val ast = UutParser.parse("echo start && for i in 1..2\n  echo \$i\nend\n")
+        assertEquals(2, ast.size)
+        assertEquals("echo start", (ast[0] as UutStmt.Cmd).raw)
+        assertEquals("1..2", (ast[1] as UutStmt.For).rawPatterns)
+    }
+
+    @Test
+    fun commandWordInsideQuotesIsNotTreatedAsBlockHeader() {
+        // 引号里的 `; if …` 只是文本（切段规则引号感知）
+        val ast = UutParser.parse("echo \"a ; if b\"\n")
+        assertEquals(1, ast.size)
+        assertEquals("echo \"a ; if b\"", (ast[0] as UutStmt.Cmd).raw)
     }
 }

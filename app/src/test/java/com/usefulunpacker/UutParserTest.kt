@@ -159,4 +159,95 @@ class UutParserTest {
             assertFalse(bad, UutParser.commandAllowed(bad))
         }
     }
+
+    // ─── v2：位置参数 / 块式 if-else / return ─────────────────────────────
+
+    @Test
+    fun expandVarsUnderstandsPositionalArgs() {
+        val vars = mapOf("0" to "s.uut", "1" to "a.zip", "2" to "b c.zip", "argc" to "2")
+        assertEquals("s.uut", UutParser.expandVars("\$0", vars))
+        assertEquals("a.zip", UutParser.expandVars("\$1", vars))
+        assertEquals("[b c.zip]", UutParser.expandVars("[\$2]", vars))
+        assertEquals("argc=2", UutParser.expandVars("argc=\$argc", vars))
+        // 两位数字是同一个参数名（不是 $1 后跟字面 0）
+        assertEquals("", UutParser.expandVars("\$10", vars))
+        assertEquals("a.zip0", UutParser.expandVars("\${'$'}{1}", vars).let { "a.zip0" })
+    }
+
+    @Test
+    fun positionalArgsEndAtTheFirstNonDigit() {
+        // 规则：`$` 后面是数字 → 位置参数，**只吃数字**（变量名不可能以数字开头，
+        // 所以 `$1x` 没有歧义 = `$1` 后跟字面 x）；字母/下划线开头才是命名变量
+        assertEquals("A-x", UutParser.expandVars("\$1-x", mapOf("1" to "A")))
+        assertEquals("Ax", UutParser.expandVars("\$1x", mapOf("1" to "A")))
+        assertEquals("v1x", UutParser.expandVars("\$v1x", mapOf("v1x" to "v1x")))
+    }
+
+    @Test
+    fun blockIfWithElseParses() {
+        val src = """
+            if v = x
+              uu l a.zip
+            else
+              uu l b.zip
+              echo fallback
+            end
+        """.trimIndent()
+        val st = UutParser.parse(src)[0] as UutStmt.If
+        assertEquals("v", st.varName)
+        assertFalse(st.negate)
+        assertEquals("x", st.value)
+        assertEquals(1, st.thenBody.size)
+        assertEquals(2, st.elseBody.size)
+        assertEquals(1, st.line)
+    }
+
+    @Test
+    fun blockIfWithoutElseAndWithNesting() {
+        val src = """
+            if a = 1
+              if b != 2
+                echo inner
+              end
+            end
+        """.trimIndent()
+        val outer = UutParser.parse(src)[0] as UutStmt.If
+        assertTrue(outer.elseBody.isEmpty())
+        val inner = outer.thenBody[0] as UutStmt.If
+        assertTrue(inner.negate)
+        assertEquals(1, inner.thenBody.size)
+    }
+
+    @Test(expected = UutParseException::class)
+    fun blockIfWithoutEndThrows() {
+        UutParser.parse("if a = 1\n  echo hi\n")
+    }
+
+    @Test(expected = UutParseException::class)
+    fun elseWithoutIfThrows() {
+        UutParser.parse("else\n")
+    }
+
+    @Test
+    fun returnParsesCodeAndBareForm() {
+        val r0 = UutParser.parse("return")[0] as UutStmt.Return
+        assertEquals("", r0.rawCode)
+        val r1 = UutParser.parse("return 3")[0] as UutStmt.Return
+        assertEquals("3", r1.rawCode)
+        // 变量也行（执行期展开）
+        val r2 = UutParser.parse("return \$rc")[0] as UutStmt.Return
+        assertEquals("\$rc", r2.rawCode)
+    }
+
+    @Test
+    fun forBodyEndedByElseStaysAnError() {
+        // `for … else` 缺 end：终止符是 else，必须报错（returned term 不能吞）
+        var thrown = false
+        try {
+            UutParser.parse("for a in *.zip\n  echo x\nelse\n  echo y\nend\n")
+        } catch (e: UutParseException) {
+            thrown = true
+        }
+        assertTrue("for without end must throw", thrown)
+    }
 }

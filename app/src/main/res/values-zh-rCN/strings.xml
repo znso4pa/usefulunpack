@@ -616,4 +616,7 @@
     <string name="cli_grep_result">%1$s 处匹配，来自 %2$s 个文件</string>
     <string name="cli_grep_none">没有匹配</string>
     <string name="terminal_docs">文档</string>
+    <string name="cli_flag_missing_value">%1$s 缺少取值</string>
+    <string name="cli_unknown_flag">未知参数：%1$s</string>
+    <string name="cli_x_outdir_is_file">%1$s 是文件 — 请用 -o &lt;输出目录&gt;（每次只解一个归档）</string>
 </resources>

@@ -68,6 +68,9 @@ internal object UuCommands {
     /** 需要文件参数的命令缺参时用它。 */
     private fun needFile(p: Picker = Picker.FILE) = Result("", 2, p)
 
+    /** 某命令的 usage 行（缺参时回显用法而不是弹无法收敛的选择器）。 */
+    private fun usageOf(cmd: String): String = table.first { it.name == cmd }.usage
+
     /** x/c 不加路径时的默认输出位置（单独路径，产品要求）。 */
     private fun defaultOut(ctx: Ctx): File = (ctx.defaultOutDir ?: ctx.cwd).apply { mkdirs() }
 
@@ -87,10 +90,10 @@ internal object UuCommands {
         Cmd("fmt",    Kind.LIST_FORMATS, "List every supported format",                    "uu fmt"),
         Cmd("help",   Kind.HELP,         "Show this help",                                 "uu help"),
         Cmd("docs",   Kind.DOCS,         "Full command & parameter reference (table)",      "uu docs"),
-        Cmd("info",   Kind.INFO,         "Print the detected format of a file",            "uu info <file>"),
+        Cmd("info",   Kind.INFO,         "Print detected format key(s), one per line",            "uu info <file>"),
         Cmd("l",      Kind.LIST,         "List the entries of an archive",                 "uu l <archive> [-a]"),
         Cmd("cat",    Kind.CAT,          "Print a text entry from an archive",             "uu cat <archive> <entry> [-p pw]"),
-        Cmd("hash",   Kind.HASH,         "Print the MD5 and SHA-256 of a file",            "uu hash <file>"),
+        Cmd("hash",   Kind.HASH,         "Print the MD5 and SHA-256 of files",            "uu hash <file>"),
         Cmd("grep",   Kind.GREP,         "Search text inside a folder or archive",         "uu grep [-i] <pattern> <path>"),
         Cmd("cp",     Kind.COPY,         "Copy a file or folder (refuses to overwrite)",   "uu cp <src> <dst>"),
         Cmd("mv",     Kind.MV,           "Move a file or folder (refuses to overwrite)",   "uu mv <src> <dst>"),
@@ -98,10 +101,10 @@ internal object UuCommands {
         Cmd("rm",     Kind.RM,           "Delete (recycle bin by default; -f permanent)",  "uu rm <path...> [-f]"),
         Cmd("mkdir",  Kind.MKDIR,        "Create folders",                                 "uu mkdir <path...>"),
         Cmd("tree",   Kind.TREE,         "Recursive directory listing",                    "uu tree [dir] [depth]"),
-        Cmd("du",     Kind.DU,           "Show the total size of a folder or file",        "uu du <path>"),
+        Cmd("du",     Kind.DU,           "Show total sizes (sums when given several paths)",        "uu du <path>"),
         Cmd("stat",   Kind.STAT,         "Show type / size / modified time",               "uu stat <path...>"),
-        Cmd("x",      Kind.EXTRACT,      "Extract an archive, optionally selected entries", "uu x <archive> [outdir] [entry...] [-p pw]"),
-        Cmd("c",      Kind.PACK,         "Pack a file or folder",                          "uu c <src...> [out] [-c|-s] [-f key] [level] [splitMB] [-p pw]"),
+        Cmd("x",      Kind.EXTRACT,      "Extract an archive, optionally selected entries", "uu x <archive> [-o outdir] [entry...] [-p pw]"),
+        Cmd("c",      Kind.PACK,         "Pack files or folders (merge / separate)",                          "uu c <src...> [out] [-c|-s] [-f key] [-l level] [-b splitMB] [-p pw]"),
         Cmd("set",    Kind.SET,          "Replace one entry inside an archive",            "uu set <archive> <entry> <localfile> [-p pw]"),
         Cmd("scan",   Kind.SCAN,         "Scan a file for embedded archive signatures",    "uu scan <file>"),
         Cmd("cso",    Kind.CSO,          "Convert ISO ↔ CSO",                              "uu cso <file> [out]"),
@@ -179,11 +182,11 @@ internal object UuCommands {
         val sb = StringBuilder()
         sb.append("UU CLI reference\n")
         sb.append("=".repeat(96)).append("\n")
-        sb.append("COMMAND".padEnd(8)).append("USAGE".padEnd(64)).append("DESCRIPTION\n")
-        sb.append("-".repeat(8)).append(' ').append("-".repeat(63)).append(' ').append("-".repeat(30)).append('\n')
+        sb.append("COMMAND".padEnd(8)).append("USAGE".padEnd(70)).append("DESCRIPTION\n")
+        sb.append("-".repeat(8)).append(' ').append("-".repeat(69)).append(' ').append("-".repeat(30)).append('\n')
         for (c in table) {
             sb.append(c.name.padEnd(8))
-                .append(c.usage.padEnd(64))
+                .append(c.usage.padEnd(70))
                 .append(c.summary).append('\n')
         }
         sb.append('\n')
@@ -191,13 +194,14 @@ internal object UuCommands {
         sb.append("-".repeat(10)).append('\n')
         val params = listOf(
             "-a            " to "list all entries (uu l; default caps at 500)",
-            "-p <password> " to "archive password (uu x / c / cat / set / l)",
+            "-p <password> " to "archive password (uu l / cat / grep / x / c / set); empty -> prompt",
             "-f <key>      " to "explicit format key (uu c / set; see uu fmt)",
             "-c / -s       " to "merge into one archive / separate per source (uu c, multi-source)",
+            "-l <level>    " to "compression level (uu c)",
+            "-b <splitMB>  " to "split size in MB (uu c, zip/7z only)",
+            "-o <outdir>   " to "output directory (uu x; entries then follow unambiguously)",
             "-f            " to "permanent delete instead of recycle bin (uu rm)",
             "-i            " to "case-insensitive search (uu grep)",
-            "<level>       " to "compression level (uu c, single source)",
-            "<splitMB>     " to "split size in MB (uu c, zip/7z only)",
         )
         for ((k, v) in params) sb.append("  ").append(k).append(v).append('\n')
         sb.append('\n')
@@ -216,28 +220,44 @@ internal object UuCommands {
      * 识别不出时输出**空行**（退出码 0），因为「不是归档」是有效答案而不是错误。
      */
     private fun info(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
         if (args.isEmpty()) return needFile()
-        val f = UuText.resolve(ctx.cwd, args[0])
-        if (!f.isFile) return Result(UuText.notFound(ctx.str, args[0]), 1)
-        val fmt = detectFormat(f) ?: detectFormatByMagic(f)
-        return Result(fmt ?: "")
+        // 多参数（通配展开后）逐个输出格式 key；不是归档输出空行
+        val lines = args.map { p ->
+            val f = UuText.resolve(ctx.cwd, p)
+            if (!f.isFile) UuText.notFound(ctx.str, p)
+            else (detectFormat(f) ?: detectFormatByMagic(f) ?: "")
+        }
+        return Result(lines.joinToString("\n"))
     }
 
     private fun list(args: List<String>, ctx: Ctx): Result {
-        if (args.isEmpty()) return needFile()
+        val pa = splitFlags(args, listOf("-p"), listOf("-a"))
+        missingValueError(ctx, pa)?.let { return it }
         // -a = 打印全部条目；默认截断（有些归档几十万条，刷屏且吃光 scrollback）
-        val showAll = args.any { it == "-a" }
-        val rest = args.filter { it != "-a" }
-        if (rest.isEmpty()) return needFile()
-        val spec = rest[0]
+        val showAll = "-a" in pa.bools
+        val pw = pa.values["-p"]?.takeIf { it.isNotEmpty() } ?: ctx.password ?: ""
+        if (pa.pos.isEmpty()) return needFile()
+        // 多归档（通配展开）逐个列出，各带一行标题
+        if (pa.pos.size > 1) {
+            val out = StringBuilder()
+            for (spec in pa.pos) {
+                out.append("── ").append(spec).append('\n')
+                out.append(listOne(spec, showAll, pw, ctx).text).append('\n')
+            }
+            return Result(out.toString().trimEnd('\n'))
+        }
+        return listOne(pa.pos[0], showAll, pw, ctx)
+    }
 
+    private fun listOne(spec: String, showAll: Boolean, pwd: String, ctx: Ctx): Result {
         // fN → 整文件条目（ls 注册的）直接读 host；区间条目（scan 注册的）先
         // 临时 carve 出来再列
         val fd = ctx.fds?.get(spec.removePrefix("f").toIntOrNull() ?: -1)
         if (fd != null) {
             if (fd.wholeFile) {
                 ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
-                return listEntries(fd.host, fd.host.name, showAll, ctx)
+                return listEntries(fd.host, fd.host.name, showAll, pwd, ctx)
             }
             if (!fd.isArchive()) {
                 return Result(UuText.fdNotArchive(ctx.str, spec, fd.label), 2)
@@ -250,7 +270,7 @@ internal object UuCommands {
                 carved.parentFile?.mkdirs()
                 carveToFile(fd.host, fd.offset, fd.length, carved) {}
                 // 展示名用 scan 的 label；临时文件名是一串哈希没有信息量。
-                return listEntries(carved, fd.label, showAll, ctx)
+                return listEntries(carved, fd.label, showAll, pwd, ctx)
             } finally {
                 carved.deleteRecursively()
             }
@@ -258,15 +278,14 @@ internal object UuCommands {
 
         val f = UuText.resolve(ctx.cwd, spec)
         if (!f.isFile) return Result(UuText.notFound(ctx.str, spec), 1)
-        return listEntries(f, f.name, showAll, ctx)
+        return listEntries(f, f.name, showAll, pwd, ctx)
     }
 
-    private fun listEntries(f: File, displayName: String, showAll: Boolean, ctx: Ctx): Result {
+    private fun listEntries(f: File, displayName: String, showAll: Boolean, pwd: String, ctx: Ctx): Result {
         val fmt = detectFormat(f) ?: detectFormatByMagic(f)
             ?: return Result(UuText.extractBadFormat(ctx.str, "-"), 1)
         // 密码：先试空密码（大多数包没密码），失败再让用户加 -p。
         // 不弹模态 —— 模态在终端里很怪，而且可阻塞 30s 会冻住输出区。
-        val pwd = ctx.password ?: ""
         val json = listEntriesJsonFor(ctx, fmt, f, pwd)
             ?: return Result(UuText.listFailed(ctx.str, f.name), 1)
         if (json == "[]") return Result(UuText.listEmpty(ctx.str, displayName))
@@ -295,17 +314,32 @@ internal object UuCommands {
 
     /** `uu hash <file>` → MD5 + SHA-256 两行十六进制，流式读取不整载。支持 fN。 */
     private fun hash(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
         if (args.isEmpty()) return needFile()
-        return when (val r = resolveSource(args[0], ctx)) {
-            is SrcSpec.Fail -> r.result
-            is SrcSpec.Path -> {
-                if (!r.f.isFile) return Result(UuText.notFound(ctx.str, args[0]), 1)
-                hashOf(r.f)
-            }
-            is SrcSpec.Fd -> {
-                try { hashOf(r.f) } finally { r.temp?.deleteRecursively() }
+        val multi = args.size > 1
+        var anyOk = false
+        val out = StringBuilder()
+        for (a in args) {
+            when (val r = resolveSource(a, ctx)) {
+                is SrcSpec.Fail -> { if (!multi) return r.result; out.append(a).append(": ").append(r.result.text).append('\n'); continue }
+                is SrcSpec.Path -> {
+                    if (!r.f.isFile) {
+                        if (!multi) return Result(UuText.notFound(ctx.str, a), 1)
+                        out.append(UuText.notFound(ctx.str, a)).append('\n'); continue
+                    }
+                    if (multi) out.append(r.f.name).append(':').append('\n')
+                    out.append(hashOf(r.f).text).append('\n')
+                    anyOk = true
+                }
+                is SrcSpec.Fd -> {
+                    try {
+                        if (multi) out.append(a).append(':').append('\n')
+                        out.append(hashOf(r.f).text).append('\n'); anyOk = true
+                    } finally { r.temp?.deleteRecursively() }
+                }
             }
         }
+        return Result(out.toString().trimEnd('\n'), if (anyOk) 0 else 1)
     }
 
     private fun hashOf(f: File): Result =
@@ -338,6 +372,7 @@ internal object UuCommands {
 
     /** `uu cp <src> <dst>` — 文件/目录/fN；dst 已存在（含作为目标本身）拒绝覆盖。 */
     private fun copy(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
         if (args.size < 2) return needFile()
         var srcTemp: File? = null
         val src: File = when (val r = resolveSource(args[0], ctx)) {
@@ -374,6 +409,7 @@ internal object UuCommands {
 
     /** `uu rename <old> <new>` — 同目录改名；new 已存在拒绝。 */
     private fun rename(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
         if (args.size < 2) return needFile()
         val src = UuText.resolve(ctx.cwd, args[0])
         if (!src.exists()) return Result(UuText.notFound(ctx.str, args[0]), 1)
@@ -396,10 +432,13 @@ internal object UuCommands {
      * 加密包在**拿调度槽之前**解决（-p 或模态询问）。
      */
     private fun extract(args: List<String>, ctx: Ctx): Result {
-        val (flags, _, pos) = splitFlags(args, listOf("-p"))
-        val pw = flags["-p"] ?: ctx.password
+        val pa = splitFlags(args, listOf("-p", "-o"))
+        missingValueError(ctx, pa)?.let { return it }
+        val (flags, _, pos) = Triple(pa.values, pa.bools, pa.pos)
+        val pw = flags["-p"]?.takeIf { it.isNotEmpty() } ?: ctx.password
         if (pos.isEmpty()) return needFile()
         val spec = pos[0]
+        val optOutdir: String? = flags["-o"]?.takeIf { it.isNotEmpty() }
 
         // fN 引用：整文件条目直接用 host；区间条目临时 carve 出来再解
         var carvedTemp: File? = null
@@ -448,17 +487,31 @@ internal object UuCommands {
                 }
             }
 
-            // outdir：不加路径 → 默认单独路径（uu_cli/<归档名>/，产品要求）；
-            // 显式给了就以该路径为最终输出（已存在则必须是目录，直接解进去）。
-            // 显式路径先行校验（快速失败）；默认目录的唯一化**拿到槽位后再解析**
-            //（不变量：排队的两次解压不能在入队时撞名）。
-            val outDirExplicit: File? = if (pos.size >= 2) {
-                val d = UuText.resolve(ctx.cwd, pos[1])
+            // outdir：-o 优先（此时其后的位置参数全部是 entries，无二义）；
+            // 否则沿用位置形式 pos[1]=outdir；都不给 → 默认单独路径。
+            // 显式路径先行校验（快速失败）；默认目录的唯一化**拿到槽位后再解析**。
+            val entryStart: Int
+            val outDirExplicit: File? = if (optOutdir != null) {
+                entryStart = 1
+                val d = UuText.resolve(ctx.cwd, optOutdir)
                 if (d.exists() && !d.isDirectory) return Result(ctx.text(R.string.cli_exists, d.path), 1)
                 d.mkdirs()
                 d
-            } else null
-            val selected = pos.drop(2).joinToString("\n")
+            } else if (pos.size >= 2) {
+                entryStart = 2
+                val d = UuText.resolve(ctx.cwd, pos[1])
+                if (d.exists() && !d.isDirectory) {
+                    // 通配展开后的第二个归档 / 误写的条目名都会落到这里：
+                    // 位置形式无法与「条目」区分,给明确出口而不是误导性的 exists 报错。
+                    return Result(ctx.text(R.string.cli_x_outdir_is_file, pos[1]), 1)
+                }
+                d.mkdirs()
+                d
+            } else {
+                entryStart = 1
+                null
+            }
+            val selected = pos.drop(entryStart).joinToString("\n")
 
             val act = ctx.activity
             val opH = act?.let { tryStartOperation(it, fmt) }
@@ -528,7 +581,9 @@ internal object UuCommands {
      *  产物名**拿到调度槽之后**解析（排队互不撞名）；已存在拒绝；`.pfs` 二义必须 -f。
      */
     private fun pack(args: List<String>, ctx: Ctx): Result {
-        val (flags, bools, pos) = splitFlags(args, listOf("-p", "-f"), listOf("-c", "-s"))
+        val pa = splitFlags(args, listOf("-p", "-f", "-l", "-b"), listOf("-c", "-s"))
+        missingValueError(ctx, pa)?.let { return it }
+        val (flags, bools, pos) = Triple(pa.values, pa.bools, pa.pos)
         val merge = "-c" in bools
         val separate = "-s" in bools
         if (merge && separate) return Result(UuText.failed(ctx.str, "-c / -s"), 1)
@@ -543,8 +598,13 @@ internal object UuCommands {
                 if (it !in COMPRESS_EXT.keys) return Result(UuText.packUnknownKey(ctx.str, it), 1)
                 it
             } ?: return Result(ctx.text(R.string.cli_pack_need_format), 1)
-            // zip 的等级 GUI 走 zip_level（generic_level 不是它的档位）
-            val level = ctx.prefs?.let { if (fmt == "zip") it.getInt("zip_level", 5) else it.getInt("generic_level", 6) } ?: 6
+            // zip 的等级 GUI 走 zip_level（generic_level 不是它的档位）；-l 可覆盖
+            val level = flags["-l"]?.toIntOrNull()
+                ?: ctx.prefs?.let { if (fmt == "zip") it.getInt("zip_level", 5) else it.getInt("generic_level", 6) } ?: 6
+            val batchSplit = flags["-b"]?.toLongOrNull() ?: 0L
+            if (batchSplit > 0 && fmt !in setOf("zip", "7z")) {
+                return Result(UuText.packSplitUnsupported(ctx.str, fmt), 1)
+            }
             val ext = COMPRESS_EXT[fmt]!!
             if (merge && fmt in setOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "br", "ksd")) {
                 // 单文件流格式没有「合并多文件」语义，提前拒绝而不是在 Rust 层深处失败
@@ -588,7 +648,8 @@ internal object UuCommands {
                             }
                             val outF = uniqueFile(outDir, "archive.$ext")
                             val ok = compressDispatch(staging, outF, fmt, level, pw, ctx.prefs
-                                ?: throw IllegalStateException("prefs required"))
+                                ?: throw IllegalStateException("prefs required"),
+                                if (batchSplit > 0) batchSplit * 1024 * 1024 else null)
                             if (ok) okCount++ else failCount++
                             if (ok) packResultLines.add(ctx.text(R.string.cli_pack_ok, outF.name))
                         } finally {
@@ -609,7 +670,8 @@ internal object UuCommands {
                                 }
                                 val from = wrapDir ?: src
                                 val ok = compressDispatch(from, outF, fmt, level, pw, ctx.prefs
-                                    ?: throw IllegalStateException("prefs required"))
+                                    ?: throw IllegalStateException("prefs required"),
+                                    if (batchSplit > 0) batchSplit * 1024 * 1024 else null)
                                 if (ok) okCount++ else failCount++
                                 if (ok) packResultLines.add(ctx.text(R.string.cli_pack_ok, outF.name))
                             } finally {
@@ -635,9 +697,7 @@ internal object UuCommands {
         // ── 单源模式 ──
         // 多源必须 -c/-s：否则 "uu c a.txt b.zip c.zip" 会把 b.zip 当产物、
         // c.zip 当等级，静默打出错误的包。
-        if (pos.size > 3 || (pos.size == 3 && pos[2].toIntOrNull() == null)) {
-            return Result(ctx.text(R.string.cli_pack_multi_needs_flag), 1)
-        }
+        if (pos.size > 2) return Result(ctx.text(R.string.cli_pack_multi_needs_flag), 1)
         val src = UuText.resolve(ctx.cwd, pos[0])
         if (!src.exists()) return Result(UuText.notFound(ctx.str, pos[0]), 1)
 
@@ -664,8 +724,9 @@ internal object UuCommands {
             return Result(ctx.text(R.string.cli_pack_need_format), 1)
         }
 
-        val level = pos.getOrNull(2)?.toIntOrNull() ?: 6
-        val splitMb = pos.getOrNull(3)?.toLongOrNull() ?: 0L
+        // 等级/分卷走 -l/-b 标志（位置式 3/4 参形态是死代码——曾被 arity 守卫拦死）
+        val level = flags["-l"]?.toIntOrNull() ?: 6
+        val splitMb = flags["-b"]?.toLongOrNull() ?: 0L
         if (splitMb > 0 && fmt !in setOf("zip", "7z")) {
             return Result(UuText.packSplitUnsupported(ctx.str, fmt), 1)
         }
@@ -748,31 +809,79 @@ internal object UuCommands {
         return "$bar $pctTxt $sizeTxt $name$countTxt"
     }
 
+    /** [splitFlags] 的结果。[missingValue] 非空 = 某个取值旗标后面没跟值（命令须报错）。 */
+    private class ParsedArgs(
+        val values: Map<String, String>,
+        val bools: Set<String>,
+        val pos: List<String>,
+        val missingValue: String?,
+    )
+
     /**
      * 拆出 `-k value`（[valueKeys]）与 `-b` 布尔（[boolKeys]）旗标；其余按顺序返回。
+     * 取值旗标缺后续 token 时记入 [ParsedArgs.missingValue]（此前会静默变成空串,
+     * 把 `-p` 变成空密码并吞掉密码弹窗）。
      */
     private fun splitFlags(
         args: List<String>, valueKeys: List<String>, boolKeys: List<String> = emptyList()
-    ): Triple<Map<String, String>, Set<String>, List<String>> {
+    ): ParsedArgs {
         val flags = mutableMapOf<String, String>()
         val bools = mutableSetOf<String>()
         val pos = ArrayList<String>()
+        var missing: String? = null
         var i = 0
         while (i < args.size) {
             val a = args[i]
             when {
-                a in valueKeys -> { flags[a] = args.getOrNull(i + 1) ?: ""; i += 2 }
+                a in valueKeys -> {
+                    val v = args.getOrNull(i + 1)
+                    if (v == null) missing = missing ?: a
+                    else flags[a] = v
+                    i += 2
+                }
                 a in boolKeys -> { bools.add(a); i++ }
                 else -> { pos.add(a); i++ }
             }
         }
-        return Triple(flags, bools, pos)
+        return ParsedArgs(flags, bools, pos, missing)
+    }
+
+    /** 缺值 → 报错 Result；否则 null。 */
+    private fun missingValueError(ctx: Ctx, pa: ParsedArgs): Result? =
+        pa.missingValue?.let { Result(ctx.text(R.string.cli_flag_missing_value, it), 1) }
+
+    /**
+     * 无旗标命令的防御：任何 `-x` 形状且未被识别的 token 报错（此前会被当路径,
+     * 如 `uu mkdir -p a` 造出名为 `-p` 的目录）。纯负数字（-1）不算旗标。
+     */
+    private fun rejectUnknownFlags(ctx: Ctx, args: List<String>, known: List<String> = emptyList()): Result? {
+        for (a in args) {
+            if (a.length > 1 && a[0] == '-' && a !in known && a.drop(1).any { !it.isDigit() }) {
+                return Result(ctx.text(R.string.cli_unknown_flag, a), 1)
+            }
+        }
+        return null
     }
 
     private fun scan(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
         if (args.isEmpty()) return needFile()
-        val f = UuText.resolve(ctx.cwd, args[0])
-        if (!f.isFile) return Result(UuText.notFound(ctx.str, args[0]), 1)
+        // 多参数逐个扫描,结果分段输出
+        if (args.size > 1) {
+            val sb = StringBuilder()
+            for (a in args) {
+                val r = scanOne(a, ctx)
+                if (args.size > 1) sb.append("── ").append(a).append('\n')
+                sb.append(r.text).append('\n')
+            }
+            return Result(sb.toString().trimEnd('\n'))
+        }
+        return scanOne(args[0], ctx)
+    }
+
+    private fun scanOne(spec: String, ctx: Ctx): Result {
+        val f = UuText.resolve(ctx.cwd, spec)
+        if (!f.isFile) return Result(UuText.notFound(ctx.str, spec), 1)
 
         val scan = ScanCore.scanFile(f.absolutePath)
             ?: return Result(UuText.scanFailed(ctx.str, f.name), 1)
@@ -812,7 +921,9 @@ internal object UuCommands {
 
     /** `uu cat <archive> <entry> [-p pw]` → 打印包内文本条目（编码自动探测，有界读取）。 */
     private fun cat(args: List<String>, ctx: Ctx): Result {
-        val (flags, _, pos) = splitFlags(args, listOf("-p"))
+        val pa = splitFlags(args, listOf("-p"))
+        missingValueError(ctx, pa)?.let { return it }
+        val (flags, _, pos) = Triple(pa.values, pa.bools, pa.pos)
         if (pos.size < 2) return needFile()
         val pw = flags["-p"] ?: ctx.password ?: ""
         var temp: File? = null
@@ -859,7 +970,10 @@ internal object UuCommands {
      * 文本条目解到临时目录再搜（与预览内搜索同款文本扩展名过滤）。
      */
     private fun grep(args: List<String>, ctx: Ctx): Result {
-        val (_, bools, pos) = splitFlags(args, emptyList(), listOf("-i"))
+        val pa = splitFlags(args, listOf("-p"), listOf("-i"))
+        missingValueError(ctx, pa)?.let { return it }
+        val (flags, bools, pos) = Triple(pa.values, pa.bools, pa.pos)
+        val gpw = flags["-p"]?.takeIf { it.isNotEmpty() } ?: ctx.password ?: ""
         if (pos.size < 2) return needFile()
         val pattern = pos[0]
         val ci = "-i" in bools
@@ -873,7 +987,7 @@ internal object UuCommands {
             val d = ctx.cacheDir?.let { File(it, "uu_grep/${System.nanoTime()}") }
                 ?: return Result(UuText.needsActivity(ctx.str), 2)
             tempDir = d
-            val json = listEntriesJsonFor(ctx, fmt, target, ctx.password ?: "")
+            val json = listEntriesJsonFor(ctx, fmt, target, gpw)
                 ?: return Result(UuText.listFailed(ctx.str, target.name), 1)
             val entries = parseEntries(json)
             for (e in entries) {
@@ -882,7 +996,7 @@ internal object UuCommands {
                 if (ext !in TEXT_SEARCH_EXTS) continue
                 val rel = sanitizeEntryPath(e.path) ?: continue
                 extractByFormat(fmt, target.path, d.path, rel, ctx.prefs
-                    ?: throw IllegalStateException("prefs required"), ctx.password ?: "")
+                    ?: throw IllegalStateException("prefs required"), gpw)
             }
             d
         } else target
@@ -927,7 +1041,8 @@ internal object UuCommands {
 
     /** `uu rm <path...> [-f]` — 默认进回收站（可恢复），`-f` 永久删除。 */
     private fun rm(args: List<String>, ctx: Ctx): Result {
-        val (_, bools, pos) = splitFlags(args, emptyList(), listOf("-f"))
+        val pa = splitFlags(args, emptyList(), listOf("-f"))
+        val (_, bools, pos) = Triple(pa.values, pa.bools, pa.pos)
         if (pos.isEmpty()) return needFile(Picker.FILE_OR_FOLDER)
         val hard = "-f" in bools
         val act = ctx.activity
@@ -948,6 +1063,7 @@ internal object UuCommands {
 
     /** `uu mkdir <path...>` */
     private fun mkdir(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
         if (args.isEmpty()) return needFile(Picker.FILE_OR_FOLDER)
         var ok = 0
         var fail = 0
@@ -962,6 +1078,7 @@ internal object UuCommands {
 
     /** `uu mv <src> <dst>` — 同卷 rename 原子；跨卷先复制成功再删源。 */
     private fun mv(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
         if (args.size < 2) return needFile()
         val src = UuText.resolve(ctx.cwd, args[0])
         if (!src.exists()) return Result(UuText.notFound(ctx.str, args[0]), 1)
@@ -985,7 +1102,8 @@ internal object UuCommands {
 
     /** `uu tree [dir] [depth]` — 目录树（默认深 3，最多 TREE_MAX 行）。 */
     private fun tree(args: List<String>, ctx: Ctx): Result {
-        val pos = args.filter { !it.startsWith("-") }
+        rejectUnknownFlags(ctx, args)?.let { return it }
+        val pos = args
         val root = if (pos.isEmpty()) ctx.cwd else UuText.resolve(ctx.cwd, pos[0])
         if (!root.isDirectory) return Result(UuText.notFound(ctx.str, pos.getOrNull(0) ?: "."), 1)
         val depth = pos.getOrNull(1)?.toIntOrNull()?.coerceAtLeast(1) ?: 3
@@ -1011,18 +1129,32 @@ internal object UuCommands {
 
     /** `uu du <path>` — 递归统计大小与文件数。 */
     private fun du(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
         if (args.isEmpty()) return needFile(Picker.FILE_OR_FOLDER)
-        val f = UuText.resolve(ctx.cwd, args[0])
-        if (!f.exists()) return Result(UuText.notFound(ctx.str, args[0]), 1)
-        var bytes = 0L
-        var files = 0
-        if (f.isFile) { bytes = f.length(); files = 1 }
-        else f.walkTopDown().forEach { if (it.isFile) { bytes += runCatching { it.length() }.getOrDefault(0L); files++ } }
-        return Result(ctx.text(R.string.cli_du_result, fmt(bytes), files.toString()))
+        fun sizeOf(f: File): Pair<Long, Int> {
+            if (f.isFile) return f.length() to 1
+            var bytes = 0L; var files = 0
+            f.walkTopDown().forEach { if (it.isFile) { bytes += runCatching { it.length() }.getOrDefault(0L); files++ } }
+            return bytes to files
+        }
+        val multi = args.size > 1
+        var totalBytes = 0L; var totalFiles = 0
+        val out = StringBuilder()
+        for (a in args) {
+            val f = UuText.resolve(ctx.cwd, a)
+            if (!f.exists()) { if (!multi) return Result(UuText.notFound(ctx.str, a), 1); out.append(UuText.notFound(ctx.str, a)).append('\n'); continue }
+            val (b, n) = sizeOf(f)
+            totalBytes += b; totalFiles += n
+            if (multi) out.append(f.name).append(":\n")
+            out.append(ctx.text(R.string.cli_du_result, fmt(b), n.toString())).append('\n')
+        }
+        if (multi) out.append(ctx.text(R.string.cli_du_result, fmt(totalBytes), totalFiles.toString())).append('\n')
+        return Result(out.toString().trimEnd('\n'))
     }
 
     /** `uu stat <path...>` — 类型 / 大小 / 修改时间。 */
     private fun stat(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
         if (args.isEmpty()) return needFile()
         val df = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
         val lines = args.map { p ->
@@ -1042,8 +1174,10 @@ internal object UuCommands {
      * 保留）；其余可封包格式走整解 → 覆盖 → 重封。
      */
     private fun setEntry(args: List<String>, ctx: Ctx): Result {
-        val (flags, _, pos) = splitFlags(args, listOf("-p"))
-        if (pos.size < 3) return needFile()
+        val pa = splitFlags(args, listOf("-p", "-f"))
+        missingValueError(ctx, pa)?.let { return it }
+        val (flags, _, pos) = Triple(pa.values, pa.bools, pa.pos)
+        if (pos.size < 3) return Result(usageOf("set"), 2)
         val pw = flags["-p"] ?: ""
         val archive = UuText.resolve(ctx.cwd, pos[0])
         if (!archive.isFile) return Result(UuText.notFound(ctx.str, pos[0]), 1)
@@ -1051,7 +1185,10 @@ internal object UuCommands {
             ?: return Result(UuText.notFound(ctx.str, pos[1]), 1)
         val srcFile = UuText.resolve(ctx.cwd, pos[2])
         if (!srcFile.isFile) return Result(UuText.notFound(ctx.str, pos[2]), 1)
-        val fmt = detectFormat(archive) ?: detectFormatByMagic(archive)
+        val fmt = flags["-f"]?.let { key ->
+            if (key !in COMPRESS_EXT.keys) return Result(UuText.packUnknownKey(ctx.str, key), 1)
+            key
+        } ?: detectFormat(archive) ?: detectFormatByMagic(archive)
             ?: return Result(UuText.extractBadFormat(ctx.str, "-"), 1)
         if (fmt == "rar") return Result(ctx.text(R.string.cli_set_unsupported, "RAR"), 1)
 
@@ -1130,7 +1267,8 @@ internal object UuCommands {
 
     /** `uu cso <file> [out]` — ISO→CSO / CSO→ISO。 */
     private fun cso(args: List<String>, ctx: Ctx): Result {
-        val pos = args.filter { !it.startsWith("-") }
+        rejectUnknownFlags(ctx, args)?.let { return it }
+        val pos = args
         if (pos.isEmpty()) return needFile()
         val src = UuText.resolve(ctx.cwd, pos[0])
         if (!src.isFile) return Result(UuText.notFound(ctx.str, pos[0]), 1)

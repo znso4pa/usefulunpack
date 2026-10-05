@@ -611,4 +611,7 @@
     <string name="cli_grep_result">%1$s 件一致、%2$s ファイル</string>
     <string name="cli_grep_none">一致なし</string>
     <string name="terminal_docs">ドキュメント</string>
+    <string name="cli_flag_missing_value">%1$s には値が必要です</string>
+    <string name="cli_unknown_flag">未知のフラグ：%1$s</string>
+    <string name="cli_x_outdir_is_file">%1$s はファイルです — -o &lt;出力先&gt; を使ってください（1 回に 1 アーカイブ）</string>
 </resources>

@@ -616,4 +616,31 @@ class UuCommandsTest {
         val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
         assertEquals(1, UuCommands.dispatch(listOf("l", "-j", "x.bin"), c).exitCode)
     }
+
+    // ─── 第七批：uu x 的 entries 通配展开（纯函数部分） ────────────────────
+
+    @Test
+    fun matchEntryPathsExpandsGlobsAndKeepsExactItems() {
+        val paths = listOf("data/img/a.png", "data/img/b.png", "data/script/x.txt", "readme.md")
+        // 无通配符的项原样保留（目录前缀语义不变，交给原生侧）
+        val (h1, m1) = UuCommands.matchEntryPaths(paths, listOf("readme.md", "data/script/"))
+        assertEquals(listOf("readme.md", "data/script/"), h1)
+        assertTrue(m1.isEmpty())
+        // `*` 跨目录分隔符
+        val (h2, _) = UuCommands.matchEntryPaths(paths, listOf("*.png"))
+        assertEquals(listOf("data/img/a.png", "data/img/b.png"), h2)
+        // `?` 单字符
+        val (h3, _) = UuCommands.matchEntryPaths(paths, listOf("data/img/?.png"))
+        assertEquals(listOf("data/img/a.png", "data/img/b.png"), h3)
+        // 重复命中只留一份，顺序按模式顺序
+        val (h4, _) = UuCommands.matchEntryPaths(paths, listOf("*.png", "a.png".let { "data/img/a*" }))
+        assertEquals(listOf("data/img/a.png", "data/img/b.png"), h4)
+        // 未命中的模式单独报出来（不能静默少解）
+        val (h5, m5) = UuCommands.matchEntryPaths(paths, listOf("*.jpg", "readme.md"))
+        assertEquals(listOf("readme.md"), h5)
+        assertEquals(listOf("*.jpg"), m5)
+    }
+
+    // 注：要判断"通配项全不命中"，必须先列条目（原生 JNI），所以 `uu x` 的这条
+    // 分支只能真机验证 —— JVM 单测里 native 库不存在。这里只钉住纯匹配部分。
 }

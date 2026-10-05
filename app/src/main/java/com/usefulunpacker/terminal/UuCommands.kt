@@ -253,6 +253,7 @@ internal object UuCommands {
         sb.append("  for i in 1..5        ").append("counted loop (descending 5..1 works too)\n")
         sb.append("  if exist path / not exist path").append(" file & directory test (no wildcards)\n")
         sb.append("  \$? / \$errorlevel  ").append("exit code of the previous command\n")
+        sb.append("  entries (uu x)       ").append("take * and ? matched against the full entry path — uu x a.zip \"*.png\"\n")
         sb.append("  uu l -j <archive>    ").append("raw JSON: [{\"n\":name,\"s\":size,\"d\":isDir,\"e\":encrypted}] (one archive)\n")
         sb.append("  only uu / ls / cd / pwd / help / echo").append(" are allowed — no arbitrary shell\n")
         sb.append("  errors stop the script (-k continues); each line is echoed; \"\$\" escapes only variables\n")
@@ -477,6 +478,36 @@ internal object UuCommands {
         return Result(ctx.text(R.string.cli_rename_done, src.name, dst.name))
     }
 
+    /**
+     * 选择项（`uu x` 的 entries）里的通配符 → 精确路径（**纯函数**，可单测）。
+     *
+     * 原生侧只认"精确路径 + 目录前缀"，所以通配符必须在 Kotlin 侧先展开。`*`
+     * 可以跨目录分隔符（`*.png` 能匹配 data/img/a.png），`?` 是单字符；无通配符
+     * 的项原样保留（目录前缀语义不变）。
+     *
+     * 注意注释里不要写出"星号斜杠"那个序列 —— 它会提前结束块注释（踩过）。
+     * @return (展开后的路径, 未命中的模式)；两者都按输入顺序，路径去重
+     */
+    internal fun matchEntryPaths(paths: List<String>, patterns: List<String>): Pair<List<String>, List<String>> {
+        val hits = ArrayList<String>()
+        val misses = ArrayList<String>()
+        for (p in patterns) {
+            if (!CliGlob.hasWildcards(p)) { hits.add(p); continue }
+            val m = paths.filter { CliGlob.matches(it, p) }
+            if (m.isEmpty()) misses.add(p) else hits.addAll(m)
+        }
+        return hits.distinct() to misses
+    }
+
+    /** 读条目表并展开选择项里的通配符；列不出条目时原样返回（让原生侧照常报错）。 */
+    private fun expandEntryGlobs(
+        patterns: List<String>, fmt: String, src: File, pwd: String, ctx: Ctx,
+    ): Pair<List<String>, List<String>> {
+        if (patterns.none { CliGlob.hasWildcards(it) }) return patterns to emptyList()
+        val json = listEntriesJsonFor(ctx, fmt, src, pwd) ?: return patterns to emptyList()
+        return matchEntryPaths(parseEntries(json).map { it.path }, patterns)
+    }
+
     private fun listEntriesJsonFor(ctx: Ctx, fmt: String, f: File, pwd: String): String? {
         val host = ctx.activity ?: return null
         return host.listEntriesJson(fmt, f, pwd, nestedOnly = false)
@@ -570,7 +601,13 @@ internal object UuCommands {
                 entryStart = 1
                 null
             }
-            val selected = pos.drop(entryStart).joinToString("\n")
+            // 选择项里的通配符先展开成精确路径（原生侧不认 glob）
+            val rawSel = pos.drop(entryStart)
+            val (selPaths, selMisses) = expandEntryGlobs(rawSel, fmt, src0, pwd, ctx)
+            if (rawSel.isNotEmpty() && selPaths.isEmpty()) {
+                return Result(ctx.text(R.string.cli_x_glob_none, selMisses.joinToString(" ")), 1)
+            }
+            val selected = selPaths.joinToString("\n")
 
             val act = ctx.activity
             val opH = act?.let { tryStartOperation(it, fmt) }
@@ -619,11 +656,13 @@ internal object UuCommands {
                 act?.runOnUiThread {
                     if (!act.isFinishing && !act.isDestroyed) act.refreshTab(act.activeTab)
                 }
+                val missNote = if (selMisses.isEmpty()) "" else
+                    "\n" + ctx.text(R.string.cli_x_glob_miss, selMisses.joinToString(" "))
                 return Result(
                     ctx.text(R.string.cli_extract_ok, displayName,
                         o.counts.total.toString(), o.counts.success.toString(),
                         o.counts.error.toString()) + "\n" +
-                    ctx.text(R.string.cli_all_set)
+                    ctx.text(R.string.cli_all_set) + missNote
                 )
             } finally {
                 opH?.release()

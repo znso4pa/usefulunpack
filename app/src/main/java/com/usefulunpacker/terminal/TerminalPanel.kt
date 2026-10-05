@@ -63,6 +63,9 @@ internal class TerminalPanel(private val act: MainActivity) {
     private var pinnedToBottom = true
     /** 手指是否正按在输出区拖动（只有真实拖动才改变跟随状态）。 */
     private var userScrolling = false
+
+    /** 运行中操作的取消钩子（命令侧注册；点进度行 → 确认 → 调用）。 */
+    @Volatile private var cancelThunk: (() -> Unit)? = null
     private var historyIdx = -1
 
     private fun str(id: Int, vararg a: Any) = act.getString(id, *a)
@@ -219,6 +222,19 @@ internal class TerminalPanel(private val act: MainActivity) {
                 setBackgroundColor(C["surface_dim"]!!)
                 isSingleLine = true
                 ellipsize = android.text.TextUtils.TruncateAt.END
+                isClickable = true
+                // 点进度行 = 取消当前操作（排队中=出队,运行中=点火 cancel）
+                setOnClickListener {
+                    val thunk = cancelThunk ?: return@setOnClickListener
+                    android.app.AlertDialog.Builder(act)
+                        .setTitle(R.string.cli_cancel_op)
+                        .setPositiveButton(R.string.action_confirm) { _, _ ->
+                            thunk()
+                            cancelThunk = null
+                        }
+                        .setNegativeButton(R.string.action_cancel, null)
+                        .show()
+                }
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(inputStack, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
@@ -285,6 +301,7 @@ internal class TerminalPanel(private val act: MainActivity) {
         val r = root
         root = null; out = null; scroller = null; input = null; cwdView = null
         progressView = null
+        cancelThunk = null
         (r?.parent as? ViewGroup)?.removeView(r)
     }
 
@@ -409,54 +426,201 @@ internal class TerminalPanel(private val act: MainActivity) {
             }
             is CliTokenizer.Out.Ok -> t.tokens
         }
-        val cwd = sess.cwd       // 主线程读：dispatch 里的 cd 会写它
         // 捕获当前会话/进度视图/归属 tab：命令期间用户可能切 tab 甚至打开别的
         // 终端 —— 结果必须回到发起它的那个会话，不能读活字段串台。
         val s = sess
         val pv = progressView
         val owner = ownerTabId
         append(PROMPT + line)
-        thread { runTokens(line, tokens, cwd, s, pv, owner) }
+        thread { runTokens(line, tokens, s, pv, owner) }
     }
 
     /** 一行命令的产出：要么是文本，要么是「缺路径，请用户选一个」。 */
     private sealed interface Outcome {
-        data class Text(val s: String) : Outcome
+        data class Text(val s: String, val exitCode: Int = 0) : Outcome
         data class NeedPath(val cmd: String, val kind: UuCommands.Picker) : Outcome
     }
+
+    /** runSegment 的结果。 */
+    private sealed interface SegResult
+    private class SegDone(val exit: Int) : SegResult
+    private class SegAsk(val cmd: String, val kind: UuCommands.Picker) : SegResult
 
     /**
      * 后台执行。**只算字符串 / 只改 ViewModel，绝不碰 View** ——
      * 在这里 setText 会抛 CalledFromWrongThreadException 并杀掉整个进程。
+     * 支持 `&&` / `;` 链、`|` 管道（过滤段仅 grep/head/tail/wc）、`>` / `>>`
+     * 重定向与 `uu run <脚本>`；返回最后一段的退出码（0 成功 / 1 失败 / 2 缺参）。
      */
     private fun runTokens(
-        line: String, tokens0: List<String>, cwd: File,
-        s: TerminalViewModel.Session, pv: TextView?, owner: Int
-    ) {
-        // 通配符展开(所有命令共用): uu x *.zip / uu c *.ks -c / uu hash *.png…
-        // 无匹配保留原样,错误信息里能看到模式本身。
-        val tokens = UuCommands.expandGlobs(tokens0, cwd)
-        val outcome = when (val argv = tokens.firstOrNull()) {
-            null -> Outcome.Text("")
-            "ls" -> lsOutcome(tokens.drop(1), cwd)
-            "pwd" -> Outcome.Text(cwd.absolutePath)
-            "cd" -> cdOutcome(tokens.drop(1), s, owner)
-            "help" -> Outcome.Text(UuCommands.renderHelp(ctx(s, pv, owner)))
-            "uu" -> runUu(tokens.drop(1), ctx(s, pv, owner))
-            else -> Outcome.Text(runShell(line, cwd))   // §7.3：绝不把 cwd 插值进 shell 字符串
+        line: String, tokens0: List<String>,
+        s: TerminalViewModel.Session, pv: TextView?, owner: Int, depth: Int = 0
+    ): Int {
+        var exit = 0
+        for (seg in UuCommands.splitSegments(tokens0)) {
+            if (seg.andAlso && exit != 0) break
+            if (seg.tokens.isEmpty()) continue
+            when (val r = runSegment(line, seg.tokens, s, pv, owner, depth)) {
+                is SegDone -> exit = r.exit
+                is SegAsk -> {
+                    hideProgressView(pv, owner)
+                    act.runOnUiThread {
+                        if (act.isFinishing || act.isDestroyed) return@runOnUiThread
+                        askPath(line, r.cmd, r.kind, s, pv, owner)
+                    }
+                    return exit
+                }
+            }
         }
-        // 命令完成：收起**发起时刻的**进度视图（结果行已进 scrollback）
+        hideProgressView(pv, owner)
+        return exit
+    }
+
+    private fun hideProgressView(pv: TextView?, owner: Int) {
+        cancelThunk = null
         act.runOnUiThread {
             if (act.isFinishing || act.isDestroyed) return@runOnUiThread
             if (ownerTabId == owner) pv?.visibility = View.GONE
         }
-        when (outcome) {
-            is Outcome.Text -> if (outcome.s.isNotEmpty()) postOut(outcome.s, s)
-            is Outcome.NeedPath -> act.runOnUiThread {
-                if (act.isFinishing || act.isDestroyed) return@runOnUiThread
-                askPath(line, outcome.cmd, outcome.kind, s, pv, owner)
+    }
+
+    /** 一段：可选重定向 + 管道链；首段正常执行，后续段必须是内部过滤器。 */
+    private fun runSegment(
+        line: String, tokens: List<String>,
+        s: TerminalViewModel.Session, pv: TextView?, owner: Int, depth: Int
+    ): SegResult {
+        var toks = tokens
+        var redir: Pair<String, Boolean>? = null
+        val ri = toks.indexOfFirst { it == ">" || it == ">>" }
+        if (ri >= 0) {
+            val path = toks.getOrNull(ri + 1)
+            if (path == null) {
+                postOut(ctxStr()(R.string.cli_redirect_path, arrayOf(toks[ri])), s)
+                return SegDone(2)
+            }
+            redir = path to (toks[ri] == ">>")
+            toks = toks.subList(0, ri)
+        }
+        val stages = UuCommands.splitOnPipe(toks)
+        var text = ""
+        var exit = 0
+        for ((i, stage) in stages.withIndex()) {
+            if (stage.isEmpty()) continue
+            if (i == 0) {
+                when (val o = runStage(stage, s, pv, owner, depth)) {
+                    is Outcome.NeedPath -> {
+                        if (stages.size == 1 && redir == null) return SegAsk(o.cmd, o.kind)
+                        // 管道/重定向语境不能弹选择器
+                        postOut(ctxStr()(R.string.cli_pipe_filter_only, arrayOf()), s)
+                        return SegDone(2)
+                    }
+                    is Outcome.Text -> { text = o.s; exit = o.exitCode }
+                }
+            } else {
+                val f = UuCommands.pipeFilter(stage, text)
+                if (f == null) {
+                    postOut(ctxStr()(R.string.cli_pipe_filter_only, arrayOf()), s)
+                    return SegDone(2)
+                }
+                text = f.first
+                exit = f.second
             }
         }
+        if (redir != null) {
+            val f = UuText.resolve(s.cwd, redir.first)
+            val ok = runCatching {
+                f.parentFile?.mkdirs()
+                if (redir.second) f.appendText(text + "\n") else f.writeText(text + "\n")
+                true
+            }.getOrDefault(false)
+            postOut(
+                if (ok) ctxStr()(R.string.cli_saved_to, arrayOf(f.name))
+                else UuText.failed({ id, a -> if (a.isEmpty()) act.getString(id) else act.getString(id, *a) },
+                    redir.first),
+                s
+            )
+            return SegDone(if (ok) exit else 1)
+        }
+        if (text.isNotEmpty()) postOut(text, s)
+        return SegDone(exit)
+    }
+
+    /** 单段分发（含 `uu run` 内建；shell 兜底用 token 重建命令）。 */
+    private fun runStage(
+        tokens: List<String>, s: TerminalViewModel.Session,
+        pv: TextView?, owner: Int, depth: Int
+    ): Outcome {
+        val cwd = s.cwd
+        // 通配符展开(所有命令共用): uu x *.zip / uu c *.ks -c / uu hash *.png…
+        val ex = UuCommands.expandGlobs(tokens, cwd)
+        return when (val argv = ex.firstOrNull()) {
+            null -> Outcome.Text("")
+            "ls" -> lsOutcome(ex.drop(1), cwd)
+            "pwd" -> Outcome.Text(cwd.absolutePath)
+            "cd" -> cdOutcome(ex.drop(1), s, owner)
+            "help" -> Outcome.Text(UuCommands.renderHelp(ctx(s, pv, owner)))
+            "uu" -> {
+                if (ex.getOrNull(1) == "run") Outcome.Text("", runScript(ex.drop(2), s, pv, owner, depth))
+                else runUu(ex.drop(1), ctx(s, pv, owner))
+            }
+            else -> {
+                val cmdLine = ex.joinToString(" ") { UuCommands.shellQuote(it) }
+                val (out, code) = runShell(cmdLine, cwd)
+                Outcome.Text(out, code)
+            }
+        }
+    }
+
+    /** `uu run <file> [-k]`：逐行执行迷你脚本（# 注释/空行；行内管道重定向可用）。 */
+    private fun runScript(
+        args: List<String>, s: TerminalViewModel.Session,
+        pv: TextView?, owner: Int, depth: Int
+    ): Int {
+        if (depth >= SCRIPT_MAX_DEPTH) {
+            postOut(str(R.string.cli_run_stopped, "0", "1", "depth>${SCRIPT_MAX_DEPTH - 1}"), s)
+            return 1
+        }
+        val keepGoing = args.any { it == "-k" }
+        val path = args.firstOrNull { !it.startsWith("-") }
+        if (path == null) {
+            postOut("uu run <file> [-k]", s)
+            return 2
+        }
+        val f = UuText.resolve(s.cwd, path)
+        if (!f.isFile) {
+            postOut(str(R.string.cli_not_found, path), s)
+            return 1
+        }
+        val bytes = runCatching { readPrefix(f, SCRIPT_MAX_BYTES) }.getOrNull()
+            ?: return 1
+        val enc = detectBestEncoding(bytes)
+        val text = if (enc != null) decodeTextStrict(bytes, enc) else String(bytes, Charsets.UTF_8)
+        var ran = 0
+        var lastExit = 0
+        var stoppedLine = -1
+        for ((li, ln) in UuCommands.scriptLines(text)) {
+            postOut(PROMPT + ln, s)
+            val toks = when (val t = tokenizer.tokenize(ln)) {
+                is CliTokenizer.Out.Bad -> {
+                    postOut(UuText.unclosedQuote({ id, a -> if (a.isEmpty()) act.getString(id) else act.getString(id, *a) },
+                        (t.reason as? CliTokenizer.Reason.UnclosedQuote)?.quote ?: '"'), s)
+                    lastExit = 1
+                    ran++
+                    if (!keepGoing) { stoppedLine = li; break }
+                    continue
+                }
+                is CliTokenizer.Out.Ok -> t.tokens
+            }
+            lastExit = runTokens(ln, toks, s, pv, owner, depth + 1)
+            ran++
+            if (lastExit != 0 && !keepGoing) { stoppedLine = li; break }
+        }
+        postOut(
+            if (stoppedLine >= 0) str(R.string.cli_run_stopped, ran.toString(), lastExit.toString(), stoppedLine.toString())
+            else str(R.string.cli_run_summary, ran.toString(), lastExit.toString()),
+            s
+        )
+        return lastExit
     }
 
     /** 结果进捕获的会话；仅当终端仍显示该会话时才刷新视图。 */
@@ -492,13 +656,15 @@ internal class TerminalPanel(private val act: MainActivity) {
         },
         // x/c 不加路径时的默认输出位置（单独路径，产品要求）
         defaultOutDir = File(android.os.Environment.getExternalStorageDirectory(), "uu_cli"),
+        // 命令侧拿到 opH/accessors 后注册取消（进度行可点）
+        registerCancel = { thunk -> cancelThunk = thunk },
     )
 
     private fun runUu(rest: List<String>, c: UuCommands.Ctx): Outcome {
         if (rest.isEmpty()) return Outcome.Text(UuCommands.renderHelp(c))
         val r = UuCommands.dispatch(rest, c)
         val p = r.picker
-        return if (p != null) Outcome.NeedPath(rest[0], p) else Outcome.Text(r.text)
+        return if (p != null) Outcome.NeedPath(rest[0], p) else Outcome.Text(r.text, r.exitCode)
     }
 
     // ─── 缺路径 → 弹选择器 ────────────────────────────────────────────────
@@ -617,11 +783,10 @@ internal class TerminalPanel(private val act: MainActivity) {
         if (tokens.isEmpty()) return
         val next = tokens + picked.absolutePath
         val echo = next.joinToString(" ") { if (it.contains(' ')) "\"$it\"" else it }
-        val cwd = s.cwd
         // 结果仍进发起会话：append 直写快照，视图仅在终端还显示它时刷新
         s.append(PROMPT + echo)
         if (sess === s) render()
-        thread { runTokens(echo, next, cwd, s, pv, owner) }
+        thread { runTokens(echo, next, s, pv, owner) }
     }
 
     // ─── 内建命令 ────────────────────────────────────────────────────────
@@ -684,11 +849,12 @@ internal class TerminalPanel(private val act: MainActivity) {
     /** §7.4：原来的实现只认 `..` / 绝对 / 单段；这里补多段归一化、`~`、无参数回 cwd。 */
     private fun cdOutcome(args: List<String>, s: TerminalViewModel.Session, owner: Int): Outcome {
         if (args.isEmpty()) return Outcome.NeedPath("cd", UuCommands.Picker.FOLDER)
-        return Outcome.Text(doCd(args, s, owner))
+        val (text, code) = doCd(args, s, owner)
+        return Outcome.Text(text, code)
     }
 
-    private fun doCd(args: List<String>, s: TerminalViewModel.Session, owner: Int): String {
-        val target = args.firstOrNull() ?: return s.cwd.absolutePath
+    private fun doCd(args: List<String>, s: TerminalViewModel.Session, owner: Int): Pair<String, Int> {
+        val target = args.firstOrNull() ?: return s.cwd.absolutePath to 0
         val cwd = s.cwd
         val dest = when {
             target == "~" -> android.os.Environment.getExternalStorageDirectory()
@@ -707,18 +873,18 @@ internal class TerminalPanel(private val act: MainActivity) {
             }
         }
         val norm = File("/" + parts.joinToString("/"))
-        if (!norm.isDirectory) return str(R.string.terminal_not_found, target)
+        if (!norm.isDirectory) return str(R.string.terminal_not_found, target) to 1
         s.lastDir = cwd
         s.cwd = norm
         // 联动 tab（§2 硬约束）：导航**终端扎根的 tab**。owner 已被关闭时不退化
         // 到 activeTab（那是别的窗口，不该被动导航）——报错即可。
         val ownerTab = act.tabs.firstOrNull { it.tabId == owner }
-            ?: return str(R.string.terminal_not_found, "$target (${owner})")
+            ?: return str(R.string.terminal_not_found, "$target (${owner})") to 1
         act.runOnUiThread {
             if (act.isFinishing || act.isDestroyed) return@runOnUiThread
             act.navTab(ownerTab, norm)
         }
-        return "→ ${norm.absolutePath}"
+        return "→ ${norm.absolutePath}" to 0
     }
 
     /**
@@ -727,7 +893,7 @@ internal class TerminalPanel(private val act: MainActivity) {
      * 含 `"` / `$` / 反引号时会拆坏命令，且是注入面）。用 `directory()` 设工作目录。
      * 管道排空是必须的：waitFor 先阻塞的话子进程写满 ~64KB 管道就永远等不到退出。
      */
-    private fun runShell(cmdLine: String, cwd: File): String = runCatching {
+    private fun runShell(cmdLine: String, cwd: File): Pair<String, Int> = runCatching {
         val p = ProcessBuilder("/system/bin/sh", "-c", cmdLine)
             .directory(cwd)
             .redirectErrorStream(true)
@@ -736,15 +902,18 @@ internal class TerminalPanel(private val act: MainActivity) {
         val pump = thread { runCatching { p.inputStream.copyTo(buf) } }
         if (p.waitFor(SHELL_TIMEOUT_SEC, TimeUnit.SECONDS)) {
             pump.join(2000)
-            buf.toString().trimEnd('\n')
+            buf.toString().trimEnd('\n') to runCatching { p.exitValue() }.getOrDefault(0)
         } else {
             p.destroyForcibly()
-            str(R.string.terminal_exec_timeout)
+            str(R.string.terminal_exec_timeout) to 124
         }
-    }.getOrDefault(str(R.string.terminal_exec_failed))
+    }.getOrDefault(str(R.string.terminal_exec_failed) to 127)
 
     private companion object {
         const val SHELL_TIMEOUT_SEC = 30L
+        /** `uu run`：脚本文件上限 / 递归深度上限。 */
+        const val SCRIPT_MAX_BYTES = 1L * 1024 * 1024
+        const val SCRIPT_MAX_DEPTH = 3
         /** 输入行与回显统一用的 POSIX 风格提示符。 */
         const val PROMPT = "~ \$ "
     }

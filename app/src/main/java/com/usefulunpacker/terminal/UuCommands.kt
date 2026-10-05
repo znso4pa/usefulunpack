@@ -46,6 +46,11 @@ internal object UuCommands {
          * 终端层传 /storage/emulated/0/uu_cli；null = 退回 cwd（单测）。
          */
         val defaultOutDir: File? = null,
+        /**
+         * 命令侧注册「取消当前操作」的钩子（进度行可点 → 确认 → 调用）。
+         * 命令在拿到 opH/accessors 后注册；终端层在命令结束时清掉。
+         */
+        val registerCancel: ((() -> Unit) -> Unit)? = null,
     ) {
         fun text(resId: Int, vararg args: Any) = str(resId, arrayOf(*args))
     }
@@ -224,6 +229,11 @@ internal object UuCommands {
         sb.append("-".repeat(8)).append('\n')
         sb.append("  fN            ").append("descriptor from \"ls\" / \"uu scan\" — uu l f0 / uu x f0 / uu cp f0 out.zip\n")
         sb.append("  * ?           ").append("wildcards expand in the current dir — uu x *.zip / uu hash *.png\n")
+        sb.append("  |             ").append("pipe into a filter: grep / head / tail / wc — uu l a.zip | grep main\n")
+        sb.append("  > >>          ").append("redirect output to a file (>> appends) — uu l a.zip > list.txt\n")
+        sb.append("  && ;          ").append("chain commands (&& stops on failure) — cd sub && uu x *.zip\n")
+        sb.append("  uu run <file> ").append("run a script line by line (# comments; -k keeps going)\n")
+        sb.append("  progress line ").append("tap to cancel a running uu x / c / set / cso operation\n")
         sb.append("  ls pwd cd help").append(" builtins; anything else runs in the system shell\n")
         sb.append('\n')
         sb.append("Default output dir (x/c without a path): /storage/emulated/0/uu_cli\n")
@@ -453,7 +463,8 @@ internal object UuCommands {
         val pw = flags["-p"]?.takeIf { it.isNotEmpty() } ?: ctx.password
         if (pos.isEmpty()) return needFile()
         val spec = pos[0]
-        val optOutdir: String? = flags["-o"]?.takeIf { it.isNotEmpty() }
+        val optOutdir: String? = flags["-o"]?.takeIf { it.isNotEmpty()}
+        val cancelled = AtomicBoolean(false)
 
         // fN 引用：整文件条目直接用 host；区间条目临时 carve 出来再解
         var carvedTemp: File? = null
@@ -537,6 +548,11 @@ internal object UuCommands {
                 val outDir = outDirExplicit
                     ?: uniqueFile(defaultOut(ctx), src0.nameWithoutExtension.ifEmpty { "extracted" })
                 val accessors = extractAccessors(fmt)
+                ctx.registerCancel?.invoke {
+                    val running = opH?.isRunning == true
+                    opH?.requestCancel()
+                    if (running) { cancelled.set(true); accessors.cancel() }
+                }
                 val done = AtomicBoolean(false)
                 val poller = if (ctx.progress != null) thread {
                     while (!done.get()) {
@@ -553,6 +569,10 @@ internal object UuCommands {
                     poller?.join(600)
                 }
 
+                if (cancelled.get()) {
+                    outDir.deleteRecursively()
+                    return Result(UuText.extractCancelled(ctx.str), 1)
+                }
                 if (!o.counts.ok) {
                     val msg = if (act != null) friendlyExtractError(act, o.error)
                               else (o.error ?: "failed")
@@ -604,6 +624,7 @@ internal object UuCommands {
         if (merge && separate) return Result(UuText.failed(ctx.str, "-c / -s"), 1)
         val pw = flags["-p"] ?: ""
         val forceKey = flags["-f"]
+        val cancelled = AtomicBoolean(false)
         if (pos.isEmpty()) return needFile(Picker.FILE_OR_FOLDER)
 
         val packResultLines = ArrayList<String>()
@@ -630,6 +651,11 @@ internal object UuCommands {
             try {
                 if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
                 val accessors = compressAccessors(fmt)
+                ctx.registerCancel?.invoke {
+                    val running = opH?.isRunning == true
+                    opH?.requestCancel()
+                    if (running) { cancelled.set(true); accessors.cancel() }
+                }
                 val done = AtomicBoolean(false)
                 val poller = if (ctx.progress != null) thread {
                     while (!done.get()) {
@@ -758,6 +784,11 @@ internal object UuCommands {
             outFile.parentFile?.mkdirs()
 
             val accessors = compressAccessors(fmt)
+            ctx.registerCancel?.invoke {
+                val running = opH?.isRunning == true
+                opH?.requestCancel()
+                if (running) { cancelled.set(true); accessors.cancel() }
+            }
             val done = AtomicBoolean(false)
             val poller = if (ctx.progress != null) thread {
                 while (!done.get()) {
@@ -782,6 +813,10 @@ internal object UuCommands {
                 poller?.join(600)
             }
 
+            if (cancelled.get()) {
+                outFile.delete()
+                return Result(UuText.extractCancelled(ctx.str), 1)
+            }
             if (!ok) return Result(UuText.packFailed(ctx.str, outFile.name), 1)
             return Result(ctx.text(R.string.cli_pack_ok, outFile.name) + "\n" +
                 ctx.text(R.string.cli_all_set))
@@ -1241,9 +1276,15 @@ internal object UuCommands {
         val staging = ctx.cacheDir?.let { File(it, "uu_set/${System.nanoTime()}") }
             ?: return Result(UuText.needsActivity(ctx.str), 2)
         val opH = act?.let { tryStartOperation(it, fmt) }
+        val cancelled = AtomicBoolean(false)
         try {
             if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
             var acc = extractAccessors(fmt)
+            ctx.registerCancel?.invoke {
+                val running = opH?.isRunning == true
+                opH?.requestCancel()
+                if (running) { cancelled.set(true); acc.cancel() }
+            }
             val done = AtomicBoolean(false)
             val poller = if (ctx.progress != null) thread {
                 while (!done.get()) {
@@ -1254,6 +1295,7 @@ internal object UuCommands {
             try {
                 val o = extractByFormat(fmt, archive.path, staging.path, "", ctx.prefs
                     ?: throw IllegalStateException("prefs required"), pw)
+                if (cancelled.get()) return Result(UuText.extractCancelled(ctx.str), 1)
                 if (!o.counts.ok) {
                     return Result(act?.let { friendlyExtractError(it, o.error) } ?: (o.error ?: rel), 1)
                 }
@@ -1299,6 +1341,7 @@ internal object UuCommands {
         if (outF.exists()) return Result(ctx.text(R.string.cli_exists, outF.path), 1)
         val act = ctx.activity
         val opH = act?.let { tryStartOperation(it, "cso") }
+        val cancelled = AtomicBoolean(false)
         try {
             if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
             val acc = ProgressAccessors(
@@ -1306,6 +1349,11 @@ internal object UuCommands {
                 { CsoCore.csoProgressFileCount() }, { CsoCore.csoProgressFileTotal() },
                 { CsoCore.csoProgressName() }, { CsoCore.csoCancel() }
             )
+            ctx.registerCancel?.invoke {
+                val running = opH?.isRunning == true
+                opH?.requestCancel()
+                if (running) { cancelled.set(true); acc.cancel() }
+            }
             val done = AtomicBoolean(false)
             val poller = if (ctx.progress != null) thread {
                 while (!done.get()) {
@@ -1319,6 +1367,10 @@ internal object UuCommands {
             } finally {
                 done.set(true)
                 poller?.join(600)
+            }
+            if (cancelled.get()) {
+                outF.delete()
+                return Result(UuText.extractCancelled(ctx.str), 1)
             }
             if (!ok) {
                 outF.delete()
@@ -1587,7 +1639,88 @@ internal object UuCommands {
     private fun parseNum(s: String): Long? =
         if (s.startsWith("0x", true)) s.drop(2).toLongOrNull(16) else s.toLongOrNull()
 
-        /**
+        /** `&&`/`;` 切出的一段。[andAlso] = 需前段成功（&&）才执行。 */
+    internal class Seg(val tokens: List<String>, val andAlso: Boolean)
+
+    /** 顶层按 `&&` / `;` 分段（tokenizer 保留它们是普通 token）。 */
+    internal fun splitSegments(tokens: List<String>): List<Seg> {
+        val out = ArrayList<Seg>()
+        var cur = ArrayList<String>()
+        var andAlso = false
+        for (t in tokens) {
+            if (t == "&&" || t == ";") {
+                out.add(Seg(cur, andAlso))
+                andAlso = t == "&&"
+                cur = ArrayList()
+            } else cur.add(t)
+        }
+        out.add(Seg(cur, andAlso))
+        return out
+    }
+
+    /** 按 `|` 切分管道段。 */
+    internal fun splitOnPipe(tokens: List<String>): List<List<String>> {
+        if (tokens.none { it == "|" }) return listOf(tokens)
+        val out = ArrayList<List<String>>()
+        var cur = ArrayList<String>()
+        for (t in tokens) {
+            if (t == "|") { out.add(cur); cur = ArrayList() } else cur.add(t)
+        }
+        out.add(cur)
+        return out
+    }
+
+    /** shell 兜底时从 token 重建命令：全部加安全引号（tokenizer 已丢原始引号）。 */
+    internal fun shellQuote(t: String): String =
+        if (t.isNotEmpty() && t.all { it.isLetterOrDigit() || it in "._-/@:=+,^%~" }) t
+        else "'" + t.replace("'", "'\\''") + "'"
+
+    /** 脚本有效行（跳过空行与 # 注释）：(行号, 命令文本)。 */
+    internal fun scriptLines(text: String): List<Pair<Int, String>> {
+        val out = ArrayList<Pair<Int, String>>()
+        for ((i, raw) in text.lines().withIndex()) {
+            val ln = raw.trim()
+            if (ln.isEmpty() || ln.startsWith("#")) continue
+            out.add(i + 1 to ln)
+        }
+        return out
+    }
+
+    /**
+     * 管道过滤器（`uu l x.zip | grep main` 的右段）：grep [-i] <模式> / head [n] /
+     * tail [n] / wc [-l]。返回 (文本, 退出码)；不支持的过滤器返回 null
+     * （终端层提示改用 shell）。
+     */
+    internal fun pipeFilter(tokens: List<String>, input: String): Pair<String, Int>? {
+        val name = tokens.firstOrNull() ?: return null
+        val lines = input.split('\n')
+        return when (name) {
+            "grep" -> {
+                val ci = tokens.any { it == "-i" }
+                val pattern = tokens.drop(1).firstOrNull { it != "-i" } ?: return "" to 2
+                val hits = lines.filter {
+                    if (ci) it.contains(pattern, ignoreCase = true) else it.contains(pattern)
+                }
+                (if (hits.isEmpty()) "(no match)" else hits.joinToString("\n")) to if (hits.isEmpty()) 1 else 0
+            }
+            "head" -> {
+                val n = tokens.getOrNull(1)?.toIntOrNull()?.coerceAtLeast(0) ?: 10
+                lines.take(n).joinToString("\n") to 0
+            }
+            "tail" -> {
+                val n = tokens.getOrNull(1)?.toIntOrNull()?.coerceAtLeast(0) ?: 10
+                lines.takeLast(n).joinToString("\n") to 0
+            }
+            "wc" -> {
+                val linesOnly = tokens.any { it == "-l" }
+                if (linesOnly) lines.size.toString() to 0
+                else "${lines.size} ${input.split(Regex("\\s+")).count { it.isNotEmpty() }} ${input.length}" to 0
+            }
+            else -> null
+        }
+    }
+
+    /**
      * 通配符展开（所有命令共用）：参数含 `*`/`?` 时在 cwd 内展开为实际路径；
      * **无匹配保留原样**（错误信息里能看到用户输入的模式）。目录部分不参与
      * 匹配（带子目录的模式先拆 parent 再匹配文件名）。

@@ -441,4 +441,60 @@ class UuCommandsTest {
         assertEquals(listOf("chg.txt"), changed)
     }
 
+    // ── Round 3：管道/分段/过滤器/脚本行 ──
+
+    @Test
+    fun pipeFilterGrepHeadTailWc() {
+        val input = "alpha\nbeta\nmain.ks\ngamma\nmain2.ks"
+        // grep 大小写敏感/不敏感
+        assertEquals("main.ks\nmain2.ks", UuCommands.pipeFilter(listOf("grep", "main"), input)!!.first)
+        assertEquals("alpha", UuCommands.pipeFilter(listOf("grep", "-i", "ALPHA"), input)!!.first)
+        assertEquals("beta", UuCommands.pipeFilter(listOf("grep", "-i", "BETA"), input)!!.first)
+        assertEquals(1, UuCommands.pipeFilter(listOf("grep", "zzz"), input)!!.second)
+        // head / tail
+        assertEquals("alpha\nbeta", UuCommands.pipeFilter(listOf("head", "2"), input)!!.first)
+        assertEquals("main2.ks", UuCommands.pipeFilter(listOf("tail", "1"), input)!!.first)
+        // wc -l
+        assertEquals("5", UuCommands.pipeFilter(listOf("wc", "-l"), input)!!.first)
+        // 不支持的过滤器 → null
+        assertEquals(null, UuCommands.pipeFilter(listOf("sort"), input))
+    }
+
+    @Test
+    fun splitSegmentsHandlesAndAlsoAndSemicolon() {
+        val segs = UuCommands.splitSegments(listOf("a", "&&", "b", ";", "c"))
+        assertEquals(3, segs.size)
+        assertEquals(listOf("a"), segs[0].tokens)
+        assertFalse(segs[0].andAlso)
+        assertEquals(listOf("b"), segs[1].tokens)
+        assertTrue(segs[1].andAlso)   // b 需 a 成功
+        assertEquals(listOf("c"), segs[2].tokens)
+        assertFalse(segs[2].andAlso)  // c 无条件
+    }
+
+    @Test
+    fun splitOnPipeKeepsStages() {
+        val stages = UuCommands.splitOnPipe(listOf("uu", "l", "a.zip", "|", "grep", "main"))
+        assertEquals(2, stages.size)
+        assertEquals(listOf("uu", "l", "a.zip"), stages[0])
+        assertEquals(listOf("grep", "main"), stages[1])
+        assertEquals(1, UuCommands.splitOnPipe(listOf("ls")).size)
+    }
+
+    @Test
+    fun shellQuoteProtectsSpecials() {
+        assertEquals("abc", UuCommands.shellQuote("abc"))
+        assertEquals("'a b'", UuCommands.shellQuote("a b"))
+        assertEquals("'a;b'", UuCommands.shellQuote("a;b"))
+        assertEquals("'it'\\''s'", UuCommands.shellQuote("it's"))
+    }
+
+    @Test
+    fun scriptLinesSkipCommentsAndBlanks() {
+        val lines = UuCommands.scriptLines("# comment\n\nuu x a.zip\n   \nuu c a -f zip\n")
+        assertEquals(2, lines.size)
+        assertEquals(3 to "uu x a.zip", lines[0])
+        assertEquals(5 to "uu c a -f zip", lines[1])
+    }
+
 }

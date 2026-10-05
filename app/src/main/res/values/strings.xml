@@ -439,7 +439,7 @@
         <item>Scrolling &amp; refresh\nLong lists have an always-visible draggable handle on the right (grab and drag to jump); the text preview/editor have a draggable scrollbar too. The file list refreshes automatically when the current folder changes (rename/move/delete/extract/compress or external changes such as USB)</item>
         <item>Recycle bin\nDelete moves files to the recycle bin instead of permanently deleting them (configurable). Tap the recycle bin icon in the toolbar to view, restore, or permanently delete items. Auto-clean removes items after a configurable period (7/14/30/60/90 days or never). Files in the recycle bin count against storage space. Note: the recycle bin is stored in app internal storage and is cleared when the app is uninstalled</item>
         <item>Terminal &amp; uu commands
-The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the current window: switch tabs and it hides, switch back and the session (output, history, cd) is untouched. Type "uu help" for the command set: uu fmt (supported formats), uu info &lt;file&gt; (one-line format key), uu l &lt;archive&gt; [-a] (list entries), uu scan &lt;file&gt; (signature scan). Each scan hit registers as an fN byte-range descriptor (f3, f4…) — "uu l f3" lists an embedded ZIP without carving it out first; the descriptor goes stale if the host file changes. Built-ins: ls / pwd / cd (navigates the rooted window) / help; any other line runs in the system shell. "uu x" (extract) and "uu c" (pack) are coming next</item>
+The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the current window: switch tabs and it hides, switch back and the session (output, history, cd) is untouched. Type "uu help" for the command set: uu fmt (supported formats), uu info &lt;file&gt; (one-line format key), uu l &lt;archive&gt; [-a] (list entries), uu scan &lt;file&gt; (signature scan). Each scan hit registers as an fN byte-range descriptor (f3, f4…) — "uu l f3" lists an embedded ZIP without carving it out first; the descriptor goes stale if the host file changes. Built-ins: ls / pwd / cd (navigates the rooted window) / help; any other line runs in the system shell. "uu x &lt;archive&gt; [outdir] [entries] [-p pw]" extracts (progress is rendered inside the terminal itself — a walking bar with bytes, current file and entry counts, no dialogs) and ends with an all-set line; "uu c &lt;src&gt; &lt;out.ext&gt; [-f key] [level] [splitMB] [-p pw]" packs (out.pfs needs -f pfs or -f pf6). uu hash &lt;file&gt; prints MD5 + SHA-256; uu cp / uu rn refuse to overwrite</item>
     </string-array>
 
 
@@ -591,4 +591,10 @@ The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the curre
     <string name="cli_pack_split_unsupported">Split volumes are not supported for %1$s</string>
     <string name="cli_pack_ok">Packed: %1$s</string>
     <string name="cli_pack_failed">Pack failed: %1$s</string>
+
+    <string name="cli_need_password">This archive is encrypted — enter the password</string>
+    <string name="cli_exists">Already exists: %1$s</string>
+    <string name="cli_copy_done">Copied: %1$s → %2$s</string>
+    <string name="cli_rename_done">Renamed: %1$s → %2$s</string>
+    <string name="cli_all_set">✔ All set</string>
 </resources>

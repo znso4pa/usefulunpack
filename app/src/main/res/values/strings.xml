@@ -616,4 +616,5 @@
     <string name="cli_cso_bad_ext">Not an ISO/CSO file: %1$s</string>
     <string name="cli_grep_result">%1$s matches in %2$s files</string>
     <string name="cli_grep_none">No matches</string>
+    <string name="terminal_docs">Docs</string>
 </resources>

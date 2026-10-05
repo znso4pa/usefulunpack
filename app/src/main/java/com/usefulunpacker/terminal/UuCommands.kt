@@ -359,7 +359,13 @@ internal object UuCommands {
                     return Result(msg, 1)
                 }
                 // 解压产物可能就在当前窗口的目录里，刷新让用户直接看到。
-                act?.refreshTab(act.activeTab)
+                // 必须回 UI 线程：refreshTab→navTab 摸视图，后台线程直接调会抛
+                // CalledFromWrongThreadException（"Main thread (tid 2), calling
+                // thread (tid 29)"——之前被 dispatch 的 catch 包成失败文本，
+                // 看起来像解压失败，其实产物是好的）。
+                act?.runOnUiThread {
+                    if (!act.isFinishing && !act.isDestroyed) act.refreshTab(act.activeTab)
+                }
                 return Result(
                     ctx.text(R.string.cli_extract_ok, displayName,
                         o.counts.total.toString(), o.counts.success.toString(),

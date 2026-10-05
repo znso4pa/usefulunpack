@@ -69,15 +69,20 @@ fun deleteWithProgress(
                             // barTotal is 2× because the move reads the data twice
                             // (copy + delete), and showing that as the denominator
                             // made a 3.6 GB tree read as "7.2 GB".
-                            val shown = if (st.barDone > st.dataTotal) st.dataTotal else st.barDone
-                            c.overallText.text = activity.resources.getQuantityString(
-                                R.plurals.recycle_progress_items_bytes, st.filesTotal,
-                                fmt(shown), fmt(st.dataTotal), st.filesDone, st.filesTotal
-                            )
-                            // Once the copy half is done the byte line is at its final
-                            // value, so the message has to say what is still running —
-                            // otherwise a moving bar under a full "3.6 GB / 3.6 GB"
-                            // reads as a stuck bar.
+                            // 清理半程（删原树）时数字必须**跟随条**（已删字节/总字节），
+                            // 否则文本停在满值而条还在跑，读作「满了但卡死」——真机反馈。
+                            c.overallText.text = if (st.cleaningUp) {
+                                activity.getString(
+                                    R.string.recycle_progress_cleaning_bytes,
+                                    fmt(st.barDone - st.dataTotal), fmt(st.dataTotal),
+                                    st.filesDone, st.filesTotal
+                                )
+                            } else {
+                                activity.resources.getQuantityString(
+                                    R.plurals.recycle_progress_items_bytes, st.filesTotal,
+                                    fmt(st.barDone), fmt(st.dataTotal), st.filesDone, st.filesTotal
+                                )
+                            }
                             c.msg.text = if (st.cleaningUp) {
                                 activity.getString(R.string.recycle_progress_cleaning)
                             } else {

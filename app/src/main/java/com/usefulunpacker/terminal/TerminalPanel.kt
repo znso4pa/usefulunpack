@@ -322,16 +322,21 @@ internal class TerminalPanel(private val act: MainActivity) {
     }
 
     private fun render() {
+        val sv = scroller
+        // setText 会把滚动位置重置到顶部：非跟随状态下必须先记后还原，否则
+        // 进度刷新期间用户上滑浏览会每 200ms 被拽回最头上。
+        val scrollY = sv?.scrollY ?: 0
         out?.text = sess.output
-        // cwd 是**衍生**状态：`cd` 只改 vm.cwd，不去碰这个 TextView。
+        // cwd 是**衍生**状态：`cd` 只改 sess.cwd，不去碰这个 TextView。
         // 不在这里统一刷新的话，`cd` 之后标题栏还停在旧目录。
         cwdView?.text = sess.cwd.name.ifEmpty { "/" }
-        if (pinnedToBottom) scroller?.post { scroller?.fullScroll(View.FOCUS_DOWN) }
+        if (pinnedToBottom) sv?.post { sv.fullScroll(View.FOCUS_DOWN) }
+        else sv?.post { sv.scrollTo(0, scrollY) }
         // 上滑浏览时不要强拉回底部
-        scroller?.setOnScrollChangeListener { _, _, scrollY, _, _ ->
-            val h = scroller?.getChildAt(0)?.height ?: 0
-            val range = h - (scroller?.height ?: 0)
-            pinnedToBottom = range <= 0 || scrollY >= range - 8
+        sv?.setOnScrollChangeListener { _, _, scrollYNew, _, _ ->
+            val h = sv?.getChildAt(0)?.height ?: 0
+            val range = h - (sv?.height ?: 0)
+            pinnedToBottom = range <= 0 || scrollYNew >= range - 8
         }
     }
 

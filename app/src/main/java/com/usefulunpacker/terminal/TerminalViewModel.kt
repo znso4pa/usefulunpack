@@ -28,6 +28,11 @@ internal class TerminalViewModel : ViewModel() {
 
     fun session(tabId: Int): Session = sessions.getOrPut(tabId) { Session() }
 
+    /** 清掉已关闭 tab 的会话（≤200KB scrollback ×4 不该陪葬整个 Activity 生命周期）。 */
+    fun retainSessions(alive: Collection<Int>) {
+        sessions.keys.retainAll(alive.toSet())
+    }
+
     class Session {
         /** 会话 cwd。`cd` 会改它。 */
         var cwd: File = File("/")

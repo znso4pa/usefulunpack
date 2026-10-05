@@ -19,6 +19,7 @@ captures/
 *.iml
 .vscode/
 .zcode/
+.zcodeignore
 
 # macOS
 .DS_Store

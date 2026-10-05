@@ -128,4 +128,21 @@ class FdTableTest {
         assertEquals(1024L, t.get(0)!!.byteSize())
         dir.deleteRecursively()
     }
+    @Test
+    fun reuseRefreshesSnapshotSoModifiedFileHeals() {
+        val dir = tmp("refresh")
+        val f = File(dir, "w.zip").apply { writeBytes(ByteArray(8)) }
+        val t = FdTable()
+        val fd = t.registerFiles(listOf(f))[0]
+        val e1 = t.get(fd)!!
+        assertNull(t.checkFresh(e1))
+        // 文件被修改 → 旧快照 stale
+        f.appendBytes(ByteArray(4))
+        assertTrue(t.checkFresh(e1) is FdTable.Rejected.Stale)
+        // 再次 ls（registerFiles 复用同一编号但刷新快照）→ 恢复新鲜
+        assertEquals(listOf(fd), t.registerFiles(listOf(f)))
+        assertNull(t.checkFresh(t.get(fd)!!))
+        dir.deleteRecursively()
+    }
+
 }

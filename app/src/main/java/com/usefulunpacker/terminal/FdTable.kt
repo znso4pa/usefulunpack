@@ -33,6 +33,11 @@ internal class FdTable {
     ) {
         fun isArchive() = archiveKey != null
 
+        /** 复用编号时刷新宿主快照（size/mtime），让 checkFresh 恢复新鲜。 */
+        fun refreshed(hostSize: Long, hostMtime: Long) = Entry(
+            fd, host, offset, length, label, archiveKey, hostSize, hostMtime, wholeFile
+        )
+
         /** 片段的绝对结束偏移（宿主总长兜底）。 */
         fun end(hostFileSize: Long): Long = length?.let { offset + it } ?: hostFileSize
 
@@ -63,7 +68,13 @@ internal class FdTable {
         val existing = entries.entries.firstOrNull {
             it.value.wholeFile && it.value.host.absolutePath == f.absolutePath
         }
-        existing?.key ?: run {
+        if (existing != null) {
+            // 复用编号的同时**刷新快照**：否则文件被修改过之后，旧的
+            // size+mtime 让 checkFresh 永远 stale，只有重启进程才能自愈。
+            val old = existing.value
+            entries[old.fd] = old.refreshed(f.length(), f.lastModified())
+            old.fd
+        } else {
             val fd = nextFd()
             entries[fd] = Entry(
                 fd = fd, host = f, offset = 0L, length = null, label = f.name,
@@ -85,7 +96,12 @@ internal class FdTable {
             !it.value.wholeFile && it.value.host.absolutePath == host.absolutePath &&
                 it.value.offset == h.offset && it.value.length == h.size
         }
-        existing?.key ?: run {
+        if (existing != null) {
+            // 同宿主同偏移同长度 → 内容没挪位，刷新快照让 checkFresh 恢复新鲜
+            val old = existing.value
+            entries[old.fd] = old.refreshed(hostSize, hostMtime)
+            old.fd
+        } else {
             val fd = nextFd()
             entries[fd] = Entry(
                 fd = fd, host = host, offset = h.offset, length = h.size,

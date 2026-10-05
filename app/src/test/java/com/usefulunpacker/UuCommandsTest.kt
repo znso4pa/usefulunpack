@@ -288,6 +288,8 @@ class UuCommandsTest {
             "set v = text", "if v = xp3 then", "for a in *.zip", "only uu / ls / cd",
             // v2：位置参数 / 块式 if-else / return
             "\$1 \$2 / \$argc / \$args", "if v = xp3 / else / end", "return [code]",
+            // v4：数值比较 / 算术 / while / break
+            "if n > 3 / n <= 3", "set n = \$n + 1", "while n < 5 ... end", "break",
         )) {
             assertTrue("missing UUT doc: $kw", r.text.contains(kw))
         }
@@ -466,7 +468,10 @@ class UuCommandsTest {
         // wc -l
         assertEquals("5", UuCommands.pipeFilter(listOf("wc", "-l"), input)!!.first)
         // 不支持的过滤器 → null
-        assertEquals(null, UuCommands.pipeFilter(listOf("sort"), input))
+        assertEquals(null, UuCommands.pipeFilter(listOf("awk"), input))   // 只支持 grep/head/tail/wc/sort
+        // sort（第八批新增）：字典序，-r 反向
+        assertEquals("alpha\nbeta\ngamma\nmain.ks\nmain2.ks", UuCommands.pipeFilter(listOf("sort"), input)!!.first)
+        assertEquals("main2.ks\nmain.ks\ngamma\nbeta\nalpha", UuCommands.pipeFilter(listOf("sort", "-r"), input)!!.first)
     }
 
     @Test
@@ -643,4 +648,46 @@ class UuCommandsTest {
 
     // 注：要判断"通配项全不命中"，必须先列条目（原生 JNI），所以 `uu x` 的这条
     // 分支只能真机验证 —— JVM 单测里 native 库不存在。这里只钉住纯匹配部分。
+
+    // ─── 第八批：uu b64 ───────────────────────────────────────────────────
+
+    @Test
+    fun b64EncodesToTextAndDecodesBack() {
+        val dir = tmp.root.resolve("b64").apply { mkdirs() }
+        val raw = ByteArray(300) { (it % 251).toByte() }
+        val src = File(dir, "blob.bin").apply { writeBytes(raw) }
+        val c = UuCommands.Ctx(prefs = null, cwd = dir)
+        // 编码：输出即 base64 文本（给管道用），不写文件
+        val enc = UuCommands.dispatch(listOf("b64", "blob.bin"), c)
+        assertEquals(0, enc.exitCode)
+        assertEquals(java.util.Base64.getEncoder().encodeToString(raw), enc.text)
+        // 解码 round-trip：默认输出名 = 去掉 .b64 + .bin（copy.bin 此时不存在）
+        File(dir, "copy.b64").writeText(enc.text)
+        val dec = UuCommands.dispatch(listOf("b64", "-d", "copy.b64"), c)
+        assertEquals(0, dec.exitCode)
+        val produced = File(dir, "copy.bin")
+        assertTrue(dec.text, produced.isFile)
+        assertTrue("bytes differ", produced.readBytes().contentEquals(raw))
+        // 显式输出路径（`uu b64 -d in.b64 out.bin`）
+        val dec2 = UuCommands.dispatch(listOf("b64", "-d", "copy.b64", "explicit.bin"), c)
+        assertEquals(0, dec2.exitCode)
+        assertTrue(File(dir, "explicit.bin").readBytes().contentEquals(raw))
+        // 编码写文件（`uu b64 in.bin out.txt`）→ 内容是同一份 base64 文本
+        val encFile = UuCommands.dispatch(listOf("b64", "blob.bin", "enc.txt"), c)
+        assertEquals(0, encFile.exitCode)
+        assertEquals(java.util.Base64.getEncoder().encodeToString(raw), File(dir, "enc.txt").readText().trim())
+    }
+
+    @Test
+    fun b64RejectsInvalidInputAndBadFlags() {
+        val dir = tmp.root.resolve("b64b").apply { mkdirs() }
+        File(dir, "junk.b64").writeText("!!! not base64 !!!")
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("b64", "-d", "junk.b64"), c)
+        assertEquals(1, r.exitCode)
+        // 未知标志照旧拒绝
+        assertEquals(1, UuCommands.dispatch(listOf("b64", "-z", "junk.b64"), c).exitCode)
+        // 缺文件参数 → 用法错误
+        assertEquals(2, UuCommands.dispatch(listOf("b64"), c).exitCode)
+    }
 }

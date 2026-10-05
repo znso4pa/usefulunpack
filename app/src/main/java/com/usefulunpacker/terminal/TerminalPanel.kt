@@ -694,12 +694,9 @@ internal class TerminalPanel(private val act: MainActivity) {
         return r.exit
     }
 
-    /** 求值一个 UUT 条件（变量比较 / 文件测试）。 */
-    private fun evalCond(cond: UutCond, vars: Map<String, String>, cwd: File): Boolean = when (cond) {
-        is UutCond.VarEq -> {
-            val cur = vars[cond.name] ?: ""
-            if (cond.negate) cur != cond.value else cur == cond.value
-        }
+    /** 求值一个 UUT 条件（变量比较 / 文件测试）；null = 数值比较拿到非整数。 */
+    private fun evalCond(cond: UutCond, vars: Map<String, String>, cwd: File): Boolean? = when (cond) {
+        is UutCond.VarCmp -> UutParser.compareValues(vars[cond.name] ?: "", cond.op, cond.value)
         is UutCond.Exists -> {
             val p = UutParser.expandVars(cond.rawPath, vars)
             // 含通配符时按"有没有任何命中"判断：`if exist *.zip` 是脚本里最常见
@@ -712,6 +709,12 @@ internal class TerminalPanel(private val act: MainActivity) {
         }
     }
 
+    /** 条件求值失败（数值比较的非整数操作数）时的报错文本。 */
+    private fun badCmp(cond: UutCond): String = when (cond) {
+        is UutCond.VarCmp -> str(R.string.cli_uut_bad_cmp, cond.name, cond.op, cond.value)
+        is UutCond.Exists -> str(R.string.cli_uut_bad_cmp, "exist", "=", cond.rawPath)
+    }
+
     /** 每条命令执行完记下退出码：`$?` / `$errorlevel` 都能取（bat 的 errorlevel 习惯）。 */
     private fun noteExit(vars: MutableMap<String, String>, code: Int) {
         vars["?"] = code.toString()
@@ -721,6 +724,8 @@ internal class TerminalPanel(private val act: MainActivity) {
     /** UUT 执行统计。[returned] = 脚本里执行了 `return`（只结束当前这一层）。 */
     private class UutRun(
         val ran: Int = 0, val exit: Int = 0, val stoppedLine: Int = 0, val returned: Boolean = false,
+        /** `break`：只被**最内层** for / while 吸收，if 之类的块照原样往上传。 */
+        val broke: Boolean = false,
     )
 
     private fun execUut(
@@ -764,10 +769,24 @@ internal class TerminalPanel(private val act: MainActivity) {
                 is UutStmt.Set -> {
                     val expanded = UutParser.expandVars(st.rawValue, vars).trim()
                     val cap = UutParser.captureInner(expanded)
-                    vars[st.name] = if (cap != null) captureCmd(cap, vars, ec, depth) else expanded
+                    vars[st.name] = when {
+                        cap != null -> captureCmd(cap, vars, ec, depth)
+                        // 算术赋值：`set n = $n + 1`（展开之后才判断，见 evalArith）
+                        else -> try {
+                            UutParser.evalArith(expanded) ?: expanded
+                        } catch (e: ArithmeticException) {
+                            ec.emit(UuText.failed(ctxStr(), e.message ?: "arithmetic error"))
+                            return UutRun(ran + 1, 1, st.line)
+                        }
+                    }
                 }
                 is UutStmt.IfInline -> {
-                    if (evalCond(st.cond, vars, ec.s.cwd)) {
+                    val okInline = evalCond(st.cond, vars, ec.s.cwd)
+                    if (okInline == null) {
+                        ec.emit(badCmp(st.cond))
+                        return UutRun(ran + 1, 1, st.line)
+                    }
+                    if (okInline) {
                         val expanded = UutParser.expandVars(st.rawCmd, vars)
                         if (ec.echo) ec.emit(PROMPT + expanded)
                         val toks = tokenizeLine(expanded) ?: run {
@@ -799,8 +818,9 @@ internal class TerminalPanel(private val act: MainActivity) {
                             val b = execUut(st.body, vars, ec, depth, keepGoing)
                             ran += b.ran; exit = b.exit
                             if (b.returned || b.stoppedLine > 0) {
-                                return UutRun(ran, exit, b.stoppedLine, b.returned)
+                                return UutRun(ran, exit, b.stoppedLine, b.returned, b.broke)
                             }
+                            if (b.broke) break                      // 计数循环同样吃 break
                             if (b.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
                         }
                         continue
@@ -821,20 +841,51 @@ internal class TerminalPanel(private val act: MainActivity) {
                         ran += sub.ran
                         exit = sub.exit
                         if (sub.returned || sub.stoppedLine > 0) {
-                            return UutRun(ran, exit, sub.stoppedLine, sub.returned)
+                            return UutRun(ran, exit, sub.stoppedLine, sub.returned, sub.broke)
                         }
+                        if (sub.broke) break
                         if (sub.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
                     }
                 }
+                is UutStmt.While -> {
+                    var iter = 0
+                    while (true) {
+                        if (iter++ >= UutParser.LOOP_MAX) {
+                            // 死循环在 App 里等于"终端卡住"，到上限就停并说清楚
+                            ec.emit(str(R.string.cli_uut_loop_max, UutParser.LOOP_MAX.toString()))
+                            return UutRun(ran, 1, st.line)
+                        }
+                        val okWhile = evalCond(st.cond, vars, ec.s.cwd)
+                        if (okWhile == null) {
+                            ec.emit(badCmp(st.cond))
+                            return UutRun(ran, 1, st.line)
+                        }
+                        if (!okWhile) break
+                        val sub = execUut(st.body, vars, ec, depth, keepGoing)
+                        ran += sub.ran
+                        exit = sub.exit
+                        if (sub.returned || sub.stoppedLine > 0) {
+                            return UutRun(ran, exit, sub.stoppedLine, sub.returned, sub.broke)
+                        }
+                        if (sub.broke) break
+                        if (sub.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
+                    }
+                }
+                is UutStmt.Break -> return UutRun(ran, exit, 0, broke = true)
                 is UutStmt.If -> {
-                    val body = if (evalCond(st.cond, vars, ec.s.cwd)) st.thenBody else st.elseBody
+                    val okIf = evalCond(st.cond, vars, ec.s.cwd)
+                    if (okIf == null) {
+                        ec.emit(badCmp(st.cond))
+                        return UutRun(ran, 1, st.line)
+                    }
+                    val body = if (okIf) st.thenBody else st.elseBody
                     // 空分支是合法的（`if x` … `end` 什么都不做）
                     if (body.isNotEmpty()) {
                         val sub = execUut(body, vars, ec, depth, keepGoing)
                         ran += sub.ran
                         exit = sub.exit
-                        if (sub.returned || sub.stoppedLine > 0) {
-                            return UutRun(ran, exit, sub.stoppedLine, sub.returned)
+                        if (sub.returned || sub.stoppedLine > 0 || sub.broke) {
+                            return UutRun(ran, exit, sub.stoppedLine, sub.returned, sub.broke)
                         }
                         if (sub.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
                     }

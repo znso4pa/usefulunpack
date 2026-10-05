@@ -26,6 +26,12 @@ package com.usefulunpacker
  * if exist out/                    # 文件/目录测试
  *   echo already extracted
  * end
+ * set n = 0
+ * while n < 3                      # 数值比较 + while（有迭代上限）
+ *   set n = $n + 1                 # 算术赋值
+ *   if $n = 2 then break           # 跳出最内层循环
+ *   echo n=$n
+ * end
  * uu l $f > list.txt
  * if $? != 0 then echo listing failed   # 上一条命令的退出码
  * return 0                         # 提前结束（退出码）
@@ -42,8 +48,15 @@ package com.usefulunpacker
  * 不必给 [UutStmt.If] / [UutStmt.IfInline] 各加一组字段、也不必让执行器猜。
  */
 internal sealed class UutCond {
-    /** `<变量> [!=] <字面值>`（`$v` 的 `$` 会被剥掉，所以 `$1` 也能比）。 */
-    class VarEq(val name: String, val negate: Boolean, val value: String) : UutCond()
+    /**
+     * `<变量> <运算符> <字面值>`。`$v` 的 `$` 会被剥掉，所以 `$1` 也能比。
+     * `=` / `!=` 是**字面**比较；`<` `>` `<=` `>=` 是**数值**比较
+     *（任一侧不是整数 → 运行期报错，绝不静默判假：while 条件判假会变成静默空转
+     * 或错分支，比报错难查得多）。
+     */
+    class VarCmp(val name: String, val op: String, val value: String) : UutCond() {
+        val negate: Boolean get() = op == "!="
+    }
 
     /** `exist <路径>` / `not exist <路径>`：相对会话 cwd 解析，**不展开通配符**。 */
     class Exists(val rawPath: String, val negate: Boolean) : UutCond()
@@ -67,6 +80,12 @@ internal sealed class UutStmt {
 
     /** `for <变量> in <模式...>` … `end`。 */
     class For(val line: Int, val varName: String, val rawPatterns: String, val body: List<UutStmt>) : UutStmt()
+
+    /** `while <条件>` … `end`（迭代上限见 [UutParser.LOOP_MAX]，超限报错而不是卡死）。 */
+    class While(val line: Int, val cond: UutCond, val body: List<UutStmt>) : UutStmt()
+
+    /** `break`：跳出**最内层** for / while。 */
+    class Break(val line: Int) : UutStmt()
 
     /** `return [退出码]`：结束**当前脚本**（嵌套 `uu run` 只结束那一层）。 */
     class Return(val line: Int, val rawCode: String) : UutStmt()
@@ -99,12 +118,30 @@ internal object UutParser {
                 if (path.isEmpty()) throw UutParseException(lineNo, "exist needs a path")
                 return UutCond.Exists(path, negExist)
             }
-            val negate = condRaw.contains("!=")
-            val parts = condRaw.split(if (negate) "!=" else "=", limit = 2)
-            if (parts.size != 2) throw UutParseException(lineNo, "if needs <var> = <value>")
-            return UutCond.VarEq(
-                parts[0].trim().removePrefix("$"), negate, parts[1].trim().trim('"', '\'')
-            )
+            // 双字符运算符先试，避免 "<=" 被当成 "<" + "=…"
+            for (op in OPS) {
+                val i = indexOfOp(condRaw, op)
+                if (i <= 0) continue
+                return UutCond.VarCmp(
+                    condRaw.substring(0, i).trim().removePrefix("$"), op,
+                    condRaw.substring(i + op.length).trim().trim('"', '\'')
+                )
+            }
+            throw UutParseException(lineNo, "condition needs an operator (= != < > <= >=)")
+        }
+
+        /** 找到 [op] 在条件里第一次出现的位置（跳过引号内）。 */
+        private fun indexOfOp(s: String, op: String): Int {
+            var quote = '\u0000'
+            var i = 0
+            while (i <= s.length - op.length) {
+                val c = s[i]
+                if (quote != '\u0000') { if (c == quote) quote = '\u0000'; i++; continue }
+                if (c == '"' || c == '\'') { quote = c; i++; continue }
+                if (s.startsWith(op, i)) return i
+                i++
+            }
+            return -1
         }
 
         /** `if <条件>` / `if <条件> then <命令>`（两者的区别只在有没有 ` then `）。 */
@@ -173,6 +210,13 @@ internal object UutParser {
                     }
                     raw.startsWith("if ") -> out.add(parseIf(lineNo, raw.removePrefix("if ").trim()))
                     raw.startsWith("for ") -> out.add(parseFor(lineNo, raw.removePrefix("for ").trim()))
+                    raw.startsWith("while ") -> {
+                        val cond = parseCond(raw.removePrefix("while ").trim(), lineNo)
+                        val (body, term) = parseBlock(inBlock = true)
+                        if (term != "end") throw UutParseException(lineNo, "while needs 'end'")
+                        out.add(UutStmt.While(lineNo, cond, body))
+                    }
+                    raw == "break" -> out.add(UutStmt.Break(lineNo))
                     raw == "return" || raw.startsWith("return ") ->
                         out.add(UutStmt.Return(lineNo, raw.removePrefix("return").trim()))
                     else -> {
@@ -183,15 +227,23 @@ internal object UutParser {
                         val pieces = splitChain(raw)
                         val head = pieces.lastOrNull()?.first
                         if (pieces.size > 1 && head != null &&
-                            (head.startsWith("if ") || head.startsWith("for "))
+                            (head.startsWith("if ") || head.startsWith("for ") || head.startsWith("while "))
                         ) {
                             val prefix = pieces.dropLast(1)
                                 .mapIndexed { i, p -> if (i == 0) p.first else "${p.second} ${p.first}" }
                                 .joinToString(" ")
                             out.add(UutStmt.Cmd(lineNo, prefix))
                             out.add(
-                                if (head.startsWith("if ")) parseIf(lineNo, head.removePrefix("if ").trim())
-                                else parseFor(lineNo, head.removePrefix("for ").trim())
+                                when {
+                                    head.startsWith("if ") -> parseIf(lineNo, head.removePrefix("if ").trim())
+                                    head.startsWith("for ") -> parseFor(lineNo, head.removePrefix("for ").trim())
+                                    else -> {
+                                        val cond = parseCond(head.removePrefix("while ").trim(), lineNo)
+                                        val (body, term) = parseBlock(inBlock = true)
+                                        if (term != "end") throw UutParseException(lineNo, "while needs 'end'")
+                                        UutStmt.While(lineNo, cond, body)
+                                    }
+                                }
                             )
                         } else out.add(UutStmt.Cmd(lineNo, raw))
                     }
@@ -287,6 +339,46 @@ internal object UutParser {
         return if (out.isEmpty()) out else listOf(out[0].first to "") + out.drop(1).map { it.first to it.second }
     }
 
+    /** 条件里可用的运算符（双字符在前，"<=" 不能被拆成 "<"）。 */
+    val OPS = listOf("!=", "<=", ">=", "=", "<", ">")
+
+    /**
+     * `set n = $n + 1` 的算术：`<整数> <op> <整数>`（op ∈ + - * /）。
+     * 不是算术式 → null（当普通字符串赋值）；除零 → 抛 [ArithmeticException]，
+     * 由执行器转成脚本错误（静默给 0 会让计数器悄悄跑飞）。
+     */
+    fun evalArith(expr: String): String? {
+        val m = ARITH_REGEX.matchEntire(expr.trim()) ?: return null
+        val a = m.groupValues[1].toLongOrNull() ?: return null
+        val b = m.groupValues[3].toLongOrNull() ?: return null
+        return when (m.groupValues[2]) {
+            "+" -> a + b
+            "-" -> a - b
+            "*" -> a * b
+            else -> if (b == 0L) throw ArithmeticException("division by zero") else a / b
+        }.toString()
+    }
+
+    /**
+     * 条件比较。`=` / `!=` 按字符串；其余按**整数**（任一侧不是整数 → null，
+     * 由执行器报错；不静默判假）。
+     */
+    fun compareValues(left: String, op: String, right: String): Boolean? = when (op) {
+        "=" -> left == right
+        "!=" -> left != right
+        else -> {
+            val a = left.trim().toLongOrNull()
+            val b = right.trim().toLongOrNull()
+            if (a == null || b == null) null
+            else when (op) {
+                "<" -> a < b
+                ">" -> a > b
+                "<=" -> a <= b
+                else -> a >= b
+            }
+        }
+    }
+
     /**
      * `1..5` 计数区间 → ["1".."5"]（含两端，可降序）；不是区间返回 null。
      * 纯函数，便于单测；执行器只在 `for` 的模式列表是**单个**区间时使用。
@@ -303,6 +395,14 @@ internal object UutParser {
 
     /** `for i in 1..N` 的生成上限（超过则视为空，宁可什么都不做也不要卡死）。 */
     const val RANGE_MAX = 100_000
+
+    /**
+     * `while` 的迭代上限。脚本是**在 App 里**跑的（共享一个终端线程），死循环会
+     * 让终端看起来卡死且取消按钮只能点一次 —— 到上限就报错停下，比挂住强。
+     */
+    const val LOOP_MAX = 10_000
+
+    private val ARITH_REGEX = Regex("^(-?\\d+)\\s*([+\\-*/])\\s*(-?\\d+)$")
 
     /** 脚本命令行的首个 token 必须是白名单命令（防止套娃 shell）。 */
     fun commandAllowed(firstToken: String): Boolean = firstToken in ALLOWED_COMMANDS

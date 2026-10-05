@@ -430,7 +430,7 @@
         <item>滚动与自动刷新\n长列表右侧有常显可拖把手（抓住拖动即可跳转）；文本预览/编辑器也有可拖滚动条。当前目录内容变化（重命名/移动/删除/解压/压缩或 USB 等外部改动）时文件列表自动刷新</item>
         <item>回收站\n删除操作默认将文件移到回收站而非直接永久删除（可在设置中关闭）。点工具栏回收站图标查看、恢复或永久删除项目。自动清理可设置保留天数（7/14/30/60/90天或从不）。回收站中的文件占用存储空间。注意：回收站存储在应用私有目录，卸载应用时会清除</item>
         <item>终端与 uu 命令
-工具栏 ⋋ 打开全屏终端，扎根于当前窗口：切走隐藏、切回时输出/历史/cd 原样还在。输入 "uu help" 查看命令集：uu fmt（支持的格式）、uu info &lt;文件&gt;（单行格式 key）、uu l &lt;归档&gt; [-a]（列条目）、uu scan &lt;文件&gt;（签名扫描）。ls 会按应用的排序方式给每个文件发一个 fN 标签（只编文件）；每个扫描命中注册为 fN 字节区间描述符——"uu l f0" 无需落盘直接列内嵌 ZIP；宿主文件被改动后描述符失效。内建命令：ls / pwd / cd（导航扎根的窗口）/ help；其余命令由系统 shell 执行。"uu x &lt;归档&gt; [输出目录] [条目] [-p 密码]" 解压（进度直接画在终端里——滚动的进度条 + 字节数 + 当前文件名 + 条目计数，不弹对话框），完成输出 all set；"uu c &lt;源&gt; &lt;产物.ext&gt; [-f key] [等级] [分卷MB] [-p 密码]" 封包（out.pfs 需 -f pfs 或 -f pf6）。uu hash &lt;文件&gt; 输出 MD5 + SHA-256；uu cp / uu rn 拒绝覆盖</item>
+工具栏 ⋋ 打开全屏终端，扎根于当前窗口：切走隐藏、切回时输出/历史/cd 原样还在。输入 "uu help" 查看命令集：uu fmt（支持的格式）、uu info &lt;文件&gt;（单行格式 key）、uu l &lt;归档&gt; [-a]（列条目）、uu scan &lt;文件&gt;（签名扫描）。ls 会按应用的排序方式给每个文件发一个 fN 标签（只编文件）；每个扫描命中注册为 fN 字节区间描述符——"uu l f0" 无需落盘直接列内嵌 ZIP；宿主文件被改动后描述符失效。内建命令：ls / pwd / cd（导航扎根的窗口）/ help；其余命令由系统 shell 执行。"uu x &lt;归档&gt; [输出目录] [条目] [-p 密码]" 解压（进度直接画在终端里——滚动的进度条 + 字节数 + 当前文件名 + 条目计数，不弹对话框），完成输出 all set；"uu c &lt;源&gt; &lt;产物.ext&gt; [-f key] [等级] [分卷MB] [-p 密码]" 封包（out.pfs 需 -f pfs 或 -f pf6）。uu hash 输出 MD5 + SHA-256；uu cp / mv / rn / rm 管文件（rm 默认进回收站，-f 永久删）；uu cat 看包内文本、uu grep -i 搜目录或归档里的文本、uu set 替换包内单个条目（存为 -cn 副本）；tree / du / stat / mkdir / cso 补齐其余，通配符全命令可用（uu x *.zip）</item>
     </string-array>
 
 
@@ -600,4 +600,20 @@
     <string name="cli_pack_need_format">请用 -f 指定封包格式（见 uu fmt）</string>
     <string name="cli_pack_partial">%1$s 个失败</string>
     <string name="cli_pack_multi_needs_flag">多个源需要 -c（合并）或 -s（分别压缩）</string>
+    <string name="cli_cat_binary">%1$s 是二进制文件（%2$s），不打印</string>
+    <string name="cli_cat_truncated">… 已在 %1$s 处截断</string>
+    <string name="cli_rm_recycled">已移入回收站：%1$s</string>
+    <string name="cli_rm_deleted">已删除：%1$s</string>
+    <string name="cli_set_done">已更新 %1$s → %2$s</string>
+    <string name="cli_set_no_entry">归档中找不到条目：%1$s</string>
+    <string name="cli_set_unsupported">%1$s 归档不支持更新</string>
+    <string name="cli_mv_done">已移动：%1$s → %2$s</string>
+    <string name="cli_tree_truncated">… 已在 %1$s 条处截断</string>
+    <string name="cli_du_result">共 %1$s，%2$s 个文件</string>
+    <string name="cli_stat_line">%1$s · %2$s · 修改于 %3$s</string>
+    <string name="cli_mkdir_done">已创建 %1$s 个目录</string>
+    <string name="cli_cso_done">已转换：%1$s</string>
+    <string name="cli_cso_bad_ext">不是 ISO/CSO 文件：%1$s</string>
+    <string name="cli_grep_result">%1$s 处匹配，来自 %2$s 个文件</string>
+    <string name="cli_grep_none">没有匹配</string>
 </resources>

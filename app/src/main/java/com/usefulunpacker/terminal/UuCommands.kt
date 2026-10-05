@@ -1,6 +1,7 @@
 package com.usefulunpacker
 
 import android.content.SharedPreferences
+import com.usefulunpacker.fileops.RecycleBin
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -70,7 +71,10 @@ internal object UuCommands {
     /** x/c 不加路径时的默认输出位置（单独路径，产品要求）。 */
     private fun defaultOut(ctx: Ctx): File = (ctx.defaultOutDir ?: ctx.cwd).apply { mkdirs() }
 
-    internal enum class Kind { LIST_FORMATS, HELP, INFO, LIST, HASH, COPY, RENAME, EXTRACT, PACK, SCAN }
+    internal enum class Kind {
+        LIST_FORMATS, HELP, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
+        TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO
+    }
 
     internal class Cmd(val name: String, val kind: Kind, val summary: String, val usage: String)
 
@@ -84,12 +88,22 @@ internal object UuCommands {
         Cmd("help",   Kind.HELP,         "Show this help",                                 "uu help"),
         Cmd("info",   Kind.INFO,         "Print the detected format of a file",            "uu info <file>"),
         Cmd("l",      Kind.LIST,         "List the entries of an archive",                 "uu l <archive> [-a]"),
+        Cmd("cat",    Kind.CAT,          "Print a text entry from an archive",             "uu cat <archive> <entry> [-p pw]"),
         Cmd("hash",   Kind.HASH,         "Print the MD5 and SHA-256 of a file",            "uu hash <file>"),
+        Cmd("grep",   Kind.GREP,         "Search text inside a folder or archive",         "uu grep [-i] <pattern> <path>"),
         Cmd("cp",     Kind.COPY,         "Copy a file or folder (refuses to overwrite)",   "uu cp <src> <dst>"),
+        Cmd("mv",     Kind.MV,           "Move a file or folder (refuses to overwrite)",   "uu mv <src> <dst>"),
         Cmd("rn",     Kind.RENAME,       "Rename a file or folder (refuses to overwrite)", "uu rn <old> <new>"),
+        Cmd("rm",     Kind.RM,           "Delete (recycle bin by default; -f permanent)",  "uu rm <path...> [-f]"),
+        Cmd("mkdir",  Kind.MKDIR,        "Create folders",                                 "uu mkdir <path...>"),
+        Cmd("tree",   Kind.TREE,         "Recursive directory listing",                    "uu tree [dir] [depth]"),
+        Cmd("du",     Kind.DU,           "Show the total size of a folder or file",        "uu du <path>"),
+        Cmd("stat",   Kind.STAT,         "Show type / size / modified time",               "uu stat <path...>"),
         Cmd("x",      Kind.EXTRACT,      "Extract an archive, optionally selected entries", "uu x <archive> [outdir] [entry...] [-p pw]"),
         Cmd("c",      Kind.PACK,         "Pack a file or folder",                          "uu c <src...> [out] [-c|-s] [-f key] [level] [splitMB] [-p pw]"),
+        Cmd("set",    Kind.SET,          "Replace one entry inside an archive",            "uu set <archive> <entry> <localfile> [-p pw]"),
         Cmd("scan",   Kind.SCAN,         "Scan a file for embedded archive signatures",    "uu scan <file>"),
+        Cmd("cso",    Kind.CSO,          "Convert ISO ↔ CSO",                              "uu cso <file> [out]"),
     )
 
     /** 供 `help` 内建命令复用，保证它和 `uu help` 讲的是同一份内容。 */
@@ -107,12 +121,22 @@ internal object UuCommands {
                 Kind.HELP -> help(ctx)
                 Kind.INFO -> info(args, ctx)
                 Kind.LIST -> list(args, ctx)
+                Kind.CAT -> cat(args, ctx)
                 Kind.HASH -> hash(args, ctx)
+                Kind.GREP -> grep(args, ctx)
                 Kind.COPY -> copy(args, ctx)
+                Kind.MV -> mv(args, ctx)
                 Kind.RENAME -> rename(args, ctx)
+                Kind.RM -> rm(args, ctx)
+                Kind.MKDIR -> mkdir(args, ctx)
+                Kind.TREE -> tree(args, ctx)
+                Kind.DU -> du(args, ctx)
+                Kind.STAT -> stat(args, ctx)
                 Kind.EXTRACT -> extract(args, ctx)
                 Kind.PACK -> pack(args, ctx)
+                Kind.SET -> setEntry(args, ctx)
                 Kind.SCAN -> scan(args, ctx)
+                Kind.CSO -> cso(args, ctx)
             }
         } catch (e: Exception) {
             // 命令层不各自 catch：统一转成一行错误，避免把堆栈写进终端输出区
@@ -740,10 +764,408 @@ internal object UuCommands {
         is FdTable.Rejected.NoSuchFd -> UuText.noSuchFd(str, r.name)
     }
 
+    // ─── cat / grep / 文件命令 / set / cso ──────────────────────────────
+
+    /** `uu cat <archive> <entry> [-p pw]` → 打印包内文本条目（编码自动探测，有界读取）。 */
+    private fun cat(args: List<String>, ctx: Ctx): Result {
+        val (flags, _, pos) = splitFlags(args, listOf("-p"))
+        if (pos.size < 2) return needFile()
+        val pw = flags["-p"] ?: ctx.password ?: ""
+        var temp: File? = null
+        val archive: File = when (val r = resolveSource(pos[0], ctx)) {
+            is SrcSpec.Fail -> return r.result
+            is SrcSpec.Path -> {
+                if (!r.f.isFile) return Result(UuText.notFound(ctx.str, pos[0]), 1)
+                r.f
+            }
+            is SrcSpec.Fd -> { temp = r.temp; r.f }
+        }
+        try {
+            val fmt = detectFormat(archive) ?: detectFormatByMagic(archive)
+                ?: return Result(UuText.extractBadFormat(ctx.str, "-"), 1)
+            val rel = sanitizeEntryPath(pos[1])
+                ?: return Result(UuText.notFound(ctx.str, pos[1]), 1)
+            val tmpDir = ctx.cacheDir?.let { File(it, "uu_cat/${System.nanoTime()}") }
+                ?: return Result(UuText.needsActivity(ctx.str), 2)
+            try {
+                val o = extractByFormat(fmt, archive.path, tmpDir.path, rel, ctx.prefs
+                    ?: throw IllegalStateException("prefs required"), pw)
+                val f = File(tmpDir, rel)
+                if (!f.isFile) {
+                    return Result(ctx.text(R.string.cli_set_no_entry, pos[1]), 1)
+                }
+                val bytes = readPrefix(f, CAT_MAX_BYTES)
+                val enc = detectBestEncoding(bytes)
+                    ?: return Result(ctx.text(R.string.cli_cat_binary, pos[1], fmt(f.length())), 1)
+                var text = decodeTextStrict(bytes, enc)
+                if (text.length > CAT_MAX_CHARS) text = text.take(CAT_MAX_CHARS)
+                val truncated = f.length() > CAT_MAX_BYTES || text.length >= CAT_MAX_CHARS
+                return Result(text + if (truncated)
+                    "\n" + ctx.text(R.string.cli_cat_truncated, fmt(CAT_MAX_BYTES)) else "")
+            } finally {
+                tmpDir.deleteRecursively()
+            }
+        } finally {
+            temp?.deleteRecursively()
+        }
+    }
+
+    /**
+     * `uu grep [-i] <pattern> <path>` — 目录内按行搜文本；path 是归档时先把
+     * 文本条目解到临时目录再搜（与预览内搜索同款文本扩展名过滤）。
+     */
+    private fun grep(args: List<String>, ctx: Ctx): Result {
+        val (_, bools, pos) = splitFlags(args, emptyList(), listOf("-i"))
+        if (pos.size < 2) return needFile()
+        val pattern = pos[0]
+        val ci = "-i" in bools
+        val target = UuText.resolve(ctx.cwd, pos[1])
+        if (!target.exists()) return Result(UuText.notFound(ctx.str, pos[1]), 1)
+
+        var tempDir: File? = null
+        val root: File = if (target.isFile) {
+            val fmt = detectFormat(target) ?: detectFormatByMagic(target)
+                ?: return Result(UuText.extractBadFormat(ctx.str, "-"), 1)
+            val d = ctx.cacheDir?.let { File(it, "uu_grep/${System.nanoTime()}") }
+                ?: return Result(UuText.needsActivity(ctx.str), 2)
+            tempDir = d
+            val json = listEntriesJsonFor(ctx, fmt, target, ctx.password ?: "")
+                ?: return Result(UuText.listFailed(ctx.str, target.name), 1)
+            val entries = parseEntries(json)
+            for (e in entries) {
+                if (e.isDirectory) continue
+                val ext = e.name.substringAfterLast('.').lowercase()
+                if (ext !in TEXT_SEARCH_EXTS) continue
+                val rel = sanitizeEntryPath(e.path) ?: continue
+                extractByFormat(fmt, target.path, d.path, rel, ctx.prefs
+                    ?: throw IllegalStateException("prefs required"), ctx.password ?: "")
+            }
+            d
+        } else target
+
+        try {
+            var matches = 0
+            var fileName = 0
+            val sb = StringBuilder()
+            root.walkTopDown().forEach { f ->
+                if (!f.isFile) return@forEach
+                // 目录搜索只查文本类；归档解出的临时内容已是白名单
+                if (tempDir == null && f.extension.lowercase() !in TEXT_SEARCH_EXTS) return@forEach
+                if (f.length() > GREP_MAX_FILE_BYTES) return@forEach
+                val bytes = runCatching { readPrefix(f, GREP_MAX_FILE_BYTES) }.getOrNull() ?: return@forEach
+                val enc = detectBestEncoding(bytes) ?: return@forEach
+                val text = runCatching { decodeTextStrict(bytes, enc) }.getOrNull() ?: return@forEach
+                var hit = false
+                var lineNo = 0
+                for (line in text.lineSequence()) {
+                    lineNo++
+                    val isHit = if (ci) line.contains(pattern, ignoreCase = true)
+                                else line.contains(pattern)
+                    if (isHit) {
+                        matches++
+                        hit = true
+                        if (sb.length < GREP_MAX_PRINT_CHARS) {
+                            sb.append(f.relativeTo(root).path).append(':').append(lineNo)
+                                .append(": ").append(line.trim().take(160)).append('\n')
+                        }
+                    }
+                }
+                if (hit) fileName++
+            }
+            if (matches == 0) return Result(ctx.text(R.string.cli_grep_none))
+            val head = ctx.text(R.string.cli_grep_result, matches.toString(), fileName.toString())
+            val body = sb.toString().trimEnd('\n')
+            return Result(head + (if (body.isEmpty()) "" else "\n$body"))
+        } finally {
+            tempDir?.deleteRecursively()
+        }
+    }
+
+    /** `uu rm <path...> [-f]` — 默认进回收站（可恢复），`-f` 永久删除。 */
+    private fun rm(args: List<String>, ctx: Ctx): Result {
+        val (_, bools, pos) = splitFlags(args, emptyList(), listOf("-f"))
+        if (pos.isEmpty()) return needFile(Picker.FILE_OR_FOLDER)
+        val hard = "-f" in bools
+        val act = ctx.activity
+        if (!hard && act == null) return Result(UuText.needsActivity(ctx.str), 2)
+        var ok = 0
+        var fail = 0
+        for (p in pos) {
+            val f = UuText.resolve(ctx.cwd, p)
+            if (!f.exists()) { fail++; continue }
+            val done = if (hard) runCatching { f.deleteRecursively() }.getOrDefault(false)
+                       else runCatching { RecycleBin.moveToRecycleBin(act!!, f) }.getOrDefault(false)
+            if (done) ok++ else fail++
+        }
+        val msg = ctx.text(if (hard) R.string.cli_rm_deleted else R.string.cli_rm_recycled, ok.toString())
+        return if (fail == 0) Result(msg)
+               else Result(msg + "\n" + ctx.text(R.string.cli_pack_partial, fail.toString()), 1)
+    }
+
+    /** `uu mkdir <path...>` */
+    private fun mkdir(args: List<String>, ctx: Ctx): Result {
+        if (args.isEmpty()) return needFile(Picker.FILE_OR_FOLDER)
+        var ok = 0
+        var fail = 0
+        for (p in args) {
+            val f = UuText.resolve(ctx.cwd, p)
+            if (f.isDirectory || f.mkdirs()) ok++ else fail++
+        }
+        val msg = ctx.text(R.string.cli_mkdir_done, ok.toString())
+        return if (fail == 0) Result(msg)
+               else Result(msg + "\n" + ctx.text(R.string.cli_pack_partial, fail.toString()), 1)
+    }
+
+    /** `uu mv <src> <dst>` — 同卷 rename 原子；跨卷先复制成功再删源。 */
+    private fun mv(args: List<String>, ctx: Ctx): Result {
+        if (args.size < 2) return needFile()
+        val src = UuText.resolve(ctx.cwd, args[0])
+        if (!src.exists()) return Result(UuText.notFound(ctx.str, args[0]), 1)
+        var dst = UuText.resolve(ctx.cwd, args[1])
+        if (dst.isDirectory) dst = File(dst, src.name)
+        if (dst.exists()) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
+        if (src.isDirectory && dst.canonicalPath.startsWith(src.canonicalPath + File.separator)) {
+            return Result(ctx.text(R.string.cli_failed, dst.path), 1)
+        }
+        if (src.renameTo(dst)) return Result(ctx.text(R.string.cli_mv_done, src.name, dst.path))
+        return try {
+            if (src.isDirectory) src.copyRecursively(dst, overwrite = false)
+            else { dst.parentFile?.mkdirs(); src.copyTo(dst, overwrite = false) }
+            if (src.isDirectory) src.deleteRecursively() else src.delete()
+            Result(ctx.text(R.string.cli_mv_done, src.name, dst.path))
+        } catch (e: Exception) {
+            dst.deleteRecursively()  // 半成品清掉；复制失败绝不删源
+            Result(UuText.failed(ctx.str, e.message ?: src.name), 1)
+        }
+    }
+
+    /** `uu tree [dir] [depth]` — 目录树（默认深 3，最多 TREE_MAX 行）。 */
+    private fun tree(args: List<String>, ctx: Ctx): Result {
+        val pos = args.filter { !it.startsWith("-") }
+        val root = if (pos.isEmpty()) ctx.cwd else UuText.resolve(ctx.cwd, pos[0])
+        if (!root.isDirectory) return Result(UuText.notFound(ctx.str, pos.getOrNull(0) ?: "."), 1)
+        val depth = pos.getOrNull(1)?.toIntOrNull()?.coerceAtLeast(1) ?: 3
+        val sb = StringBuilder()
+        var count = 0
+        var truncated = false
+        fun walk(d: File, prefix: String, level: Int) {
+            val kids = d.listFiles()?.sortedBy { it.name.lowercase() } ?: return
+            for ((i, f) in kids.withIndex()) {
+                if (count >= TREE_MAX) { truncated = true; return }
+                val last = i == kids.size - 1
+                sb.append(prefix).append(if (last) "`-- " else "|-- ")
+                    .append(f.name).append(if (f.isDirectory) "/" else "").append('\n')
+                count++
+                if (f.isDirectory && level < depth) walk(f, prefix + (if (last) "    " else "|   "), level + 1)
+            }
+        }
+        sb.append(root.absolutePath).append('\n')
+        walk(root, "", 1)
+        if (truncated) sb.append(ctx.text(R.string.cli_tree_truncated, TREE_MAX.toString())).append('\n')
+        return Result(sb.toString().trimEnd('\n'))
+    }
+
+    /** `uu du <path>` — 递归统计大小与文件数。 */
+    private fun du(args: List<String>, ctx: Ctx): Result {
+        if (args.isEmpty()) return needFile(Picker.FILE_OR_FOLDER)
+        val f = UuText.resolve(ctx.cwd, args[0])
+        if (!f.exists()) return Result(UuText.notFound(ctx.str, args[0]), 1)
+        var bytes = 0L
+        var files = 0
+        if (f.isFile) { bytes = f.length(); files = 1 }
+        else f.walkTopDown().forEach { if (it.isFile) { bytes += runCatching { it.length() }.getOrDefault(0L); files++ } }
+        return Result(ctx.text(R.string.cli_du_result, fmt(bytes), files.toString()))
+    }
+
+    /** `uu stat <path...>` — 类型 / 大小 / 修改时间。 */
+    private fun stat(args: List<String>, ctx: Ctx): Result {
+        if (args.isEmpty()) return needFile()
+        val df = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+        val lines = args.map { p ->
+            val f = UuText.resolve(ctx.cwd, p)
+            if (!f.exists()) ctx.text(R.string.cli_not_found, p)
+            else ctx.text(R.string.cli_stat_line,
+                if (f.isDirectory) "dir" else "file",
+                if (f.isDirectory) "-" else fmt(f.length()),
+                df.format(java.util.Date(f.lastModified())))
+        }
+        return Result(lines.joinToString("\n"))
+    }
+
+    /**
+     * `uu set <archive> <entry> <localfile> [-p pw]` — 替换归档内单个条目,
+     * 输出 `名字-cn.ext` 副本（原包不动）。ZIP 走 zipModify（未动条目字节级
+     * 保留）；其余可封包格式走整解 → 覆盖 → 重封。
+     */
+    private fun setEntry(args: List<String>, ctx: Ctx): Result {
+        val (flags, _, pos) = splitFlags(args, listOf("-p"))
+        if (pos.size < 3) return needFile()
+        val pw = flags["-p"] ?: ""
+        val archive = UuText.resolve(ctx.cwd, pos[0])
+        if (!archive.isFile) return Result(UuText.notFound(ctx.str, pos[0]), 1)
+        val rel = sanitizeEntryPath(pos[1])
+            ?: return Result(UuText.notFound(ctx.str, pos[1]), 1)
+        val srcFile = UuText.resolve(ctx.cwd, pos[2])
+        if (!srcFile.isFile) return Result(UuText.notFound(ctx.str, pos[2]), 1)
+        val fmt = detectFormat(archive) ?: detectFormatByMagic(archive)
+            ?: return Result(UuText.extractBadFormat(ctx.str, "-"), 1)
+        if (fmt == "rar") return Result(ctx.text(R.string.cli_set_unsupported, "RAR"), 1)
+
+        val parent = archive.parentFile ?: ctx.cwd
+        val act = ctx.activity
+
+        // ZIP 快路径：zipModify replace（未动条目字节级保留）
+        val isSplitZip = fmt == "zip" && (isVolumeFile(archive) == "zip" || isZipVolumeName(archive.name))
+        if (fmt == "zip" && !isSplitZip) {
+            val opH = act?.let { tryStartOperation(it, "zip") }
+            try {
+                if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+                val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
+                val tmp = File(parent, "${archive.nameWithoutExtension}.set.zip")
+                val ok = ZipCore.zipModify("", archive.path, tmp.path, "replace|$rel|${srcFile.path}", pw)
+                if (!ok) {
+                    tmp.delete()
+                    return Result(UuText.packFailed(ctx.str, outF.name), 1)
+                }
+                java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                return Result(ctx.text(R.string.cli_set_done, rel, outF.name) + "\n" +
+                    ctx.text(R.string.cli_all_set))
+            } catch (e: Exception) {
+                return Result(UuText.failed(ctx.str, e.message ?: rel), 1)
+            } finally {
+                opH?.release()
+            }
+        }
+
+        // 通用路径：整解 → 覆盖条目 → 重封（需要该格式支持封包）
+        if (fmt !in COMPRESS_EXT.keys) return Result(UuText.packUnknownKey(ctx.str, fmt), 1)
+        val staging = ctx.cacheDir?.let { File(it, "uu_set/${System.nanoTime()}") }
+            ?: return Result(UuText.needsActivity(ctx.str), 2)
+        val opH = act?.let { tryStartOperation(it, fmt) }
+        try {
+            if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+            var acc = extractAccessors(fmt)
+            val done = AtomicBoolean(false)
+            val poller = if (ctx.progress != null) thread {
+                while (!done.get()) {
+                    ctx.progress?.invoke(progressLine(acc))
+                    Thread.sleep(200)
+                }
+            } else null
+            try {
+                val o = extractByFormat(fmt, archive.path, staging.path, "", ctx.prefs
+                    ?: throw IllegalStateException("prefs required"), pw)
+                if (!o.counts.ok) {
+                    return Result(act?.let { friendlyExtractError(it, o.error) } ?: (o.error ?: rel), 1)
+                }
+                val target = File(staging, rel)
+                if (!target.isFile) return Result(ctx.text(R.string.cli_set_no_entry, rel), 1)
+                target.parentFile?.mkdirs()
+                srcFile.copyTo(target, overwrite = true)
+                val outExt = archive.extension.ifEmpty { COMPRESS_EXT[fmt] ?: fmt }
+                val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.$outExt")
+                acc = compressAccessors(fmt)
+                val level = ctx.prefs?.let {
+                    if (fmt == "zip") it.getInt("zip_level", 5) else it.getInt("generic_level", 6)
+                } ?: 6
+                val ok = compressDispatch(staging, outF, fmt, level, pw, ctx.prefs
+                    ?: throw IllegalStateException("prefs required"))
+                if (!ok) return Result(UuText.packFailed(ctx.str, outF.name), 1)
+                return Result(ctx.text(R.string.cli_set_done, rel, outF.name) + "\n" +
+                    ctx.text(R.string.cli_all_set))
+            } finally {
+                done.set(true)
+                poller?.join(600)
+                staging.deleteRecursively()
+            }
+        } finally {
+            opH?.release()
+        }
+    }
+
+    /** `uu cso <file> [out]` — ISO→CSO / CSO→ISO。 */
+    private fun cso(args: List<String>, ctx: Ctx): Result {
+        val pos = args.filter { !it.startsWith("-") }
+        if (pos.isEmpty()) return needFile()
+        val src = UuText.resolve(ctx.cwd, pos[0])
+        if (!src.isFile) return Result(UuText.notFound(ctx.str, pos[0]), 1)
+        val toCso = when (src.extension.lowercase()) {
+            "iso" -> true
+            "cso" -> false
+            else -> return Result(ctx.text(R.string.cli_cso_bad_ext, src.name), 1)
+        }
+        val outF = pos.getOrNull(1)?.let { UuText.resolve(ctx.cwd, it) }
+            ?: uniqueFile(defaultOut(ctx), "${src.nameWithoutExtension}.${if (toCso) "cso" else "iso"}")
+        if (outF.exists()) return Result(ctx.text(R.string.cli_exists, outF.path), 1)
+        val act = ctx.activity
+        val opH = act?.let { tryStartOperation(it, "cso") }
+        try {
+            if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+            val acc = ProgressAccessors(
+                { CsoCore.csoProgressCount() }, { CsoCore.csoProgressTotal() },
+                { CsoCore.csoProgressFileCount() }, { CsoCore.csoProgressFileTotal() },
+                { CsoCore.csoProgressName() }, { CsoCore.csoCancel() }
+            )
+            val done = AtomicBoolean(false)
+            val poller = if (ctx.progress != null) thread {
+                while (!done.get()) {
+                    ctx.progress?.invoke(progressLine(acc))
+                    Thread.sleep(200)
+                }
+            } else null
+            val ok = try {
+                if (toCso) CsoCore.isoToCso("", src.path, outF.path, "2048")
+                else CsoCore.csoToIso("", src.path, outF.path)
+            } finally {
+                done.set(true)
+                poller?.join(600)
+            }
+            if (!ok) {
+                outF.delete()
+                return Result(UuText.packFailed(ctx.str, outF.name), 1)
+            }
+            return Result(ctx.text(R.string.cli_cso_done, outF.name) + "\n" +
+                ctx.text(R.string.cli_all_set))
+        } finally {
+            opH?.release()
+        }
+    }
+
+    /**
+     * 通配符展开（所有命令共用）：参数含 `*`/`?` 时在 cwd 内展开为实际路径；
+     * **无匹配保留原样**（错误信息里能看到用户输入的模式）。目录部分不参与
+     * 匹配（带子目录的模式先拆 parent 再匹配文件名）。
+     */
+    fun expandGlobs(tokens: List<String>, cwd: File): List<String> {
+        if (tokens.size <= 1) return tokens
+        val out = ArrayList<String>(tokens.size)
+        for ((i, t) in tokens.withIndex()) {
+            if (i == 0 || !CliGlob.hasWildcards(t)) { out.add(t); continue }
+            val f = UuText.resolve(cwd, t)
+            val dir = f.parentFile ?: cwd
+            val matches = dir.listFiles { c -> CliGlob.matches(c.name, f.name) }
+                ?.sortedBy { it.name.lowercase() }.orEmpty()
+            if (matches.isEmpty()) out.add(t) else matches.forEach { out.add(it.absolutePath) }
+        }
+        return out
+    }
+
     // ─── 内部常量 / 辅助 ──────────────────────────────────────────────────
 
     /** `uu l` 默认最多打印这么多条，末尾给一行汇总。 */
     const val LIST_PREVIEW_LIMIT = 500
+
+    /** `uu cat` 有界读取：2MB 字节 / 100k 字符（scrollback 友好）。 */
+    private const val CAT_MAX_BYTES = 2 * 1024 * 1024L
+    private const val CAT_MAX_CHARS = 100_000
+
+    /** `uu tree` 最多打印 TREE_MAX 行。 */
+    private const val TREE_MAX = 500
+
+    /** `uu grep`：单文件读取上限 / 打印字符上限。 */
+    private const val GREP_MAX_FILE_BYTES = 5L * 1024 * 1024
+    private const val GREP_MAX_PRINT_CHARS = 60_000
 
     /**
      * scan-core 的 label → 归档格式 key；非归档命中返回 null（只能 dd，不能 x/l）。

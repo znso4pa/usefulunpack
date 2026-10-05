@@ -418,7 +418,7 @@
         <item>スクロールと自動更新\n長いリストの右側に常時表示のドラッグハンドル（掴んでドラッグで移動）；テキストプレビュー/エディタにもドラッグ可能なスクロールバー。現在のフォルダに変更（名前変更/移動/削除/解凍/圧縮、USB 等の外部変更）があるとファイル一覧が自動更新されます</item>
         <item>ごみ箱\nドロワーのごみ箱は削除前の複製を保持（保持日数を設定可）。復元と全消去に対応し、サイズと元のパスで表示される</item>
         <item>ターミナルと uu コマンド
-ツールバーの ⋋ でフルスクリーン ターミナルを開きます。現在のウィンドウに紐づき：タブを切り替えると隠れ、戻ると出力/履歴/cd はそのまま。"uu help" でコマンド一覧：uu fmt（対応形式）、uu info &lt;ファイル&gt;（1 行の形式キー）、uu l &lt;アーカイブ&gt; [-a]（エントリ一覧）、uu scan &lt;ファイル&gt;（シグネチャスキャン）。ls はアプリの並び順で各ファイルに fN タグを付与（ファイルのみ）；スキャンヒットは fN バイト範囲記述子として登録——"uu l f0" で carve せずに埋め込み ZIP を直接一覧；ホストファイルが変わると記述子は無効化。内蔵コマンド：ls / pwd / cd（紐づくウィンドウを移動）/ help；それ以外はシステムシェルで実行。"uu x &lt;アーカイブ&gt; [出力先] [エントリ] [-p pw]" で解凍（進捗はターミナル内に直接描画——動くバー + バイト数/現在ファイル/項目カウンタ、ダイアログなし）、完了時に all set を表示；"uu c &lt;src&gt; &lt;out.ext&gt; [-f key] [level] [splitMB] [-p pw]" で圧縮（out.pfs は -f pfs か -f pf6 が必要）。uu hash &lt;file&gt; は MD5 + SHA-256 を出力；uu cp / uu rn は上書きしません</item>
+ツールバーの ⋋ でフルスクリーン ターミナルを開きます。現在のウィンドウに紐づき：タブを切り替えると隠れ、戻ると出力/履歴/cd はそのまま。"uu help" でコマンド一覧：uu fmt（対応形式）、uu info &lt;ファイル&gt;（1 行の形式キー）、uu l &lt;アーカイブ&gt; [-a]（エントリ一覧）、uu scan &lt;ファイル&gt;（シグネチャスキャン）。ls はアプリの並び順で各ファイルに fN タグを付与（ファイルのみ）；スキャンヒットは fN バイト範囲記述子として登録——"uu l f0" で carve せずに埋め込み ZIP を直接一覧；ホストファイルが変わると記述子は無効化。内蔵コマンド：ls / pwd / cd（紐づくウィンドウを移動）/ help；それ以外はシステムシェルで実行。"uu x &lt;アーカイブ&gt; [出力先] [エントリ] [-p pw]" で解凍（進捗はターミナル内に直接描画——動くバー + バイト数/現在ファイル/項目カウンタ、ダイアログなし）、完了時に all set を表示；"uu c &lt;src&gt; &lt;out.ext&gt; [-f key] [level] [splitMB] [-p pw]" で圧縮（out.pfs は -f pfs か -f pf6 が必要）。uu hash は MD5 + SHA-256；uu cp / mv / rn / rm（rm はゴミ箱、-f で完全削除）；uu cat でアーカイブ内テキスト表示、uu grep -i でフォルダ/アーカイブ内検索、uu set でエントリ差し替え（-cn コピー保存）；tree / du / stat / mkdir / cso ほか、ワイルドカードも全コマンドで利用可（uu x *.zip）</item>
     </string-array>
 
 
@@ -595,4 +595,20 @@
     <string name="cli_pack_need_format">-f で形式を指定してください（uu fmt 参照）</string>
     <string name="cli_pack_partial">%1$s 件失敗</string>
     <string name="cli_pack_multi_needs_flag">複数ソースには -c（結合）か -s（個別）が必要です</string>
+    <string name="cli_cat_binary">%1$s はバイナリ（%2$s）のため表示しません</string>
+    <string name="cli_cat_truncated">… %1$s で切り詰め</string>
+    <string name="cli_rm_recycled">ゴミ箱へ移動：%1$s</string>
+    <string name="cli_rm_deleted">削除しました：%1$s</string>
+    <string name="cli_set_done">更新：%1$s → %2$s</string>
+    <string name="cli_set_no_entry">アーカイブ内にエントリがありません：%1$s</string>
+    <string name="cli_set_unsupported">%1$s アーカイブは更新できません</string>
+    <string name="cli_mv_done">移動：%1$s → %2$s</string>
+    <string name="cli_tree_truncated">… %1$s 件で切り詰め</string>
+    <string name="cli_du_result">計 %1$s、%2$s ファイル</string>
+    <string name="cli_stat_line">%1$s · %2$s · 更新 %3$s</string>
+    <string name="cli_mkdir_done">%1$s 個のフォルダを作成</string>
+    <string name="cli_cso_done">変換完了：%1$s</string>
+    <string name="cli_cso_bad_ext">ISO/CSO ファイルではありません：%1$s</string>
+    <string name="cli_grep_result">%1$s 件一致、%2$s ファイル</string>
+    <string name="cli_grep_none">一致なし</string>
 </resources>

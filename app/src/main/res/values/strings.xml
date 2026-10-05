@@ -439,7 +439,7 @@
         <item>Scrolling &amp; refresh\nLong lists have an always-visible draggable handle on the right (grab and drag to jump); the text preview/editor have a draggable scrollbar too. The file list refreshes automatically when the current folder changes (rename/move/delete/extract/compress or external changes such as USB)</item>
         <item>Recycle bin\nDelete moves files to the recycle bin instead of permanently deleting them (configurable). Tap the recycle bin icon in the toolbar to view, restore, or permanently delete items. Auto-clean removes items after a configurable period (7/14/30/60/90 days or never). Files in the recycle bin count against storage space. Note: the recycle bin is stored in app internal storage and is cleared when the app is uninstalled</item>
         <item>Terminal &amp; uu commands
-The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the current window: switch tabs and it hides, switch back and the session (output, history, cd) is untouched. Type "uu help" for the command set: uu fmt (supported formats), uu info &lt;file&gt; (one-line format key), uu l &lt;archive&gt; [-a] (list entries), uu scan &lt;file&gt; (signature scan). "ls" tags every file with an fN descriptor (numbered in the app\'s sort order, files only) and each scan hit registers as an fN byte-range descriptor — "uu l f0" lists an embedded ZIP without carving it out first; the descriptor goes stale if the host file changes. Built-ins: ls / pwd / cd (navigates the rooted window) / help; any other line runs in the system shell. "uu x &lt;archive&gt; [outdir] [entries] [-p pw]" extracts (progress is rendered inside the terminal itself — a walking bar with bytes, current file and entry counts, no dialogs) and ends with an all-set line; "uu c &lt;src&gt; &lt;out.ext&gt; [-f key] [level] [splitMB] [-p pw]" packs (out.pfs needs -f pfs or -f pf6). uu hash &lt;file&gt; prints MD5 + SHA-256; uu cp / uu rn refuse to overwrite</item>
+The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the current window: switch tabs and it hides, switch back and the session (output, history, cd) is untouched. Type "uu help" for the command set: uu fmt (supported formats), uu info &lt;file&gt; (one-line format key), uu l &lt;archive&gt; [-a] (list entries), uu scan &lt;file&gt; (signature scan). "ls" tags every file with an fN descriptor (numbered in the app\'s sort order, files only) and each scan hit registers as an fN byte-range descriptor — "uu l f0" lists an embedded ZIP without carving it out first; the descriptor goes stale if the host file changes. Built-ins: ls / pwd / cd (navigates the rooted window) / help; any other line runs in the system shell. "uu x &lt;archive&gt; [outdir] [entries] [-p pw]" extracts (progress is rendered inside the terminal itself — a walking bar with bytes, current file and entry counts, no dialogs) and ends with an all-set line; "uu c &lt;src&gt; &lt;out.ext&gt; [-f key] [level] [splitMB] [-p pw]" packs (out.pfs needs -f pfs or -f pf6). uu hash prints MD5 + SHA-256; uu cp / mv / rn / rm work on files (rm uses the recycle bin, -f deletes); uu cat prints a file inside an archive, uu grep -i searches text in folders or archives, uu set replaces one entry (saved as a -cn copy); tree / du / stat / mkdir / cso round out the rest, and wildcards work everywhere (uu x *.zip)</item>
     </string-array>
 
 
@@ -601,4 +601,20 @@ The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the curre
     <string name="cli_pack_need_format">Specify the pack format with -f (see uu fmt)</string>
     <string name="cli_pack_partial">%1$s failed</string>
     <string name="cli_pack_multi_needs_flag">Multiple sources need -c (merge) or -s (separate)</string>
+    <string name="cli_cat_binary">%1$s looks binary (%2$s) — not printed</string>
+    <string name="cli_cat_truncated">… truncated at %1$s</string>
+    <string name="cli_rm_recycled">Moved to recycle bin: %1$s</string>
+    <string name="cli_rm_deleted">Deleted: %1$s</string>
+    <string name="cli_set_done">Updated %1$s → %2$s</string>
+    <string name="cli_set_no_entry">Entry not found in archive: %1$s</string>
+    <string name="cli_set_unsupported">%1$s archives cannot be updated</string>
+    <string name="cli_mv_done">Moved: %1$s → %2$s</string>
+    <string name="cli_tree_truncated">… truncated at %1$s entries</string>
+    <string name="cli_du_result">%1$s in %2$s files</string>
+    <string name="cli_stat_line">%1$s · %2$s · modified %3$s</string>
+    <string name="cli_mkdir_done">Created %1$s folders</string>
+    <string name="cli_cso_done">Converted: %1$s</string>
+    <string name="cli_cso_bad_ext">Not an ISO/CSO file: %1$s</string>
+    <string name="cli_grep_result">%1$s matches in %2$s files</string>
+    <string name="cli_grep_none">No matches</string>
 </resources>

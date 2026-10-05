@@ -427,9 +427,12 @@ internal class TerminalPanel(private val act: MainActivity) {
      * 在这里 setText 会抛 CalledFromWrongThreadException 并杀掉整个进程。
      */
     private fun runTokens(
-        line: String, tokens: List<String>, cwd: File,
+        line: String, tokens0: List<String>, cwd: File,
         s: TerminalViewModel.Session, pv: TextView?, owner: Int
     ) {
+        // 通配符展开(所有命令共用): uu x *.zip / uu c *.ks -c / uu hash *.png…
+        // 无匹配保留原样,错误信息里能看到模式本身。
+        val tokens = UuCommands.expandGlobs(tokens0, cwd)
         val outcome = when (val argv = tokens.firstOrNull()) {
             null -> Outcome.Text("")
             "ls" -> lsOutcome(tokens.drop(1), cwd)

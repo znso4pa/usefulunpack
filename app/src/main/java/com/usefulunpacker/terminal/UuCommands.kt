@@ -97,12 +97,12 @@ internal object UuCommands {
         Cmd("help",   Kind.HELP,         "Show this help",                                 "uu help"),
         Cmd("docs",   Kind.DOCS,         "Full command & parameter reference (table)",      "uu docs"),
         Cmd("info",   Kind.INFO,         "Print detected format key(s), one per line",            "uu info <file>"),
-        Cmd("l",      Kind.LIST,         "List the entries of an archive (-j = raw JSON)",  "uu l <archive> [-a] [-j] [-p pw]"),
+        Cmd("l",      Kind.LIST,         "List entries (-j JSON / -t tree)",              "uu l <archive> [-a] [-j] [-t] [-p pw]"),
         Cmd("cat",    Kind.CAT,          "Print a text entry from an archive",             "uu cat <archive> <entry> [-p pw]"),
         Cmd("hash",   Kind.HASH,         "Print the MD5 and SHA-256 of files",            "uu hash <file>"),
         Cmd("grep",   Kind.GREP,         "Search text inside a folder or archive",         "uu grep [-i] <pattern> <path>"),
-        Cmd("cp",     Kind.COPY,         "Copy a file or folder (refuses to overwrite)",   "uu cp <src> <dst>"),
-        Cmd("mv",     Kind.MV,           "Move a file or folder (refuses to overwrite)",   "uu mv <src> <dst>"),
+        Cmd("cp",     Kind.COPY,         "Copy a file or folder (-f overwrites)",          "uu cp <src> <dst> [-f]"),
+        Cmd("mv",     Kind.MV,           "Move a file or folder (-f overwrites)",          "uu mv <src> <dst> [-f]"),
         Cmd("rn",     Kind.RENAME,       "Rename a file or folder (refuses to overwrite)", "uu rn <old> <new>"),
         Cmd("rm",     Kind.RM,           "Delete (recycle bin by default; -f permanent)",  "uu rm <path...> [-f]"),
         Cmd("mkdir",  Kind.MKDIR,        "Create folders",                                 "uu mkdir <path...>"),
@@ -238,7 +238,7 @@ internal object UuCommands {
         sb.append("  * ?           ").append("wildcards expand in the current dir — uu x *.zip / uu hash *.png\n")
         sb.append("  |             ").append("pipe into a filter: grep / head / tail / wc / sort(+-r) — uu l a.zip | sort\n")
         sb.append("  > >>          ").append("redirect output to a file (>> appends) — uu l a.zip > list.txt\n")
-        sb.append("  && ;          ").append("chain commands (&& stops on failure) — cd sub && uu x *.zip\n")
+        sb.append("  && ; ||       ").append("chain: && runs on success, || runs on failure — uu l f0 || uu scan f0\n")
         sb.append("  uu run <file> ").append("run a UUT script: uu run [-k] file.uut [args...] — see below\n")
         sb.append("  progress line ").append("tap to cancel a running uu x / c / set / cso operation\n")
         sb.append("  ls pwd cd help").append(" builtins; anything else runs in the system shell\n")
@@ -251,6 +251,9 @@ internal object UuCommands {
         sb.append("  if v = xp3 then ...  ").append("one-line branch; also \"if v != \"\" then ...\"\n")
         sb.append("  if v = xp3 / else / end").append(" block branch (nestable, else optional)\n")
         sb.append("  for a in *.zip ... end").append(" loop over wildcard matches (nestable)\n")
+        sb.append("  for l in \$(uu fd)   ").append("iterate command output line by line\n")
+        sb.append("  continue             ").append("skip to the next loop iteration\n")
+        sb.append("  else if v = pfs      ").append("elif chain inside a block if (one shared end)\n")
         sb.append("  return [code]        ").append("stop this script with an exit code\n")
         sb.append("  for i in 1..5        ").append("counted loop (descending 5..1 works too)\n")
         sb.append("  if exist path / not exist path").append(" file & directory test (no wildcards)\n")
@@ -285,13 +288,15 @@ internal object UuCommands {
     }
 
     private fun list(args: List<String>, ctx: Ctx): Result {
-        val pa = splitFlags(args, listOf("-p"), listOf("-a", "-j"))
+        val pa = splitFlags(args, listOf("-p"), listOf("-a", "-j", "-t"))
         missingValueError(ctx, pa)?.let { return it }
         // -a = 打印全部条目；默认截断（有些归档几十万条，刷屏且吃光 scrollback）
         val showAll = "-a" in pa.bools
         // -j = 输出原始条目 JSON（脚本接口：n/s/d/e 四个键，见 uu docs）。
         // 只接受**一个**归档：多份 JSON 拼在一起没有合法解析方式。
         val asJson = "-j" in pa.bools
+        val asTree = "-t" in pa.bools
+        if (asJson && asTree) return Result(usageOf("l"), 2)
         val pw = pa.values["-p"]?.takeIf { it.isNotEmpty() } ?: ctx.password ?: ""
         if (pa.pos.isEmpty()) return needFile()
         if (asJson && pa.pos.size > 1) return Result(ctx.text(R.string.cli_json_one_file, pa.pos.size.toString()), 2)
@@ -304,17 +309,17 @@ internal object UuCommands {
             }
             return Result(out.toString().trimEnd('\n'))
         }
-        return listOne(pa.pos[0], showAll, pw, ctx, asJson)
+        return listOne(pa.pos[0], showAll, pw, ctx, asJson, asTree)
     }
 
-    private fun listOne(spec: String, showAll: Boolean, pwd: String, ctx: Ctx, asJson: Boolean = false): Result {
+    private fun listOne(spec: String, showAll: Boolean, pwd: String, ctx: Ctx, asJson: Boolean = false, asTree: Boolean = false): Result {
         // fN → 整文件条目（ls 注册的）直接读 host；区间条目（scan 注册的）先
         // 临时 carve 出来再列
         val fd = ctx.fds?.get(spec.removePrefix("f").toIntOrNull() ?: -1)
         if (fd != null) {
             if (fd.wholeFile) {
                 ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
-                return listEntries(fd.host, fd.host.name, showAll, pwd, ctx, asJson)
+                return listEntries(fd.host, fd.host.name, showAll, pwd, ctx, asJson, asTree)
             }
             if (!fd.isArchive()) {
                 return Result(UuText.fdNotArchive(ctx.str, spec, fd.label), 2)
@@ -327,7 +332,7 @@ internal object UuCommands {
                 carved.parentFile?.mkdirs()
                 carveToFile(fd.host, fd.offset, fd.length, carved) {}
                 // 展示名用 scan 的 label；临时文件名是一串哈希没有信息量。
-                return listEntries(carved, fd.label, showAll, pwd, ctx, asJson)
+                return listEntries(carved, fd.label, showAll, pwd, ctx, asJson, asTree)
             } finally {
                 carved.deleteRecursively()
             }
@@ -335,11 +340,12 @@ internal object UuCommands {
 
         val f = UuText.resolve(ctx.cwd, spec)
         if (!f.isFile) return Result(UuText.notFound(ctx.str, spec), 1)
-        return listEntries(f, f.name, showAll, pwd, ctx, asJson)
+        return listEntries(f, f.name, showAll, pwd, ctx, asJson, asTree)
     }
 
     private fun listEntries(
-        f: File, displayName: String, showAll: Boolean, pwd: String, ctx: Ctx, asJson: Boolean = false,
+        f: File, displayName: String, showAll: Boolean, pwd: String, ctx: Ctx,
+        asJson: Boolean = false, asTree: Boolean = false,
     ): Result {
         val fmt = detectFormat(f) ?: detectFormatByMagic(f)
             ?: return Result(UuText.extractBadFormat(ctx.str, "-"), 1)
@@ -352,10 +358,24 @@ internal object UuCommands {
         if (asJson) return Result(json)
         if (json == "[]") return Result(UuText.listEmpty(ctx.str, displayName))
 
-        val entries = parseEntries(json)
+        val entries0 = parseEntries(json)
+
+        val entries = entries0
         val total = entries.sumOf { if (!it.isDirectory) it.size else 0L }
         val sb = StringBuilder()
         sb.append(UuText.listHeader(ctx.str, displayName, entries.size, fmt(total))).append('\n')
+        // -t：树状视图（游戏归档嵌套很深，平铺列表读不动）。行数多时受 -a 同样的
+        // 截断保护 —— 截断提示沿用列表那套。
+        if (asTree) {
+            val encMark = UuText.listEncMark(ctx.str)
+            sb.append(renderEntryTree(entries) { e ->
+                if (e.isDirectory) "/" else "  " + fmt(e.size) + if (e.isEncrypted) "  $encMark" else ""
+            }).append('\n')
+            if (!showAll && entries.size > LIST_PREVIEW_LIMIT) {
+                sb.append(UuText.listTruncated(ctx.str, entries.size - LIST_PREVIEW_LIMIT)).append('\n')
+            }
+            return Result(sb.toString().trimEnd('\n'))
+        }
         val dirMark = UuText.listDirMark(ctx.str)
         val encMark = UuText.listEncMark(ctx.str)
         val shown = if (showAll) entries.size else minOf(entries.size, LIST_PREVIEW_LIMIT)
@@ -433,12 +453,15 @@ internal object UuCommands {
     }
 
     /** `uu cp <src> <dst>` — 文件/目录/fN；dst 已存在（含作为目标本身）拒绝覆盖。 */
-    private fun copy(args: List<String>, ctx: Ctx): Result {
-        rejectUnknownFlags(ctx, args)?.let { return it }
-        if (args.size < 2) return needFile()
+    private fun copy(raw: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, raw, listOf("-f"))?.let { return it }
         // 多出来的位置参数此前被**静默忽略**：`uu cp a.txt b.txt dst/` 会把
         // `b.txt` 当成目标、报"已存在"，a.txt 一个都没拷 —— 脚本里这是隐形杀手。
-        if (args.size > 2) return Result(ctx.text(R.string.cli_one_src_only, "cp"), 2)
+        val pa = splitFlags(raw, emptyList(), listOf("-f"))
+        if (pa.pos.size < 2) return needFile()
+        if (pa.pos.size > 2) return Result(ctx.text(R.string.cli_one_src_only, "cp"), 2)
+        val force = "-f" in pa.bools
+        val args = pa.pos
         var srcTemp: File? = null
         val src: File = when (val r = resolveSource(args[0], ctx)) {
             is SrcSpec.Fail -> return r.result
@@ -456,7 +479,11 @@ internal object UuCommands {
                 val name = if (srcTemp != null) "carved" else src.name
                 dst = File(dst, name)
             }
-            if (dst.exists()) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
+            if (dst.exists()) {
+                if (!force) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
+                // -f 覆盖：先删再拷（目录也整棵换掉 —— 幂等脚本的写法）
+                if (!dst.deleteRecursively()) return Result(ctx.text(R.string.cli_failed, dst.path), 1)
+            }
             // 目录拷贝进自己（cp mydir mydir/inner）→ 无限自嵌套直到路径爆掉
             if (src.isDirectory && dst.canonicalPath.startsWith(src.canonicalPath + File.separator)) {
                 return Result(ctx.text(R.string.cli_failed, dst.path), 1)
@@ -482,6 +509,48 @@ internal object UuCommands {
         if (dst.exists()) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
         if (!src.renameTo(dst)) return Result(UuText.failed(ctx.str, args[0]), 1)
         return Result(ctx.text(R.string.cli_rename_done, src.name, dst.name))
+    }
+
+    /**
+     * 条目路径 → 树状文本（**纯函数**，`uu l -t` 用，可单测）。
+     * 每目录内目录在前、名称升序；后缀由 [suffixOf] 决定（目录加 "/"，文件带大小），
+     * 缺失的父目录条目自动补成目录节点（有些归档不写目录条目）。
+     */
+    internal fun renderEntryTree(entries: List<ArchiveEntry>, suffixOf: (ArchiveEntry) -> String): String {
+        val children = HashMap<String, MutableList<ArchiveEntry>>()
+        for (e in entries) {
+            val parent = e.path.substringBeforeLast('/', "")
+            children.getOrPut(parent) { ArrayList() }.add(e)
+        }
+        // 归档可能不写目录条目：路径有父级但表里没有 → 补虚拟目录节点。
+        // knownDirs = 已存在的目录节点（真实条目 + 已补的），保证每个只补一次
+        //（否则两个同父条目会各造一份，树里出现重复节点）
+        val knownDirs = entries.filter { it.isDirectory }.map { it.path }.toMutableSet()
+        for (e in entries) {
+            var p = e.path.substringBeforeLast('/', "")
+            while (p.isNotEmpty() && p !in knownDirs) {
+                val grand = p.substringBeforeLast('/', "")
+                children.getOrPut(grand) { ArrayList() }
+                    .add(ArchiveEntry(p, p.substringAfterLast('/'), 0, true, false, p.count { it == '/' }))
+                knownDirs.add(p)
+                p = grand
+            }
+        }
+        for (list in children.values) {
+            list.sortWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
+        }
+        val sb = StringBuilder()
+        fun walk(parent: String, prefix: String) {
+            val list = children[parent].orEmpty()
+            for ((i, e) in list.withIndex()) {
+                val last = i == list.size - 1
+                sb.append(prefix).append(if (last) "└─ " else "├─ ").append(e.name)
+                sb.append(suffixOf(e)).append('\n')
+                if (e.isDirectory) walk(e.path, prefix + if (last) "   " else "│  ")
+            }
+        }
+        walk("", "")
+        return sb.toString().trimEnd('\n')
     }
 
     /**
@@ -1216,15 +1285,20 @@ internal object UuCommands {
     }
 
     /** `uu mv <src> <dst>` — 同卷 rename 原子；跨卷先复制成功再删源。 */
-    private fun mv(args: List<String>, ctx: Ctx): Result {
-        rejectUnknownFlags(ctx, args)?.let { return it }
-        if (args.size < 2) return needFile()
-        if (args.size > 2) return Result(ctx.text(R.string.cli_one_src_only, "mv"), 2)
-        val src = UuText.resolve(ctx.cwd, args[0])
-        if (!src.exists()) return Result(UuText.notFound(ctx.str, args[0]), 1)
-        var dst = UuText.resolve(ctx.cwd, args[1])
+    private fun mv(raw: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, raw, listOf("-f"))?.let { return it }
+        val pa = splitFlags(raw, emptyList(), listOf("-f"))
+        if (pa.pos.size < 2) return needFile()
+        if (pa.pos.size > 2) return Result(ctx.text(R.string.cli_one_src_only, "mv"), 2)
+        val force = "-f" in pa.bools
+        val src = UuText.resolve(ctx.cwd, pa.pos[0])
+        if (!src.exists()) return Result(UuText.notFound(ctx.str, pa.pos[0]), 1)
+        var dst = UuText.resolve(ctx.cwd, pa.pos[1])
         if (dst.isDirectory) dst = File(dst, src.name)
-        if (dst.exists()) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
+        if (dst.exists()) {
+            if (!force) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
+            if (!dst.deleteRecursively()) return Result(ctx.text(R.string.cli_failed, dst.path), 1)
+        }
         if (src.isDirectory && dst.canonicalPath.startsWith(src.canonicalPath + File.separator)) {
             return Result(ctx.text(R.string.cli_failed, dst.path), 1)
         }
@@ -1875,21 +1949,25 @@ internal object UuCommands {
         if (s.startsWith("0x", true)) s.drop(2).toLongOrNull(16) else s.toLongOrNull()
 
         /** `&&`/`;` 切出的一段。[andAlso] = 需前段成功（&&）才执行。 */
-    internal class Seg(val tokens: List<String>, val andAlso: Boolean)
+    /**
+     * 一个串联段。[op] 是它**与前一段的连接方式**：""（首段）、";"（总是执行）、
+     * "&&"（前段成功才执行）、"||"（前段失败才执行）。
+     */
+    internal class Seg(val tokens: List<String>, val op: String)
 
     /** 顶层按 `&&` / `;` 分段（tokenizer 保留它们是普通 token）。 */
     internal fun splitSegments(tokens: List<String>): List<Seg> {
         val out = ArrayList<Seg>()
         var cur = ArrayList<String>()
-        var andAlso = false
+        var op = ""
         for (t in tokens) {
-            if (t == "&&" || t == ";") {
-                out.add(Seg(cur, andAlso))
-                andAlso = t == "&&"
+            if (t == "&&" || t == ";" || t == "||") {
+                out.add(Seg(cur, op))
+                op = t
                 cur = ArrayList()
             } else cur.add(t)
         }
-        out.add(Seg(cur, andAlso))
+        out.add(Seg(cur, op))
         return out
     }
 

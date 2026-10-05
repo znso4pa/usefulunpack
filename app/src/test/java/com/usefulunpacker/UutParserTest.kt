@@ -450,4 +450,39 @@ class UutParserTest {
         assertNull(UutParser.compareValues("abc", "<", "5"))
         assertNull(UutParser.compareValues("5", ">", "x"))
     }
+
+    @Test
+    fun elseIfOnTheSameLineFormsAnElifChain() {
+        // 同行 `else if`：整条链一个 end；命中第二支
+        val src = """
+            if a = 1
+              echo one
+            else if a = 2
+              echo two
+            else
+              echo other
+            end
+        """.trimIndent()
+        val outer = UutParser.parse(src)[0] as UutStmt.If
+        val mid = outer.elseBody.single() as UutStmt.If
+        assertEquals("2", (mid.cond as UutCond.VarCmp).value)
+        assertEquals(listOf<UutStmt>().size + 1, mid.thenBody.size)
+        assertEquals(1, mid.elseBody.size)
+    }
+
+    @Test
+    fun elifKeywordAlsoWorks() {
+        val src = "if a = 1\n  echo one\nelif a = 2\n  echo two\nend\n"
+        val outer = UutParser.parse(src)[0] as UutStmt.If
+        val mid = outer.elseBody.single() as UutStmt.If
+        assertEquals("2", (mid.cond as UutCond.VarCmp).value)
+    }
+
+    @Test
+    fun elseIfChainCanEndWithPlainElse() {
+        val src = "if a = 1\n  echo 1\nelse if a = 2\n  echo 2\nelse\n  echo x\nend\n"
+        val outer = UutParser.parse(src)[0] as UutStmt.If
+        val mid = outer.elseBody.single() as UutStmt.If
+        assertEquals(1, mid.elseBody.size)
+    }
 }

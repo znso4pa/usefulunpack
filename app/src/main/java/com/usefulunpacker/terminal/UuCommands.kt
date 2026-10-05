@@ -97,8 +97,8 @@ internal object UuCommands {
         Cmd("help",   Kind.HELP,         "Show this help",                                 "uu help"),
         Cmd("docs",   Kind.DOCS,         "Full command & parameter reference (table)",      "uu docs"),
         Cmd("info",   Kind.INFO,         "Print detected format key(s), one per line",            "uu info <file>"),
-        Cmd("l",      Kind.LIST,         "List entries (-j JSON / -t tree)",              "uu l <archive> [-a] [-j] [-t] [-p pw]"),
-        Cmd("cat",    Kind.CAT,          "Print a text entry from an archive",             "uu cat <archive> <entry> [-p pw]"),
+        Cmd("l",      Kind.LIST,         "List entries (-j JSON / -t tree / -S by size)",  "uu l <archive> [-a] [-j] [-t] [-S] [-p pw]"),
+        Cmd("cat",    Kind.CAT,          "Print a text file or an archive's entry",        "uu cat <file|archive> [entry] [-p pw]"),
         Cmd("hash",   Kind.HASH,         "Print the MD5 and SHA-256 of files",            "uu hash <file>"),
         Cmd("grep",   Kind.GREP,         "Search text inside a folder or archive",         "uu grep [-i] <pattern> <path>"),
         Cmd("cp",     Kind.COPY,         "Copy a file or folder (-f overwrites)",          "uu cp <src> <dst> [-f]"),
@@ -116,7 +116,7 @@ internal object UuCommands {
         Cmd("cso",    Kind.CSO,          "Convert ISO ↔ CSO",                              "uu cso <file> [out]"),
         Cmd("enc",    Kind.ENC,          "Convert text encoding (BOM kept)",               "uu enc <file> <from|auto> <to> [out]"),
         Cmd("mvdec",  Kind.MVDEC,        "Decode RPG Maker MV/MZ assets (no key needed)",  "uu mvdec <file...> [-o dir]"),
-        Cmd("rmd",    Kind.RMD,          "Delete entries from a ZIP (name-cn copy)",       "uu rmd <zip> <entry...> [-p pw]"),
+        Cmd("rmd",    Kind.RMD,          "Delete entries from a ZIP (name-cn copy)",       "uu rmd <zip> <entry...> [-p pw] (globs ok)"),
         Cmd("add",    Kind.ADD,          "Add a file to a ZIP (name-cn copy)",             "uu add <zip> <local> [name] [-p pw]"),
         Cmd("find",   Kind.FIND,         "Find files by name under a folder",              "uu find [dir] <glob> [depth]"),
         Cmd("diff",   Kind.DIFF,         "Compare entry lists of two archives (size-based)", "uu diff <a> <b> [-p pw]"),
@@ -263,6 +263,7 @@ internal object UuCommands {
         sb.append("  set n = \$n + 1       ").append("arithmetic on integers (+ - * /), division by zero errors out\n")
         sb.append("  while n < 5 ... end  ").append("loop (stops with an error after ").append(UutParser.LOOP_MAX.toString()).append(" iterations)\n")
         sb.append("  break                ").append("leave the innermost for / while\n")
+        sb.append("  ... # note           ").append("trailing comments: # at word start, not inside quotes\n")
         sb.append("  uu l -j <archive>    ").append("raw JSON: [{\"n\":name,\"s\":size,\"d\":isDir,\"e\":encrypted}] (one archive)\n")
         sb.append("  only uu / ls / cd / pwd / help / echo").append(" are allowed — no arbitrary shell\n")
         sb.append("  errors stop the script (-k continues); each line is echoed; \"\$\" escapes only variables\n")
@@ -288,7 +289,7 @@ internal object UuCommands {
     }
 
     private fun list(args: List<String>, ctx: Ctx): Result {
-        val pa = splitFlags(args, listOf("-p"), listOf("-a", "-j", "-t"))
+        val pa = splitFlags(args, listOf("-p"), listOf("-a", "-j", "-t", "-S"))
         missingValueError(ctx, pa)?.let { return it }
         // -a = 打印全部条目；默认截断（有些归档几十万条，刷屏且吃光 scrollback）
         val showAll = "-a" in pa.bools
@@ -297,6 +298,7 @@ internal object UuCommands {
         val asJson = "-j" in pa.bools
         val asTree = "-t" in pa.bools
         if (asJson && asTree) return Result(usageOf("l"), 2)
+        if (asJson && "-S" in pa.bools) return Result(usageOf("l"), 2)   // JSON 交给脚本自己排
         val pw = pa.values["-p"]?.takeIf { it.isNotEmpty() } ?: ctx.password ?: ""
         if (pa.pos.isEmpty()) return needFile()
         if (asJson && pa.pos.size > 1) return Result(ctx.text(R.string.cli_json_one_file, pa.pos.size.toString()), 2)
@@ -309,17 +311,17 @@ internal object UuCommands {
             }
             return Result(out.toString().trimEnd('\n'))
         }
-        return listOne(pa.pos[0], showAll, pw, ctx, asJson, asTree)
+        return listOne(pa.pos[0], showAll, pw, ctx, asJson, asTree, "-S" in pa.bools)
     }
 
-    private fun listOne(spec: String, showAll: Boolean, pwd: String, ctx: Ctx, asJson: Boolean = false, asTree: Boolean = false): Result {
+    private fun listOne(spec: String, showAll: Boolean, pwd: String, ctx: Ctx, asJson: Boolean = false, asTree: Boolean = false, bySize: Boolean = false): Result {
         // fN → 整文件条目（ls 注册的）直接读 host；区间条目（scan 注册的）先
         // 临时 carve 出来再列
         val fd = ctx.fds?.get(spec.removePrefix("f").toIntOrNull() ?: -1)
         if (fd != null) {
             if (fd.wholeFile) {
                 ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
-                return listEntries(fd.host, fd.host.name, showAll, pwd, ctx, asJson, asTree)
+                return listEntries(fd.host, fd.host.name, showAll, pwd, ctx, asJson, asTree, bySize)
             }
             if (!fd.isArchive()) {
                 return Result(UuText.fdNotArchive(ctx.str, spec, fd.label), 2)
@@ -332,7 +334,7 @@ internal object UuCommands {
                 carved.parentFile?.mkdirs()
                 carveToFile(fd.host, fd.offset, fd.length, carved) {}
                 // 展示名用 scan 的 label；临时文件名是一串哈希没有信息量。
-                return listEntries(carved, fd.label, showAll, pwd, ctx, asJson, asTree)
+                return listEntries(carved, fd.label, showAll, pwd, ctx, asJson, asTree, bySize)
             } finally {
                 carved.deleteRecursively()
             }
@@ -340,12 +342,12 @@ internal object UuCommands {
 
         val f = UuText.resolve(ctx.cwd, spec)
         if (!f.isFile) return Result(UuText.notFound(ctx.str, spec), 1)
-        return listEntries(f, f.name, showAll, pwd, ctx, asJson, asTree)
+        return listEntries(f, f.name, showAll, pwd, ctx, asJson, asTree, bySize)
     }
 
     private fun listEntries(
         f: File, displayName: String, showAll: Boolean, pwd: String, ctx: Ctx,
-        asJson: Boolean = false, asTree: Boolean = false,
+        asJson: Boolean = false, asTree: Boolean = false, bySize: Boolean = false,
     ): Result {
         val fmt = detectFormat(f) ?: detectFormatByMagic(f)
             ?: return Result(UuText.extractBadFormat(ctx.str, "-"), 1)
@@ -360,7 +362,8 @@ internal object UuCommands {
 
         val entries0 = parseEntries(json)
 
-        val entries = entries0
+        // -S：按大小降序（找游戏包里的大文件）；树视图是结构化的，不受影响
+        val entries = if (bySize && !asTree) entries0.sortedByDescending { it.size } else entries0
         val total = entries.sumOf { if (!it.isDirectory) it.size else 0L }
         val sb = StringBuilder()
         sb.append(UuText.listHeader(ctx.str, displayName, entries.size, fmt(total))).append('\n')
@@ -737,7 +740,8 @@ internal object UuCommands {
                     ctx.text(R.string.cli_extract_ok, displayName,
                         o.counts.total.toString(), o.counts.success.toString(),
                         o.counts.error.toString()) + "\n" +
-                    ctx.text(R.string.cli_all_set) + missNote
+                    ctx.text(R.string.cli_all_set) + "\n" +
+                    ctx.text(R.string.cli_x_outdir, outDir.absolutePath) + missNote
                 )
             } finally {
                 opH?.release()
@@ -1123,7 +1127,24 @@ internal object UuCommands {
         val pa = splitFlags(args, listOf("-p"))
         missingValueError(ctx, pa)?.let { return it }
         val (flags, _, pos) = Triple(pa.values, pa.bools, pa.pos)
-        if (pos.size < 2) return needFile()
+        // 单参数 + 纯文本文件 = 像 shell cat 一样直接打印（脚本通用读取器，
+        // 编码自动探测，2MB/100k 字符上限与归档条目一致）。归档或不存在 → 走
+        // 原有的两参数流程 / 选择器。
+        if (pos.size == 1) {
+            val single = UuText.resolve(ctx.cwd, pos[0])
+            if (!single.exists()) return Result(UuText.notFound(ctx.str, pos[0]), 1)
+            if (single.isFile && detectFormat(single) == null && detectFormatByMagic(single) == null) {
+                val bytes = readPrefix(single, CAT_MAX_BYTES)
+                val enc = detectBestEncoding(bytes)
+                    ?: return Result(ctx.text(R.string.cli_cat_binary, pos[0], fmt(single.length())), 1)
+                var text = decodeTextStrict(bytes, enc)
+                if (text.length > CAT_MAX_CHARS) text = text.take(CAT_MAX_CHARS)
+                val truncated = single.length() > CAT_MAX_BYTES || text.length >= CAT_MAX_CHARS
+                return Result(text + if (truncated)
+                    "\n" + ctx.text(R.string.cli_cat_truncated, fmt(CAT_MAX_BYTES)) else "")
+            }
+            return needFile()
+        }
         val pw = flags["-p"] ?: ctx.password ?: ""
         var temp: File? = null
         val archive: File = when (val r = resolveSource(pos[0], ctx)) {
@@ -1649,13 +1670,20 @@ internal object UuCommands {
         if (pa.pos.size < 2) return Result(usageOf("rmd"), 2)
         val archive = UuText.resolve(ctx.cwd, pa.pos[0])
         if (!archive.isFile) return Result(UuText.notFound(ctx.str, pa.pos[0]), 1)
-        val entries = pa.pos.drop(1)
-        if (entries.any { it.contains('|') }) {
+        val pw = pa.values["-p"]?.takeIf { it.isNotEmpty() } ?: ""
+        // 条目通配：与 uu x 同一套"按条目 JSON 展开"（`uu rmd a.zip "*.tmp"`）
+        val raw = pa.pos.drop(1)
+        val (expanded, misses) = expandEntryGlobs(raw, "zip", archive, pw, ctx)
+        if (raw.isNotEmpty() && expanded.isEmpty()) {
+            return Result(ctx.text(R.string.cli_x_glob_none, misses.joinToString(" ")), 1)
+        }
+        if (expanded.any { it.contains('|') }) {
             return Result(ctx.text(R.string.zip_invalid_entry_name), 1)
         }
-        val pw = pa.values["-p"]?.takeIf { it.isNotEmpty() } ?: ""
-        val ops = entries.joinToString("\n") { "delete|$it" }
-        return zipModifyCopy(archive, ops, pw, "${entries.size} entries", ctx)
+        val ops = expanded.joinToString("\n") { "delete|$it" }
+        val r = zipModifyCopy(archive, ops, pw, "${expanded.size} entries", ctx)
+        return if (misses.isEmpty()) r
+        else Result(r.text + "\n" + ctx.text(R.string.cli_x_glob_miss, misses.joinToString(" ")), r.exitCode)
     }
 
     /** `uu add <zip> <local> [name] [-p pw]` — 向 ZIP 添加条目（输出 -cn 副本）。 */

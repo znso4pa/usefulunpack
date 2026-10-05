@@ -485,4 +485,34 @@ class UutParserTest {
         val mid = outer.elseBody.single() as UutStmt.If
         assertEquals(1, mid.elseBody.size)
     }
+
+    // ─── 第十批：行尾注释（词首 # 才算） ──────────────────────────────────
+
+    @Test
+    fun stripCommentCutsWordInitialHashOnly() {
+        assertEquals("uu l a.zip", UutParser.stripComment("uu l a.zip  # list it"))
+        assertEquals("echo a#b", UutParser.stripComment("echo a#b"))        // 词中 # 不是注释
+        assertEquals("echo \"#1\"", UutParser.stripComment("echo \"#1\"")) // 引号内不是注释
+        assertEquals("echo it", UutParser.stripComment("echo it # trailing"))
+        assertEquals("", UutParser.stripComment("# whole line"))
+        assertEquals("set n = 1", UutParser.stripComment("set n = 1 #count"))
+    }
+
+    @Test
+    fun parseHandlesTrailingCommentsOnAllLineTypes() {
+        val src = """
+            set f = 1.zip  # target
+            uu l ${'$'}f # list
+            for a in *.zip # loop
+              echo ${'$'}a
+            end
+            # pure comment stays fine
+        """.trimIndent()
+        val ast = UutParser.parse(src)
+        // set + uu l + for = 3 条语句；for 体 1 条；纯注释行不产生语句
+        assertEquals(3, ast.size)
+        val loop = ast[2] as UutStmt.For
+        assertEquals("*.zip", loop.rawPatterns)
+        assertEquals(1, loop.body.size)
+    }
 }

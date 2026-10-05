@@ -125,6 +125,7 @@ internal object UutParser {
 
         fun parseAll(): List<UutStmt> = parseBlock(inBlock = false).first
 
+
         /** 条件：`exist <路径>` / `not exist <路径>` / `<变量> [!=] <值>`。 */
         private fun parseCond(condRaw: String, lineNo: Int): UutCond {
             val negExist = condRaw.startsWith("not exist ")
@@ -220,10 +221,11 @@ internal object UutParser {
         private fun parseBlock(inBlock: Boolean): Pair<List<UutStmt>, String?> {
             val out = ArrayList<UutStmt>()
             while (idx < lines.size) {
-                val raw = lines[idx].trim()
                 val lineNo = idx + 1
+                // 行尾注释先剥掉（词首 # 才算，引号内的不算），空行与整行注释统一跳过
+                val raw = stripComment(lines[idx].trim())
                 idx++
-                if (raw.isEmpty() || raw.startsWith("#")) continue
+                if (raw.isEmpty()) continue
                 if (raw == "end" || raw == "else") {
                     if (inBlock) return out to raw
                     throw UutParseException(
@@ -386,6 +388,27 @@ internal object UutParser {
         flush()
         // 首段没有连接符；flush() 默认给 ";"，这里纠正
         return if (out.isEmpty()) out else listOf(out[0].first to "") + out.drop(1).map { it.first to it.second }
+    }
+
+    /**
+     * 去掉行尾注释：`#` 在**词首**（行首或空白之后）且不在引号内才算注释，
+     * `echo a#b` 里的 # 是文件名的一部分（shell 同规则）。
+     */
+    fun stripComment(line: String): String {
+        var quote = '\u0000'
+        var i = 0
+        while (i < line.length) {
+            val c = line[i]
+            when {
+                quote != '\u0000' -> if (c == quote) quote = '\u0000'
+                c == '\\' && i + 1 < line.length -> i++
+                c == '"' || c == '\'' -> quote = c
+                c == '#' && (i == 0 || line[i - 1].isWhitespace()) ->
+                    return line.substring(0, i).trimEnd()
+            }
+            i++
+        }
+        return line
     }
 
     /** 条件里可用的运算符（双字符在前，"<=" 不能被拆成 "<"）。 */

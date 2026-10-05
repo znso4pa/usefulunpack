@@ -702,7 +702,12 @@ internal class TerminalPanel(private val act: MainActivity) {
         }
         is UutCond.Exists -> {
             val p = UutParser.expandVars(cond.rawPath, vars)
-            val exists = UuText.resolve(cwd, p).exists()
+            // 含通配符时按"有没有任何命中"判断：`if exist *.zip` 是脚本里最常见
+            // 的写法（展开逻辑与 for 复用同一套；未命中会退回字面模式，这里滤掉）
+            val exists = if (CliGlob.hasWildcards(p)) {
+                UuCommands.expandGlobs(listOf("exist") + listOf(p), cwd)
+                    .drop(1).any { !it.contains('*') && !it.contains('?') }
+            } else UuText.resolve(cwd, p).exists()
             if (cond.negate) !exists else exists
         }
     }

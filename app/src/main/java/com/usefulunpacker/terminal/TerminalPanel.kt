@@ -507,7 +507,10 @@ internal class TerminalPanel(private val act: MainActivity) {
     private fun runTokens(line: String, tokens0: List<String>, ec: ExecCtx, depth: Int = 0): Int {
         var exit = 0
         for (seg in UuCommands.splitSegments(tokens0)) {
-            if (seg.andAlso && exit != 0) break
+            when (seg.op) {
+                "&&" -> if (exit != 0) break
+                "||" -> if (exit == 0) break
+            }
             if (seg.tokens.isEmpty()) continue
             when (val r = runSegment(line, seg.tokens, ec, depth)) {
                 is SegDone -> {
@@ -726,6 +729,8 @@ internal class TerminalPanel(private val act: MainActivity) {
         val ran: Int = 0, val exit: Int = 0, val stoppedLine: Int = 0, val returned: Boolean = false,
         /** `break`：只被**最内层** for / while 吸收，if 之类的块照原样往上传。 */
         val broke: Boolean = false,
+        /** `continue`：与 broke 同一套传播规则，被循环吸收后进入下一轮。 */
+        val continued: Boolean = false,
     )
 
     private fun execUut(
@@ -741,7 +746,10 @@ internal class TerminalPanel(private val act: MainActivity) {
                     var lastExit = 0
                     var anyRan = false
                     for ((piece, joiner) in UutParser.splitChain(st.raw)) {
-                        if (joiner == "&&" && lastExit != 0) continue   // && 短路
+                        when (joiner) {
+                            "&&" -> if (lastExit != 0) continue   // 前段失败：短路
+                            "||" -> if (lastExit == 0) continue   // 前段成功：短路
+                        }
                         val expanded = UutParser.expandVars(piece, vars)
                         if (ec.echo) ec.emit(PROMPT + expanded)
                         val toks = tokenizeLine(expanded) ?: run {
@@ -749,10 +757,11 @@ internal class TerminalPanel(private val act: MainActivity) {
                             return UutRun(ran + 1, 1, st.line)
                         }
                         if (toks.isEmpty()) continue
-                        // 行内 break / return：是 UUT 语句而不是 shell 命令，
+                        // 行内 break / continue / return：是 UUT 语句而不是 shell 命令，
                         // 必须在白名单检查之前拦截（否则 if x then break 直接被拒）
                         when (toks[0]) {
                             "break" -> return UutRun(ran, exit, 0, broke = true)
+                            "continue" -> return UutRun(ran, exit, 0, continued = true)
                             "return" -> {
                                 val code = UutParser.expandVars(toks.drop(1).joinToString(" "), vars)
                                     .trim().toIntOrNull() ?: 0
@@ -804,10 +813,11 @@ internal class TerminalPanel(private val act: MainActivity) {
                             return UutRun(ran + 1, 1, st.line)
                         }
                         if (toks.isNotEmpty()) when (toks[0]) {
-                            // 行内 break / return（与 Cmd 片段循环同一套拦截：
-                            // 漏了这边的话 `if x then break` 会落进 shell 兜底，
+                            // 行内 break / continue / return（与 Cmd 片段循环同一套
+                            // 拦截：漏了这边的话 `if x then break` 会落进 shell 兜底，
                             // 静默返回 0、循环跑满 —— 真机实测）
                             "break" -> return UutRun(ran, exit, 0, broke = true)
+                            "continue" -> return UutRun(ran, exit, 0, continued = true)
                             "return" -> {
                                 val code = UutParser.expandVars(toks.drop(1).joinToString(" "), vars)
                                     .trim().toIntOrNull() ?: 0
@@ -827,8 +837,29 @@ internal class TerminalPanel(private val act: MainActivity) {
                     }
                 }
                 is UutStmt.For -> {
-                    val patterns = UutParser.expandVars(st.rawPatterns, vars)
-                        .trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+                    val patternsRaw = UutParser.expandVars(st.rawPatterns, vars).trim()
+                    // 单个 `$(命令)` = 按行迭代命令输出（脚本最常用的"遍历结果"写法；
+                    // 捕获先于分词，否则 `$(` 会被空格切碎）
+                    val capItems = UutParser.captureInner(patternsRaw)?.let { cap ->
+                        captureCmd(cap, vars, ec, depth).split('\n')
+                            .map { it.trim() }.filter { it.isNotEmpty() }
+                    }
+                    if (capItems != null) {
+                        if (capItems.isEmpty()) continue
+                        for (item in capItems) {
+                            vars[st.varName] = item
+                            val b = execUut(st.body, vars, ec, depth, keepGoing)
+                            ran += b.ran; exit = b.exit
+                            if (b.returned || b.stoppedLine > 0) {
+                                return UutRun(ran, exit, b.stoppedLine, b.returned, b.broke, b.continued)
+                            }
+                            if (b.broke) break
+                            if (b.continued) continue
+                            if (b.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
+                        }
+                        continue
+                    }
+                    val patterns = patternsRaw.split(Regex("\\s+")).filter { it.isNotEmpty() }
                     if (patterns.isEmpty()) continue
                     // 单个 `1..N` = 计数循环（纯数字列表，不做通配展开）
                     val range = UutParser.rangeValues(patterns[0])
@@ -839,9 +870,10 @@ internal class TerminalPanel(private val act: MainActivity) {
                             val b = execUut(st.body, vars, ec, depth, keepGoing)
                             ran += b.ran; exit = b.exit
                             if (b.returned || b.stoppedLine > 0) {
-                                return UutRun(ran, exit, b.stoppedLine, b.returned, b.broke)
+                                return UutRun(ran, exit, b.stoppedLine, b.returned, b.broke, b.continued)
                             }
                             if (b.broke) break                      // 计数循环同样吃 break
+                            if (b.continued) continue
                             if (b.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
                         }
                         continue
@@ -862,9 +894,10 @@ internal class TerminalPanel(private val act: MainActivity) {
                         ran += sub.ran
                         exit = sub.exit
                         if (sub.returned || sub.stoppedLine > 0) {
-                            return UutRun(ran, exit, sub.stoppedLine, sub.returned, sub.broke)
+                            return UutRun(ran, exit, sub.stoppedLine, sub.returned, sub.broke, sub.continued)
                         }
                         if (sub.broke) break
+                        if (sub.continued) continue
                         if (sub.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
                     }
                 }
@@ -886,13 +919,15 @@ internal class TerminalPanel(private val act: MainActivity) {
                         ran += sub.ran
                         exit = sub.exit
                         if (sub.returned || sub.stoppedLine > 0) {
-                            return UutRun(ran, exit, sub.stoppedLine, sub.returned, sub.broke)
+                            return UutRun(ran, exit, sub.stoppedLine, sub.returned, sub.broke, sub.continued)
                         }
                         if (sub.broke) break
+                        if (sub.continued) continue
                         if (sub.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
                     }
                 }
                 is UutStmt.Break -> return UutRun(ran, exit, 0, broke = true)
+                is UutStmt.Continue -> return UutRun(ran, exit, 0, continued = true)
                 is UutStmt.If -> {
                     val okIf = evalCond(st.cond, vars, ec.s.cwd)
                     if (okIf == null) {
@@ -905,8 +940,8 @@ internal class TerminalPanel(private val act: MainActivity) {
                         val sub = execUut(body, vars, ec, depth, keepGoing)
                         ran += sub.ran
                         exit = sub.exit
-                        if (sub.returned || sub.stoppedLine > 0 || sub.broke) {
-                            return UutRun(ran, exit, sub.stoppedLine, sub.returned, sub.broke)
+                        if (sub.returned || sub.stoppedLine > 0 || sub.broke || sub.continued) {
+                            return UutRun(ran, exit, sub.stoppedLine, sub.returned, sub.broke, sub.continued)
                         }
                         if (sub.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
                     }

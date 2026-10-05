@@ -476,14 +476,17 @@ class UuCommandsTest {
 
     @Test
     fun splitSegmentsHandlesAndAlsoAndSemicolon() {
-        val segs = UuCommands.splitSegments(listOf("a", "&&", "b", ";", "c"))
-        assertEquals(3, segs.size)
+        // 第九批起 Seg 携带连接方式（op），`||` 与 `&&` / `;` 同级
+        val segs = UuCommands.splitSegments(listOf("a", "&&", "b", "||", "c", ";", "d"))
+        assertEquals(4, segs.size)
         assertEquals(listOf("a"), segs[0].tokens)
-        assertFalse(segs[0].andAlso)
+        assertEquals("", segs[0].op)
         assertEquals(listOf("b"), segs[1].tokens)
-        assertTrue(segs[1].andAlso)   // b 需 a 成功
+        assertEquals("&&", segs[1].op)   // b 需 a 成功
         assertEquals(listOf("c"), segs[2].tokens)
-        assertFalse(segs[2].andAlso)  // c 无条件
+        assertEquals("||", segs[2].op)   // c 需 a 失败
+        assertEquals(listOf("d"), segs[3].tokens)
+        assertEquals(";", segs[3].op)    // d 无条件
     }
 
     @Test
@@ -717,5 +720,91 @@ class UuCommandsTest {
         val (hits, misses) = UuCommands.matchEntryPaths(paths, listOf("*"))
         assertEquals(paths, hits)
         assertTrue(misses.isEmpty())
+    }
+
+    // ─── 第九批：l -t 树 / cp·mv -f / UUT v5 语义的纯函数部分 ─────────────
+
+    private fun entry(path: String, size: Long = 0, isDir: Boolean = false) =
+        com.usefulunpacker.ArchiveEntry(path, path.substringAfterLast('/'), size, isDir, false, path.count { it == '/' })
+
+    @Test
+    fun entryTreeRendersNestedWithDirsFirst() {
+        val entries = listOf(
+            entry("readme.md", 2),
+            entry("data/img/b.png", 2),
+            entry("data/img/a.png", 1),
+            entry("data", isDir = true),
+            entry("data/img", isDir = true),
+        )
+        val out = UuCommands.renderEntryTree(entries) { e ->
+            if (e.isDirectory) "/" else "  " + e.size + "B"
+        }
+        // 目录在前、名称升序；树形符号与缩进
+        val lines = out.split('\n')
+        assertEquals("├─ data/", lines[0])
+        assertEquals("│  └─ img/", lines[1])
+        assertEquals("│     ├─ a.png  1B", lines[2])
+        assertEquals("│     └─ b.png  2B", lines[3])
+        assertEquals("└─ readme.md  2B", lines[4])
+    }
+
+    @Test
+    fun entryTreeSynthesizesMissingDirectoryNodes() {
+        // 有些归档不写目录条目：只有 data/img/a.png 也必须长出 data/ 和 img/
+        val entries = listOf(entry("data/img/a.png", 5))
+        val out = UuCommands.renderEntryTree(entries) { e ->
+            if (e.isDirectory) "/" else "  " + e.size + "B"
+        }
+        val lines = out.split('\n')
+        assertEquals("└─ data/", lines[0])
+        assertEquals("   └─ img/", lines[1])
+        assertEquals("      └─ a.png  5B", lines[2])
+    }
+
+    @Test
+    fun copyForceOverwritesAndPlainRefuses() {
+        val dir = tmp.root.resolve("cpf").apply { mkdirs() }
+        File(dir, "src.txt").writeText("new")
+        val dst = File(dir, "dst.txt").apply { writeText("old") }
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        // 无 -f：拒绝
+        assertEquals(1, UuCommands.dispatch(listOf("cp", "src.txt", "dst.txt"), c).exitCode)
+        assertEquals("old", dst.readText())
+        // -f：覆盖
+        assertEquals(0, UuCommands.dispatch(listOf("cp", "src.txt", "dst.txt", "-f"), c).exitCode)
+        assertEquals("new", dst.readText())
+        // 目录目标是"拷进去"语义（与 shell 一致，-f 只对文件目标有意义）：
+        // d2 已存在 → 拷成 d2/d1
+        File(dir, "d1/x").apply { parentFile.mkdirs(); writeText("1") }
+        File(dir, "d2").mkdirs()
+        assertEquals(0, UuCommands.dispatch(listOf("cp", "d1", "d2"), c).exitCode)
+        assertEquals("1", File(dir, "d2/d1/x").readText())
+    }
+
+    @Test
+    fun mvForceOverwrites() {
+        val dir = tmp.root.resolve("mvf").apply { mkdirs() }
+        File(dir, "a.txt").writeText("A")
+        File(dir, "b.txt").writeText("B")
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        assertEquals(1, UuCommands.dispatch(listOf("mv", "a.txt", "b.txt"), c).exitCode)
+        assertEquals("B", File(dir, "b.txt").readText())
+        assertEquals(0, UuCommands.dispatch(listOf("mv", "a.txt", "b.txt", "-f"), c).exitCode)
+        assertEquals("A", File(dir, "b.txt").readText())
+        // -f 也不吃多余位置参数（继续报用法错）
+        assertEquals(2, UuCommands.dispatch(listOf("mv", "a.txt", "b.txt", "c.txt", "-f"), c).exitCode)
+    }
+
+    @Test
+    fun orElseJoinerSplitByChain() {
+        assertEquals(
+            listOf("uu l f0" to "", "echo missing" to "||"),
+            UutParser.splitChain("uu l f0 || echo missing")
+        )
+        // 混合：; 之后 && 与 || 各自短路
+        assertEquals(
+            listOf("a" to "", "b" to ";", "c" to "&&", "d" to "||"),
+            UutParser.splitChain("a ; b && c || d")
+        )
     }
 }

@@ -87,6 +87,9 @@ internal sealed class UutStmt {
     /** `break`：跳出**最内层** for / while。 */
     class Break(val line: Int) : UutStmt()
 
+    /** `continue`：跳过**最内层** for / while 的本轮剩余部分。 */
+    class Continue(val line: Int) : UutStmt()
+
     /** `return [退出码]`：结束**当前脚本**（嵌套 `uu run` 只结束那一层）。 */
     class Return(val line: Int, val rawCode: String) : UutStmt()
 }
@@ -112,6 +115,13 @@ internal object UutParser {
      */
     private class BlockParser(private val lines: List<String>) {
         private var idx = 0
+
+        /**
+         * 同行 `else if <cond>` / `elif <cond>` 的条件文本：parseBlock 撞见这种行时
+         * 收在这里并按 "else" 终止当前块，紧跟着的 parseIf 优先消费它 —— 否则整行
+         * 会被当普通命令，`else if` 里的分支永远走不到（真机实测：恒走 else）。
+         */
+        private var pendingElseIf: String? = null
 
         fun parseAll(): List<UutStmt> = parseBlock(inBlock = false).first
 
@@ -163,9 +173,28 @@ internal object UutParser {
             if (term == null) throw UutParseException(lineNo, "if needs 'end'")
             var elseBody: List<UutStmt> = emptyList()
             if (term == "else") {
-                val (eb, t2) = parseBlock(inBlock = true)
-                if (t2 != "end") throw UutParseException(lineNo, "if needs 'end'")
-                elseBody = eb
+                // elif 的两种形态：同行 `else if <cond>` / `elif <cond>`（pendingElseIf，
+                // parseBlock 已把行消费掉），或 `else` 换行后紧跟 `if` 行（peek）。
+                // 两者都作为嵌套 if 解析，整条链共享一个 end。
+                val inline = pendingElseIf
+                pendingElseIf = null
+                when {
+                    inline != null -> elseBody = listOf(parseIf(lineNo, inline))
+                    else -> {
+                        var peek = idx
+                        while (peek < lines.size && lines[peek].trim().isEmpty()) peek++
+                        if (peek < lines.size && lines[peek].trim().startsWith("if ")) {
+                            val ln = peek + 1
+                            val rest = lines[peek].trim().removePrefix("if ").trim()
+                            idx = peek + 1
+                            elseBody = listOf(parseIf(ln, rest))
+                        } else {
+                            val (eb, t2) = parseBlock(inBlock = true)
+                            if (t2 != "end") throw UutParseException(lineNo, "if needs 'end'")
+                            elseBody = eb
+                        }
+                    }
+                }
             }
             return UutStmt.If(lineNo, cond, thenBody, elseBody)
         }
@@ -202,6 +231,16 @@ internal object UutParser {
                         "'$raw' without block (a block header must start the line or follow ';' / '&&')"
                     )
                 }
+                // 同行 elif：`else if <cond>` / `elif <cond>` —— 收下条件文本后按
+                // "else" 终止当前块（parseIf 会优先消费 pendingElseIf）
+                if (raw.startsWith("else if ") || raw.startsWith("elif ")) {
+                    pendingElseIf = when {
+                        raw.startsWith("else if ") -> raw.removePrefix("else if ").trim()
+                        else -> raw.removePrefix("elif ").trim()
+                    }
+                    if (inBlock) return out to "else"
+                    throw UutParseException(lineNo, "'else' without block")
+                }
                 when {
                     raw.startsWith("set ") -> {
                         val rest = raw.removePrefix("set ").trim()
@@ -222,6 +261,7 @@ internal object UutParser {
                         out.add(UutStmt.While(lineNo, cond, body))
                     }
                     raw == "break" -> out.add(UutStmt.Break(lineNo))
+                    raw == "continue" -> out.add(UutStmt.Continue(lineNo))
                     raw == "return" || raw.startsWith("return ") ->
                         out.add(UutStmt.Return(lineNo, raw.removePrefix("return").trim()))
                     else -> {
@@ -301,8 +341,9 @@ internal object UutParser {
     }
 
     /**
-     * 把一行原文按 `;` / `&&` 切成片段（引号内与 `\` 转义的分隔符不算），
-     * 返回 (文本, 连接符)，连接符 ∈ {"", ";"(总是执行), "&&"(前一段成功才执行)}。
+     * 把一行原文按 `;` / `&&` / `||` 切成片段（引号内与 `\` 转义的分隔符不算），
+     * 返回 (文本, 连接符)，连接符 ∈ {"", ";"(总是执行), "&&"(前段成功才执行),
+     * "||"(前段失败才执行)}。
      *
      * 为什么要在**展开变量之前**切：`uu l nope.zip ; echo rc=$?` 里的 `$?` 必须
      * 看到前一段的退出码，而"整行先展开再执行"的话它拿到的是上一行留下的值
@@ -335,6 +376,9 @@ internal object UutParser {
                 c == ';' -> { flush(); i++ }
                 c == '&' && i + 1 < raw.length && raw[i + 1] == '&' -> {
                     flush(); joiner = "&&"; i += 2
+                }
+                c == '|' && i + 1 < raw.length && raw[i + 1] == '|' -> {
+                    flush(); joiner = "||"; i += 2
                 }
                 else -> { cur.append(c); i++ }
             }

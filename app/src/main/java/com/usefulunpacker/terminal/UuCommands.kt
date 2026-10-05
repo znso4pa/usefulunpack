@@ -82,7 +82,7 @@ internal object UuCommands {
     internal enum class Kind {
         LIST_FORMATS, HELP, DOCS, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
         TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO,
-        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, IMG, FD
+        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, IMG, FD, B64
     }
 
     internal class Cmd(val name: String, val kind: Kind, val summary: String, val usage: String)
@@ -123,6 +123,7 @@ internal object UuCommands {
         Cmd("hex",    Kind.HEX,          "Hex dump a byte range",                         "uu hex <file> [offset] [len]"),
         Cmd("img",    Kind.IMG,          "Convert images (jpg / png / webp)",             "uu img <src...> <jpg|png|webp> [-o dir] [-q 1-100]"),
         Cmd("fd",     Kind.FD,           "List the registered fN descriptors",            "uu fd [fN...]"),
+        Cmd("b64",    Kind.B64,          "Base64 encode (default) or decode a file",      "uu b64 <file> [-d] [out]"),
     )
 
     /** 供 `help` 内建命令复用，保证它和 `uu help` 讲的是同一份内容。 */
@@ -166,6 +167,7 @@ internal object UuCommands {
                 Kind.HEX -> hex(args, ctx)
                 Kind.IMG -> img(args, ctx)
                 Kind.FD -> fd(args, ctx)
+                Kind.B64 -> b64(args, ctx)
             }
         } catch (e: Exception) {
             // 命令层不各自 catch：统一转成一行错误，避免把堆栈写进终端输出区
@@ -234,7 +236,7 @@ internal object UuCommands {
         sb.append("-".repeat(8)).append('\n')
         sb.append("  fN            ").append("descriptor from \"ls\" / \"uu scan\" — uu l f0 / uu x f0 / uu cp f0 out.zip\n")
         sb.append("  * ?           ").append("wildcards expand in the current dir — uu x *.zip / uu hash *.png\n")
-        sb.append("  |             ").append("pipe into a filter: grep / head / tail / wc — uu l a.zip | grep main\n")
+        sb.append("  |             ").append("pipe into a filter: grep / head / tail / wc / sort(+-r) — uu l a.zip | sort\n")
         sb.append("  > >>          ").append("redirect output to a file (>> appends) — uu l a.zip > list.txt\n")
         sb.append("  && ;          ").append("chain commands (&& stops on failure) — cd sub && uu x *.zip\n")
         sb.append("  uu run <file> ").append("run a UUT script: uu run [-k] file.uut [args...] — see below\n")
@@ -254,6 +256,10 @@ internal object UuCommands {
         sb.append("  if exist path / not exist path").append(" file & directory test (no wildcards)\n")
         sb.append("  \$? / \$errorlevel  ").append("exit code of the previous command\n")
         sb.append("  entries (uu x)       ").append("take * and ? matched against the full entry path — uu x a.zip \"*.png\"\n")
+        sb.append("  if n > 3 / n <= 3    ").append("numeric compare (< > <= >=); = and != are literal text\n")
+        sb.append("  set n = \$n + 1       ").append("arithmetic on integers (+ - * /), division by zero errors out\n")
+        sb.append("  while n < 5 ... end  ").append("loop (stops with an error after ").append(UutParser.LOOP_MAX.toString()).append(" iterations)\n")
+        sb.append("  break                ").append("leave the innermost for / while\n")
         sb.append("  uu l -j <archive>    ").append("raw JSON: [{\"n\":name,\"s\":size,\"d\":isDir,\"e\":encrypted}] (one archive)\n")
         sb.append("  only uu / ls / cd / pwd / help / echo").append(" are allowed — no arbitrary shell\n")
         sb.append("  errors stop the script (-k continues); each line is echoed; \"\$\" escapes only variables\n")
@@ -1706,6 +1712,67 @@ internal object UuCommands {
         return Result(sb.toString().trimEnd('\n'), if (fail > 0) 1 else 0)
     }
 
+    /**
+     * `uu b64 <file> [-d] [out]` — Base64 编/解码。
+     *
+     * 默认编码：输出**纯 base64 文本**（无换行，便于管道与脚本）；
+     * `-d` 解码：按 base64 文本读入，写出原始字节（`out` 省略时写 `<名字>.b64` /
+     * `<名字>.bin`，用 `>` 重定向也可以）。
+     * 支持 fN（扫描命中的 base64 blob 可以直接解）。cap 见 [B64_MAX_BYTES]。
+     */
+    private fun b64(args: List<String>, ctx: Ctx): Result {
+        val pa = splitFlags(args, emptyList(), listOf("-d"))
+        val decode = "-d" in pa.bools
+        if (pa.pos.isEmpty()) return needFile()
+        val spec = pa.pos[0]
+        val outArg = pa.pos.getOrNull(1)
+        var temp: File? = null
+        val src = when (val r = resolveSource(spec, ctx)) {
+            is SrcSpec.Fail -> return r.result
+            is SrcSpec.Path -> {
+                if (!r.f.isFile) return Result(UuText.notFound(ctx.str, spec), 1)
+                r.f
+            }
+            is SrcSpec.Fd -> { temp = r.temp; r.f }
+        }
+        try {
+            if (src.length() > B64_MAX_BYTES) {
+                return Result(ctx.text(R.string.cli_b64_too_big, fmt(src.length()), fmt(B64_MAX_BYTES)), 1)
+            }
+            val bytes = runCatching { src.readBytes() }.getOrNull()
+                ?: return Result(UuText.failed(ctx.str, src.name), 1)
+            if (!decode) {
+                val text = java.util.Base64.getEncoder().encodeToString(bytes)
+                val dest = outArg?.let { UuText.resolve(ctx.cwd, it) }
+                if (dest != null) {
+                    if (dest.exists()) return Result(ctx.text(R.string.cli_exists, dest.path), 1)
+                    dest.parentFile?.mkdirs()
+                    val ok = runCatching { dest.writeText(text + "\n"); true }.getOrDefault(false)
+                    return if (ok) Result(ctx.text(R.string.cli_b64_saved, dest.absolutePath))
+                           else Result(UuText.failed(ctx.str, dest.name), 1)
+                }
+                // 不给路径：base64 文本就是命令输出（可管道、可重定向）
+                return Result(text)
+            }
+            // 解码：**字节不进 String**（默认字符集转换会把 >=0x80 的字节变成 U+FFFD，
+            // 实测 round-trip 出来"bytes differ"）。Base64 解码本身允许换行（MIME 解码器）。
+            val raw = runCatching {
+                java.util.Base64.getMimeDecoder().decode(bytes.toString(Charsets.ISO_8859_1))
+            }.getOrElse { return Result(ctx.text(R.string.cli_b64_bad, spec), 1) }
+            val defaultName = src.name.removeSuffix(".b64").removeSuffix(".txt")
+                .ifEmpty { "decoded" } + ".bin"
+            val dest = outArg?.let { UuText.resolve(ctx.cwd, it) }
+                ?: uniqueFile(ctx.cwd, defaultName)
+            if (dest.exists()) return Result(ctx.text(R.string.cli_exists, dest.path), 1)
+            dest.parentFile?.mkdirs()
+            val ok = runCatching { dest.writeBytes(raw); true }.getOrDefault(false)
+            return if (ok) Result(ctx.text(R.string.cli_b64_saved, dest.absolutePath))
+                   else Result(UuText.failed(ctx.str, dest.name), 1)
+        } finally {
+            temp?.delete()
+        }
+    }
+
     /** `uu fd [fN...]` — 列出已注册的文件描述符（进程级表，跨 tab 稳定）。 */
     private fun fd(args: List<String>, ctx: Ctx): Result {
         rejectUnknownFlags(ctx, args)?.let { return it }
@@ -1879,6 +1946,11 @@ internal object UuCommands {
                 val n = tokens.getOrNull(1)?.toIntOrNull()?.coerceAtLeast(0) ?: 10
                 lines.takeLast(n).joinToString("\n") to 0
             }
+            "sort" -> {
+                val rev = tokens.any { it == "-r" }
+                val sorted = if (rev) lines.sortedDescending() else lines.sorted()
+                sorted.joinToString("\n") to 0
+            }
             "wc" -> {
                 val linesOnly = tokens.any { it == "-l" }
                 if (linesOnly) lines.size.toString() to 0
@@ -1926,6 +1998,9 @@ internal object UuCommands {
         "grep" -> setOf(if (tokens.getOrNull(1) == "-i") 2 else 1)
         else -> emptySet()
     }
+
+    /** `uu b64` 的单文件上限：编解码都在内存里做（文本形式还要再涨 4/3）。 */
+    private const val B64_MAX_BYTES = 16L * 1024 * 1024
 
     // ─── 内部常量 / 辅助 ──────────────────────────────────────────────────
 

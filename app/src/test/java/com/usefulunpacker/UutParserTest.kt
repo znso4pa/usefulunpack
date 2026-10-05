@@ -53,9 +53,9 @@ class UutParserTest {
     @Test
     fun ifInlineEquality() {
         val st = UutParser.parse("if answer = xp3 then uu x a.xp3")[0] as UutStmt.IfInline
-        val c = st.cond as UutCond.VarEq
+        val c = st.cond as UutCond.VarCmp
         assertEquals("answer", c.name)
-        assertFalse(c.negate)
+        assertEquals("=", c.op)
         assertEquals("xp3", c.value)
         assertEquals("uu x a.xp3", st.rawCmd)
     }
@@ -63,7 +63,7 @@ class UutParserTest {
     @Test
     fun ifInlineNegatedAcceptsDollarPrefixAndQuotes() {
         val st = UutParser.parse("if \$v != \"0\" then echo hi")[0] as UutStmt.IfInline
-        val c = st.cond as UutCond.VarEq
+        val c = st.cond as UutCond.VarCmp
         assertEquals("v", c.name)
         assertTrue(c.negate)
         assertEquals("0", c.value)
@@ -196,9 +196,9 @@ class UutParserTest {
             end
         """.trimIndent()
         val st = UutParser.parse(src)[0] as UutStmt.If
-        val c = st.cond as UutCond.VarEq
+        val c = st.cond as UutCond.VarCmp
         assertEquals("v", c.name)
-        assertFalse(c.negate)
+        assertEquals("=", c.op)
         assertEquals("x", c.value)
         assertEquals(1, st.thenBody.size)
         assertEquals(2, st.elseBody.size)
@@ -217,7 +217,7 @@ class UutParserTest {
         val outer = UutParser.parse(src)[0] as UutStmt.If
         assertTrue(outer.elseBody.isEmpty())
         val inner = outer.thenBody[0] as UutStmt.If
-        assertTrue((inner.cond as UutCond.VarEq).negate)
+        assertEquals("!=", (inner.cond as UutCond.VarCmp).op)
         assertEquals(1, inner.thenBody.size)
     }
 
@@ -357,5 +357,97 @@ class UutParserTest {
         val ast = UutParser.parse("echo \"a ; if b\"\n")
         assertEquals(1, ast.size)
         assertEquals("echo \"a ; if b\"", (ast[0] as UutStmt.Cmd).raw)
+    }
+
+    // ─── v4：while / break / 算术 / 数值比较 ───────────────────────────────
+
+    @Test
+    fun whileParsesWithConditionAndBody() {
+        val src = """
+            set n = 0
+            while n < 3
+              set n = ${'$'}n + 1
+              if ${'$'}n = 2 then break
+            end
+        """.trimIndent()
+        val ast = UutParser.parse(src)
+        assertEquals(2, ast.size)
+        val w = ast[1] as UutStmt.While
+        val c = w.cond as UutCond.VarCmp
+        assertEquals("n", c.name)
+        assertEquals("<", c.op)
+        assertEquals("3", c.value)
+        assertEquals(2, w.body.size)
+        assertTrue(w.body[1] is UutStmt.IfInline)
+    }
+
+    @Test
+    fun breakInsideIfInlineIsRecognised() {
+        val st = UutParser.parse("for a in *.zip\n  if a = stop.zip then break\nend\n")[0] as UutStmt.For
+        val inline = st.body[0] as UutStmt.IfInline
+        assertEquals("break", inline.rawCmd)
+    }
+
+    @Test(expected = UutParseException::class)
+    fun whileWithoutEndThrows() {
+        UutParser.parse("while n < 3\n  echo x\n")
+    }
+
+    @Test(expected = UutParseException::class)
+    fun conditionWithoutOperatorThrows() {
+        UutParser.parse("if n 3 then echo x\n")
+    }
+
+    @Test
+    fun comparisonOperatorsParseTwoCharFirst() {
+        val le = UutParser.parse("if n <= 5 then echo x")[0] as UutStmt.IfInline
+        assertEquals("<=", (le.cond as UutCond.VarCmp).op)
+        assertEquals("5", (le.cond as UutCond.VarCmp).value)
+        val ge = UutParser.parse("if n >= 5 then echo x")[0] as UutStmt.IfInline
+        assertEquals(">=", (ge.cond as UutCond.VarCmp).op)
+        val gt = UutParser.parse("if n > 5 then echo x")[0] as UutStmt.IfInline
+        assertEquals(">", (gt.cond as UutCond.VarCmp).op)
+    }
+
+    @Test
+    fun conditionOperatorInsideQuotesIsNotAnOperator() {
+        // `if v = "a = b"` 里的第一个 `=` 才是运算符
+        val st = UutParser.parse("if v = \"a=b\" then echo x")[0] as UutStmt.IfInline
+        val c = st.cond as UutCond.VarCmp
+        assertEquals("=", c.op)
+        assertEquals("a=b", c.value)
+    }
+
+    @Test
+    fun arithAssignmentEvaluatesFourOperators() {
+        assertEquals("3", UutParser.evalArith("1 + 2"))
+        assertEquals("6", UutParser.evalArith(" 10 - 4 "))
+        assertEquals("12", UutParser.evalArith("3 * 4"))
+        assertEquals("2", UutParser.evalArith("7 / 3"))
+        assertEquals("-4", UutParser.evalArith("-1 + -3"))
+        // 不是算术式 → null（当普通字符串）
+        assertNull(UutParser.evalArith("game.xp3"))
+        assertNull(UutParser.evalArith("1 + x"))
+        assertNull(UutParser.evalArith("a/b"))
+    }
+
+    @Test(expected = ArithmeticException::class)
+    fun arithDivisionByZeroThrowsInsteadOfSilentZero() {
+        UutParser.evalArith("5 / 0")
+    }
+
+    @Test
+    fun compareValuesIsLiteralForEqAndNumericForOthers() {
+        // = / != 走字符串（"10" != "9" 字面成立，数值上也成立；但 "010" vs "10" 只有字面能区分）
+        assertEquals(false, UutParser.compareValues("010", "=", "10"))   // 字面
+        assertEquals(true, UutParser.compareValues("010", "!=", "10"))   // 字面
+        assertEquals(false, UutParser.compareValues("010", "<", "10"))  // 数值：10 < 10 假
+        assertEquals(false, UutParser.compareValues("10", "<", "9"))
+        assertEquals(true, UutParser.compareValues("9", "<", "10"))
+        assertEquals(true, UutParser.compareValues("10", ">=", "10"))
+        assertEquals(true, UutParser.compareValues("10", "<=", "10"))
+        // 非整数 → null（调用方报错，不静默判假）
+        assertNull(UutParser.compareValues("abc", "<", "5"))
+        assertNull(UutParser.compareValues("5", ">", "x"))
     }
 }

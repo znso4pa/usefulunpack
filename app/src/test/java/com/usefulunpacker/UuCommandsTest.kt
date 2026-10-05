@@ -690,4 +690,32 @@ class UuCommandsTest {
         // 缺文件参数 → 用法错误
         assertEquals(2, UuCommands.dispatch(listOf("b64"), c).exitCode)
     }
+
+    // ─── 第七批补：uu x 的命令级展开只作用于归档 ──────────────────────────
+
+    @Test
+    fun globSkipForXKeepsOnlyTheArchiveExpandable() {
+        // 条目模式必须原样留给"按条目展开"；cwd 里有同名文件时它会被抢先换掉
+        //（真机踩过：uu x multi.zip "*.png" → conv2/a.png → 匹配 0 条 → 解压失败）
+        val skip = UuCommands.globSkipIndices(listOf("uu", "x", "a.zip", "*.png"))
+        assertTrue(2 !in skip)                       // 归档可展开（uu x *.zip 仍工作）
+        assertTrue(3 in skip)                        // 条目模式不展开
+        // -o 形式：flag 与其值都跳过，归档仍是第一个位置参数
+        val skip2 = UuCommands.globSkipIndices(listOf("uu", "x", "-o", "out", "a.zip", "*.png", "*.jpg"))
+        assertTrue(setOf(2, 3, 5, 6).all { it in skip2 })
+        assertTrue(4 !in skip2)
+        // 位置形式：第二个位置参数是 outdir，也不展开
+        val skip3 = UuCommands.globSkipIndices(listOf("uu", "x", "a.zip", "out", "*.png"))
+        assertTrue(2 !in skip3)
+        assertTrue(setOf(3, 4).all { it in skip3 })
+    }
+
+    @Test
+    fun matchEntryPathsStarAloneSelectsEverything() {
+        // 命令级展开不再吃掉裸 `*` 之后，它按条目语义 = 全选
+        val paths = listOf("a.txt", "data/b.png")
+        val (hits, misses) = UuCommands.matchEntryPaths(paths, listOf("*"))
+        assertEquals(paths, hits)
+        assertTrue(misses.isEmpty())
+    }
 }

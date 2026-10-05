@@ -1992,11 +1992,40 @@ internal object UuCommands {
         "uu" -> when (tokens.getOrNull(1)) {
             "find" -> (2 until tokens.size).toSet()
             "grep" -> setOf(if (tokens.getOrNull(2) == "-i") 3 else 2)
+            "x" -> xSkipFrom(tokens, from = 2)
             else -> emptySet()
         }
         "find" -> (1 until tokens.size).toSet()
         "grep" -> setOf(if (tokens.getOrNull(1) == "-i") 2 else 1)
+        "x" -> xSkipFrom(tokens, from = 1)
         else -> emptySet()
+    }
+
+    /**
+     * `uu x` 只让**归档**（第一个位置参数）参与命令级通配展开，其余全部跳过。
+     * entries 有自己的"按条目"展开（第七批），而命令级展开发生在它**之前** ——
+     * cwd 里恰好有同名 .png 时，`uu x a.zip "*.png"` 的模式会被换成那个文件的
+     * 绝对路径，条目展开看到一个死路径，原生选择器匹配 0 条 → "解压失败"
+     *（真机踩过）。副产物：裸 `*` 不再被 cwd 吃掉，`uu x a.zip *` 现在的语义
+     * 是"选中全部条目"。
+     */
+    private fun xSkipFrom(tokens: List<String>, from: Int): Set<Int> {
+        val skip = mutableSetOf<Int>()
+        var i = from
+        var positional = 0
+        while (i < tokens.size) {
+            val t = tokens[i]
+            when {
+                t == "-o" || t == "-p" -> { skip.add(i); if (i + 1 < tokens.size) skip.add(i + 1); i += 2 }
+                t.startsWith("-") -> { skip.add(i); i++ }
+                else -> {
+                    positional++
+                    if (positional > 1) skip.add(i)   // outdir（位置形式）与 entries 不展开
+                    i++
+                }
+            }
+        }
+        return skip
     }
 
     /** `uu b64` 的单文件上限：编解码都在内存里做（文本形式还要再涨 4/3）。 */

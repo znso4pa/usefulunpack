@@ -154,9 +154,14 @@ internal object UuCommands {
         if (rest.isEmpty()) return needFile()
         val spec = rest[0]
 
-        // fN → 该片段是宿主文件的一段；能当归档读时先临时 carve 出来再列
+        // fN → 整文件条目（ls 注册的）直接读 host；区间条目（scan 注册的）先
+        // 临时 carve 出来再列
         val fd = ctx.fds?.get(spec.removePrefix("f").toIntOrNull() ?: -1)
         if (fd != null) {
+            if (fd.wholeFile) {
+                ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
+                return listEntries(fd.host, fd.host.name, showAll, ctx)
+            }
             if (!fd.isArchive()) {
                 return Result(UuText.fdNotArchive(ctx.str, spec, fd.label), 2)
             }
@@ -266,21 +271,27 @@ internal object UuCommands {
         if (pos.isEmpty()) return needFile()
         val spec = pos[0]
 
-        // fN 引用：临时 carve 出来再解（同 list 的路径）
+        // fN 引用：整文件条目直接用 host；区间条目临时 carve 出来再解
         var carvedTemp: File? = null
         val src0: File
         val displayName: String
         val fd = ctx.fds?.get(spec.removePrefix("f").toIntOrNull() ?: -1)
         if (fd != null) {
-            if (!fd.isArchive()) return Result(UuText.fdNotArchive(ctx.str, spec, fd.label), 2)
-            ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
-            val carved = ctx.cacheDir?.let { File(it, "uufd/f${fd.fd}-${fd.label.hashCode()}") }
-                ?: return Result(UuText.needsActivity(ctx.str), 2)
-            carved.parentFile?.mkdirs()
-            carveToFile(fd.host, fd.offset, fd.length, carved) {}
-            carvedTemp = carved
-            src0 = carved
-            displayName = fd.label
+            if (fd.wholeFile) {
+                ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
+                src0 = fd.host
+                displayName = fd.host.name
+            } else {
+                if (!fd.isArchive()) return Result(UuText.fdNotArchive(ctx.str, spec, fd.label), 2)
+                ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
+                val carved = ctx.cacheDir?.let { File(it, "uufd/f${fd.fd}-${fd.label.hashCode()}") }
+                    ?: return Result(UuText.needsActivity(ctx.str), 2)
+                carved.parentFile?.mkdirs()
+                carveToFile(fd.host, fd.offset, fd.length, carved) {}
+                carvedTemp = carved
+                src0 = carved
+                displayName = fd.label
+            }
         } else {
             val f = UuText.resolve(ctx.cwd, spec)
             if (!f.isFile) return Result(UuText.notFound(ctx.str, spec), 1)

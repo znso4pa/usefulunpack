@@ -439,7 +439,7 @@
         <item>Scrolling &amp; refresh\nLong lists have an always-visible draggable handle on the right (grab and drag to jump); the text preview/editor have a draggable scrollbar too. The file list refreshes automatically when the current folder changes (rename/move/delete/extract/compress or external changes such as USB)</item>
         <item>Recycle bin\nDelete moves files to the recycle bin instead of permanently deleting them (configurable). Tap the recycle bin icon in the toolbar to view, restore, or permanently delete items. Auto-clean removes items after a configurable period (7/14/30/60/90 days or never). Files in the recycle bin count against storage space. Note: the recycle bin is stored in app internal storage and is cleared when the app is uninstalled</item>
         <item>Terminal &amp; uu commands
-The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the current window: switch tabs and it hides, switch back and the session (output, history, cd) is untouched. Type "uu help" for the command set: uu fmt (supported formats), uu info &lt;file&gt; (one-line format key), uu l &lt;archive&gt; [-a] (list entries), uu scan &lt;file&gt; (signature scan). Each scan hit registers as an fN byte-range descriptor (f3, f4…) — "uu l f3" lists an embedded ZIP without carving it out first; the descriptor goes stale if the host file changes. Built-ins: ls / pwd / cd (navigates the rooted window) / help; any other line runs in the system shell. "uu x &lt;archive&gt; [outdir] [entries] [-p pw]" extracts (progress is rendered inside the terminal itself — a walking bar with bytes, current file and entry counts, no dialogs) and ends with an all-set line; "uu c &lt;src&gt; &lt;out.ext&gt; [-f key] [level] [splitMB] [-p pw]" packs (out.pfs needs -f pfs or -f pf6). uu hash &lt;file&gt; prints MD5 + SHA-256; uu cp / uu rn refuse to overwrite</item>
+The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the current window: switch tabs and it hides, switch back and the session (output, history, cd) is untouched. Type "uu help" for the command set: uu fmt (supported formats), uu info &lt;file&gt; (one-line format key), uu l &lt;archive&gt; [-a] (list entries), uu scan &lt;file&gt; (signature scan). "ls" tags every file with an fN descriptor (numbered in the app\'s sort order, files only) and each scan hit registers as an fN byte-range descriptor — "uu l f0" lists an embedded ZIP without carving it out first; the descriptor goes stale if the host file changes. Built-ins: ls / pwd / cd (navigates the rooted window) / help; any other line runs in the system shell. "uu x &lt;archive&gt; [outdir] [entries] [-p pw]" extracts (progress is rendered inside the terminal itself — a walking bar with bytes, current file and entry counts, no dialogs) and ends with an all-set line; "uu c &lt;src&gt; &lt;out.ext&gt; [-f key] [level] [splitMB] [-p pw]" packs (out.pfs needs -f pfs or -f pf6). uu hash &lt;file&gt; prints MD5 + SHA-256; uu cp / uu rn refuse to overwrite</item>
     </string-array>
 
 
@@ -554,7 +554,7 @@ The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the curre
     <string name="terminal_banner">UsefulUnpack terminal — type \"uu help\" for the uu command set, \"help\" for built-ins.</string>
     <string name="cli_unknown_command">Unknown command: %1$s (try \"uu help\")</string>
     <string name="cli_help_intro">uu commands (built-ins: ls / pwd / cd / help; anything else runs in sh)</string>
-    <string name="cli_help_examples">Examples:\n  uu info game.dat          → pfs\n  uu l game.xp3             → list entries\n  uu scan video.mp4         → f3, f4 …\n  uu l f3                   → list an embedded ZIP</string>
+    <string name="cli_help_examples">Examples:\n  uu info game.dat          → pfs\n  uu l game.xp3             → list entries\n  uu scan video.mp4         → fN …\n  uu l f0                   → list an embedded ZIP</string>
     <string name="cli_need_file">%1$s: missing a file path</string>
     <string name="cli_pick_file_title">%1$s: choose a file</string>
     <string name="cli_pick_folder_title">%1$s: choose a folder</string>
@@ -576,7 +576,7 @@ The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the curre
     <string name="cli_scan_none">No signatures found in %1$s</string>
     <string name="cli_scan_header">%1$s — %2$s hits</string>
     <string name="cli_scan_entries">%1$s files</string>
-    <string name="cli_scan_fd_hint">%1$s hits registered as f3, f4, … — try: uu l f3 / dd if=f3 of=part.bin</string>
+    <string name="cli_scan_fd_hint">%1$s hits registered as fN (numbers shown above) — try: uu l f0 / dd if=f0 of=part.bin</string>
     <string name="cli_fd_not_archive">%1$s is not an archive (%2$s) — only dd can save it</string>
     <string name="cli_fd_stale">%1$s is stale (the host file changed) — run uu scan again</string>
     <string name="cli_no_such_fd">No such FD: %1$s</string>

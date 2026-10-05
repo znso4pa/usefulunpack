@@ -425,7 +425,7 @@
         <item>捲動與自動重新整理\n長列表右側有常顯可拖把手（抓住拖動即可跳轉）；文字預覽/編輯器也有可拖捲軸。目前目錄內容變化（重新命名/移動/刪除/解壓/壓縮或 USB 等外部改動）時檔案列表自動重新整理</item>
         <item>回收站\n抽屜裡的回收站保留刪除前的副本（可設定保留天數）；支援復原與清空，並依檔案大小與原路徑顯示</item>
         <item>終端機與 uu 命令
-工具列 ⋋ 開啟全螢幕終端機，紮根於目前視窗：切走隱藏、切回時輸出/歷史/cd 原樣還在。輸入 "uu help" 查看命令集：uu fmt（支援的格式）、uu info &lt;檔案&gt;（單行格式 key）、uu l &lt;封包&gt; [-a]（列條目）、uu scan &lt;檔案&gt;（簽名掃描）。每個掃描命中註冊為 fN 位元組區間描述符（f3、f4…）——"uu l f3" 無需落盤直接列內嵌 ZIP；宿主檔案被改動後描述符失效。內建命令：ls / pwd / cd（導航紮根的視窗）/ help；其餘命令由系統 shell 執行。"uu x &lt;封包&gt; [輸出目錄] [條目] [-p 密碼]" 解壓（進度直接畫在終端機裡——滾動的進度條 + 位元組數 + 目前檔名 + 條目計數，不彈對話框），完成輸出 all set；"uu c &lt;來源&gt; &lt;產物.ext&gt; [-f key] [等級] [分割MB] [-p 密碼]" 封包（out.pfs 需 -f pfs 或 -f pf6）。uu hash &lt;檔案&gt; 輸出 MD5 + SHA-256；uu cp / uu rn 拒絕覆蓋</item>
+工具列 ⋋ 開啟全螢幕終端機，紮根於目前視窗：切走隱藏、切回時輸出/歷史/cd 原樣還在。輸入 "uu help" 查看命令集：uu fmt（支援的格式）、uu info &lt;檔案&gt;（單行格式 key）、uu l &lt;封包&gt; [-a]（列條目）、uu scan &lt;檔案&gt;（簽名掃描）。ls 會按應用的排序方式給每個檔案發一個 fN 標籤（只編檔案）；每個掃描命中註冊為 fN 位元組區間描述符——"uu l f0" 無需落盤直接列內嵌 ZIP；宿主檔案被改動後描述符失效。內建命令：ls / pwd / cd（導航紮根的視窗）/ help；其餘命令由系統 shell 執行。"uu x &lt;封包&gt; [輸出目錄] [條目] [-p 密碼]" 解壓（進度直接畫在終端機裡——滾動的進度條 + 位元組數 + 目前檔名 + 條目計數，不彈對話框），完成輸出 all set；"uu c &lt;來源&gt; &lt;產物.ext&gt; [-f key] [等級] [分割MB] [-p 密碼]" 封包（out.pfs 需 -f pfs 或 -f pf6）。uu hash &lt;檔案&gt; 輸出 MD5 + SHA-256；uu cp / uu rn 拒絕覆蓋</item>
     </string-array>
 
 
@@ -548,7 +548,7 @@
     <string name="terminal_banner">UsefulUnpack 終端機 — 輸入 \"uu help\" 查看 uu 命令集，\"help\" 查看內建命令。</string>
     <string name="cli_unknown_command">未知命令：%1$s（試試 \"uu help\"）</string>
     <string name="cli_help_intro">uu 命令集（內建：ls / pwd / cd / help；其餘命令由 sh 執行）</string>
-    <string name="cli_help_examples">範例：\n  uu info game.dat          → pfs\n  uu l game.xp3             → 列條目\n  uu scan video.mp4         → f3、f4 …\n  uu l f3                   → 列內嵌 ZIP</string>
+    <string name="cli_help_examples">範例：\n  uu info game.dat          → pfs\n  uu l game.xp3             → 列條目\n  uu scan video.mp4         → fN …\n  uu l f0                   → 列內嵌 ZIP</string>
     <string name="cli_need_file">%1$s：缺少檔案路徑</string>
     <string name="cli_pick_file_title">%1$s：選擇一個檔案</string>
     <string name="cli_pick_folder_title">%1$s：選擇一個目錄</string>
@@ -570,7 +570,7 @@
     <string name="cli_scan_none">%1$s 中未發現簽名</string>
     <string name="cli_scan_header">%1$s — %2$s 個命中</string>
     <string name="cli_scan_entries">%1$s 個檔案</string>
-    <string name="cli_scan_fd_hint">%1$s 個命中已註冊為 f3、f4、… — 試試：uu l f3 / dd if=f3 of=part.bin</string>
+    <string name="cli_scan_fd_hint">%1$s 個命中已註冊為 fN（編號見表中）— 試試：uu l f0 / dd if=f0 of=part.bin</string>
     <string name="cli_fd_not_archive">%1$s 不是封包（%2$s）— 只能用 dd 儲存</string>
     <string name="cli_fd_stale">%1$s 已失效（宿主檔案已變化）— 請重新 uu scan</string>
     <string name="cli_no_such_fd">無此 FD：%1$s</string>

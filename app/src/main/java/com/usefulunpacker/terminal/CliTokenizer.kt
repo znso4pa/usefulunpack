@@ -68,3 +68,20 @@ internal class CliTokenizer {
         return Out.Ok(tokens)
     }
 }
+
+/**
+ * 最小 glob（`ls` 内建用）：`*` 任意段、`?` 单字符，其余字面。
+ * 只做**单层目录内**的文件名匹配——路径分隔符不参与（"sub 目录下的 *.zip" 由
+ * 调用方拆成 parent + 文件名模式后再到这里）。纯 JVM 可单测。
+ */
+internal object CliGlob {
+    fun hasWildcards(s: String): Boolean = s.contains('*') || s.contains('?')
+
+    fun toRegex(glob: String): Regex = buildString {
+        for (c in glob) when (c) {
+            '*' -> append(".*")
+            '?' -> append('.')
+            else -> append(Regex.escape(c.toString()))
+        }
+    }.toRegex()
+}

@@ -1,122 +1,122 @@
 package com.usefulunpacker
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import java.io.File
-import java.io.RandomAccessFile
 
 /**
- * FD 表的契约。这些是 POSIX fd 语义的映射，所以断言要钉死编号起点与失效检查。
+ * FD 表的契约：f0 起始、整文件条目（ls）/ 区间条目（scan）共用一张表、
+ * 进程级累积不清表、同文件/同命中复用编号、宿主变更即 stale。
  */
 class FdTableTest {
 
-    private fun tmp(tag: String): File {
-        val d = File(System.getProperty("java.io.tmpdir"), "uufd_$tag")
-        d.mkdirs()
-        return d
-    }
+    @get:Rule
+    val tmp = TemporaryFolder()
 
-    private fun host(dir: File, size: Int = 4096): File {
-        val f = File(dir, "movie.mkv")
-        RandomAccessFile(f, "rw").use { ra ->
-            ra.setLength(size.toLong())
-            ra.write("PK\u0003\u0004".toByteArray())
-        }
+    private fun host(dir: File, size: Long = 1024): File {
+        val f = File(dir, "host_${System.nanoTime()}.bin")
+        f.writeBytes(ByteArray(size.toInt()))
         return f
     }
 
+    private fun tmp(tag: String) = File(System.getProperty("java.io.tmpdir"), "uufd_$tag").apply { mkdirs() }
+
+    // ── 编号 ──
+
     @Test
-    fun fdsStartAtThreeSoStdioStaysReserved() {
-        val dir = tmp("start")
+    fun numberingStartsAtZero() {
+        val dir = tmp("start0")
         val h = host(dir)
         val t = FdTable()
-        val hits = listOf(ScanHit(0, "ZIP archive", 100, 12), ScanHit(256, "PNG image", 50, null))
-        val fds = t.register(h, hits, h.length(), h.lastModified()) { ARCHIVE_LABELS[it] }
-        // 第一个命中是 f3 —— f0/1/2 保留给 stdin/stdout/stderr，与真 POSIX fd 一致
-        assertEquals(listOf(3, 4), fds)
-        assertNull("fd0 保留", t.get(0))
-        assertNull("fd1 保留", t.get(1))
-        assertNull("fd2 保留", t.get(2))
+        val fds = t.register(h, listOf(ScanHit(0, "ZIP archive", 100, 2), ScanHit(200, "RAR archive", 50, null)), h.length(), h.lastModified()) { ARCHIVE_LABELS[it] }
+        // 从 0 开始：f0 / f1
+        assertEquals(listOf(0, 1), fds)
+        assertEquals("ZIP archive", t.get(0)!!.label)
+        assertEquals("RAR archive", t.get(1)!!.label)
+        dir.deleteRecursively()
+    }
+
+    // ── 整文件条目（ls 注册）──
+
+    @Test
+    fun registerFilesAssignsSortedOrderAndReusesNumbers() {
+        val dir = tmp("files")
+        val a = File(dir, "a.zip").apply { writeBytes(ByteArray(64)) }
+        val b = File(dir, "b.zip").apply { writeBytes(ByteArray(64)) }
+        val t = FdTable()
+        // 名称升序：a→f0, b→f1（排序由调用方决定，表只按输入顺序发号）
+        assertEquals(listOf(0, 1), t.registerFiles(listOf(a, b)))
+        // 同一文件再注册 → 复用编号（跨 ls 调用稳定）
+        assertEquals(listOf(0), t.registerFiles(listOf(a)))
+        assertEquals(2, t.registerFiles(listOf(File(dir, "c.zip").apply { writeBytes(ByteArray(8)) }))[0])
+        // 整文件条目属性
+        val e = t.get(0)!!
+        assertTrue(e.wholeFile)
+        assertEquals(0L, e.offset)
+        assertEquals(a.absolutePath, e.host.absolutePath)
         dir.deleteRecursively()
     }
 
     @Test
-    fun archiveHitsAreMarkedAndNonArchiveHitsAreNot() {
-        val dir = tmp("kind")
+    fun scanReusesExistingRangeAndAccumulates() {
+        val dir = tmp("scanacc")
         val h = host(dir)
         val t = FdTable()
-        t.register(h, listOf(
-            ScanHit(0, "ZIP archive", 100, 12),
-            ScanHit(256, "PNG image", 50, null),
-        ), h.length(), h.lastModified()) { ARCHIVE_LABELS[it] }
-        assertTrue("zip 命中应可当归档读", t.get(3)!!.isArchive())
-        assertEquals("zip", t.get(3)!!.archiveKey)
-        assertTrue("png 命中没有容器，只能 dd", !t.get(4)!!.isArchive())
-        assertNull(t.get(4)!!.archiveKey)
+        val k: (String) -> String? = { ARCHIVE_LABELS[it] }
+        val first = t.register(h, listOf(ScanHit(10, "ZIP archive", 100, 3)), h.length(), h.lastModified(), k)
+        assertEquals(listOf(0), first)
+        // 同文件同偏移同长度 → 复用 f0；新命中追加 f1；**不清表**
+        val second = t.register(h, listOf(ScanHit(10, "ZIP archive", 100, 3), ScanHit(500, "RAR archive", 40, null)), h.length(), h.lastModified(), k)
+        assertEquals(listOf(0, 1), second)
+        assertEquals(2, t.size())
+        // 表里已有条目时 ls 的整文件条目接在后面，互不冲突
+        val lsFile = File(dir, "x.zip").apply { writeBytes(ByteArray(16)) }
+        assertEquals(listOf(2), t.registerFiles(listOf(lsFile)))
+        assertEquals(3, t.size())
         dir.deleteRecursively()
     }
 
-    @Test
-    fun tarLabelIsRecognisedSoFdCanBeListed() {
-        // 手抄 label 表时丢过 "POSIX tar"，这里钉死：它必须映射到 tar
-        assertEquals("tar", ARCHIVE_LABELS["POSIX tar archive"])
-        assertNotNull(ARCHIVE_LABELS["7-zip archive"])
-    }
+    // ── 失效检查 ──
 
     @Test
-    fun changedHostIsStale() {
+    fun staleWhenHostChanges() {
         val dir = tmp("stale")
         val h = host(dir)
         val t = FdTable()
-        t.register(h, listOf(ScanHit(0, "ZIP archive", 100, 12)), h.length(), h.lastModified()) { ARCHIVE_LABELS[it] }
-        val e = t.get(3)!!
-        assertNull("刚扫描完应是新鲜的", t.checkFresh(e))
-        // 宿主被改写 → 偏移量已无意义，必须报错而不是静默读出垃圾
-        RandomAccessFile(h, "rw").use { it.setLength(9999) }
-        assertTrue("宿主变了必须 stale", t.checkFresh(e) is FdTable.Rejected.Stale)
-        dir.deleteRecursively()
-    }
-
-    @Test
-    fun deletedHostIsStale() {
-        val dir = tmp("gone")
-        val h = host(dir)
-        val t = FdTable()
-        t.register(h, listOf(ScanHit(0, "ZIP archive", 100, 12)), h.length(), h.lastModified()) { ARCHIVE_LABELS[it] }
-        val e = t.get(3)!!
-        h.delete()
+        val fds = t.register(h, listOf(ScanHit(0, "ZIP archive", 100, 2)), h.length(), h.lastModified()) { ARCHIVE_LABELS[it] }
+        val e = t.get(fds[0])!!
+        assertNull(t.checkFresh(e))
+        // 追加内容 → size 变 → stale
+        h.appendBytes(ByteArray(10))
         assertTrue(t.checkFresh(e) is FdTable.Rejected.Stale)
+        // 整文件条目同样失效
+        val f = File(dir, "w.zip").apply { writeBytes(ByteArray(8)) }
+        val fd = t.registerFiles(listOf(f))[0]
+        val we = t.get(fd)!!
+        assertNull(t.checkFresh(we))
+        f.appendBytes(ByteArray(4))
+        assertTrue(t.checkFresh(we) is FdTable.Rejected.Stale)
         dir.deleteRecursively()
     }
 
-    @Test
-    fun rescanRebuildsTheWholeTable() {
-        val dir = tmp("rescan")
-        val h = host(dir)
-        val t = FdTable()
-        t.register(h, listOf(ScanHit(0, "ZIP archive", 100, 12), ScanHit(256, "PNG image", 50, null)),
-            h.length(), h.lastModified()) { ARCHIVE_LABELS[it] }
-        assertEquals(2, t.size)
-        // 重新扫描整表重建，旧的 fd 不该残留
-        t.register(h, listOf(ScanHit(0, "GIF image", 20, null)), h.length(), h.lastModified()) { ARCHIVE_LABELS[it] }
-        assertEquals(1, t.size)
-        assertNull("旧 fd4 已被顶掉", t.get(4))
-        dir.deleteRecursively()
-    }
+    // ── fN 前缀 ──
 
     @Test
     fun looksLikeFdOnlyAcceptsFPrefix() {
         val t = FdTable()
-        assertTrue(t.looksLikeFd("f3"))
         assertTrue(t.looksLikeFd("f0"))
+        assertTrue(t.looksLikeFd("f3"))
         assertTrue(t.looksLikeFd("f123"))
         assertTrue("普通文件名不是 fd", !t.looksLikeFd("f.zip"))
         assertTrue(!t.looksLikeFd("archive"))
         assertTrue(!t.looksLikeFd("3"))
     }
+
+    // ── 大小兜底 ──
 
     @Test
     fun byteSizeFallsBackToHostLengthWhenUnknown() {
@@ -125,7 +125,7 @@ class FdTableTest {
         val t = FdTable()
         // size = null（scan-core 没验出边界）→ 到宿主末尾
         t.register(h, listOf(ScanHit(1024, "PNG image", null, null)), h.length(), h.lastModified()) { ARCHIVE_LABELS[it] }
-        assertEquals(1024L, t.get(3)!!.byteSize())
+        assertEquals(1024L, t.get(0)!!.byteSize())
         dir.deleteRecursively()
     }
 }

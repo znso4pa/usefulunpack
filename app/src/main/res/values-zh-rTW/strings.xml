@@ -424,7 +424,7 @@
         <item>編碼與亂碼\n每個預覽/編輯器都有編碼行：點它切換 UTF-8/SHIFT-JIS/GBK/UTF-16，文字立即重渲染；帶 BOM 的 UTF-16/UTF-8 檔自動按正確編碼開啟；用錯的非 UTF-8 編碼讀檔時會提示「看起來是 UTF-8」</item>
         <item>捲動與自動重新整理\n長列表右側有常顯可拖把手（抓住拖動即可跳轉）；文字預覽/編輯器也有可拖捲軸。目前目錄內容變化（重新命名/移動/刪除/解壓/壓縮或 USB 等外部改動）時檔案列表自動重新整理</item>
         <item>回收站\n抽屜裡的回收站保留刪除前的副本（可設定保留天數）；支援復原與清空，並依檔案大小與原路徑顯示</item>
-        <item>終端機與 uu 命令\n工具列 ⋋ 開啟全螢幕終端機，紮根於目前視窗：切走隱藏、切回時輸出/歷史/cd 原樣還在。輸入 "uu help" 查看命令集：uu fmt（支援的格式）、uu info &lt;檔案&gt;（單行格式 key）、uu l &lt;封包&gt; [-a]（列條目）、uu scan &lt;檔案&gt;（簽名掃描）。ls 會按應用的排序方式給每個檔案發一個 fN 標籤（只編檔案）；每個掃描命中註冊為 fN 位元組區間描述符——"uu l f0" 無需落盤直接列內嵌 ZIP；宿主檔案被改動後描述符失效。內建命令：ls / pwd / cd（導航紮根的視窗）/ help；其餘命令由系統 shell 執行。"uu x &lt;封包&gt; [輸出目錄] [條目] [-p 密碼]" 解壓（進度直接畫在終端機裡——滾動的進度條 + 位元組數 + 目前檔名 + 條目計數，不彈對話框），完成輸出 all set；"uu c &lt;來源&gt; &lt;產物.ext&gt; [-f key] [等級] [分割MB] [-p 密碼]" 封包（out.pfs 需 -f pfs 或 -f pf6）。uu hash 輸出 MD5 + SHA-256；uu cp / mv / rn / rm 管檔案（rm 預設進回收筒，-f 永久刪）；uu cat 看封包內文字、uu grep -i 搜目錄或封包內的文字、uu set 替換封包內單一條目（存為 -cn 副本）；tree / du / stat / mkdir / cso 補齊其餘，萬用字元全命令可用（uu x *.zip）</item>
+        <item>終端機與 uu 命令\n工具列 ⋋ 開啟全螢幕終端機，紮根於目前視窗：切走隱藏、切回時輸出/歷史/cd 原樣還在。輸入 "uu help" 查看命令集：uu fmt（支援的格式）、uu info &lt;檔案&gt;（單行格式 key）、uu l &lt;封包&gt; [-a]（列條目）、uu scan &lt;檔案&gt;（簽名掃描）。ls 會按應用的排序方式給每個檔案發一個 fN 標籤（只編檔案）；每個掃描命中註冊為 fN 位元組區間描述符——"uu l f0" 無需落盤直接列內嵌 ZIP；宿主檔案被改動後描述符失效。內建命令：ls / pwd / cd（導航紮根的視窗）/ help；其餘命令由系統 shell 執行。"uu x &lt;封包&gt; [輸出目錄] [條目] [-p 密碼]" 解壓（進度直接畫在終端機裡——滾動的進度條 + 位元組數 + 目前檔名 + 條目計數，不彈對話框），完成輸出 all set；"uu c &lt;來源&gt; &lt;產物.ext&gt; [-f key] [等級] [分割MB] [-p 密碼]" 封包（out.pfs 需 -f pfs 或 -f pf6）。uu hash 輸出 MD5 + SHA-256；uu cp / mv / rn / rm 管檔案（rm 預設進回收筒，-f 永久刪）；uu cat 看封包內文字、uu grep -i 搜目錄或封包內的文字、uu set 替換封包內單一條目（存為 -cn 副本）；tree / du / stat / mkdir / cso 補齊其餘，萬用字元全命令可用（uu x *.zip）。也支援管線與串接：「uu l a.zip | grep main」「uu l a.zip > list.txt」「cd sub &amp;&amp; uu x *.zip」，以及「uu run 指令碼.txt」逐行執行；執行中點進度行可取消</item>
     </string-array>
 
 
@@ -622,4 +622,10 @@
     <string name="cli_find_none">沒有符合 %1$s 的檔案</string>
     <string name="cli_diff_title">%1$s ↔ %2$s · +%3$s -%4$s ~%5$s（僅比大小）</string>
     <string name="cli_hex_range">偏移 %1$s · %2$s 位元組</string>
+    <string name="cli_cancel_op">取消目前操作？</string>
+    <string name="cli_pipe_filter_only">管線只支援 grep / head / tail / wc — 其餘請用系統 shell</string>
+    <string name="cli_redirect_path">%1$s 後面缺少重導向目標</string>
+    <string name="cli_saved_to">→ 已儲存到 %1$s</string>
+    <string name="cli_run_summary">指令碼：執行 %1$s 行，離開碼 %2$s</string>
+    <string name="cli_run_stopped">指令碼在第 %3$s 行停止（執行 %1$s 行，離開碼 %2$s）</string>
 </resources>

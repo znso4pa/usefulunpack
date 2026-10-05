@@ -619,4 +619,12 @@
     <string name="cli_flag_missing_value">%1$s 缺少取值</string>
     <string name="cli_unknown_flag">未知参数：%1$s</string>
     <string name="cli_x_outdir_is_file">%1$s 是文件 — 请用 -o &lt;输出目录&gt;（每次只解一个归档）</string>
+    <string name="cli_enc_done">%1$s → %2$s（%3$s → %4$s）</string>
+    <string name="cli_enc_bad_encoding">未知编码：%1$s（UTF-8 / UTF-16 / SHIFT-JIS / GBK / auto）</string>
+    <string name="cli_enc_no_detect">无法探测 %1$s 的编码</string>
+    <string name="cli_enc_too_big">文件过大，无法整文件转换编码：%1$s（上限 64MB）</string>
+    <string name="cli_ok_count">✔ 完成 %1$s 项</string>
+    <string name="cli_find_none">没有匹配 %1$s 的文件</string>
+    <string name="cli_diff_title">%1$s ↔ %2$s · +%3$s -%4$s ~%5$s（仅比大小）</string>
+    <string name="cli_hex_range">偏移 %1$s · %2$s 字节</string>
 </resources>

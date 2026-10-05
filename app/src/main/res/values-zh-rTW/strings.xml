@@ -614,4 +614,12 @@
     <string name="cli_flag_missing_value">%1$s 缺少取值</string>
     <string name="cli_unknown_flag">未知參數：%1$s</string>
     <string name="cli_x_outdir_is_file">%1$s 是檔案 — 請用 -o &lt;輸出目錄&gt;（每次只解一個封包）</string>
+    <string name="cli_enc_done">%1$s → %2$s（%3$s → %4$s）</string>
+    <string name="cli_enc_bad_encoding">未知編碼：%1$s（UTF-8 / UTF-16 / SHIFT-JIS / GBK / auto）</string>
+    <string name="cli_enc_no_detect">無法偵測 %1$s 的編碼</string>
+    <string name="cli_enc_too_big">檔案過大，無法整檔轉換編碼：%1$s（上限 64MB）</string>
+    <string name="cli_ok_count">✔ 完成 %1$s 項</string>
+    <string name="cli_find_none">沒有符合 %1$s 的檔案</string>
+    <string name="cli_diff_title">%1$s ↔ %2$s · +%3$s -%4$s ~%5$s（僅比大小）</string>
+    <string name="cli_hex_range">偏移 %1$s · %2$s 位元組</string>
 </resources>

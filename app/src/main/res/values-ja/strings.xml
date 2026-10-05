@@ -614,4 +614,12 @@
     <string name="cli_flag_missing_value">%1$s には値が必要です</string>
     <string name="cli_unknown_flag">未知のフラグ：%1$s</string>
     <string name="cli_x_outdir_is_file">%1$s はファイルです — -o &lt;出力先&gt; を使ってください（1 回に 1 アーカイブ）</string>
+    <string name="cli_enc_done">%1$s → %2$s（%3$s → %4$s）</string>
+    <string name="cli_enc_bad_encoding">不明なエンコーディング：%1$s（UTF-8 / UTF-16 / SHIFT-JIS / GBK / auto）</string>
+    <string name="cli_enc_no_detect">%1$s のエンコーディングを判別できません</string>
+    <string name="cli_enc_too_big">ファイルが大きすぎます：%1$s（上限 64MB）</string>
+    <string name="cli_ok_count">✔ %1$s 件完了</string>
+    <string name="cli_find_none">%1$s に一致するファイルなし</string>
+    <string name="cli_diff_title">%1$s ↔ %2$s · +%3$s -%4$s ~%5$s（サイズ比較のみ）</string>
+    <string name="cli_hex_range">オフセット %1$s · %2$s バイト</string>
 </resources>

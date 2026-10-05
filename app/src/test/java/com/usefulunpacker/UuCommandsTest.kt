@@ -366,4 +366,79 @@ class UuCommandsTest {
         assertTrue(r.text.contains("!str:"))  // cli_pack_multi_needs_flag
     }
 
+    // ── Round 2：enc / find / hex / diff ──
+
+    @Test
+    fun encConvertsShiftJisToUtf8AndKeepsBom() {
+        val dir = tmp.root.resolve("enc").apply { mkdirs() }
+        val sjis = File(dir, "a.txt")
+        sjis.writeBytes(encodeText("日本語テスト", "SHIFT-JIS", false))
+        val c = UuCommands.Ctx(prefs = null, cwd = dir)
+        val r = UuCommands.dispatch(listOf("enc", "a.txt", "auto", "utf-8"), c)
+        assertEquals(0, r.exitCode)
+        val out = File(dir, "a-utf8.txt")
+        assertTrue(out.isFile)
+        assertEquals("日本語テスト", decodeTextStrict(out.readBytes(), "UTF-8"))
+        assertFalse("目标为无 BOM 源时不加 BOM", hasBom(out.readBytes()))
+        // 源带 BOM → 输出保真
+        val bomFile = File(dir, "b.txt").apply { writeBytes(encodeText("x", "UTF-16", true)) }
+        val r2 = UuCommands.dispatch(listOf("enc", "b.txt", "utf-16", "utf-8"), c)
+        assertEquals(0, r2.exitCode)
+        assertTrue(hasBom(File(dir, "b-utf8.txt").readBytes()))
+    }
+
+    @Test
+    fun encRejectsUnknownEncoding() {
+        val dir = tmp.root.resolve("encbad").apply { mkdirs() }
+        File(dir, "a.txt").writeText("x")
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("enc", "a.txt", "auto", "klingon"), c)
+        assertEquals(1, r.exitCode)
+        assertTrue(r.text.contains("[klingon]"))
+    }
+
+    @Test
+    fun findMatchesRecursivelyWithDepthLimit() {
+        val dir = tmp.root.resolve("find").apply { mkdirs() }
+        File(dir, "a/b/deep").mkdirs()
+        File(dir, "a/x.ks").writeText("1")
+        File(dir, "a/b/y.ks").writeText("2")
+        File(dir, "a/b/deep/z.ks").writeText("3")
+        val c = UuCommands.Ctx(prefs = null, cwd = dir)
+        // 全深度（默认 6）：三个都命中
+        val r = UuCommands.dispatch(listOf("find", "a", "*.ks"), c)
+        assertEquals(0, r.exitCode)
+        // 路径相对 root 输出
+        assertTrue(r.text.contains("x.ks"))
+        assertTrue(r.text.contains("b/deep/z.ks"))
+        // 深度 1：只有第一层
+        val r2 = UuCommands.dispatch(listOf("find", "a", "*.ks", "1"), c)
+        assertTrue(r2.text.contains("x.ks"))
+        assertFalse(r2.text.contains("y.ks"))
+    }
+
+    @Test
+    fun hexDumpsRangeWithHexNumbers() {
+        val dir = tmp.root.resolve("hex").apply { mkdirs() }
+        val f = File(dir, "a.bin")
+        f.writeBytes(byteArrayOf(0x41, 0x42, 0x00, 0x7F, 0x0A))
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("hex", "a.bin", "0x1", "3"), c)
+        assertEquals(0, r.exitCode)
+        assertTrue(r.text.contains("42 00 7F"))
+        assertTrue(r.text.contains("B.."))  // ascii 列
+    }
+
+    @Test
+    fun diffOfClassifiesAddedRemovedChanged() {
+        fun e(p: String, sz: Long, dir: Boolean = false) =
+            ArchiveEntry(p, p.substringAfterLast('/'), sz, dir, false, 0)
+        val a = listOf(e("x.txt", 10), e("gone.txt", 5), e("chg.txt", 100), e("d", 0, true))
+        val b = listOf(e("x.txt", 10), e("new.txt", 7), e("chg.txt", 200), e("d", 0, true))
+        val (onlyA, onlyB, changed, _, _) = UuCommands.diffOf(a, b)
+        assertEquals(setOf("gone.txt"), onlyA)
+        assertEquals(setOf("new.txt"), onlyB)
+        assertEquals(listOf("chg.txt"), changed)
+    }
+
 }

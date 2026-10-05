@@ -620,4 +620,12 @@
     <string name="cli_flag_missing_value">%1$s needs a value</string>
     <string name="cli_unknown_flag">Unknown flag: %1$s</string>
     <string name="cli_x_outdir_is_file">%1$s is a file — use -o &lt;outdir&gt; (one archive per call)</string>
+    <string name="cli_enc_done">%1$s → %2$s (%3$s → %4$s)</string>
+    <string name="cli_enc_bad_encoding">Unknown encoding: %1$s (UTF-8 / UTF-16 / SHIFT-JIS / GBK / auto)</string>
+    <string name="cli_enc_no_detect">Cannot detect the encoding of %1$s</string>
+    <string name="cli_enc_too_big">File too large for encoding conversion: %1$s (64MB cap)</string>
+    <string name="cli_ok_count">✔ %1$s done</string>
+    <string name="cli_find_none">No files matching %1$s</string>
+    <string name="cli_diff_title">%1$s ↔ %2$s · +%3$s -%4$s ~%5$s (size-based)</string>
+    <string name="cli_hex_range">offset %1$s · %2$s bytes</string>
 </resources>

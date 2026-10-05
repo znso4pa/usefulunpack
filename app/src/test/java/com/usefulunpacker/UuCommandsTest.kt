@@ -284,7 +284,11 @@ class UuCommandsTest {
         assertTrue(r.text.contains("[-p pw]  Pack files or folders"))
         // UUT 段落必须在使用文档里（`uu run` 的语法只有这一处可查）
         assertTrue(r.text.contains("UUT SCRIPT"))
-        for (kw in listOf("set v = text", "if v = xp3 then", "for a in *.zip", "only uu / ls / cd")) {
+        for (kw in listOf(
+            "set v = text", "if v = xp3 then", "for a in *.zip", "only uu / ls / cd",
+            // v2：位置参数 / 块式 if-else / return
+            "\$1 \$2 / \$argc / \$args", "if v = xp3 / else / end", "return [code]",
+        )) {
             assertTrue("missing UUT doc: $kw", r.text.contains(kw))
         }
     }
@@ -550,5 +554,44 @@ class UuCommandsTest {
         val head = UuCommands.expandGlobs(listOf("*.txt", "*.txt"), dir)
         assertEquals("*.txt", head[0])
         assertEquals(3, head.size)
+    }
+
+    // ─── 第五批：uu fd（描述符表列出） ─────────────────────────────────────
+
+    @Test
+    fun fdListsWholeFileAndRangeEntries() {
+        val dir = tmp.root.resolve("fdt").apply { mkdirs() }
+        val a = File(dir, "a.zip").apply { writeBytes(ByteArray(16) { it.toByte() }) }
+        val host = File(dir, "blob.bin").apply { writeBytes(ByteArray(64) { 7 }) }
+        val t = FdTable()
+        val whole = t.registerFiles(listOf(a))[0]
+        val range = t.register(host, listOf(ScanHit(8, "ZIP archive", 16, null)), host.length(), host.lastModified()) { null }[0]
+
+        // str 用 argStr()：默认 stub 会把参数丢掉，断言不到文件名/大小
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, fds = t, str = argStr())
+        val all = UuCommands.dispatch(listOf("fd"), c)
+        assertEquals("text=" + all.text, 0, all.exitCode)
+        assertTrue(all.text, all.text.contains("[${whole}]"))   // 格式串自带 f，不能传 "f0"
+        assertTrue(all.text, all.text.contains("[a.zip]"))
+        assertTrue(all.text, all.text.contains("[${range}]"))
+        assertTrue(all.text, all.text.contains("[blob.bin]"))   // 区间要带宿主文件名
+        assertTrue(all.text, all.text.contains("[8]"))     // 区间偏移（十六进制）
+        assertTrue(all.text, all.text.contains("[2]"))     // 共 2 个描述符
+
+        // 单个 fN 过滤
+        val one = UuCommands.dispatch(listOf("fd", "f$range"), c)
+        assertEquals(0, one.exitCode)
+        assertFalse(one.text, one.text.contains("[a.zip]"))
+        // 不存在的编号 → 报错退出码 1
+        assertEquals(1, UuCommands.dispatch(listOf("fd", "f99"), c).exitCode)
+    }
+
+    @Test
+    fun fdOnEmptyTableSaysSo() {
+        val dir = tmp.root.resolve("fde").apply { mkdirs() }
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, fds = FdTable())
+        val r = UuCommands.dispatch(listOf("fd"), c)
+        assertEquals("text=" + r.text, 0, r.exitCode)
+        assertTrue(r.text.contains("!str:"))
     }
 }

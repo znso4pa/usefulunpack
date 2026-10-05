@@ -82,7 +82,7 @@ internal object UuCommands {
     internal enum class Kind {
         LIST_FORMATS, HELP, DOCS, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
         TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO,
-        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX
+        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, IMG, FD
     }
 
     internal class Cmd(val name: String, val kind: Kind, val summary: String, val usage: String)
@@ -121,6 +121,8 @@ internal object UuCommands {
         Cmd("find",   Kind.FIND,         "Find files by name under a folder",              "uu find [dir] <glob> [depth]"),
         Cmd("diff",   Kind.DIFF,         "Compare entry lists of two archives (size-based)", "uu diff <a> <b> [-p pw]"),
         Cmd("hex",    Kind.HEX,          "Hex dump a byte range",                         "uu hex <file> [offset] [len]"),
+        Cmd("img",    Kind.IMG,          "Convert images (jpg / png / webp)",             "uu img <src...> <jpg|png|webp> [-o dir] [-q 1-100]"),
+        Cmd("fd",     Kind.FD,           "List the registered fN descriptors",            "uu fd [fN...]"),
     )
 
     /** 供 `help` 内建命令复用，保证它和 `uu help` 讲的是同一份内容。 */
@@ -162,6 +164,8 @@ internal object UuCommands {
                 Kind.FIND -> find(args, ctx)
                 Kind.DIFF -> diff(args, ctx)
                 Kind.HEX -> hex(args, ctx)
+                Kind.IMG -> img(args, ctx)
+                Kind.FD -> fd(args, ctx)
             }
         } catch (e: Exception) {
             // 命令层不各自 catch：统一转成一行错误，避免把堆栈写进终端输出区
@@ -232,16 +236,19 @@ internal object UuCommands {
         sb.append("  |             ").append("pipe into a filter: grep / head / tail / wc — uu l a.zip | grep main\n")
         sb.append("  > >>          ").append("redirect output to a file (>> appends) — uu l a.zip > list.txt\n")
         sb.append("  && ;          ").append("chain commands (&& stops on failure) — cd sub && uu x *.zip\n")
-        sb.append("  uu run <file> ").append("run a UUT script (# comments; -k keeps going) — see below\n")
+        sb.append("  uu run <file> ").append("run a UUT script: uu run [-k] file.uut [args...] — see below\n")
         sb.append("  progress line ").append("tap to cancel a running uu x / c / set / cso operation\n")
         sb.append("  ls pwd cd help").append(" builtins; anything else runs in the system shell\n")
         sb.append('\n')
         sb.append("UUT SCRIPT (uu run <file.uut>)\n")
         sb.append("-".repeat(8)).append('\n')
         sb.append("  set v = text        ").append("assign a variable (\"\$v\" expands in later lines)\n")
+        sb.append("  \$1 \$2 / \$argc / \$args").append(" script arguments: uu run wrap.uut a b → \$1=a \$2=b\n")
         sb.append("  set v = \$(uu info x) ").append("capture a command's output into v\n")
         sb.append("  if v = xp3 then ...  ").append("one-line branch; also \"if v != \"\" then ...\"\n")
+        sb.append("  if v = xp3 / else / end").append(" block branch (nestable, else optional)\n")
         sb.append("  for a in *.zip ... end").append(" loop over wildcard matches (nestable)\n")
+        sb.append("  return [code]        ").append("stop this script with an exit code\n")
         sb.append("  only uu / ls / cd / pwd / help / echo").append(" are allowed — no arbitrary shell\n")
         sb.append("  errors stop the script (-k continues); each line is echoed; \"\$\" escapes only variables\n")
         sb.append('\n')
@@ -1592,6 +1599,92 @@ internal object UuCommands {
                 .append("  ").append(fmt(ma[p]!!.size)).append(" → ").append(fmt(mb[p]!!.size)).append('\n')
         }
         return Result(sb.toString().trimEnd('\n'))
+    }
+
+    /**
+     * `uu img <src...> <jpg|png|webp> [-o dir] [-q 1-100]` — 图片格式转换。
+     * 解码/合成/压缩走 `encodeImageTo`（与图片转换对话框同一实现）。
+     * 输出**永不覆盖**：目标已存在则自动加 " (n)" 后缀（与对话框一致），
+     * 实际路径逐条打印，方便脚本读回。支持 fN（扫描命中的图片可直接转）。
+     */
+    private fun img(args: List<String>, ctx: Ctx): Result {
+        val pa = splitFlags(args, listOf("-o", "-q"))
+        missingValueError(ctx, pa)?.let { return it }
+        // 格式是固定关键字：取最后一个匹配的位置参数（其余位置参数都是源）
+        val fmtIdx = pa.pos.indexOfLast { it.lowercase() in IMG_TARGET_FORMATS }
+        if (fmtIdx < 0) {
+            val only = pa.pos.singleOrNull()
+            return if (only != null) Result(ctx.text(R.string.cli_img_bad_fmt, only), 2)
+            else Result(usageOf("img"), 2)
+        }
+        val fmt = pa.pos[fmtIdx].lowercase()
+        val srcs = pa.pos.filterIndexed { i, _ -> i != fmtIdx }
+        if (srcs.isEmpty()) return needFile()
+        val q = pa.values["-q"]?.toIntOrNull()?.coerceIn(1, 100) ?: if (fmt == "jpg") 90 else 100
+        val outDir = pa.values["-o"]?.let { UuText.resolve(ctx.cwd, it) } ?: defaultOut(ctx)
+        outDir.mkdirs()
+        val sb = StringBuilder()
+        var ok = 0
+        var fail = 0
+        for (srcArg in srcs) {
+            var temp: File? = null
+            val src = when (val r = resolveSource(srcArg, ctx)) {
+                is SrcSpec.Fail -> { sb.append(r.result.text).append('\n'); fail++; continue }
+                is SrcSpec.Path -> {
+                    if (!r.f.isFile) { sb.append(UuText.notFound(ctx.str, srcArg)).append('\n'); fail++; continue }
+                    r.f
+                }
+                is SrcSpec.Fd -> { temp = r.temp; r.f }
+            }
+            try {
+                val dest = uniqueFile(outDir, "${src.nameWithoutExtension}.$fmt")
+                if (encodeImageTo(src, fmt, dest, q)) {
+                    sb.append(ctx.text(R.string.cli_img_ok, srcArg, dest.absolutePath)).append('\n')
+                    ok++
+                } else {
+                    sb.append(ctx.text(R.string.cli_img_fail, srcArg)).append('\n')
+                    fail++
+                }
+            } finally {
+                temp?.delete()
+            }
+        }
+        if (srcs.size > 1) sb.append(ctx.text(R.string.cli_img_summary, ok.toString(), fail.toString()))
+        return Result(sb.toString().trimEnd('\n'), if (fail > 0) 1 else 0)
+    }
+
+    /** `uu fd [fN...]` — 列出已注册的文件描述符（进程级表，跨 tab 稳定）。 */
+    private fun fd(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
+        val fds = ctx.fds ?: return Result(UuText.needsActivity(ctx.str), 2)
+        val list = if (args.isEmpty()) fds.all() else args.map { a ->
+            val n = a.removePrefix("f").toIntOrNull()
+                ?: return Result(UuText.noSuchFd(ctx.str, a), 1)
+            fds.get(n) ?: return Result(UuText.noSuchFd(ctx.str, a), 1)
+        }
+        if (list.isEmpty()) return Result(ctx.text(R.string.cli_fd_none))
+        val sb = StringBuilder()
+        for (e in list.sortedBy { it.fd }) {
+            sb.append(
+                when {
+                    e.wholeFile -> ctx.text(R.string.cli_fd_file, e.fd.toString(), fmt(e.byteSize()), e.host.name)
+                    // 区间条目要带上**宿主文件名**（label 是扫描器的类型名，
+                    // 光有 label 看不出这段在哪个文件里）
+                    e.archiveKey != null -> ctx.text(
+                        R.string.cli_fd_range_arch, e.fd.toString(), fmt(e.byteSize()),
+                        "%x".format(e.offset), e.host.name, e.label, e.archiveKey
+                    )
+                    else -> ctx.text(
+                        R.string.cli_fd_range, e.fd.toString(), fmt(e.byteSize()),
+                        "%x".format(e.offset), e.host.name, e.label
+                    )
+                }
+            )
+            if (fds.checkFresh(e) != null) sb.append(ctx.text(R.string.cli_fd_stale_mark))
+            sb.append('\n')
+        }
+        sb.append(ctx.text(R.string.cli_fd_total, list.size.toString()))
+        return Result(sb.toString())
     }
 
     /** `uu hex <file> [offset] [len]` — 十六进制查看（默认 0 / 512B，上限 8KB）。 */

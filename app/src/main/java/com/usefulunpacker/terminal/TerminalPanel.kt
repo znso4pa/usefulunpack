@@ -627,18 +627,34 @@ internal class TerminalPanel(private val act: MainActivity) {
         is CliTokenizer.Out.Bad -> null
     }
 
-    /** `uu run <file> [-k]`：UUT 脚本——解析 AST 后逐句执行（行内管道/重定向可用）。 */
+    /**
+     * `uu run [-k] <file> [脚本参数...]`：UUT 脚本——解析 AST 后逐句执行
+     * （行内管道/重定向可用）。路径**之后**的参数原样传给脚本（`$1`…`$n`、
+     * `$argc`、`$args`），所以带 `-` 的实参不会被误当标志。
+     */
     private fun runScript(args: List<String>, ec: ExecCtx, depth: Int): Int {
         if (depth >= SCRIPT_MAX_DEPTH) {
             ec.emit(str(R.string.cli_run_stopped, "0", "1", "depth>${SCRIPT_MAX_DEPTH - 1}"))
             return 1
         }
-        val keepGoing = args.any { it == "-k" }
-        val path = args.firstOrNull { !it.startsWith("-") }
+        var keepGoing = false
+        var i = 0
+        while (i < args.size && args[i].startsWith("-")) {
+            when (args[i]) {
+                "-k" -> keepGoing = true
+                else -> {
+                    ec.emit(str(R.string.cli_unknown_flag, args[i]))
+                    return 2
+                }
+            }
+            i++
+        }
+        val path = args.getOrNull(i)
         if (path == null) {
-            ec.emit("uu run <file> [-k]")
+            ec.emit("uu run [-k] <file.uut> [args...]")
             return 2
         }
+        val scriptArgs = args.drop(i + 1)
         val f = UuText.resolve(ec.s.cwd, path)
         if (!f.isFile) {
             ec.emit(str(R.string.cli_not_found, path))
@@ -654,6 +670,10 @@ internal class TerminalPanel(private val act: MainActivity) {
             return 2
         }
         val vars = HashMap<String, String>()
+        vars["0"] = path
+        scriptArgs.forEachIndexed { k, a -> vars[(k + 1).toString()] = a }
+        vars["argc"] = scriptArgs.size.toString()
+        vars["args"] = scriptArgs.joinToString(" ")
         val r = execUut(ast, vars, ec, depth, keepGoing)
         ec.emit(
             if (r.stoppedLine > 0) str(R.string.cli_run_stopped, r.ran.toString(), r.exit.toString(), r.stoppedLine.toString())
@@ -662,8 +682,10 @@ internal class TerminalPanel(private val act: MainActivity) {
         return r.exit
     }
 
-    /** UUT 执行统计。 */
-    private class UutRun(val ran: Int = 0, val exit: Int = 0, val stoppedLine: Int = 0)
+    /** UUT 执行统计。[returned] = 脚本里执行了 `return`（只结束当前这一层）。 */
+    private class UutRun(
+        val ran: Int = 0, val exit: Int = 0, val stoppedLine: Int = 0, val returned: Boolean = false,
+    )
 
     private fun execUut(
         stmts: List<UutStmt>, vars: HashMap<String, String>, ec: ExecCtx, depth: Int, keepGoing: Boolean
@@ -734,9 +756,32 @@ internal class TerminalPanel(private val act: MainActivity) {
                         val sub = execUut(st.body, vars, ec, depth, keepGoing)
                         ran += sub.ran
                         exit = sub.exit
-                        if (sub.stoppedLine > 0) return UutRun(ran, exit, sub.stoppedLine)
+                        if (sub.returned || sub.stoppedLine > 0) {
+                            return UutRun(ran, exit, sub.stoppedLine, sub.returned)
+                        }
                         if (sub.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
                     }
+                }
+                is UutStmt.If -> {
+                    val cur = vars[st.varName] ?: ""
+                    val ok = if (st.negate) cur != st.value else cur == st.value
+                    val body = if (ok) st.thenBody else st.elseBody
+                    // 空分支是合法的（`if x` … `end` 什么都不做）
+                    if (body.isNotEmpty()) {
+                        val sub = execUut(body, vars, ec, depth, keepGoing)
+                        ran += sub.ran
+                        exit = sub.exit
+                        if (sub.returned || sub.stoppedLine > 0) {
+                            return UutRun(ran, exit, sub.stoppedLine, sub.returned)
+                        }
+                        if (sub.exit != 0 && !keepGoing) return UutRun(ran, exit, st.line)
+                    }
+                }
+                is UutStmt.Return -> {
+                    // return 结束**本层**脚本：嵌套 `uu run` 只结束它自己，
+                    // 退出码成为那条 `uu run` 命令的退出码
+                    val code = UutParser.expandVars(st.rawCode, vars).trim().toIntOrNull() ?: 0
+                    return UutRun(ran, code, 0, returned = true)
                 }
             }
         }

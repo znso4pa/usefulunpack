@@ -76,7 +76,8 @@ internal object UuCommands {
 
     internal enum class Kind {
         LIST_FORMATS, HELP, DOCS, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
-        TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO
+        TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO,
+        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX
     }
 
     internal class Cmd(val name: String, val kind: Kind, val summary: String, val usage: String)
@@ -108,6 +109,13 @@ internal object UuCommands {
         Cmd("set",    Kind.SET,          "Replace one entry inside an archive",            "uu set <archive> <entry> <localfile> [-p pw]"),
         Cmd("scan",   Kind.SCAN,         "Scan a file for embedded archive signatures",    "uu scan <file>"),
         Cmd("cso",    Kind.CSO,          "Convert ISO ↔ CSO",                              "uu cso <file> [out]"),
+        Cmd("enc",    Kind.ENC,          "Convert text encoding (BOM kept)",               "uu enc <file> <from|auto> <to> [out]"),
+        Cmd("mvdec",  Kind.MVDEC,        "Decode RPG Maker MV/MZ assets (no key needed)",  "uu mvdec <file...> [-o dir]"),
+        Cmd("rmd",    Kind.RMD,          "Delete entries from a ZIP (name-cn copy)",       "uu rmd <zip> <entry...> [-p pw]"),
+        Cmd("add",    Kind.ADD,          "Add a file to a ZIP (name-cn copy)",             "uu add <zip> <local> [name] [-p pw]"),
+        Cmd("find",   Kind.FIND,         "Find files by name under a folder",              "uu find [dir] <glob> [depth]"),
+        Cmd("diff",   Kind.DIFF,         "Compare entry lists of two archives (size-based)", "uu diff <a> <b> [-p pw]"),
+        Cmd("hex",    Kind.HEX,          "Hex dump a byte range",                         "uu hex <file> [offset] [len]"),
     )
 
     /** 供 `help` 内建命令复用，保证它和 `uu help` 讲的是同一份内容。 */
@@ -142,6 +150,13 @@ internal object UuCommands {
                 Kind.SET -> setEntry(args, ctx)
                 Kind.SCAN -> scan(args, ctx)
                 Kind.CSO -> cso(args, ctx)
+                Kind.ENC -> enc(args, ctx)
+                Kind.MVDEC -> mvdec(args, ctx)
+                Kind.RMD -> rmd(args, ctx)
+                Kind.ADD -> add(args, ctx)
+                Kind.FIND -> find(args, ctx)
+                Kind.DIFF -> diff(args, ctx)
+                Kind.HEX -> hex(args, ctx)
             }
         } catch (e: Exception) {
             // 命令层不各自 catch：统一转成一行错误，避免把堆栈写进终端输出区
@@ -846,6 +861,8 @@ internal object UuCommands {
         return ParsedArgs(flags, bools, pos, missing)
     }
 
+    private fun Ctx.stringZipMulti() = text(R.string.zip_multi_disk_no_edit)
+
     /** 缺值 → 报错 Result；否则 null。 */
     private fun missingValueError(ctx: Ctx, pa: ParsedArgs): Result? =
         pa.missingValue?.let { Result(ctx.text(R.string.cli_flag_missing_value, it), 1) }
@@ -1314,7 +1331,263 @@ internal object UuCommands {
         }
     }
 
-    /**
+    // ─── enc / mvdec / rmd / add / find / diff / hex ─────────────────────
+
+    /** 编码别名归一（与 TEXT_ENCODINGS 的四档对齐）。 */
+    private fun normalizeEncoding(name: String): String? = when (name.uppercase()) {
+        "UTF-8", "UTF8" -> "UTF-8"
+        "UTF-16", "UTF16", "UTF-16LE", "UTF16LE" -> "UTF-16"
+        "SJIS", "SHIFT-JIS", "SHIFT_JIS", "SHIFTJIS", "CP932" -> "SHIFT-JIS"
+        "GBK", "CP936" -> "GBK"
+        else -> null
+    }
+
+    private fun encShort(enc: String) = when (enc) {
+        "UTF-8" -> "utf8"; "UTF-16" -> "utf16"; "SHIFT-JIS" -> "sjis"; "GBK" -> "gbk"; else -> "out"
+    }
+
+    /** `uu enc <file> <from|auto> <to> [out]` — 文本编码转换，BOM 按源保真。 */
+    private fun enc(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
+        if (args.size < 3) return Result(usageOf("enc"), 2)
+        val f = UuText.resolve(ctx.cwd, args[0])
+        if (!f.isFile) return Result(UuText.notFound(ctx.str, args[0]), 1)
+        val to = normalizeEncoding(args[2])
+            ?: return Result(ctx.text(R.string.cli_enc_bad_encoding, args[2]), 1)
+        val from = if (args[1].equals("auto", true)) null else normalizeEncoding(args[1])
+            ?: return Result(ctx.text(R.string.cli_enc_bad_encoding, args[1]), 1)
+        if (f.length() > ENC_MAX_BYTES) {
+            return Result(ctx.text(R.string.cli_enc_too_big, fmt(f.length())), 1)
+        }
+        val bytes = runCatching { f.readBytes() }.getOrNull()
+            ?: return Result(UuText.failed(ctx.str, f.name), 1)
+        val srcEnc = from ?: detectBestEncoding(bytes)
+            ?: return Result(ctx.text(R.string.cli_enc_no_detect, f.name), 1)
+        val text = decodeTextStrict(bytes, srcEnc)
+        val out = args.getOrNull(3)?.let { UuText.resolve(ctx.cwd, it) }
+            ?: uniqueFile(f.parentFile ?: ctx.cwd,
+                "${f.nameWithoutExtension}-${encShort(to)}.${f.extension.ifEmpty { "txt" }}")
+        if (out.exists()) return Result(ctx.text(R.string.cli_exists, out.path), 1)
+        // BOM 保真：源有 BOM 且目标支持（UTF-8/UTF-16）时保留
+        out.writeBytes(encodeText(text, to, hasBom(bytes)))
+        return Result(ctx.text(R.string.cli_enc_done, f.name, out.name, srcEnc, to))
+    }
+
+    /** `uu mvdec <file...> [-o dir]` — MV/MZ 资产解密（标准头重建，无需密钥）。 */
+    private fun mvdec(args: List<String>, ctx: Ctx): Result {
+        val pa = splitFlags(args, listOf("-o"))
+        missingValueError(ctx, pa)?.let { return it }
+        if (pa.pos.isEmpty()) return needFile()
+        val outDir = pa.values["-o"]?.let { UuText.resolve(ctx.cwd, it) } ?: defaultOut(ctx)
+        outDir.mkdirs()
+        var ok = 0
+        var fail = 0
+        for (p in pa.pos) {
+            val f = UuText.resolve(ctx.cwd, p)
+            if (!f.isFile) { fail++; continue }
+            val o = runCatching {
+                extractByFormat("rpgmv", f.path, outDir.path, "", ctx.prefs
+                    ?: throw IllegalStateException("prefs required"), "")
+            }.getOrNull()
+            if (o != null && o.counts.ok) ok++ else fail++
+        }
+        val msg = ctx.text(R.string.cli_ok_count, ok.toString())
+        return if (fail == 0) Result(msg)
+               else Result(msg + "\n" + ctx.text(R.string.cli_pack_partial, fail.toString()), 1)
+    }
+
+    /** ZIP 就地编辑公共段：在调度槽内解析产物名 → zipModify → 落成 -cn 副本。 */
+    private fun zipModifyCopy(
+        archive: File, ops: String, pw: String, label: String, ctx: Ctx
+    ): Result {
+        if (detectFormat(archive) != "zip") {
+            return Result(ctx.text(R.string.cli_set_unsupported, "non-ZIP"), 1)
+        }
+        if (isVolumeFile(archive) == "zip" || isZipVolumeName(archive.name)) {
+            return Result(ctx.stringZipMulti(), 1)
+        }
+        val parent = archive.parentFile ?: ctx.cwd
+        val act = ctx.activity
+        val opH = act?.let { tryStartOperation(it, "zip") }
+        try {
+            if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+            val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
+            val tmp = File(parent, "${archive.nameWithoutExtension}.edit.zip")
+            val ok = runCatching { ZipCore.zipModify("", archive.path, tmp.path, ops, pw) }
+                .getOrDefault(false)
+            if (!ok) {
+                tmp.delete()
+                return Result(UuText.packFailed(ctx.str, outF.name), 1)
+            }
+            java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            return Result(ctx.text(R.string.cli_set_done, label, outF.name) + "\n" +
+                ctx.text(R.string.cli_all_set))
+        } finally {
+            opH?.release()
+        }
+    }
+
+    /** `uu rmd <zip> <entry...> [-p pw]` — 删除 ZIP 条目（输出 -cn 副本）。 */
+    private fun rmd(args: List<String>, ctx: Ctx): Result {
+        val pa = splitFlags(args, listOf("-p"))
+        missingValueError(ctx, pa)?.let { return it }
+        if (pa.pos.size < 2) return Result(usageOf("rmd"), 2)
+        val archive = UuText.resolve(ctx.cwd, pa.pos[0])
+        if (!archive.isFile) return Result(UuText.notFound(ctx.str, pa.pos[0]), 1)
+        val entries = pa.pos.drop(1)
+        if (entries.any { it.contains('|') }) {
+            return Result(ctx.text(R.string.zip_invalid_entry_name), 1)
+        }
+        val pw = pa.values["-p"]?.takeIf { it.isNotEmpty() } ?: ""
+        val ops = entries.joinToString("\n") { "delete|$it" }
+        return zipModifyCopy(archive, ops, pw, "${entries.size} entries", ctx)
+    }
+
+    /** `uu add <zip> <local> [name] [-p pw]` — 向 ZIP 添加条目（输出 -cn 副本）。 */
+    private fun add(args: List<String>, ctx: Ctx): Result {
+        val pa = splitFlags(args, listOf("-p"))
+        missingValueError(ctx, pa)?.let { return it }
+        if (pa.pos.size < 2) return Result(usageOf("add"), 2)
+        val archive = UuText.resolve(ctx.cwd, pa.pos[0])
+        if (!archive.isFile) return Result(UuText.notFound(ctx.str, pa.pos[0]), 1)
+        val local = UuText.resolve(ctx.cwd, pa.pos[1])
+        if (!local.isFile) return Result(UuText.notFound(ctx.str, pa.pos[1]), 1)
+        val rawName = pa.pos.getOrNull(2) ?: local.name
+        val name = sanitizeEntryPath(rawName.replace('\\', '/').trim('/'))
+            ?: return Result(ctx.text(R.string.zip_invalid_entry_name), 1)
+        if (name.contains('|')) return Result(ctx.text(R.string.zip_invalid_entry_name), 1)
+        // Rust 的 add 对已存在条目是静默跳过——先查重给出明确错误
+        val json = listEntriesJsonFor(ctx, "zip", archive,
+            pa.values["-p"]?.takeIf { it.isNotEmpty() } ?: "")
+        if (json != null && parseEntries(json).any { it.path == name }) {
+            return Result(ctx.text(R.string.cli_exists, name), 1)
+        }
+        val pw = pa.values["-p"]?.takeIf { it.isNotEmpty() } ?: ""
+        return zipModifyCopy(archive, "add|$name|${local.path}", pw, name, ctx)
+    }
+
+    /** `uu find [dir] <glob> [depth]` — 递归文件名匹配（默认 cwd、深 6、上限 200 条）。 */
+    private fun find(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
+        if (args.isEmpty()) return needFile()
+        val single = args.size == 1
+        val root = if (single) ctx.cwd else UuText.resolve(ctx.cwd, args[0])
+        if (!root.isDirectory) return Result(UuText.notFound(ctx.str, args[0]), 1)
+        val glob = if (single) args[0] else args[1]
+        val depth = args.getOrNull(2)?.toIntOrNull()?.coerceAtLeast(1) ?: FIND_MAX_DEPTH
+        val hits = ArrayList<File>()
+        root.walkTopDown().maxDepth(depth).forEach { f ->
+            if (f != root && CliGlob.matches(f.name, glob)) hits.add(f)
+        }
+        if (hits.isEmpty()) return Result(ctx.text(R.string.cli_find_none, glob))
+        val shown = hits.take(FIND_MAX_PRINT)
+        val sb = StringBuilder()
+        for (f in shown) {
+            sb.append("  ").append(f.relativeTo(root).path).append(if (f.isDirectory) "/" else "").append('\n')
+        }
+        if (hits.size > shown.size) {
+            sb.append(ctx.text(R.string.cli_list_truncated, (hits.size - shown.size).toString())).append('\n')
+        }
+        return Result(sb.toString().trimEnd('\n'))
+    }
+
+    /** `uu diff <a> <b> [-p pw]` — 两个归档条目表差异（仅比 size/目录性,无校验和）。 */
+    private fun diff(args: List<String>, ctx: Ctx): Result {
+        val pa = splitFlags(args, listOf("-p"))
+        missingValueError(ctx, pa)?.let { return it }
+        if (pa.pos.size < 2) return Result(usageOf("diff"), 2)
+        val a = UuText.resolve(ctx.cwd, pa.pos[0]); if (!a.isFile) return Result(UuText.notFound(ctx.str, pa.pos[0]), 1)
+        val b = UuText.resolve(ctx.cwd, pa.pos[1]); if (!b.isFile) return Result(UuText.notFound(ctx.str, pa.pos[1]), 1)
+        val pw = pa.values["-p"]?.takeIf { it.isNotEmpty() } ?: ""
+        fun entriesOf(f: File): List<ArchiveEntry>? {
+            val fmt = detectFormat(f) ?: detectFormatByMagic(f) ?: return null
+            val json = listEntriesJsonFor(ctx, fmt, f, pw) ?: return null
+            return parseEntries(json)
+        }
+        val ea = entriesOf(a) ?: return Result(UuText.listFailed(ctx.str, a.name), 1)
+        val eb = entriesOf(b) ?: return Result(UuText.listFailed(ctx.str, b.name), 1)
+        val (onlyA, onlyB, changed, ma, mb) = diffOf(ea, eb)
+        val sb = StringBuilder()
+        sb.append(ctx.text(R.string.cli_diff_title, a.name, b.name,
+            onlyB.size.toString(), onlyA.size.toString(), changed.size.toString())).append('\n')
+        for (p in onlyA.sorted()) sb.append("  - ").append(p).append('\n')
+        for (p in onlyB.sorted()) sb.append("  + ").append(p).append('\n')
+        for (p in changed.sorted()) {
+            sb.append("  ~ ").append(p)
+                .append("  ").append(fmt(ma[p]!!.size)).append(" → ").append(fmt(mb[p]!!.size)).append('\n')
+        }
+        return Result(sb.toString().trimEnd('\n'))
+    }
+
+    /** `uu hex <file> [offset] [len]` — 十六进制查看（默认 0 / 512B，上限 8KB）。 */
+    private fun hex(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
+        if (args.isEmpty()) return needFile()
+        val f = UuText.resolve(ctx.cwd, args[0])
+        if (!f.isFile) return Result(UuText.notFound(ctx.str, args[0]), 1)
+        val offset = args.getOrNull(1)?.let { parseNum(it) } ?: 0L
+        val len = (args.getOrNull(2)?.let { parseNum(it) } ?: 512L).coerceIn(1L, HEX_MAX_BYTES)
+        val buf = ByteArray(len.toInt())
+        val n = try {
+            java.io.RandomAccessFile(f, "r").use { raf ->
+                raf.seek(offset)
+                raf.read(buf)
+            }
+        } catch (e: Exception) { -1 }
+        if (n < 0) return Result(UuText.failed(ctx.str, f.name), 1)
+        val sb = StringBuilder()
+        sb.append(f.name).append("  ").append(ctx.text(R.string.cli_hex_range,
+            "0x%08X".format(offset), n.toString())).append('\n')
+        var i = 0
+        while (i < n) {
+            val rowLen = minOf(16, n - i)
+            sb.append("%08X  ".format(offset + i))
+            val ascii = StringBuilder()
+            for (j in 0 until 16) {
+                if (j < rowLen) {
+                    val v = buf[i + j].toInt() and 0xFF
+                    sb.append("%02X ".format(v))
+                    ascii.append(if (v in 0x20..0x7E) v.toChar() else '.')
+                } else {
+                    sb.append("   ")
+                }
+                if (j == 7) sb.append(' ')
+            }
+            sb.append(" |").append(ascii).append("|\n")
+            i += rowLen
+        }
+        return Result(sb.toString().trimEnd('\n'))
+    }
+
+    /** 条目表差异（纯函数,可单测）：(仅A, 仅B, 变化, ma, mb)。 */
+    internal fun diffOf(
+        ea: List<ArchiveEntry>, eb: List<ArchiveEntry>
+    ): Quint<Set<String>, Set<String>, List<String>, Map<String, ArchiveEntry>, Map<String, ArchiveEntry>> {
+        val ma = ea.associateBy { it.path }
+        val mb = eb.associateBy { it.path }
+        val onlyA = ma.keys - mb.keys
+        val onlyB = mb.keys - ma.keys
+        val changed = (ma.keys intersect mb.keys).filter { p ->
+            val x = ma[p]!!; val y = mb[p]!!
+            x.isDirectory != y.isDirectory || (!x.isDirectory && x.size != y.size)
+        }
+        return Quint(onlyA, onlyB, changed, ma, mb)
+    }
+
+    internal class Quint<A, B, C, D, E>(val a: A, val b: B, val c: C, val d: D, val e: E) {
+        operator fun component1() = a
+        operator fun component2() = b
+        operator fun component3() = c
+        operator fun component4() = d
+        operator fun component5() = e
+    }
+
+    /** 支持 0x 前缀的十六进制或十进制。 */
+    private fun parseNum(s: String): Long? =
+        if (s.startsWith("0x", true)) s.drop(2).toLongOrNull(16) else s.toLongOrNull()
+
+        /**
      * 通配符展开（所有命令共用）：参数含 `*`/`?` 时在 cwd 内展开为实际路径；
      * **无匹配保留原样**（错误信息里能看到用户输入的模式）。目录部分不参与
      * 匹配（带子目录的模式先拆 parent 再匹配文件名）。
@@ -1348,6 +1621,16 @@ internal object UuCommands {
     /** `uu grep`：单文件读取上限 / 打印字符上限。 */
     private const val GREP_MAX_FILE_BYTES = 5L * 1024 * 1024
     private const val GREP_MAX_PRINT_CHARS = 60_000
+
+    /** `uu enc` 单文件上限 64MB（整文件读入）。 */
+    private const val ENC_MAX_BYTES = 64L * 1024 * 1024
+
+    /** `uu find`：默认递归深度 / 最多打印条数。 */
+    private const val FIND_MAX_DEPTH = 6
+    private const val FIND_MAX_PRINT = 200
+
+    /** `uu hex`：单次最多 8KB。 */
+    private const val HEX_MAX_BYTES = 8L * 1024
 
     /**
      * scan-core 的 label → 归档格式 key；非归档命中返回 null（只能 dd，不能 x/l）。

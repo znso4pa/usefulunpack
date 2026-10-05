@@ -32,6 +32,12 @@ internal class TerminalPanel(private val act: MainActivity) {
 
     private val vm = TerminalViewModel.of(act)
     private val fds = vm.fds
+
+    /**
+     * 当前绑定会话（按 tab 分桶，见 TerminalViewModel.sessions）。
+     * show()/mount() 时绑定；hide() 后失效（视图引用也一并清掉）。
+     */
+    private lateinit var sess: TerminalViewModel.Session
     private val tokenizer = CliTokenizer()
 
     private var root: LinearLayout? = null
@@ -67,20 +73,24 @@ internal class TerminalPanel(private val act: MainActivity) {
                     existing.visibility = View.VISIBLE
                     render()  // 同 onTabChanged：GONE 期间的滚动位置可能失效
                 }
-            } else {
-                // 换了个 tab 点 CLI：把终端扎根到当前 tab（会话状态/cwd 保留，
-                // 这是同一个 shell，只是换了个窗口显示）。
-                ownerTabId = cur
-                existing.visibility = View.VISIBLE
-                render()
+                return
             }
-            return
+            // 另一个 tab 的终端还挂着：撤下它的视图（会话按 tab 留在 vm 里），
+            // 给当前 tab 挂一个**它自己的**终端 —— 会话按 tab 独立，绝不串台。
+            hide()
         }
+        mount(cur)
+    }
+
+    /** 为 [tabId] 挂一个全新视图，绑定它自己的会话（cwd/历史/输出）。 */
+    private fun mount(tabId: Int) {
+        sess = vm.session(tabId)
+        ownerTabId = tabId
         // 首次打开时把 cwd 对齐到当前 tab 的目录（之后再由 cd 自己维护，
         // 重开终端不能把用户 cd 过去的位置重置掉）
-        if (!vm.cwdInitialized) {
-            vm.cwd = act.currentDir
-            vm.cwdInitialized = true
+        if (!sess.cwdInitialized) {
+            sess.cwd = act.currentDir
+            sess.cwdInitialized = true
         }
         val dm = act.resources.displayMetrics
         fun dp(v: Int) = (v * dm.density).toInt()
@@ -118,7 +128,7 @@ internal class TerminalPanel(private val act: MainActivity) {
             })
             addView(TextView(act).apply {
                 id = R.id.terminal_cwd
-                text = vm.cwd.name.ifEmpty { "/" }
+                text = sess.cwd.name.ifEmpty { "/" }
                 setTextColor(C["hint"]!!); textSize = 11f
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
@@ -126,7 +136,7 @@ internal class TerminalPanel(private val act: MainActivity) {
                     .apply { marginStart = dp(8) }
                 also { cwdView = it }
             })
-            addView(action(R.string.terminal_clear) { vm.clearOutput(); render() })
+            addView(action(R.string.terminal_clear) { sess.clearOutput(); render() })
             addView(action(R.string.terminal_close) { hide() })
         }
 
@@ -205,9 +215,8 @@ internal class TerminalPanel(private val act: MainActivity) {
             topMargin = topInset()
         }
         root = layout
-        ownerTabId = act.activeTab.tabId
 
-        if (vm.output.isEmpty()) append(str(R.string.terminal_banner))
+        if (sess.output.isEmpty()) append(str(R.string.terminal_banner))
         render()
         // 刚 attach 时 requestFocus() 还不生效（窗口没拿到焦点），键盘也不会自己弹，
         // 于是打开终端后直接敲键盘没反应 —— 必须 post 到下一帧再聚焦。
@@ -294,7 +303,7 @@ internal class TerminalPanel(private val act: MainActivity) {
      * -1 = 还没回看（在输入新的一行），n = 回到底下的新行（输入框清空）。
      */
     private fun recallHistory(delta: Int) {
-        val n = vm.historySize
+        val n = sess.historySize
         if (n == 0) return
         val next = when {
             historyIdx < 0 -> if (delta < 0) n - 1 else return
@@ -302,21 +311,21 @@ internal class TerminalPanel(private val act: MainActivity) {
             else -> historyIdx + delta
         }
         historyIdx = next
-        val text = if (next >= n) "" else vm.historyAt(next).orEmpty()
+        val text = if (next >= n) "" else sess.historyAt(next).orEmpty()
         input?.setText(text)
         input?.setSelection(text.length)
     }
 
     private fun append(text: String) {
-        vm.append(text)
+        sess.append(text)
         render()
     }
 
     private fun render() {
-        out?.text = vm.output
+        out?.text = sess.output
         // cwd 是**衍生**状态：`cd` 只改 vm.cwd，不去碰这个 TextView。
         // 不在这里统一刷新的话，`cd` 之后标题栏还停在旧目录。
-        cwdView?.text = vm.cwd.name.ifEmpty { "/" }
+        cwdView?.text = sess.cwd.name.ifEmpty { "/" }
         if (pinnedToBottom) scroller?.post { scroller?.fullScroll(View.FOCUS_DOWN) }
         // 上滑浏览时不要强拉回底部
         scroller?.setOnScrollChangeListener { _, _, scrollY, _, _ ->
@@ -333,7 +342,7 @@ internal class TerminalPanel(private val act: MainActivity) {
         if (line.isEmpty()) return
         input?.setText("")
         historyIdx = -1
-        vm.pushHistory(line)
+        sess.pushHistory(line)
         val tokens = when (val t = tokenizer.tokenize(line)) {
             is CliTokenizer.Out.Bad -> {
                 val reason = t.reason
@@ -347,7 +356,7 @@ internal class TerminalPanel(private val act: MainActivity) {
             }
             is CliTokenizer.Out.Ok -> t.tokens
         }
-        val cwd = vm.cwd          // 主线程读：dispatch 里的 cd 会写它
+        val cwd = sess.cwd       // 主线程读：dispatch 里的 cd 会写它
         append(PROMPT + line)
         thread { runTokens(line, tokens, cwd) }
     }
@@ -392,7 +401,7 @@ internal class TerminalPanel(private val act: MainActivity) {
 
     private fun ctx() = UuCommands.Ctx(
         prefs = act.prefs,
-        cwd = vm.cwd,
+        cwd = sess.cwd,
         activity = act,
         str = ctxStr(),
         fds = fds,
@@ -402,7 +411,7 @@ internal class TerminalPanel(private val act: MainActivity) {
         progress = { line ->
             act.runOnUiThread {
                 if (act.isFinishing || act.isDestroyed) return@runOnUiThread
-                vm.progress(line)
+                sess.progress(line)
                 render()
             }
         },
@@ -475,16 +484,16 @@ internal class TerminalPanel(private val act: MainActivity) {
 
         if (kind == UuCommands.Picker.FOLDER) {
             choice(
-                str(R.string.cli_pick_keep), str(R.string.cli_pick_keep_sub, vm.cwd.absolutePath)
-            ) { rerunWith(vm.cwd) }
+                str(R.string.cli_pick_keep), str(R.string.cli_pick_keep_sub, sess.cwd.absolutePath)
+            ) { rerunWith(sess.cwd) }
         // 跟随设置里的「路径选择方式」：终端按 tab 扎根后，新窗口模式开的
         // picker tab 会让终端 GONE 让位（选完切回自动恢复），不再需要强制对话框。
             choice(str(R.string.cli_pick_switch), str(R.string.cli_pick_switch_sub)) {
-                showFolderPicker(act, vm.cwd, false) { picked -> rerunWith(picked) }
+                showFolderPicker(act, sess.cwd, false) { picked -> rerunWith(picked) }
             }
         } else {
             choice(str(R.string.action_choose_dir), str(R.string.cli_pick_switch_sub)) {
-                showFolderPicker(act, vm.cwd, true) { picked -> rerunWith(picked) }
+                showFolderPicker(act, sess.cwd, true) { picked -> rerunWith(picked) }
             }
         }
 
@@ -506,7 +515,7 @@ internal class TerminalPanel(private val act: MainActivity) {
         if (tokens.isEmpty()) return
         val next = tokens + picked.absolutePath
         val echo = next.joinToString(" ") { if (it.contains(' ')) "\"$it\"" else it }
-        val cwd = vm.cwd
+        val cwd = sess.cwd
         append(PROMPT + echo)
         thread { runTokens(echo, next, cwd) }
     }
@@ -579,7 +588,7 @@ internal class TerminalPanel(private val act: MainActivity) {
         val target = args.firstOrNull() ?: return cwd.absolutePath
         val dest = when {
             target == "~" -> android.os.Environment.getExternalStorageDirectory()
-            target == "-" -> vm.lastDir.takeIf { it != null } ?: cwd
+            target == "-" -> sess.lastDir.takeIf { it != null } ?: cwd
             target.startsWith("/") -> File(target)
             else -> File(cwd, target)
         }
@@ -595,8 +604,8 @@ internal class TerminalPanel(private val act: MainActivity) {
         }
         val norm = File("/" + parts.joinToString("/"))
         if (!norm.isDirectory) return str(R.string.terminal_not_found, target)
-        vm.lastDir = cwd
-        vm.cwd = norm
+        sess.lastDir = cwd
+        sess.cwd = norm
         // 联动 tab（§2 硬约束）：导航**终端扎根的 tab**。终端隐藏期间不可输入，
         // 所以可见时 owner tab 就是眼前这个窗口 —— 目录切换就发生在用户眼前。
         // 不在后台线程读 activeTab：它的值随时可能因为切窗而变。

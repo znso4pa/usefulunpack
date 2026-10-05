@@ -592,4 +592,6 @@
     <string name="cli_rename_done">名前を変更しました：%1$s → %2$s</string>
     <string name="cli_all_set">✔ 完了</string>
     <string name="recycle_progress_cleaning_bytes">クリーンアップ中：%1$s / %2$s 削除（%3$d/%4$d 項目）</string>
+    <string name="cli_pack_need_format">-f で形式を指定してください（uu fmt 参照）</string>
+    <string name="cli_pack_partial">%1$s 件失敗</string>
 </resources>

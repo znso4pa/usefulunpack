@@ -97,5 +97,69 @@ class UuCommandsTest {
     fun missingFileReportsNotFound() {
         val r = UuCommands.dispatch(argv("hash", "nope.bin"), ctx(tmp.root))
         assertTrue(r.exitCode != 0)
+    }    // ── pack 默认路径 / -c -s 旗标解析 ──
+
+    @Test
+    fun packSingleWithoutOutRequiresFormatKey() {
+        val dir = tmp.root.resolve("packnf").apply { mkdirs() }
+        File(dir, "a.txt").writeText("x")
+        val c = UuCommands.Ctx(prefs = null, cwd = dir)
+        val r = UuCommands.dispatch(listOf("c", "a.txt"), c)
+        assertTrue(r.exitCode != 0)
+        assertTrue(r.picker == null)
+        // 不猜格式：必须 -f 或产物名后缀
+        assertTrue(r.text.contains("!str:") || r.text.contains("uu c"))
     }
+
+    @Test
+    fun packMergeAndSeparateMutuallyExclusive() {
+        val dir = tmp.root.resolve("packms").apply { mkdirs() }
+        val c = UuCommands.Ctx(prefs = null, cwd = dir)
+        val r = UuCommands.dispatch(listOf("c", "a", "b", "-c", "-s", "-f", "zip"), c)
+        assertTrue(r.exitCode != 0)
+    }
+
+    @Test
+    fun barePackAsksForFileOrFolderSource() {
+        val dir = tmp.root.resolve("packbare").apply { mkdirs() }
+        val c = UuCommands.Ctx(prefs = null, cwd = dir)
+        val r = UuCommands.dispatch(listOf("c"), c)
+        assertEquals(2, r.exitCode)
+        assertEquals(UuCommands.Picker.FILE_OR_FOLDER, r.picker)
+    }
+
+    // ── fN 引用（hash / cp 走 FD 表）──
+
+    @Test
+    fun hashAndCopyResolveFNDescriptors() {
+        val dir = tmp.root.resolve("fdargs").apply { mkdirs() }
+        val f = File(dir, "game.zip").apply { writeBytes("archive-bytes".toByteArray()) }
+        val t = FdTable()
+        assertEquals(listOf(0), t.registerFiles(listOf(f)))
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, fds = t, cacheDir = dir)
+
+        val h = UuCommands.dispatch(listOf("hash", "f0"), c)
+        assertEquals(0, h.exitCode)
+        // "archive-bytes" 的 MD5 已知向量，证明读到的是 f0 指向的那个文件
+        assertTrue(h.text.contains("bc450cd98c2921b77a78a6459c9b032a"))
+
+        val dst = File(dir, "out.zip")
+        val cp = UuCommands.dispatch(listOf("cp", "f0", "out.zip"), c)
+        assertEquals(0, cp.exitCode)
+        assertTrue(dst.isFile)
+        assertEquals("archive-bytes", dst.readText())
+        dir.deleteRecursively()
+    }
+
+    @Test
+    fun packWithoutOutNameShowsUsage() {
+        val dir = tmp.root.resolve("packusage").apply { mkdirs() }
+        val c = UuCommands.Ctx(prefs = null, cwd = dir)
+        val r = UuCommands.dispatch(listOf("c", "somedir"), c)
+        // 缺产物名：不猜格式，报「需要 -f」且不弹选择器（选择器只用于补「源」）
+        assertTrue(r.exitCode != 0)
+        assertTrue(r.picker == null)
+        dir.deleteRecursively()
+    }
+
 }

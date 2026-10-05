@@ -598,4 +598,6 @@ The ⋋ overflow in the toolbar opens a full-screen terminal rooted to the curre
     <string name="cli_rename_done">Renamed: %1$s → %2$s</string>
     <string name="cli_all_set">✔ All set</string>
     <string name="recycle_progress_cleaning_bytes">Cleaning up: %1$s / %2$s removed (%3$d/%4$d items)</string>
+    <string name="cli_pack_need_format">Specify the pack format with -f (see uu fmt)</string>
+    <string name="cli_pack_partial">%1$s failed</string>
 </resources>

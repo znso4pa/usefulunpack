@@ -430,7 +430,7 @@
         <item>滚动与自动刷新\n长列表右侧有常显可拖把手（抓住拖动即可跳转）；文本预览/编辑器也有可拖滚动条。当前目录内容变化（重命名/移动/删除/解压/压缩或 USB 等外部改动）时文件列表自动刷新</item>
         <item>回收站\n删除操作默认将文件移到回收站而非直接永久删除（可在设置中关闭）。点工具栏回收站图标查看、恢复或永久删除项目。自动清理可设置保留天数（7/14/30/60/90天或从不）。回收站中的文件占用存储空间。注意：回收站存储在应用私有目录，卸载应用时会清除</item>
         <item>终端与 uu 命令
-工具栏 ⋋ 打开全屏终端，扎根于当前窗口：切走隐藏、切回时输出/历史/cd 原样还在。输入 "uu help" 查看命令集：uu fmt（支持的格式）、uu info &lt;文件&gt;（单行格式 key）、uu l &lt;归档&gt; [-a]（列条目）、uu scan &lt;文件&gt;（签名扫描）。每个扫描命中注册为 fN 字节区间描述符（f3、f4…）——"uu l f3" 无需落盘直接列内嵌 ZIP；宿主文件被改动后描述符失效。内建命令：ls / pwd / cd（导航扎根的窗口）/ help；其余命令由系统 shell 执行。"uu x"（解压）与 "uu c"（封包）即将到来</item>
+工具栏 ⋋ 打开全屏终端，扎根于当前窗口：切走隐藏、切回时输出/历史/cd 原样还在。输入 "uu help" 查看命令集：uu fmt（支持的格式）、uu info &lt;文件&gt;（单行格式 key）、uu l &lt;归档&gt; [-a]（列条目）、uu scan &lt;文件&gt;（签名扫描）。每个扫描命中注册为 fN 字节区间描述符（f3、f4…）——"uu l f3" 无需落盘直接列内嵌 ZIP；宿主文件被改动后描述符失效。内建命令：ls / pwd / cd（导航扎根的窗口）/ help；其余命令由系统 shell 执行。"uu x &lt;归档&gt; [输出目录] [条目] [-p 密码]" 解压（进度直接画在终端里——滚动的进度条 + 字节数 + 当前文件名 + 条目计数，不弹对话框），完成输出 all set；"uu c &lt;源&gt; &lt;产物.ext&gt; [-f key] [等级] [分卷MB] [-p 密码]" 封包（out.pfs 需 -f pfs 或 -f pf6）。uu hash &lt;文件&gt; 输出 MD5 + SHA-256；uu cp / uu rn 拒绝覆盖</item>
     </string-array>
 
 
@@ -590,4 +590,10 @@
     <string name="cli_pack_split_unsupported">%1$s 不支持分卷</string>
     <string name="cli_pack_ok">已封包：%1$s</string>
     <string name="cli_pack_failed">封包失败：%1$s</string>
+
+    <string name="cli_need_password">该归档已加密 —— 请输入密码</string>
+    <string name="cli_exists">已存在：%1$s</string>
+    <string name="cli_copy_done">已复制：%1$s → %2$s</string>
+    <string name="cli_rename_done">已重命名：%1$s → %2$s</string>
+    <string name="cli_all_set">✔ 全部完成</string>
 </resources>

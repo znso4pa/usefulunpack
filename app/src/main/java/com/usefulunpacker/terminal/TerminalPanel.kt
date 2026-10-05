@@ -397,6 +397,15 @@ internal class TerminalPanel(private val act: MainActivity) {
         str = ctxStr(),
         fds = fds,
         cacheDir = act.cacheDir,
+        // 长命令（x/c）的进度：整行替换输出区最后一条进度行，**不弹对话框**
+        //（产品要求：进度只写在 CLI 窗口内）。
+        progress = { line ->
+            act.runOnUiThread {
+                if (act.isFinishing || act.isDestroyed) return@runOnUiThread
+                vm.progress(line)
+                render()
+            }
+        },
     )
 
     private fun runUu(rest: List<String>, cwd: File): Outcome {

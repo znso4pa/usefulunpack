@@ -807,4 +807,21 @@ class UuCommandsTest {
             UutParser.splitChain("a ; b && c || d")
         )
     }
+
+    // ─── 第十批：uu cat 纯文本文件 ────────────────────────────────────────
+
+    @Test
+    fun catPrintsPlainFilesWithEncodingDetection() {
+        val dir = tmp.root.resolve("catf").apply { mkdirs() }
+        File(dir, "note.txt").writeText("第一行\nsecond line")
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("cat", "note.txt"), c)
+        assertEquals(0, r.exitCode)
+        assertTrue(r.text, r.text.contains("第一行"))
+        assertTrue(r.text, r.text.contains("second line"))
+        // 二进制 → 报"无法按文本读"
+        File(dir, "bin.dat").writeBytes(byteArrayOf(0, 1, 2, 3, -1, -2))
+        val r2 = UuCommands.dispatch(listOf("cat", "bin.dat"), c)
+        assertEquals(1, r2.exitCode)
+    }
 }

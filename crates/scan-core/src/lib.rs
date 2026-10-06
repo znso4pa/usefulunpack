@@ -324,6 +324,107 @@ pub extern "system" fn Java_com_usefulunpacker_ScanCore_scanCancelled(_: JNIEnv,
 mod tests {
     use super::*;
 
+    /// Real-file regression for the expanded signature table.
+    ///
+    /// Every fixture here was produced by a real writer (ffmpeg for the audio
+    /// and video containers, sqlite3, javac, ar, xar, gzip/bzip2/xz/zstd/lz4,
+    /// our own APK for the DEX prefix) — see `testdata/README.md` for the exact
+    /// commands. The point is that a signature change which breaks a real
+    /// format, or a validator that reads past its buffer (which is how a
+    /// `dex\n03` header used to panic the whole scan), fails here rather than on
+    /// the device.
+    #[test]
+    fn real_fixtures_are_identified_by_their_own_signature() {
+        let _guard = SCAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cases: &[(&str, &str)] = &[
+            ("a.adx", "Criware ADX audio"),
+            ("a.au", "Sun/NeXT audio"),
+            ("a.caf", "Apple CAF audio"),
+            ("a.aiff", "AIFF audio"),
+            ("a.opus.ogg", "Ogg container"),
+            ("a.m4a", "ISO media (MP4/MOV/HEIC/AVIF)"),
+            ("v.mp4", "ISO media (MP4/MOV/HEIC/AVIF)"),
+            ("v.webm", "Matroska/WebM video"),
+            ("m.mkv", "Matroska/WebM video"),
+            ("i.qoi", "QOI image"),
+            ("i.jp2", "JPEG 2000 image"),
+            ("i.tiff", "TIFF image (little-endian)"),
+            ("i.bmp", "BMP image"),
+            ("i.gif", "GIF image"),
+            ("c.sqlite", "SQLite database"),
+            ("c.class", "Java class"),
+            ("c.pcap", "libpcap capture"),
+            ("c.torrent", "BitTorrent metainfo"),
+            ("c.pem", "PEM text"),
+            ("c.ar", "Unix ar archive"),
+            ("c.xar", "XAR archive"),
+            ("c.zip", "ZIP archive"),
+            ("c.7z", "7-zip archive"),
+            ("c.tar", "POSIX tar archive"),
+            ("c.gz", "gzip compressed data"),
+            ("c.bz2", "bzip2 compressed data"),
+            ("c.xz", "XZ compressed data"),
+            ("c.lzma", "LZMA compressed data"),
+            ("c.zst", "Zstandard compressed data"),
+            ("c.lz4", "LZ4 compressed data"),
+            ("c.dex.head", "Dalvik executable"),
+        ];
+        let mut checked = 0;
+        for (name, label) in cases {
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join(name);
+            let json = scan_file_json(p.to_str().unwrap()).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(
+                json.contains(&format!("\"l\":\"{label}\"")),
+                "{name} was not identified as {label}: {json}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, cases.len());
+    }
+
+    /// The RPA and INT fixtures come from the sibling crates (no second copy to
+    /// drift): a Ren'Py archive and a CatSystem2 KIF archive are exactly the
+    /// formats this expansion was asked for.
+    #[test]
+    fn rpa_and_int_fixtures_are_identified() {
+        let _guard = SCAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for (bytes, label) in [
+            (&include_bytes!("../../rpa-core/testdata/official-renpy-8.5.3.rpa")[..], "Ren'Py archive"),
+            (&include_bytes!("../../int-core/testdata/ptcl.int")[..], "CatSystem2 INT archive"),
+            (&include_bytes!("../../rpa-core/testdata/rpatool-v2.rpa")[..], "Ren'Py archive"),
+        ] {
+            let dir = std::env::temp_dir().join(format!("uu_scan_fx_{}", bytes.len()));
+            let _ = std::fs::create_dir_all(&dir);
+            let p = dir.join("x.bin");
+            std::fs::write(&p, bytes).unwrap();
+            let json = scan_file_json(p.to_str().unwrap()).unwrap();
+            assert!(json.contains(&format!("\"l\":\"{label}\"")), "{}: {json}", p.display());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Nothing in the table may panic on a truncated file — that is how a
+    /// validator with an undersized header buffer took down the whole scan.
+    #[test]
+    fn truncated_fixtures_never_panic() {
+        let _guard = SCAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join("uu_scan_trunc");
+        let _ = std::fs::create_dir_all(&dir);
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
+        for entry in std::fs::read_dir(&base).unwrap().flatten() {
+            let data = std::fs::read(entry.path()).unwrap();
+            for cut in [1usize, 2, 3, 4, 8, 16, 24, 32, 64, 128, 512] {
+                if cut > data.len() {
+                    continue;
+                }
+                let p = dir.join("t.bin");
+                std::fs::write(&p, &data[..cut]).unwrap();
+                let _ = scan_file_json(p.to_str().unwrap());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// All scan tests share the per-format progress/cancel statics, so they
     /// must run serially to avoid racing SCAN_TOTAL/SCAN_CANCEL.
     static SCAN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

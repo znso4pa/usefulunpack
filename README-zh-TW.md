@@ -4,7 +4,7 @@
 
 輕量級 Android 檔案管理器 & 歸檔打包/解壓工具
 
-支援 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**ISO 9660** 光碟映像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支援打包與解壓），Rust 原生核心。
+支援 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**RPA**（Ren'Py）、**ISO 9660** 光碟映像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支援打包與解壓），Rust 原生核心。
 
 ---
 
@@ -16,6 +16,7 @@
 | 📦 **PFS** | 解壓 + 封包 Artemis `.pfs` / `.pf6` / `.pf8` |
 | 📜 **NSA/SAR** | 解壓 NScripter `.nsa` / `.sar` 封包（LZSS + SPB） |
 | 📦 **YPF** | 解壓 YU-RIS `.ypf` 封包，三層自適應邊界檢測 |
+| 🐍 **RPA** | 解壓 + 封裝 Ren'Py `.rpa` / `.rpi`；索引是 zlib 壓縮的 Python pickle，RPA-1.0 / 2.0 / 3.0 三種形態（另相容 RPA-3.2 / 4.0 與 ALT-1.0），條目名為 UTF-8；**封裝寫出 RPA-3.0，pickle 協定 2**（Python 2 時代的 Ren'Py 6.x 與現代引擎都能讀取），可編輯腳本；ZiX-12A/B 需要遊戲自帶的 `renpy/loader.pyo`，明確報錯不猜 |
 | 🎮 **RPG Maker MV/MZ** | 解碼 + 回封逐檔混淆素材（回封需自填金鑰）：`.rpgmvp` 圖片、`.rpgmvo` 音訊、`.rpgmvm` 影片（以及 MZ 的 `.png_` / `.ogg_` / `.m4a_`）；16 位元組檔頭可從檔案自身還原，**不需金鑰**（檔案沒有副檔名時也認得出，靠內容判斷型別）；回封金鑰接受 32 位十六進位（原樣使用）或任意文字（依 RPG Maker 的規則做 MD5）；**每個格式只收自己的類型：`.rpgmvp` 收 `.png`、`.rpgmvo` 收 `.ogg`、`.rpgmvm` 收 `.m4a`**，其餘一律擋下，因為引擎是依副檔名選解碼器的；產物依真實副檔名命名，可直接進圖片 / 音訊預覽；批次模式一次解碼整個資料夾 |
 | 🎮 **RGSS** | 解壓 + 封包 RPG Maker 加密封包：`.rgssad`（XP）、`.rgss2a`（VX）、`.rgss3a`（VX Ace）；版面依封包標頭自動辨識，三種副檔名互相都能開啟；檔名 UTF-8 / Shift-JIS；可編輯腳本；**封包產物預設命名為 `Game.<ext>`**（RPG Maker 只認這個名字），封包選項裡可關 |
 | 💾 **KSD** | 解壓/打包 `.ksd`（mode 0/1/2 解擾 + UTF-16→UTF-8） |
@@ -125,6 +126,7 @@ bash build.sh
          libarchive_iso_core.so  → ISO 9660
          libarchive_ypf_core.so  → YPF (YU-RIS)
          libarchive_rgss_core.so → RGSS (XP/VX/VX Ace) + MV/MZ 散素材
+         libarchive_rpa_core.so  → RPA (Ren'Py)
          libarchive_rgss_core.so → RGSS (RPG Maker XP/VX/VX Ace)
          libarchive_zip_core.so  → ZIP
          libarchive_sevenz_core.so → 7z

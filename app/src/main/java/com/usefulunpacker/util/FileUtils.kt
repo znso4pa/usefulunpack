@@ -597,6 +597,15 @@ fun detectFormatByMagic(f: File): String? {
         has(byteArrayOf(0x28, 0xB5.toByte(), 0x2F, 0xFD.toByte())) -> "zst"
         has(byteArrayOf(0x04, 0x22, 0x4D, 0x18)) -> "lz4"
         has("XP3".toByteArray(Charsets.US_ASCII)) -> "xp3"
+        // Ren'Py archives keep their magic at offset 0 even when renamed. The
+        // 8-byte probe window covers every variant; `.rpi` (RPA-1.0) is
+        // deliberately absent because its only signature is the 2-byte zlib
+        // header, which is far too generic to sniff on.
+        has("RPA-3.0 ".toByteArray(Charsets.US_ASCII)) -> "rpa"
+        has("RPA-3.2 ".toByteArray(Charsets.US_ASCII)) -> "rpa"
+        has("RPA-4.0 ".toByteArray(Charsets.US_ASCII)) -> "rpa"
+        has("RPA-2.0 ".toByteArray(Charsets.US_ASCII)) -> "rpa"
+        has("ALT-1.0 ".toByteArray(Charsets.US_ASCII)) -> "rpa"
         // RPG Maker RGSS: "RGSSAD\0" + the version byte (1 = XP, 2 = VX,
         // 3 = VX Ace), so a game using a non-standard archive name still opens.
         // All three map to the one read key — the parser reads the header.

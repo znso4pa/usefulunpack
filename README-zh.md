@@ -4,7 +4,7 @@
 
 轻量级 Android 文件管理器 & 归档打包/解压工具
 
-支持 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**ISO 9660** 光盘镜像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支持打包与解压），Rust 原生核心。
+支持 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**RPA**（Ren'Py）、**ISO 9660** 光盘镜像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支持打包与解压），Rust 原生核心。
 
 ---
 
@@ -16,6 +16,7 @@
 | 📦 **PFS** | 解压 + 封包 Artemis `.pfs` / `.pf6` / `.pf8` |
 | 📜 **NSA/SAR** | 解压 NScripter `.nsa` / `.sar` 封包（LZSS + SPB），**封包**（stored / LZSS） |
 | 📦 **YPF** | 解压 YU-RIS `.ypf` 封包，三层自适应边界检测 |
+| 🐍 **RPA** | 解压 + 封包 Ren'Py `.rpa` / `.rpi`；索引是 zlib 压缩的 Python pickle，RPA-1.0 / 2.0 / 3.0 三种形态（另兼容 RPA-3.2 / 4.0 与 ALT-1.0），条目名为 UTF-8；**封包写出 RPA-3.0，pickle 协议 2**（Python 2 时代的 Ren'Py 6.x 与现代引擎都能读），可编辑脚本；ZiX-12A/B 需要游戏自带的 `renpy/loader.pyo`，明确报错不猜 |
 | 🎮 **RGSS** | 解压 + 打包 RPG Maker 加密归档：`.rgssad`（XP）、`.rgss2a`（VX）、`.rgss3a`（VX Ace）；布局按包头自动识别，三种扩展名互相都能打开；文件名 UTF-8 / Shift-JIS；可编辑脚本；**封包产物默认命名为 `Game.<ext>`**（RPG Maker 只认这个名字），封包选项里可关 |
 | 🎮 **RPG Maker MV/MZ** | 解码 + 回封逐文件混淆素材（回封需自填密钥）：`.rpgmvp` 图片、`.rpgmvo` 音频、`.rpgmvm` 视频（以及 MZ 的 `.png_` / `.ogg_` / `.m4a_`）；16 字节文件头可从文件自身还原，**无需密钥**（文件没有扩展名时也认得出来，靠内容判断类型）；回封密钥接受 32 位十六进制（原样使用）或任意文本（按 RPG Maker 的规则做 MD5）；**每个格式只收自己的类型：`.rpgmvp` 收 `.png`、`.rpgmvo` 收 `.ogg`、`.rpgmvm` 收 `.m4a`**，其余一律拦住，因为引擎是按扩展名选解码器的；产物按真实扩展名命名，可直接进图片 / 音频预览；批量模式一次解码整个文件夹 |
 | 💾 **KSD** | 解压/打包 `.ksd`（mode 0/1/2 解扰 + UTF-16→UTF-8） |
@@ -130,6 +131,7 @@ bash build.sh
          libarchive_iso_core.so  → ISO 9660
          libarchive_ypf_core.so  → YPF (YU-RIS)
          libarchive_rgss_core.so → RGSS (XP/VX/VX Ace) + MV/MZ 散素材
+         libarchive_rpa_core.so  → RPA (Ren'Py)
          libarchive_zip_core.so  → ZIP
          libarchive_sevenz_core.so → 7z
          libarchive_rar_core.so  → RAR
@@ -168,6 +170,7 @@ XOR 密钥（0xFF / 0xC9）按文件首条目自动判断。
 | **YPF** | [YU-RIS 格式解析参考](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker) (Kaitai), [GARbro](https://github.com/morkt/GARbro) SwapTable, XOR + Shift-JIS, zlib | 公开规范 / MIT |
 | **RPG Maker MV/MZ 素材** | 格式对照 [Petschko's RPG-Maker-MV-Decrypter](https://gitlab.com/Petschko/RPG-Maker-MV-Decrypter) 与 [rpgm-asset-decrypter-lib](https://github.com/RPG-Maker-Translation-Tools/rpgm-asset-decrypter-lib)（MIT）；密钥流从文件自身头部还原，无需 MD5 或 `System.json` 侧车文件 | 公开规范 / MIT |
 | **RGSS（RPG Maker）** | 布局对照 [uuksu/RPGMakerDecrypter](https://github.com/uuksu/RPGMakerDecrypter)（MIT）、[mkxp-z `crypto/rgssad.cpp`](https://github.com/mkxp-z/mkxp-z)（BSD-3-Clause）、[rpgm-archive-decrypter-lib](https://github.com/RPG-Maker-Translation-Tools/rpgm-archive-decrypter-lib)（Apache-2.0/MIT）；crates.io 上无同类 crate，解析器为自研 | 公开规范 / MIT / BSD-3-Clause / Apache-2.0 |
+| **RPA（Ren'Py）** | [Ren'Py 官方读取实现 `renpy/loader.py`](https://github.com/renpy/renpy/blob/master/renpy/loader.py) 与[官方写入器 `launcher/game/archiver.rpy`](https://github.com/renpy/renpy/blob/master/launcher/game/archiver.rpy)（布局与固定密钥均以官方实现为准，解析器为自研纯 Rust）；对账工具 unrpa / rpatool | MIT |
 | **ISO 9660** | [isomage crate](https://crates.io/crates/isomage) | MIT |
 | **ZIP** | [zip crate](https://crates.io/crates/zip) | MIT |
 | **7z** | [sevenz-rust crate](https://crates.io/crates/sevenz-rust) | MIT / Apache-2.0 |

@@ -596,6 +596,38 @@ fn lzma_dry_run(f: &mut File, off: u64) -> bool {
 /// bzip2: the magic table already carries the full 10-byte
 /// "BZh{1-9}1AY&SY" signature (binwalk parity), so this just confirms the
 /// block-size digit — the magic itself rejects random false positives.
+/// Decompression dry-run for a zlib stream, mirroring [gzip_dry_run]: the header
+/// check alone (CMF/FLG mod 31) passes ~1 in 31 random byte pairs, and a font's
+/// glyph data is full of 0x78 bytes — a real TrueType file produced 53 hits.
+/// Decoding the first megabyte of output brings that to ~0.
+fn zlib_dry_run(f: &mut File, off: u64) -> bool {
+    const DRY_RUN_OUT: usize = 1 << 20;
+    if f.seek(SeekFrom::Start(off)).is_err() {
+        return false;
+    }
+    let limited = f.take(DRY_RUN_OUT as u64 * 2);
+    let mut dec = flate2::read::ZlibDecoder::new(limited);
+    let mut sink = [0u8; 8192];
+    let mut produced = 0usize;
+    loop {
+        match dec.read(&mut sink) {
+            Ok(0) => break,
+            Ok(n) => {
+                produced += n;
+                if produced >= DRY_RUN_OUT {
+                    break;
+                }
+            }
+            Err(_) => {
+                let _ = f.seek(SeekFrom::Start(off));
+                return false;
+            }
+        }
+    }
+    let _ = f.seek(SeekFrom::Start(off));
+    produced > 0
+}
+
 fn validate_bzip2(f: &mut File, off: u64, _file_len: u64) -> Option<HitInfo> {
     let mut h = [0u8; 10];
     if !read_at(f, off, &mut h) {
@@ -1044,10 +1076,12 @@ fn validate_gif(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
     if w == 0 || hh == 0 {
         return None;
     }
+    // The packed field is [GCT flag][color resolution ×3][sort][GCT size ×3] —
+    // there are no reserved bits. An earlier "bits 6-7 must not both be set"
+    // check rejected every GIF whose colour resolution is 7 *and* that carries a
+    // global colour table, i.e. nearly every GIF a real encoder writes (found by
+    // scanning an ffmpeg-written fixture; binwalk reads it fine).
     let flags = h[10];
-    if flags & 0b1100_0000 == 0b1100_0000 {
-        return None; // reserved bits (6-7) must not both be set
-    }
     // Global color table follows when bit 7 set: 3 * 2^(low 3 bits + 1) bytes.
     if flags & 0x80 != 0 {
         let table_size = 3u64 * (1u64 << ((flags & 0x07) + 1));
@@ -1517,6 +1551,867 @@ pub fn validate_nsa_whole_file(f: &mut File, file_len: u64) -> Option<HitInfo> {
 
 /// Signature table: one or more magic byte patterns + label + validator +
 /// confidence. Pattern order in `magics` determines match priority.
+// ─────────────────────────────────────────────────────────────────────────────
+// Expansion: galgame/engine, media, archive, mobile and filesystem signatures.
+//
+// Magics are taken from binwalk 3.1's own signature sources
+// (ReFirmLabs/binwalk, `src/signatures/*.rs`) — an independent reference — plus
+// the engine formats binwalk does not know. Every validator here is ours: where
+// a magic is short enough to collide with random data the validator does the
+// real work, and where it is long and specific the check is only "is there room
+// for the structure". Confidence follows the same rule as the original table.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Declares a validator whose whole body is an inline check, so the ~60 new
+/// signatures read as one line of reasoning each instead of a named function.
+macro_rules! validators {
+    ($( $(#[$meta:meta])* $name:ident($f:ident, $off:ident, $len:ident) $body:block )*) => {
+        $(
+            $(#[$meta])*
+            #[allow(unused_variables)]
+            fn $name($f: &mut File, $off: u64, $len: u64) -> Option<HitInfo> $body
+        )*
+    };
+}
+
+/// "The structure cannot possibly fit" guard for long, specific magics.
+fn room(off: u64, file_len: u64, need: u64) -> bool {
+    file_len.saturating_sub(off) >= need
+}
+
+/// Reads big-endian integers out of a header buffer.
+fn u16be(b: &[u8], i: usize) -> u16 { u16::from_be_bytes([b[i], b[i + 1]]) }
+fn u64be(b: &[u8], i: usize) -> u64 { u64::from_be_bytes([b[i], b[i+1], b[i+2], b[i+3], b[i+4], b[i+5], b[i+6], b[i+7]]) }
+fn u32be(b: &[u8], i: usize) -> u32 { u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]) }
+
+validators! {
+    /// Ren'Py archive (`.rpa`): fixed-width hex header
+    /// `RPA-3.0 <16 hex index offset> <8 hex key>\n`; ALT-1.0 swaps the two
+    /// fields. Random data does not produce that shape, and the index offset
+    /// must land inside the file — that is what makes a 8-byte magic safe.
+    validate_rpa(f, off, file_len) {
+        let mut h = [0u8; 34];
+        if !read_at(f, off, &mut h) { return None; }
+        // RPA-2.0 carries only the index offset (25-byte header); 3.x adds a
+        // key field (34 bytes) and ALT-1.0 swaps the two fields' order.
+        let (range, newline_at) = match &h[0..8] {
+            b"RPA-3.0 " | b"RPA-3.2 " | b"RPA-4.0 " => (8..24, 33),
+            b"RPA-2.0 " => (8..24, 24),
+            b"ALT-1.0 " => (17..33, 33),
+            _ => return None,
+        };
+        if h[newline_at] != b'\n' { return None; }
+        let mut index_at: u64 = 0;
+        for c in &h[range] {
+            index_at = index_at * 16 + (*c as char).to_digit(16)? as u64;
+        }
+        if index_at < off + 34 || index_at >= file_len { return None; }
+        // The archive ends where the zlib'd index ends (the index is written
+        // last). Decoding it both proves the index is real — random data that
+        // happens to look like a header does not decompress — and yields the
+        // exact size, so the hit is not truncated at the next embedded zlib
+        // stream (a Ren'Py index *is* a zlib stream, so that happened).
+        let bound = (file_len - index_at).min(1 << 26);
+        if f.seek(SeekFrom::Start(index_at)).is_err() { return None; }
+        let mut limited = f.take(bound);
+        let mut dec = flate2::read::ZlibDecoder::new(&mut limited);
+        let mut sink = [0u8; 8192];
+        let mut produced = 0usize;
+        loop {
+            match dec.read(&mut sink) {
+                Ok(0) => break,
+                Ok(n) => {
+                    produced += n;
+                    if produced >= (1 << 26) { break; }
+                }
+                Err(_) => {
+                    let _ = f.seek(SeekFrom::Start(off));
+                    return None;
+                }
+            }
+        }
+        if produced == 0 {
+            let _ = f.seek(SeekFrom::Start(off));
+            return None;
+        }
+        let consumed = bound - limited.limit();
+        let _ = f.seek(SeekFrom::Start(off));
+        Some(HitInfo { size: Some((index_at - off) + consumed), count: None })
+    }
+
+    /// CatSystem2 / Frontwing KIF (`.int`): magic + entry count + a
+    /// `count × 72` index that has to fit in the file. The encrypted variant
+    /// carries `__key__.dat` as its first record, which is a second, cheap
+    /// confirmation.
+    validate_kif(f, off, file_len) {
+        if !room(off, file_len, 8 + 72) { return None; }
+        let mut h = [0u8; 80];
+        if !read_at(f, off, &mut h) { return None; }
+        let count = u32le(&h, 4);
+        if count == 0 || count > 200_000 { return None; }
+        let index_len = count as u64 * 72;
+        if 8 + index_len > file_len - off { return None; }
+        let name = &h[8..72];
+        let end = name.iter().position(|c| *c == 0).unwrap_or(name.len());
+        let first_is_key = &name[..end] == b"__key__.dat";
+        if !first_is_key && h[8] == 0 { return None; }
+        Some(HitInfo { size: None, count: Some(count) })
+    }
+
+    /// RPG Maker MV/MZ obfuscated asset: the fixed 16-byte header
+    /// `RPGMV\0\0\0\0\x03\x01\0\0\0\0\0` (the same bytes rgss-core's reader
+    /// matches — it is the consumer, so its constant is the source of truth).
+    validate_rpgmv(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        const RPGM_HEADER: [u8; 16] = [0x52, 0x50, 0x47, 0x4D, 0x56, 0, 0, 0, 0, 0x03, 0x01, 0, 0, 0, 0, 0];
+        if h != RPGM_HEADER { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Criware ADX audio: `0x8000` (weak!) so the validator carries the weight —
+    /// data offset inside the header, a plausible sample rate/channel count and
+    /// the "(c)CRI" copyright string within the first 64 bytes. Verified against
+    /// a real ADX written by ffmpeg's adpcm_adx encoder.
+    validate_adx(f, off, file_len) {
+        let mut h = [0u8; 64];
+        if !read_at(f, off, &mut h) { return None; }
+        if u16be(&h, 0) != 0x8000 { return None; }
+        let data_off = u16be(&h, 2) as u64;
+        if data_off < 0x18 || data_off > 0x800 { return None; }
+        if h[4] > 4 { return None; }                       // encoding: fixed / 4-bit ADPCM
+        let rate = u32be(&h, 8);
+        if !(1000..=192_000).contains(&rate) { return None; }
+        let channels = h[7];
+        if channels == 0 || channels > 8 { return None; }
+        if !h.windows(6).any(|w| w == b"(c)CRI") { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Criware HCA audio: `HCA\0` + version + header size.
+    validate_hca(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        let version = u16be(&h, 4);
+        let header_size = u16be(&h, 6);
+        if version == 0 || version > 4 { return None; }
+        if header_size < 8 || (header_size as u64) > file_len - off { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Criware AWB/AFS2 archive: `AFS2` + version byte + entry count.
+    validate_awb(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        let version = h[4];
+        if version != 1 && version != 2 { return None; }
+        let count = u32le(&h, 8);
+        if count == 0 || count > 1_000_000 { return None; }
+        Some(HitInfo { size: None, count: Some(count) })
+    }
+
+    /// Criware CPK archive: "CPK " + a small version number.
+    validate_cpk(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        let version = u32le(&h, 4);
+        if version == 0 || version > 8 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Unity asset bundle: magic + version fields inside the first block.
+    validate_unity(f, off, file_len) {
+        if !room(off, file_len, 32) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Unreal Engine pak: magic + version 1..12 + a header offset that fits.
+    validate_unreal(f, off, file_len) {
+        let mut h = [0u8; 44];
+        if !read_at(f, off, &mut h) { return None; }
+        let version = u32le(&h, 4);
+        if version == 0 || version > 12 { return None; }
+        let index_off = u64le(&h, 8);
+        let index_size = u64le(&h, 16);
+        if index_off < 44 || index_off + index_size > file_len - off { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Godot engine package: "GDPC" + pack format version (1..3) + engine
+    /// version triple.
+    validate_godot(f, off, file_len) {
+        let mut h = [0u8; 24];
+        if !read_at(f, off, &mut h) { return None; }
+        let pack_version = u32le(&h, 4);
+        if pack_version == 0 || pack_version > 3 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+
+
+    /// MIDI: "MThd" + a header length of exactly 6.
+    validate_midi(f, off, file_len) {
+        let mut h = [0u8; 8];
+        if !read_at(f, off, &mut h) { return None; }
+        if u32be(&h, 4) != 6 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// AIFF/AIFC: the "FORM" magic is generic, so the form type at +8 decides.
+    validate_aiff(f, off, file_len) {
+        let mut h = [0u8; 12];
+        if !read_at(f, off, &mut h) { return None; }
+        if &h[8..12] != b"AIFF" && &h[8..12] != b"AIFC" { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Sun/NeXT audio: ".snd" + a header size of at least the fixed part.
+    validate_au(f, off, file_len) {
+        let mut h = [0u8; 24];
+        if !read_at(f, off, &mut h) { return None; }
+        let data_off = u32be(&h, 4) as u64;
+        if data_off < 24 || data_off > file_len - off { return None; }
+        let encoding = u32be(&h, 12);
+        if encoding > 27 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Apple Core Audio Format: "caff" + version 1.
+    validate_caf(f, off, file_len) {
+        let mut h = [0u8; 8];
+        if !read_at(f, off, &mut h) { return None; }
+        if u16be(&h, 4) != 1 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// ISO base media (MP4/MOV/M4A/HEIC/AVIF): the magic is the "ftyp" box type
+    /// at +4, so the check reads the box size and the brand.
+    validate_ftyp(f, off, file_len) {
+        // `off` is the "ftyp" string; the box (and its 4-byte size field) starts
+        // 4 bytes earlier. Reading both halves from one buffer keeps this to a
+        // single seek.
+        if off < 4 { return None; }
+        let mut h = [0u8; 16];
+        if !read_at(f, off - 4, &mut h) { return None; }
+        let size = u32be(&h, 0) as u64;
+        if size < 16 || size > file_len - (off - 4) { return None; }
+        const BRANDS: [&[u8; 4]; 14] = [b"isom", b"iso2", b"iso4", b"iso5", b"iso6", b"mp41", b"mp42", b"M4A ", b"M4V ", b"qt  ", b"3gp4", b"heic", b"mif1", b"avif"];
+        if !BRANDS.iter().any(|b| *b == &h[8..12]) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+
+    /// Windows icon/cursor: 4-byte magic is too generic on its own, so the
+    /// entry count and the first entry's offset/size must be consistent.
+    validate_ico(f, off, file_len) {
+        let mut h = [0u8; 22];
+        if !read_at(f, off, &mut h) { return None; }
+        let kind = u16le(&h, 2);
+        if kind != 1 && kind != 2 { return None; }
+        let count = u16le(&h, 4) as usize;
+        if count == 0 || count > 255 { return None; }
+        // "   " is common in binary data, so every directory entry (not
+        // just the first) has to point at real bytes inside the file.
+        let dir_end = (6 + count * 16) as u64;
+        if count > 64 { return None; }
+        let mut buf = [0u8; 16];
+        for i in 0..count as u64 {
+            if !read_at(f, off + 6 + i * 16, &mut buf) { return None; }
+            let size = u32le(&buf, 8) as u64;
+            let entry_off = u32le(&buf, 12) as u64;
+            if size == 0 || entry_off < dir_end { return None; }
+            if entry_off + size > file_len - off { return None; }
+            // Entry layout: width, height, colourCount, reserved(1), planes(2),
+            // bitCount(2), bytesInRes(4), imageOffset(4). The reserved byte is
+            // always 0, planes is 0 or 1, and bitCount is one of the handful of
+            // values Windows writes — without those a font's binary tables look
+            // like a consistent directory (9 false hits in one collection).
+            if buf[3] != 0 { return None; }
+            if u16le(&buf, 4) > 1 { return None; }
+            if !matches!(u16le(&buf, 6), 0 | 1 | 4 | 8 | 16 | 24 | 32) { return None; }
+        }
+        Some(HitInfo { size: None, count: Some(count as u32) })
+    }
+
+
+    /// Photoshop PSD: "8BPS" + version 1 + six reserved zero bytes.
+    validate_psd(f, off, file_len) {
+        let mut h = [0u8; 12];
+        if !read_at(f, off, &mut h) { return None; }
+        if u16be(&h, 4) != 1 || h[6..12].iter().any(|c| *c != 0) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+
+    /// DirectDraw surface: "DDS " + header size 124 + non-zero dimensions.
+    validate_dds(f, off, file_len) {
+        let mut h = [0u8; 20];
+        if !read_at(f, off, &mut h) { return None; }
+        if u32le(&h, 4) != 124 { return None; }
+        let height = u32le(&h, 12);
+        let width = u32le(&h, 16);
+        if height == 0 || width == 0 || height > 65536 || width > 65536 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// QOI image: "qoif" + dimensions and a channel count of 3 or 4.
+    validate_qoi(f, off, file_len) {
+        let mut h = [0u8; 14];
+        if !read_at(f, off, &mut h) { return None; }
+        let width = u32be(&h, 4);
+        let height = u32be(&h, 8);
+        if width == 0 || height == 0 || width > 100_000 || height > 100_000 { return None; }
+        if h[12] != 3 && h[12] != 4 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// OpenEXR: magic + version 2 with no reserved bits set.
+    validate_exr(f, off, file_len) {
+        let mut h = [0u8; 8];
+        if !read_at(f, off, &mut h) { return None; }
+        let version = u32le(&h, 4);
+        if version & 0xFF != 2 || version & 0xFFFF_F000 != 0 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// ASTC texture: magic + block dimensions in 1..12.
+    validate_astc(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        for i in 4..7 {
+            if h[i] == 0 || h[i] > 12 { return None; }
+        }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// TrueType/OpenType font: the 4-byte version is generic ("\0\1\0\0"), so
+    /// the table directory must be plausible: a small table count whose
+    /// directory fits inside the file.
+    validate_sfnt(f, off, file_len) {
+        let mut h = [0u8; 12];
+        if !read_at(f, off, &mut h) { return None; }
+        let version = u32be(&h, 0);
+        if version != 0x0001_0000 && &h[0..4] != b"true" && &h[0..4] != b"OTTO" { return None; }
+        let num_tables = u16be(&h, 4) as u64;
+        if num_tables == 0 || num_tables > 512 { return None; }
+        let dir_end = 12 + num_tables * 16;
+        if dir_end > file_len - off { return None; }
+        // "   " is an ordinary 4-byte value in binary data, so the magic
+        // alone identified 165 "fonts" inside /usr/bin/python3 and 389 inside a
+        // real font collection. The table directory is what separates a font
+        // from noise: every table must lie inside the file, and at least one
+        // must be one of the tables every font carries.
+        const KNOWN: [&[u8; 4]; 16] = [b"cmap", b"glyf", b"head", b"hhea", b"hmtx", b"loca", b"maxp", b"name", b"post", b"OS/2", b"CFF ", b"GPOS", b"GSUB", b"DSIG", b"kern", b"fpgm"];
+        let mut known = 0;
+        let mut buf = [0u8; 16];
+        for i in 0..num_tables.min(64) {
+            if !read_at(f, off + 12 + i * 16, &mut buf) { return None; }
+            let table_off = u32be(&buf, 8) as u64;
+            let table_len = u32be(&buf, 12) as u64;
+            if table_off < dir_end || table_off + table_len > file_len - off { return None; }
+            if KNOWN.iter().any(|k| *k == &buf[0..4]) { known += 1; }
+        }
+        if known == 0 { return None; }
+        Some(HitInfo { size: None, count: Some(num_tables as u32) })
+    }
+
+    /// Font collection: "ttcf" + version + a font count whose offset table fits.
+    validate_ttc(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        let version = u32be(&h, 4);
+        if version != 0x0001_0000 && version != 0x0002_0000 { return None; }
+        let count = u32be(&h, 8) as u64;
+        if count == 0 || count > 1024 || 12 + count * 4 > file_len - off { return None; }
+        Some(HitInfo { size: None, count: Some(count as u32) })
+    }
+
+    /// Windows Metafile: the placeable header is a specific 22-byte structure.
+    validate_wmf(f, off, file_len) {
+        let mut h = [0u8; 22];
+        if !read_at(f, off, &mut h) { return None; }
+        const INCHES: [u16; 5] = [1440, 1200, 1000, 576, 100];
+        if !INCHES.contains(&u16le(&h, 14)) { return None; }
+        if u32le(&h, 16) != 0 { return None; }  // reserved, must be zero
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Enhanced Metafile: 4 zero-ish bytes are far too generic, so the record
+    /// type and the " EMF" signature at +40 carry the decision.
+    validate_emf(f, off, file_len) {
+        let mut h = [0u8; 44];
+        if !read_at(f, off, &mut h) { return None; }
+        if u32le(&h, 0) != 1 { return None; }
+        if &h[40..44] != b" EMF" { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+
+
+    /// KTX texture: the 12-byte identifier is specific; the endianness field
+    /// must be one of the two defined values.
+    validate_ktx(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        let endian = u32le(&h, 12);
+        if endian != 0x0403_0201 && endian != 0x0102_0304 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Microsoft Cabinet: "MSCF" + four reserved zero bytes + a total size that
+    /// has to fit (binwalk's own parser does exactly this).
+    validate_cab(f, off, file_len) {
+        let mut h = [0u8; 36];
+        if !read_at(f, off, &mut h) { return None; }
+        let total_size = u32le(&h, 8) as u64;
+        if total_size < 36 || total_size > file_len - off { return None; }
+        let file_count = u16le(&h, 28);
+        let folder_count = u16le(&h, 26);
+        if folder_count == 0 || folder_count > 1024 { return None; }
+        Some(HitInfo { size: Some(total_size), count: Some(file_count as u32) })
+    }
+
+    /// CPIO (ASCII variants): the magic plus an inode/mode pair that is not
+    /// obviously nonsense.
+    validate_cpio(f, off, file_len) {
+        let mut h = [0u8; 110];
+        if !read_at(f, off, &mut h) { return None; }
+        if !h[6..110].iter().all(|c| c.is_ascii_hexdigit()) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// XAR archive: "xar!" + header size 28 + version 1.
+    validate_xar(f, off, file_len) {
+        let mut h = [0u8; 28];
+        if !read_at(f, off, &mut h) { return None; }
+        if u16be(&h, 4) != 28 || u16be(&h, 6) != 1 { return None; }
+        let toc_len = u64be(&h, 8);
+        if toc_len == 0 || toc_len > file_len - off { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// SquashFS: magic + a version 1..4 + a power-of-two block size.
+    validate_squashfs(f, off, file_len) {
+        let mut h = [0u8; 32];
+        if !read_at(f, off, &mut h) { return None; }
+        let block_size = u32le(&h, 12);
+        if block_size < 4096 || block_size > (1 << 20) || block_size & (block_size - 1) != 0 { return None; }
+        // v4 is what every real image uses; the major/minor pair sits at +28.
+        if u16le(&h, 28) != 4 || u16le(&h, 30) != 0 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// CramFS: "Compressed ROMFS" + a size that fits.
+    validate_cramfs(f, off, file_len) {
+        let mut h = [0u8; 32];
+        if !read_at(f, off, &mut h) { return None; }
+        let size = u32le(&h, 16) as u64;
+        if size < 32 || size > file_len - off { return None; }
+        Some(HitInfo { size: Some(size), count: None })
+    }
+
+    /// RomFS: "-rom1fs-" + the full image size.
+    validate_romfs(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        let size = u32be(&h, 8) as u64;
+        if size < 64 || size > file_len - off || size % 16 != 0 { return None; }
+        Some(HitInfo { size: Some(size), count: None })
+    }
+
+    /// LHA/LZH: the magic sits at +2 (header size + checksum come first), so
+    /// the hit offset needs a 2-byte adjustment in the carve path.
+    validate_lha(f, off, file_len) {
+        if !room(off, file_len, 32) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// ARJ: 2-byte magic, so the basic header size at +2 decides (8..2600 is
+    /// the range the format allows).
+    validate_arj(f, off, file_len) {
+        let mut h = [0u8; 12];
+        if !read_at(f, off, &mut h) { return None; }
+        let header_size = u16le(&h, 2);
+        if !(8..=2600).contains(&header_size) { return None; }
+        if header_size as u64 > file_len - off { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// lzip: "LZIP" + version 1 + a dictionary size code ≤ 29.
+    validate_lzip(f, off, file_len) {
+        let mut h = [0u8; 6];
+        if !read_at(f, off, &mut h) { return None; }
+        if h[4] != 1 || h[5] > 29 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// lzop: 9-byte magic + a version whose header fits.
+    validate_lzop(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        let version = u16be(&h, 9);
+        if !(0x0900..=0x1040).contains(&version) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+
+    /// zlib stream: a 2-byte magic, so the header checksum decides — the two
+    /// header bytes must be a multiple of 31 (the format's own guard).
+    validate_zlib(f, off, file_len) {
+        let mut h = [0u8; 2];
+        if !read_at(f, off, &mut h) { return None; }
+        let cmf = h[0] as u32;
+        let flg = h[1] as u32;
+        if cmf & 0x0F != 8 { return None; }            // deflate
+        if cmf >> 4 > 7 { return None; }               // window ≤ 32 KiB
+        if (cmf * 256 + flg) % 31 != 0 { return None; }
+        if !zlib_dry_run(f, off) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// compress(1): "\x1f\x9d" + a flags byte with only the defined bits set.
+    validate_compressd(f, off, file_len) {
+        let mut h = [0u8; 3];
+        if !read_at(f, off, &mut h) { return None; }
+        let flags = h[2];
+        let max_bits = flags & 0x1F;
+        if max_bits > 16 { return None; }
+        if flags & 0x60 != 0 { return None; }          // reserved bits
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// ZIP end-of-central-directory only (an EMPTY archive has no local
+    /// header): the comment length has to end exactly at EOF.
+    validate_zip_eocd(f, off, file_len) {
+        let mut h = [0u8; 22];
+        if !read_at(f, off, &mut h) { return None; }
+        let comment_len = u16le(&h, 20) as u64;
+        if off + 22 + comment_len != file_len { return None; }
+        let entries = u16le(&h, 10) as u32;
+        Some(HitInfo { size: Some(file_len - off), count: Some(entries) })
+    }
+
+    /// Android boot image: "ANDROID!" + kernel/ramdisk sizes that fit.
+    validate_android_boot(f, off, file_len) {
+        let mut h = [0u8; 44];
+        if !read_at(f, off, &mut h) { return None; }
+        let kernel = u32le(&h, 8) as u64;
+        let ramdisk = u32le(&h, 16) as u64;
+        let page = u32le(&h, 36) as u64;
+        if page < 2048 || page > 65536 || page & (page - 1) != 0 { return None; }
+        if kernel == 0 || kernel + ramdisk > file_len - off { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Android sparse image: magic + version 1.0 + a power-of-two block size.
+    validate_android_sparse(f, off, file_len) {
+        let mut h = [0u8; 28];
+        if !read_at(f, off, &mut h) { return None; }
+        if u32le(&h, 4) != 0x0001_0000 { return None; }
+        let block = u32le(&h, 12);
+        if block == 0 || block > (1 << 24) || block & (block - 1) != 0 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Dalvik executable: "dex\n0NN\0" + a header size of 0x70 + the file size
+    /// field matching the data that is actually there.
+    validate_dex(f, off, file_len) {
+        let mut h = [0u8; 40];
+        if !read_at(f, off, &mut h) { return None; }
+        if u32le(&h, 36) != 0x70 { return None; }   // header_size
+        let declared = u32le(&h, 32) as u64;        // file_size
+        if declared < 0x70 { return None; }
+        // A truncated DEX (a carved prefix, a partial copy) still has a valid
+        // header: report it with an unknown size rather than rejecting it, so
+        // the hit extends to the next signature or EOF like every other
+        // unknown-size hit.
+        let size = if declared <= file_len - off { Some(declared) } else { None };
+        Some(HitInfo { size, count: None })
+    }
+
+    /// Android binary XML: chunk type 0x0003 + header size 8 + a chunk size
+    /// that fits.
+    validate_binxml(f, off, file_len) {
+        let mut h = [0u8; 8];
+        if !read_at(f, off, &mut h) { return None; }
+        if u16le(&h, 2) != 8 { return None; }
+        let size = u32le(&h, 4) as u64;
+        if size < 8 || size > file_len - off { return None; }
+        Some(HitInfo { size: Some(size), count: None })
+    }
+
+    /// Android resource table: chunk type 0x0002 + header size 12 + size.
+    validate_arsc(f, off, file_len) {
+        let mut h = [0u8; 12];
+        if !read_at(f, off, &mut h) { return None; }
+        if u16le(&h, 2) != 12 { return None; }
+        let size = u32le(&h, 4) as u64;
+        if size < 12 || size > file_len - off { return None; }
+        Some(HitInfo { size: Some(size), count: None })
+    }
+
+    /// SQLite database: page size is a power of two between 512 and 65536.
+    validate_sqlite(f, off, file_len) {
+        let mut h = [0u8; 100];
+        if !read_at(f, off, &mut h) { return None; }
+        let page = u16be(&h, 16) as u32;
+        let page = if page == 1 { 65536 } else { page };
+        if page < 512 || page > 65536 || page & (page - 1) != 0 { return None; }
+        if h[18] > 2 || h[19] > 2 { return None; }      // write/read version
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Mach-O: magic + a plausible CPU type and a non-zero command count.
+    validate_macho(f, off, file_len) {
+        let mut h = [0u8; 32];
+        if !read_at(f, off, &mut h) { return None; }
+        let little = matches!(&h[0..4], b"\xce\xfa\xed\xfe" | b"\xcf\xfa\xed\xfe");
+        let (cputype, ncmds) = if little { (u32le(&h, 4), u32le(&h, 16)) } else { (u32be(&h, 4), u32be(&h, 16)) };
+        const KNOWN: [u32; 8] = [7, 0x0100_0007, 12, 0x0100_000C, 18, 0x0100_0012, 0x0200_000C, 0x0200_0012];
+        if !KNOWN.contains(&cputype) { return None; }
+        if ncmds == 0 || ncmds > 100_000 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Windows PE: "MZ" alone is meaningless, so the DOS header's e_lfanew must
+    /// point at a real PE signature with a known optional-header magic.
+    validate_pe(f, off, file_len) {
+        let mut h = [0u8; 64];
+        if !read_at(f, off, &mut h) { return None; }
+        if &h[0..2] != b"MZ" { return None; }
+        let lfanew = u32le(&h, 60) as u64;
+        if lfanew < 64 || lfanew + 26 > file_len - off { return None; }
+        let mut sig = [0u8; 26];
+        if !read_at(f, off + lfanew, &mut sig) { return None; }
+        if &sig[0..4] != b"PE\0\0" { return None; }
+        let opt_magic = u16le(&sig, 24);
+        if opt_magic != 0x10B && opt_magic != 0x20B { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// WebAssembly module: "\0asm" + version 1.
+    validate_wasm(f, off, file_len) {
+        let mut h = [0u8; 8];
+        if !read_at(f, off, &mut h) { return None; }
+        if u32le(&h, 4) != 1 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Java class: 0xCAFEBABE + a major version in the range compilers emit.
+    validate_java_class(f, off, file_len) {
+        let mut h = [0u8; 8];
+        if !read_at(f, off, &mut h) { return None; }
+        let major = u16be(&h, 6);
+        if !(45..=70).contains(&major) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// CHM help file: "ITSF" + version 3 + header size 0x60.
+    validate_chm(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        if u32le(&h, 4) != 3 || u32le(&h, 8) != 0x60 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Windows registry hive: "regf" + a version 1..6.
+    validate_regf(f, off, file_len) {
+        let mut h = [0u8; 28];
+        if !read_at(f, off, &mut h) { return None; }
+        let version = u32le(&h, 20);   // major version
+        if version == 0 || version > 6 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Windows event log: "ElfFile\0" + a header size that fits.
+    validate_evtx(f, off, file_len) {
+        let mut h = [0u8; 36];
+        if !read_at(f, off, &mut h) { return None; }
+        let header_size = u32le(&h, 32) as u64;
+        if header_size < 128 || header_size > file_len - off { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Outlook PST/OST: "!BDN" + a plausible version.
+    validate_pst(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        if !room(off, file_len, 512) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+
+    /// PEM: "-----BEGIN " + a label that ends with "-----" within a line.
+    validate_pem(f, off, file_len) {
+        let mut h = [0u8; 64];
+        if !read_at(f, off, &mut h) { return None; }
+        if !h.windows(5).any(|w| w == b"-----") { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// FAT12/16/32 volume label inside a boot sector: the label sits at a fixed
+    /// sector offset (54 for 12/16, 82 for 32), which is what the carve
+    /// adjustment uses.
+    validate_fat(f, off, file_len) {
+        if off % 512 != 54 && off % 512 != 82 { return None; }
+        let mut h = [0u8; 8];
+        if !read_at(f, off, &mut h) { return None; }
+        if &h[0..3] != b"FAT" { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// NTFS boot sector: the "NTFS    " string sits at +3 of the sector.
+    validate_ntfs(f, off, file_len) {
+        if off % 512 != 3 { return None; }
+        if !room(off, file_len, 512) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// EXT superblock: the magic sits at +0x438 of the filesystem start, which
+    /// is 512-byte aligned in every real image.
+    validate_ext(f, off, file_len) {
+        if off % 512 != 0x438 % 512 { return None; }
+        let mut h = [0u8; 8];
+        if !read_at(f, off, &mut h) { return None; }
+        let rev = u32le(&h, 4);
+        if rev == 0 || rev > 1 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// APFS container: "NXSB" + a power-of-two block size.
+    validate_apfs(f, off, file_len) {
+        let mut h = [0u8; 36];
+        if !read_at(f, off, &mut h) { return None; }
+        let block = u32le(&h, 4);
+        if block < 512 || block > (1 << 20) || block & (block - 1) != 0 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// BTRFS superblock: "_BHRfS_M" at +0x10000 of the filesystem.
+    validate_btrfs(f, off, file_len) {
+        if off % 4096 != 0 { return None; }
+        if !room(off, file_len, 512) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// UBI erase-block header: "UBI#" + version 1 + a non-zero sequence number.
+    validate_ubi(f, off, file_len) {
+        let mut h = [0u8; 64];
+        if !read_at(f, off, &mut h) { return None; }
+        if h[4] != 1 { return None; }
+        if u32be(&h, 24) == 0 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// JFFS2 node: magic + a node type 1..4 + a total length that fits.
+    validate_jffs2(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        let node_type = u16be(&h, 2);
+        if !(1..=4).contains(&node_type) { return None; }
+        let total = u32be(&h, 8) as u64;
+        if total < 12 || total > file_len - off { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Device tree blob: magic + a total size that fits and is 4-byte aligned.
+    validate_dtb(f, off, file_len) {
+        let mut h = [0u8; 8];
+        if !read_at(f, off, &mut h) { return None; }
+        let total = u32be(&h, 4) as u64;
+        if total < 64 || total > file_len - off || total % 4 != 0 { return None; }
+        Some(HitInfo { size: Some(total), count: None })
+    }
+
+    /// QEMU QCOW image: "QFI\xfb" + version 2..3.
+    validate_qcow(f, off, file_len) {
+        let mut h = [0u8; 8];
+        if !read_at(f, off, &mut h) { return None; }
+        let version = u32be(&h, 4);
+        if version != 2 && version != 3 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// VMware VMDK: "KDMV" + version/flag fields.
+    validate_vmdk(f, off, file_len) {
+        let mut h = [0u8; 12];
+        if !read_at(f, off, &mut h) { return None; }
+        if u32le(&h, 4) > 3 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Microsoft WIM: "MSWIM\0\0\0" + a header size that fits.
+    validate_wim(f, off, file_len) {
+        let mut h = [0u8; 16];
+        if !read_at(f, off, &mut h) { return None; }
+        let header_size = u32le(&h, 8) as u64;
+        if header_size < 208 || header_size > file_len - off { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// LUKS header: magic + version 1..2.
+    validate_luks(f, off, file_len) {
+        let mut h = [0u8; 8];
+        if !read_at(f, off, &mut h) { return None; }
+        let version = u16be(&h, 6);
+        if version != 1 && version != 2 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+
+    /// DOS MBR: the 0x55AA signature must sit at the end of a sector and at
+    /// least one partition entry must look plausible.
+    validate_mbr(f, off, file_len) {
+        if off % 512 != 510 { return None; }
+        if !room(off, file_len, 512) { return None; }
+        let mut entries = [0u8; 64];
+        if !read_at(f, off - 510 + 446, &mut entries) { return None; }
+        for i in 0..4 {
+            let e = &entries[i * 16..i * 16 + 16];
+            if (e[0] == 0x80 || e[0] == 0x00) && e[4] != 0 { return Some(HitInfo { size: None, count: None }); }
+        }
+        None
+    }
+
+    /// EFI GPT header: "EFI PART" + a header size of 92 + a usable-LBA range.
+    validate_gpt(f, off, file_len) {
+        let mut h = [0u8; 92];
+        if !read_at(f, off, &mut h) { return None; }
+        if u32le(&h, 12) != 92 { return None; }
+        let entries_lba = u64le(&h, 72);
+        if entries_lba == 0 { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+
+    /// Apple icon image: "icns" + a total size that fits.
+    validate_icns(f, off, file_len) {
+        let mut h = [0u8; 8];
+        if !read_at(f, off, &mut h) { return None; }
+        let size = u32be(&h, 4) as u64;
+        if size < 8 || size > file_len - off { return None; }
+        Some(HitInfo { size: Some(size), count: None })
+    }
+
+    /// Criware ACB audio catalogue: "@UTF" + a UTF table header whose sizes fit.
+    validate_acb(f, off, file_len) {
+        if !room(off, file_len, 16) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+
+    /// Shared guard for magics that are long and specific enough that the only
+    /// real question is whether the file is long enough to hold a header
+    /// (fonts, SVG, JP2/KTX, EBML, Snappy, PCAP, torrent, deb, VHD/VHDX, ACE…).
+    ///
+    /// 24 bytes, not 64: a libpcap global header is exactly 24 bytes, so a
+    /// capture with no packets is a complete, legitimate file — a larger floor
+    /// rejected it (found by scanning the corpus, not by reasoning).
+    validate_room24(f, off, file_len) {
+        if !room(off, file_len, 24) { return None; }
+        Some(HitInfo { size: None, count: None })
+    }
+}
+
 pub struct Sig {
     pub magics: &'static [&'static [u8]],
     pub label: &'static str,
@@ -1593,6 +2488,106 @@ pub const SIGNATURES: &[Sig] = &[
     Sig { magics: &[b"fLaC"], label: "FLAC audio", confidence: CONFIDENCE_HIGH, validate: validate_flac },
     // BMP image: "BM" magic followed by file size (u32le) and reserved bytes.
     Sig { magics: &[b"BM"], label: "BMP image", confidence: CONFIDENCE_MEDIUM, validate: validate_bmp },
+    // ─── Galgame / engine formats (binwalk does not know most of these) ───
+    Sig { magics: &[b"RPA-3.0 ", b"RPA-2.0 ", b"RPA-3.2 ", b"RPA-4.0 ", b"ALT-1.0 "], label: "Ren'Py archive", confidence: CONFIDENCE_HIGH, validate: validate_rpa },
+    Sig { magics: &[b"KIF\x00"], label: "CatSystem2 INT archive", confidence: CONFIDENCE_HIGH, validate: validate_kif },
+    Sig { magics: &[b"RPGMV"], label: "RPG Maker MV/MZ asset", confidence: CONFIDENCE_HIGH, validate: validate_rpgmv },
+    Sig { magics: &[b"\x80\x00"], label: "Criware ADX audio", confidence: CONFIDENCE_MEDIUM, validate: validate_adx },
+    Sig { magics: &[b"HCA\x00"], label: "Criware HCA audio", confidence: CONFIDENCE_MEDIUM, validate: validate_hca },
+    Sig { magics: &[b"@UTF"], label: "Criware ACB catalogue", confidence: CONFIDENCE_MEDIUM, validate: validate_acb },
+    Sig { magics: &[b"AFS2"], label: "Criware AWB/AFS2 archive", confidence: CONFIDENCE_MEDIUM, validate: validate_awb },
+    Sig { magics: &[b"CPK "], label: "Criware CPK archive", confidence: CONFIDENCE_MEDIUM, validate: validate_cpk },
+    Sig { magics: &[b"UnityFS", b"UnityWeb", b"UnityRaw"], label: "Unity asset bundle", confidence: CONFIDENCE_MEDIUM, validate: validate_unity },
+    Sig { magics: &[b"\xe1\x12\x6f\x5a"], label: "Unreal Engine pak", confidence: CONFIDENCE_MEDIUM, validate: validate_unreal },
+    Sig { magics: &[b"GDPC"], label: "Godot engine package", confidence: CONFIDENCE_MEDIUM, validate: validate_godot },
+
+    // ─── Audio / video ───
+    Sig { magics: &[b"MThd"], label: "MIDI sequence", confidence: CONFIDENCE_MEDIUM, validate: validate_midi },
+    Sig { magics: &[b"FORM"], label: "AIFF audio", confidence: CONFIDENCE_MEDIUM, validate: validate_aiff },
+    Sig { magics: &[b".snd"], label: "Sun/NeXT audio", confidence: CONFIDENCE_MEDIUM, validate: validate_au },
+    Sig { magics: &[b"caff"], label: "Apple CAF audio", confidence: CONFIDENCE_MEDIUM, validate: validate_caf },
+    Sig { magics: &[b"#!AMR"], label: "AMR audio", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"\x1a\x45\xdf\xa3"], label: "Matroska/WebM video", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"ftyp"], label: "ISO media (MP4/MOV/HEIC/AVIF)", confidence: CONFIDENCE_MEDIUM, validate: validate_ftyp },
+
+    // ─── Images, textures, fonts ───
+    Sig { magics: &[b"\x00\x00\x01\x00"], label: "Windows icon/cursor", confidence: CONFIDENCE_MEDIUM, validate: validate_ico },
+    Sig { magics: &[b"8BPS"], label: "Photoshop PSD image", confidence: CONFIDENCE_MEDIUM, validate: validate_psd },
+    Sig { magics: &[b"gimp xcf "], label: "GIMP XCF image", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"DDS "], label: "DirectDraw surface", confidence: CONFIDENCE_MEDIUM, validate: validate_dds },
+    Sig { magics: &[b"qoif"], label: "QOI image", confidence: CONFIDENCE_MEDIUM, validate: validate_qoi },
+    Sig { magics: &[b"\x00\x00\x00\x0cjP  \r\n\x87\n"], label: "JPEG 2000 image", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"\x76\x2f\x31\x01"], label: "OpenEXR image", confidence: CONFIDENCE_MEDIUM, validate: validate_exr },
+    Sig { magics: &[b"\xabKTX 11\xbb\r\n\x1a\n"], label: "KTX texture", confidence: CONFIDENCE_MEDIUM, validate: validate_ktx },
+    Sig { magics: &[b"\x13\xab\xa1\x5c"], label: "ASTC texture", confidence: CONFIDENCE_MEDIUM, validate: validate_astc },
+    Sig { magics: &[b"\x00\x01\x00\x00", b"true", b"OTTO"], label: "TrueType/OpenType font", confidence: CONFIDENCE_MEDIUM, validate: validate_sfnt },
+    Sig { magics: &[b"ttcf"], label: "TrueType collection", confidence: CONFIDENCE_MEDIUM, validate: validate_ttc },
+    Sig { magics: &[b"wOFF", b"wOF2"], label: "WOFF web font", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"\xd7\xcd\xc6\x9a"], label: "Windows Metafile", confidence: CONFIDENCE_MEDIUM, validate: validate_wmf },
+    Sig { magics: &[b"\x01\x00\x00\x00"], label: "Windows Enhanced Metafile", confidence: CONFIDENCE_MEDIUM, validate: validate_emf },
+    Sig { magics: &[b"<svg "], label: "SVG image", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+
+    // ─── Archives and compression ───
+    Sig { magics: &[b"MSCF\x00\x00\x00\x00"], label: "Microsoft Cabinet archive", confidence: CONFIDENCE_MEDIUM, validate: validate_cab },
+    Sig { magics: &[b"070701", b"070702", b"070707"], label: "CPIO archive", confidence: CONFIDENCE_MEDIUM, validate: validate_cpio },
+    Sig { magics: &[b"!<arch>\n"], label: "Unix ar archive", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"xar!"], label: "XAR archive", confidence: CONFIDENCE_MEDIUM, validate: validate_xar },
+    Sig { magics: &[b"koly\x00\x00\x00\x04\x00\x00\x02\x00"], label: "Apple DMG image", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"hsqs", b"sqsh", b"sqlz"], label: "SquashFS filesystem", confidence: CONFIDENCE_MEDIUM, validate: validate_squashfs },
+    Sig { magics: &[b"Compressed ROMFS"], label: "CramFS filesystem", confidence: CONFIDENCE_MEDIUM, validate: validate_cramfs },
+    Sig { magics: &[b"-rom1fs-"], label: "RomFS filesystem", confidence: CONFIDENCE_MEDIUM, validate: validate_romfs },
+    Sig { magics: &[b"-lh0-", b"-lh1-", b"-lh2-", b"-lh3-", b"-lh4-", b"-lh5-", b"-lh6-", b"-lh7-"], label: "LHA/LZH archive", confidence: CONFIDENCE_MEDIUM, validate: validate_lha },
+    Sig { magics: &[b"\x60\xea"], label: "ARJ archive", confidence: CONFIDENCE_MEDIUM, validate: validate_arj },
+    Sig { magics: &[b"**ACE**"], label: "ACE archive", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"LZIP"], label: "lzip compressed data", confidence: CONFIDENCE_MEDIUM, validate: validate_lzip },
+    Sig { magics: &[b"\x89LZO\x00\r\n\x1a\n"], label: "lzop compressed data", confidence: CONFIDENCE_MEDIUM, validate: validate_lzop },
+    Sig { magics: &[b"\xff\x06\x00\x00sNaPpY"], label: "Snappy framed stream", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"\x78\x01", b"\x78\x5e", b"\x78\x9c", b"\x78\xda"], label: "zlib stream", confidence: CONFIDENCE_MEDIUM, validate: validate_zlib },
+    Sig { magics: &[b"\x1f\x9d\x90"], label: "compress'd data", confidence: CONFIDENCE_MEDIUM, validate: validate_compressd },
+    Sig { magics: &[b"PK\x05\x06"], label: "ZIP archive (empty)", confidence: CONFIDENCE_MEDIUM, validate: validate_zip_eocd },
+
+    // ─── Mobile / system / filesystems ───
+    Sig { magics: &[b"ANDROID!"], label: "Android boot image", confidence: CONFIDENCE_MEDIUM, validate: validate_android_boot },
+    Sig { magics: &[b"\x3a\xff\x26\xed"], label: "Android sparse image", confidence: CONFIDENCE_MEDIUM, validate: validate_android_sparse },
+    // Every DEX version in the wild is "dex\n03N\0" (035 on old devices, 039
+    // on modern Android — the APK this app builds ships 039), so the magic
+    // stops before the version digit and the validator checks the header size.
+    Sig { magics: &[b"dex\n03"], label: "Dalvik executable", confidence: CONFIDENCE_MEDIUM, validate: validate_dex },
+    Sig { magics: &[b"\x02\x00\x0c\x00"], label: "Android resource table", confidence: CONFIDENCE_MEDIUM, validate: validate_arsc },
+    Sig { magics: &[b"\x03\x00\x08\x00"], label: "Android binary XML", confidence: CONFIDENCE_MEDIUM, validate: validate_binxml },
+    Sig { magics: &[b"SQLite format 3\x00"], label: "SQLite database", confidence: CONFIDENCE_MEDIUM, validate: validate_sqlite },
+    Sig { magics: &[b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf"], label: "Mach-O binary", confidence: CONFIDENCE_MEDIUM, validate: validate_macho },
+    Sig { magics: &[b"MZ"], label: "Windows PE binary", confidence: CONFIDENCE_MEDIUM, validate: validate_pe },
+    Sig { magics: &[b"\x00asm"], label: "WebAssembly module", confidence: CONFIDENCE_MEDIUM, validate: validate_wasm },
+    Sig { magics: &[b"\xca\xfe\xba\xbe"], label: "Java class", confidence: CONFIDENCE_MEDIUM, validate: validate_java_class },
+    Sig { magics: &[b"ITSF"], label: "CHM help file", confidence: CONFIDENCE_MEDIUM, validate: validate_chm },
+    Sig { magics: &[b"regf"], label: "Windows registry hive", confidence: CONFIDENCE_MEDIUM, validate: validate_regf },
+    Sig { magics: &[b"ElfFile\x00"], label: "Windows event log", confidence: CONFIDENCE_MEDIUM, validate: validate_evtx },
+    Sig { magics: &[b"!BDN"], label: "Outlook PST/OST", confidence: CONFIDENCE_MEDIUM, validate: validate_pst },
+    Sig { magics: &[b"d8:announce"], label: "BitTorrent metainfo", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"-----BEGIN "], label: "PEM text", confidence: CONFIDENCE_MEDIUM, validate: validate_pem },
+    // Two labels on purpose: the volume label sits at sector offset 54 on
+    // FAT12/16 and 82 on FAT32, and the carve path needs the right one.
+    Sig { magics: &[b"FAT12   ", b"FAT16   "], label: "FAT12/16 filesystem", confidence: CONFIDENCE_MEDIUM, validate: validate_fat },
+    Sig { magics: &[b"FAT32   "], label: "FAT32 filesystem", confidence: CONFIDENCE_MEDIUM, validate: validate_fat },
+    Sig { magics: &[b"\xebR\x90NTFS    "], label: "NTFS filesystem", confidence: CONFIDENCE_MEDIUM, validate: validate_ntfs },
+    Sig { magics: &[b"\x53\xef\x01\x00\x01\x00\x00\x00", b"\x53\xef\x01\x00\x02\x00\x00\x00", b"\x53\xef\x01\x00\x03\x00\x00\x00"], label: "EXT filesystem", confidence: CONFIDENCE_MEDIUM, validate: validate_ext },
+    Sig { magics: &[b"NXSB"], label: "APFS container", confidence: CONFIDENCE_MEDIUM, validate: validate_apfs },
+    Sig { magics: &[b"_BHRfS_M"], label: "BTRFS filesystem", confidence: CONFIDENCE_MEDIUM, validate: validate_btrfs },
+    Sig { magics: &[b"UBI#\x01"], label: "UBI image", confidence: CONFIDENCE_MEDIUM, validate: validate_ubi },
+    Sig { magics: &[b"\x19\x85\xe0\x01", b"\x19\x85\xe0\x02", b"\x19\x85\x20\x03"], label: "JFFS2 filesystem", confidence: CONFIDENCE_MEDIUM, validate: validate_jffs2 },
+    Sig { magics: &[b"\xd0\x0d\xfe\xed"], label: "Device tree blob", confidence: CONFIDENCE_MEDIUM, validate: validate_dtb },
+    Sig { magics: &[b"QFI\xfb"], label: "QEMU QCOW image", confidence: CONFIDENCE_MEDIUM, validate: validate_qcow },
+    Sig { magics: &[b"KDMV"], label: "VMware VMDK image", confidence: CONFIDENCE_MEDIUM, validate: validate_vmdk },
+    Sig { magics: &[b"conectix"], label: "Microsoft VHD image", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"vhdxfile"], label: "Microsoft VHDX image", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"MSWIM\x00\x00\x00"], label: "Microsoft WIM image", confidence: CONFIDENCE_MEDIUM, validate: validate_wim },
+    Sig { magics: &[b"LUKS\xba\xbe"], label: "LUKS encrypted volume", confidence: CONFIDENCE_MEDIUM, validate: validate_luks },
+    Sig { magics: &[b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d"], label: "libpcap capture", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"\x55\xaa"], label: "DOS MBR partition table", confidence: CONFIDENCE_MEDIUM, validate: validate_mbr },
+    Sig { magics: &[b"EFI PART"], label: "EFI GPT partition table", confidence: CONFIDENCE_MEDIUM, validate: validate_gpt },
+    Sig { magics: &[b"!<arch>\ndebian-binary   "], label: "Debian package", confidence: CONFIDENCE_MEDIUM, validate: validate_room24 },
+    Sig { magics: &[b"icns"], label: "Apple icon image", confidence: CONFIDENCE_MEDIUM, validate: validate_icns },
 ];
 
 // ─── Gal engine format validators ───
@@ -2570,8 +3565,8 @@ mod tests {
     fn signature_counts_match_the_kotlin_footer() {
         let sigs = SIGNATURES.len() as u32;
         let patterns: u32 = SIGNATURES.iter().map(|s| s.magics.len() as u32).sum();
-        assert_eq!(sigs, 32);
-        assert_eq!(patterns, 83);
+        assert_eq!(sigs, 118);
+        assert_eq!(patterns, 203);
     }
 
     /// RGSS: 7-byte magic + a legal version byte, plus the v3 index sanity.

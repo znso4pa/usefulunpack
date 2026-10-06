@@ -64,10 +64,14 @@ internal val ARCHIVE_LABELS = mapOf(
     "RGSS archive" to "rgss",
     "ISO 9660 disc image" to "iso",
     "POSIX tar archive" to "tar",
+    // The two formats this expansion was asked for (both readers want the
+    // archive at byte 0, so they are also in NEEDS_CARVE below).
+    "Ren'Py archive" to "rpa",
+    "CatSystem2 INT archive" to "int",
 )
 
 /** Formats whose native readers require the archive at byte 0 (must carve first). */
-private val NEEDS_CARVE = setOf("7z", "gz", "bz2", "xz", "zst", "lzma", "lz4", "xp3", "tar", "pfs", "rgss")
+private val NEEDS_CARVE = setOf("7z", "gz", "bz2", "xz", "zst", "lzma", "lz4", "xp3", "tar", "pfs", "rgss", "rpa", "int")
 
 /** rars scans only the first 8 MiB for an embedded RAR signature. */
 private const val RAR_SCAN_LIMIT = 8L * 1024 * 1024
@@ -84,6 +88,88 @@ private val EXT_FOR_LABEL = mapOf(
     "RIFF (AVI/WAV/WebP)" to "webp",
     "ISO 9660 disc image" to "iso",
     "MPEG program stream" to "mpg",
+    // Expansion formats: the carve gets a recognizable extension instead of
+    // .bin. Formats whose magic is a trailer (DMG's koly, VHD's conectix) are
+    // deliberately absent — carving from there would produce a 512-byte stub.
+    "Criware ADX audio" to "adx",
+    "Criware HCA audio" to "hca",
+    "Criware ACB catalogue" to "acb",
+    "Criware AWB/AFS2 archive" to "awb",
+    "Criware CPK archive" to "cpk",
+    "Unity asset bundle" to "unity3d",
+    "Unreal Engine pak" to "pak",
+    "Godot engine package" to "pck",
+    "MIDI sequence" to "mid",
+    "AIFF audio" to "aiff",
+    "Sun/NeXT audio" to "au",
+    "Apple CAF audio" to "caf",
+    "AMR audio" to "amr",
+    "Matroska/WebM video" to "mkv",
+    "ISO media (MP4/MOV/HEIC/AVIF)" to "mp4",
+    "Windows icon/cursor" to "ico",
+    "Photoshop PSD image" to "psd",
+    "GIMP XCF image" to "xcf",
+    "DirectDraw surface" to "dds",
+    "QOI image" to "qoi",
+    "JPEG 2000 image" to "jp2",
+    "OpenEXR image" to "exr",
+    "KTX texture" to "ktx",
+    "ASTC texture" to "astc",
+    "TrueType/OpenType font" to "ttf",
+    "TrueType collection" to "ttc",
+    "WOFF web font" to "woff",
+    "Windows Metafile" to "wmf",
+    "Windows Enhanced Metafile" to "emf",
+    "SVG image" to "svg",
+    "Microsoft Cabinet archive" to "cab",
+    "CPIO archive" to "cpio",
+    "Unix ar archive" to "ar",
+    "XAR archive" to "xar",
+    "SquashFS filesystem" to "squashfs",
+    "CramFS filesystem" to "cramfs",
+    "RomFS filesystem" to "romfs",
+    "LHA/LZH archive" to "lzh",
+    "ARJ archive" to "arj",
+    "ACE archive" to "ace",
+    "lzip compressed data" to "lz",
+    "lzop compressed data" to "lzo",
+    "Snappy framed stream" to "sz",
+    "zlib stream" to "zlib",
+    "compress'd data" to "Z",
+    "Android boot image" to "img",
+    "Android sparse image" to "img",
+    "Dalvik executable" to "dex",
+    "Android resource table" to "arsc",
+    "Android binary XML" to "xml",
+    "SQLite database" to "sqlite",
+    "Mach-O binary" to "macho",
+    "Windows PE binary" to "exe",
+    "WebAssembly module" to "wasm",
+    "Java class" to "class",
+    "CHM help file" to "chm",
+    "Windows registry hive" to "hive",
+    "Windows event log" to "evtx",
+    "Outlook PST/OST" to "pst",
+    "BitTorrent metainfo" to "torrent",
+    "PEM text" to "pem",
+    "FAT12/16 filesystem" to "img",
+    "FAT32 filesystem" to "img",
+    "NTFS filesystem" to "img",
+    "EXT filesystem" to "img",
+    "APFS container" to "img",
+    "BTRFS filesystem" to "img",
+    "UBI image" to "ubi",
+    "JFFS2 filesystem" to "jffs2",
+    "Device tree blob" to "dtb",
+    "QEMU QCOW image" to "qcow2",
+    "VMware VMDK image" to "vmdk",
+    "Microsoft WIM image" to "wim",
+    "LUKS encrypted volume" to "luks",
+    "libpcap capture" to "pcap",
+    "DOS MBR partition table" to "mbr",
+    "EFI GPT partition table" to "gpt",
+    "Debian package" to "deb",
+    "Apple icon image" to "icns",
 )
 
 /** Archive hit label → file extension for a raw dd carve (so the carved file
@@ -106,6 +192,10 @@ private val ARCHIVE_EXT_FOR_LABEL = mapOf(
     "RGSS archive" to "rgss3a",
     "ISO 9660 disc image" to "iso",
     "POSIX tar archive" to "tar",
+    // The two formats this expansion was asked for (both readers want the
+    // archive at byte 0, so they are also in NEEDS_CARVE below).
+    "Ren'Py archive" to "rpa",
+    "CatSystem2 INT archive" to "int",
 )
 
 /** Copies [src] from [offset] for [length] bytes (null = to the end of the
@@ -138,13 +228,14 @@ fun carveToFile(src: File, offset: Long, length: Long?, dest: File, onProgress: 
     }
 }
 
-/** Signature / magic-pattern counts reported by the Rust scan-core (kept in
- *  sync with validators.rs: 32 signatures, 83 magic patterns — bzip2 has 9
- *  variants, gif 2, jpeg 3, lzma 36 (4 props × 9 dict prefixes), iso 1,
- *  ypf 1, pf6/pf8 2, ksd 3, rgss 1, ogg 1, mp3 4, flac 1, bmp 1,
- *  everything else 1). */
-private const val SCAN_SIG_COUNT = 32
-private const val SCAN_PATTERN_COUNT = 83
+/** Signature / magic-pattern counts reported by the Rust scan-core, kept in
+ *  sync with validators.rs by `signature_counts_match_the_kotlin_footer` (the
+ *  Rust test fails the moment the table changes without this). Multi-variant
+ *  signatures carry most of the patterns: bzip2 9, lzma 36 (4 props × 9 dict
+ *  prefixes), lh0-lh7 8, the RPA headers 5, mp3 4, Mach-O 4, zlib 4, pcap 4,
+ *  EXT 3, ksd/jpeg 3, gif/pf6+pf8/ttf/ico-ish 2-3, everything else 1. */
+private const val SCAN_SIG_COUNT = 118
+private const val SCAN_PATTERN_COUNT = 203
 
 /** binwalk-style scan dialog (Rust scan-core + byte-level progress bar). */
 internal fun MainActivity.showSignatureScan(f: File) {
@@ -397,6 +488,16 @@ private fun MainActivity.showSeparateDestDialog(f: File, hit: ScanHit, extract: 
 private fun magicStartAdjust(label: String): Long = when (label) {
     "ISO 9660 disc image" -> 32768L
     "POSIX tar archive" -> 257L
+    // Expansion formats whose magic is not at the container's first byte.
+    "ISO media (MP4/MOV/HEIC/AVIF)" -> 4L        // the "ftyp" box type
+    "LHA/LZH archive" -> 2L                      // header size + checksum come first
+    "FAT12/16 filesystem" -> 54L                 // volume label in the boot sector
+    "FAT32 filesystem" -> 82L
+    "NTFS filesystem" -> 3L
+    "EXT filesystem" -> 0x438L                   // superblock magic
+    "BTRFS filesystem" -> 0x10000L               // superblock offset
+    "DOS MBR partition table" -> 510L            // 0x55AA at the sector end
+    "EFI GPT partition table" -> 512L            // header follows the protective MBR
     else -> 0L
 }
 

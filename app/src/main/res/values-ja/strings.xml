@@ -15,7 +15,7 @@
     <string name="msg_tjs_compiled">コンパイル済み TJS スクリプト（TJS2 バイナリ）のため、テキストとしてプレビューできません</string>
     <string name="edit_archive">✏️ 編集</string>
     <string name="action_more">More</string>
-    <string name="edit_only_pack">対応するのはパック可能な形式のみです（XP3/PFS/ISO/NSA/7Z/YPF/RGSS）</string>
+    <string name="edit_only_pack">対応するのはパック可能な形式のみです（XP3/PFS/ISO/NSA/7Z/YPF/RGSS/RPA）</string>
     <string name="zip_manage_only_zip">エントリ管理に対応しているのは ZIP のみです</string>
     <string name="convert_only_iso">CSO 変換に対応しているのは ISO のみです</string>
     <string name="nested_archive_title">入れ子のアーカイブ</string>
@@ -396,6 +396,7 @@
         <item>BROTLI (.br) — 解凍 + 圧縮\nGoogle Brotli 圧縮；レベル 0-11（デフォルト 6）；Web コンテンツで広く使用</item>
         <item>RPG Maker MV/MZ (.rpgmvp/.rpgmvo/.rpgmvm) — 展開 &amp; 圧縮\n1 ファイルずつ難読化される素材：画像 (.rpgmvp)、音声 (.rpgmvo)、動画 (.rpgmvm)。16 バイトのヘッダーはファイル自身から復元できるため鍵は不要。出力は本来の拡張子で命名されるため、そのまま画像 / 音声プレビューを開ける\nRPG Maker MZ の .png_ / .ogg_ / .m4a_ にも対応。難読化されていないファイル（再パックされたゲーム）はそのまま出力\n注意：1 回タップすると「復号したファイル」1 件のアーカイブビューが開くので、もう一度タップで画像 / 音声プレビュー。一括モードでフォルダ全体をまとめて復号可能\n圧縮は 1 つの素材を難読化します（foo.png → foo.rpgmvp）。キーは圧縮オプションで入力: 32 桁の 16 進数はそのまま使用、他の文字は RPG Maker と同じく MD5 化、空欄ならデフォルトキー。一括モードで複数まとめて実行できます。形式ごとに型は 1 種類のみ: .rpgmvp は .png、.rpgmvo は .ogg、.rpgmvm は .m4a のみです。それ以外は拒否されます</item>
         <item>RGSS (.rgssad/.rgss2a/.rgss3a) — 解凍 + 圧縮\nRPG Maker 暗号化アーカイブ：XP (.rgssad)、VX (.rgss2a)、VX Ace (.rgss3a)。レイアウトはヘッダーから自動判別され、どの組み合わせでも開けます。ファイル名は UTF-8 / Shift-JIS\n圧縮時は対象バージョンを選択可。スクリプト編集可（name-cn.rgss3a として再パック）。圧縮産物は既定で Game.rgss3a という名前になります（RPG Maker が開くのはこの名前だけのため。圧縮オプションで変更可）\n注意：編集して再パックした場合は元の Game.rgss3a が存在するため上書きせず、-cn 名的ままになります。ゲームに読ませるには手動で差し替えてください\n制限：v3 のオフセットは 32 ビットのため、圧縮産物が 4GiB を超えることはありません</item>
+        <item>RPA (.rpa/.rpi) — 解凍 + 圧縮\nRen\'Py アーカイブ。インデックスは zlib 圧縮された Python pickle で、3 つの形態があります：RPA-3.0（オフセットをヘッダーのキーで XOR。現行形式）、RPA-2.0（XOR なし）、RPA-1.0（.rpi、インデックスがファイル先頭）。RPA-3.2 / RPA-4.0 / ALT-1.0 も開けます。エントリー名は UTF-8 なので、日本語・中国語の名前や空白もそのまま復元されます\n圧縮は RPA-3.0 を書き出し、キーは Ren\'Py 公式アーカイバーと同じ固定値。インデックスは pickle プロトコル 2 なので、Python 2 時代（Ren\'Py 6.x）のエンジンでも現行エンジンでも読めます。スクリプト編集可（name-cn.rpa として再パック）\n注意：ZiX-12A/B はゲーム付属の renpy/loader.pyo からキーを導出する必要があるため、推測せずエラーとして報告します</item>
     </string-array>
         <string-array name="help_tutorials">
         <item>圧縮設定\n設定 → 圧縮：圧縮レベル（zip/7z/汎用）、分割サイズ（zip/7z）、ZIP エンコーディング、圧縮パスワード；「OK」で一括保存；作業モード（アーカイブ/圧縮）切替でタイトルバー更新</item>

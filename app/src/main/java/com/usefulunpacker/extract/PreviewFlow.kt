@@ -645,7 +645,7 @@ internal data class MergeTarget(val file: File, val window: TabState?)
  * so they can never disagree about whether a merge target exists.
  *
  * Only repackable formats survive the filter (zip/7z/tar + xp3/pfs/nsa/iso/ypf +
- * rgss), so the list never offers something that would bounce off
+ * rgss + rpa), so the list never offers something that would bounce off
  * `merge_target_unsupported` on tap. Duplicates (an archive open in a neighbour
  * window that also sits in this folder) collapse to the folder row, which is the
  * nearer one.
@@ -1213,6 +1213,7 @@ internal fun MainActivity.listEntriesJson(
         "xp3" -> Xp3Core.xp3ListEntries(src.absolutePath)
         "pfs" -> PfsCore.pfsListEntries(src.absolutePath)
         "nsa" -> NsaCore.nsaListEntries(src.absolutePath)
+        "rpa" -> RpaCore.rpaListEntries(src.absolutePath)
         "iso" -> IsoCore.isoListEntries(src.absolutePath)
         "ypf" -> YpfCore.ypfListEntries(src.absolutePath)
         "rgss" -> RgssCore.rgssListEntries(src.absolutePath)

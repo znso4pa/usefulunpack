@@ -371,6 +371,10 @@ fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password
             "pfs" -> PfsCore.pfsCreateArchive("", src.path, outFile.path) != null
             "pf6" -> PfsCore.pfsCreateArchivePf6("", src.path, outFile.path) != null
             "nsa" -> NsaCore.nsaCreateArchive("", src.path, outFile.path, if (level > 0) "2" else "0") != null
+            // RPA stores payloads raw: `level` has nothing to act on, and the
+            // 2-tuple index form this writer emits is the shape Ren'Py's own
+            // reader fast-paths.
+            "rpa" -> RpaCore.rpaCreateArchive("", src.path, outFile.path, level.toString())
             "iso" -> IsoCore.isoCreateArchive("", src.path, outFile.path) != null
             "ypf" -> YpfCore.ypfCreateArchive("", src.path, outFile.path, level.toString()) != null
             "rgssad", "rgss2a", "rgss3a" -> RgssCore.rgssCreateArchive("", src.path, outFile.path, rgssWriteVersionOf(fmt)) != null

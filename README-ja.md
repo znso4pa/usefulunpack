@@ -4,7 +4,7 @@
 
 軽量 Android ファイルマネージャー & アーカイブ圧縮・解凍ツール
 
-**XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**ISO 9660**、および **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** などの汎用形式（圧縮/解凍対応）。Rust ネイティブコア。
+**XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**RPA**（Ren'Py）、**ISO 9660**、および **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** などの汎用形式（圧縮/解凍対応）。Rust ネイティブコア。
 
 ---
 
@@ -16,6 +16,7 @@
 | 📦 **PFS** | Artemis `.pfs` / `.pf6` / `.pf8` を解凍・作成 |
 | 📜 **NSA/SAR** | NScripter `.nsa` / `.sar` を解凍（LZSS + SPB） |
 | 📦 **YPF** | YU-RIS `.ypf` を3層検出で解凍 |
+| 🐍 **RPA** | Ren'Py `.rpa` / `.rpi` の解凍 + 圧縮。インデックスは zlib 圧縮の Python pickle で RPA-1.0 / 2.0 / 3.0 の3形態（RPA-3.2 / 4.0 と ALT-1.0 にも対応）。名前は UTF-8。**圧縮は RPA-3.0 を pickle プロトコル 2 で書き出し**、Python 2 時代の Ren'Py 6.x でも現行エンジンでも読めます。スクリプト編集可。ZiX-12A/B はゲーム付属の `renpy/loader.pyo` が必要なため明確にエラー |
 | 🎮 **RPG Maker MV/MZ** | ファイルごとに難読化された素材の復号 + 再難読化（再封包は鍵の入力が必要）：`.rpgmvp` 画像、`.rpgmvo` 音声、`.rpgmvm` 動画（MZ の `.png_` / `.ogg_` / `.m4a_` も対応）。16 バイトのヘッダーはファイル自身から復元できるため**鍵は不要**（副ファイル名が無い場合も内容から判別）。再封包の鍵は 32 桁の 16 進数（そのまま使用）か任意テキスト（RPG Maker と同じく MD5 化）を受け付ける。**形式ごとに型は 1 種類のみ：`.rpgmvp` は `.png`、`.rpgmvo` は `.ogg`、`.rpgmvm` は `.m4a`** —— エンジンが拡張子でローダを選ぶため、それ以外は拒否。鍵不要。出力は実拡張子で命名されるのでそのまま画像 / 音声プレビューが開ける。一括モードでフォルダ全体をまとめて復号 |
 | 🎮 **RGSS** | RPG Maker 暗号化アーカイブの解凍 + 圧縮：`.rgssad`（XP）、`.rgss2a`（VX）、`.rgss3a`（VX Ace）。レイアウトはヘッダーから自動判別。ファイル名は UTF-8 / Shift-JIS。スクリプト編集可。**封包出力は既定で `Game.<ext>` という名前にする**（RPG Maker が開くのはこの名前だけ）。圧縮オプションで無効化可 |
 | 💾 **KSD** | `.ksd` を解凍/作成（mode 0/1/2 + UTF-16→UTF-8） |
@@ -107,6 +108,7 @@ bash build.sh
          libarchive_iso_core.so  → ISO 9660
          libarchive_ypf_core.so  → YPF (YU-RIS)
          libarchive_rgss_core.so → RGSS (XP/VX/VX Ace) + MV/MZ 素材
+         libarchive_rpa_core.so  → RPA (Ren'Py)
          libarchive_rgss_core.so → RGSS (RPG Maker XP/VX/VX Ace)
          libarchive_zip_core.so  → ZIP
          libarchive_sevenz_core.so → 7z

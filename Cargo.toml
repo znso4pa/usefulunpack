@@ -23,6 +23,7 @@ members = [
     "crates/brotli-core",
     "crates/rgss-core",
     "crates/rpa-core",
+    "crates/int-core",
 
 ]
 resolver = "2"

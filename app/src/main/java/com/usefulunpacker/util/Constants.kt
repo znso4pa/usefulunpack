@@ -48,6 +48,7 @@ val FORMAT_COLORS = mapOf(
     "rpgmvo" to 0xFFb26500.toInt(),
     "rpgmvm" to 0xFFb26500.toInt(),
     "rpa" to 0xFF2ecc71.toInt(),
+    "int" to 0xFF34495e.toInt(),
     "zip" to 0xFF3498db.toInt(),
     "7z" to 0xFF8e44ad.toInt(),
     "rar" to 0xFFc0392b.toInt(),
@@ -81,6 +82,8 @@ fun formatOfName(name: String): String? {
         // appended); it reads through the same key because the parser takes
         // the layout from the header.
         "rpa", "rpi" -> "rpa"
+        // CatSystem2 (KIF): the engine writes `.int` for its archives.
+        "int" -> "int"
         "iso" -> "iso"
         "ypf" -> "ypf"
         // All three RGSS container versions read through one key: the parser
@@ -124,7 +127,7 @@ val ARCHIVE_EXTS = setOf(
     "xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso", "ypf", "zip", "7z", "rar", "lz4",
     "gz", "bz2", "xz", "zst", "lzma", "tar", "tgz", "tbz2", "txz", "tzst", "ksd", "br",
     "rgssad", "rgss2a", "rgss3a", "rpgmvp", "rpgmvo", "rpgmvm", "png_", "ogg_", "m4a_",
-    "rpa", "rpi",
+    "rpa", "rpi", "int",
 )
 
 // 归档模式格式选择器：格式 key → 显示标签
@@ -133,6 +136,7 @@ val FORMAT_LABELS = mapOf(
     "rgss" to "RGSS (.rgssad/.rgss2a/.rgss3a)",
     "rpgmv" to "RPG Maker MV/MZ",
     "rpa" to "RPA (.rpa/.rpi)",
+    "int" to "INT (.int, CatSystem2)",
     "zip" to "ZIP", "7z" to "7z", "rar" to "RAR", "lz4" to "LZ4",
     "tar" to "TAR (.tar/.tgz/.tar.gz/.tbz2/.txz)", "gz" to "GZIP (.gz)", "bz2" to "BZIP2 (.bz2)",
     "xz" to "XZ (.xz)", "zst" to "ZSTD (.zst)", "lzma" to "LZMA (.lzma)",
@@ -142,7 +146,7 @@ val FORMAT_LABELS = mapOf(
 // 归档模式格式选择器分组顺序（表头用 string 资源，格式 key 列表）
 val FORMAT_GROUPS = listOf(
     Pair(R.string.format_group_generic, listOf("zip", "7z", "rar", "lz4", "tar", "gz", "bz2", "xz", "zst", "lzma", "br")),
-    Pair(R.string.format_group_other, listOf("xp3", "pfs", "nsa", "iso", "ypf", "ksd", "rgss", "rpgmv", "rpa")),
+    Pair(R.string.format_group_other, listOf("xp3", "pfs", "nsa", "iso", "ypf", "ksd", "rgss", "rpgmv", "rpa", "int")),
 )
 
 // 压缩模式格式选择器分组（zip/7z + tar 变体 = 归档打包；单流 = 单文件压缩）

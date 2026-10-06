@@ -1123,7 +1123,10 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
         // Nested archive inside the current one (e.g. a .zip living inside an
         // .xp3): offer to open it in a NEW window so the outer preview is kept.
         val nestedFmt = formatOfName(entry.path)
-        if (nestedFmt != null && nestedFmt in setOf("zip", "7z", "rar", "xp3", "pfs", "nsa", "iso", "ypf", "rgss", "rpgmv")) {
+        // `int` is deliberately absent: its index key comes from the game's exe,
+        // which a carved-out temp copy has no access to — the nested-open would
+        // only ever bounce. `rpa` needs nothing external, so it is here.
+        if (nestedFmt != null && nestedFmt in setOf("zip", "7z", "rar", "xp3", "pfs", "nsa", "iso", "ypf", "rgss", "rpgmv", "rpa")) {
             AlertDialog.Builder(this)
                 .setTitle(getString(R.string.nested_archive_title))
                 .setMessage(getString(R.string.nested_archive_msg, entry.path, archive.name))
@@ -1134,14 +1137,8 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
                 .show().also { it.keepTabsTappable() }
             return
         }
-        if (ext !in PREVIEW_EXTS) {
-            toast(getString(R.string.err_preview_unsupported, ".$ext"))
-            return
-        }
-
         val cacheDir = File(cacheDir, "preview/${archive.nameWithoutExtension}")
-        fun openPreview() {
-            val extracted = File(cacheDir, entry.path)
+        fun showExtracted(extracted: File) {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 when (ext) {
@@ -1158,6 +1155,22 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
                         showTextPreview(this, extracted, showEdit = canEditZip,
                             onEdited = if (canEditZip) { { zipReplaceEntry(archive, entry, extracted, pwd, ownerTab) } } else { null })
                     }
+                }
+            }
+        }
+        fun openPreview() {
+            val extracted = File(cacheDir, entry.path)
+            // The extension decides for known types; for everything else the
+            // entry is sniffed *after* extraction, so a script/data file with an
+            // extension nobody listed still opens as text instead of being
+            // refused. The read is bounded (64 KiB) and off the UI thread.
+            if (ext in PREVIEW_EXTS) { showExtracted(extracted); return }
+            thread {
+                val text = looksLikeTextFile(extracted)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (text) showExtracted(extracted)
+                    else toast(getString(R.string.err_preview_unsupported, ".$ext"))
                 }
             }
         }
@@ -1214,6 +1227,7 @@ internal fun MainActivity.listEntriesJson(
         "pfs" -> PfsCore.pfsListEntries(src.absolutePath)
         "nsa" -> NsaCore.nsaListEntries(src.absolutePath)
         "rpa" -> RpaCore.rpaListEntries(src.absolutePath)
+        "int" -> IntCore.intListEntries(src.absolutePath)
         "iso" -> IsoCore.isoListEntries(src.absolutePath)
         "ypf" -> YpfCore.ypfListEntries(src.absolutePath)
         "rgss" -> RgssCore.rgssListEntries(src.absolutePath)

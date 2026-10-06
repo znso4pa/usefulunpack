@@ -4,7 +4,7 @@
 
 A lightweight Android file manager and archive packing/unpacking tool.
 
-Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF** (YU-RIS), **RGSS** (RPG Maker XP/VX/VX Ace), **RPA** (Ren'Py), **KSD** (Kirikiri2), **ZIP**, **7z**, **RAR**, **LZ4**, and **ISO 9660** disc images — with native Rust-powered extraction and packing.
+Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF** (YU-RIS), **RGSS** (RPG Maker XP/VX/VX Ace), **RPA** (Ren'Py), **INT** (CatSystem2), **KSD** (Kirikiri2), **ZIP**, **7z**, **RAR**, **LZ4**, and **ISO 9660** disc images — with native Rust-powered extraction and packing.
 
 ---
 
@@ -17,6 +17,7 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 📜 **NSA/SAR** | Unpack NScripter `.nsa` / `.sar` archives (LZSS + SPB), **pack** (stored / LZSS) |
 | 🗜️ **ZIP** | Browse/extract/pack ZIP (AES-256, split volumes); **PKWARE multi-disk** (`.z01/.z02/.zip`) with **cross-disk entries**; **in-place edit** — replace / delete / add entries without repacking the whole archive, **AES flag preserved** for untouched encrypted entries; edits save as a `name-cn.zip` copy (original untouched) |
 | 📦 **YPF** | Unpack YU-RIS `.ypf` archives with adaptive boundary detection |
+| 🐍 **INT** | Unpack CatSystem2 (KIF) `.int`: entry names are permuted, offsets/sizes and payloads are Blowfish-encrypted, and **the key lives in the key_code / v_code / v_code2 resources of the game executable** — so the `.exe` has to sit next to the `.int`. Without it the archive is refused, never guessed |
 | 🐍 **RPA** | Unpack + pack Ren'Py `.rpa` / `.rpi`. The index is a zlib-compressed Python pickle in three shapes — RPA-1.0 / 2.0 / 3.0 (plus RPA-3.2 / 4.0 and ALT-1.0) — with UTF-8 entry names. **Packing writes RPA-3.0 at pickle protocol 2**, so both Python-2 era engines (Ren'Py 6.x) and modern ones read it; scripts can be edited in place. ZiX-12A/B need the game's own `renpy/loader.pyo` and are refused with a message |
 | 🎮 **RGSS** | Unpack **and pack** RPG Maker encrypted archives (packed output is named `Game.rgss3a`, the only name the engine opens) — `.rgssad` (XP), `.rgss2a` (VX), `.rgss3a` (VX Ace); layout auto-detected from the header, so any of the three opens any of the three; UTF-8 / Shift-JIS names; edit scripts in-place |
 | 🎮 **RPG Maker MV/MZ** | Decode **and re-obfuscate** per-file assets — `.rpgmvp` pictures, `.rpgmvo` sounds, `.rpgmvm` movies (and MZ's `.png_` / `.ogg_` / `.m4a_`); decoding needs no key because the 16-byte header is recovered from the file itself (including for files whose name carries no extension — the content decides), and packing takes the keystream you type (32 hex digits verbatim, or any text to be MD5-hashed the way RPG Maker does it). **Each key takes only its own type: `.rpgmvp` packs `.png`, `.rpgmvo` packs `.ogg`, `.rpgmvm` packs `.m4a`** — anything else is refused, because the engine picks its loader from the extension; output named with its real extension so it opens in the image / audio viewer; batch mode handles a whole selection |
@@ -154,6 +155,7 @@ User taps file → Kotlin UI calls format-specific JNI
           libarchive_ypf_core.so  → YPF (YU-RIS)
           libarchive_rgss_core.so → RGSS (XP/VX/VX Ace) + MV/MZ loose assets
           libarchive_rpa_core.so  → RPA (Ren'Py)
+          libarchive_int_core.so  → INT (CatSystem2)
           libarchive_zip_core.so  → ZIP
           libarchive_sevenz_core.so → 7z
           libarchive_rar_core.so  → RAR
@@ -197,6 +199,7 @@ XOR key auto-detection (0xFF vs 0xC9) is done per-file on the first entry.
 | **RPG Maker MV/MZ assets** | Format cross-checked against [Petschko's RPG-Maker-MV-Decrypter](https://gitlab.com/Petschko/RPG-Maker-MV-Decrypter) and [rpgm-asset-decrypter-lib](https://github.com/RPG-Maker-Translation-Tools/rpgm-asset-decrypter-lib) (MIT); the keystream is recovered from each file's own header, so no MD5 or `System.json` sidecar is needed | Public spec / MIT |
 | **RGSS (RPG Maker)** | Layout cross-checked against [uuksu/RPGMakerDecrypter](https://github.com/uuksu/RPGMakerDecrypter) (MIT), [mkxp-z `crypto/rgssad.cpp`](https://github.com/mkxp-z/mkxp-z) (BSD-3-Clause) and [rpgm-archive-decrypter-lib](https://github.com/RPG-Maker-Translation-Tools/rpgm-archive-decrypter-lib) (Apache-2.0/MIT); no equivalent crate exists on crates.io, so the parser is self-contained | Public spec / MIT / BSD-3-Clause / Apache-2.0 |
 | **RPA (Ren'Py)** | [Ren'Py's own reader `renpy/loader.py`](https://github.com/renpy/renpy/blob/master/renpy/loader.py) and [writer `launcher/game/archiver.rpy`](https://github.com/renpy/renpy/blob/master/launcher/game/archiver.rpy) — layout and fixed key follow the reference implementation; the parser is our own pure Rust. Cross-checked with unrpa / rpatool | MIT |
+| **INT (CatSystem2 / KIF)** | [arc_unpacker's CatSystem2 decoder and its real sample archive](https://github.com/vn-tools/arc_unpacker/tree/master/tests/dec/cat_system) (GPL-3.0, read as a reference only; the sample plus its 13 expected outputs are the byte-for-byte oracle), [GARbro `ArcINT`](https://github.com/morkt/GARbro) (MIT). Blowfish/MT19937 are standard algorithms carrying their own test vectors | public format / MIT / GPL-3.0 (reference) |
 | **ISO 9660** | [isomage crate](https://crates.io/crates/isomage) | MIT |
 | **ZIP** | [zip crate](https://crates.io/crates/zip) | MIT |
 | **7z** | [sevenz-rust crate](https://crates.io/crates/sevenz-rust) | MIT / Apache-2.0 |

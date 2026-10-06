@@ -1135,7 +1135,7 @@ internal object UuCommands {
             if (!single.exists()) return Result(UuText.notFound(ctx.str, pos[0]), 1)
             if (single.isFile && detectFormat(single) == null && detectFormatByMagic(single) == null) {
                 val bytes = readPrefix(single, CAT_MAX_BYTES)
-                val enc = detectBestEncoding(bytes)
+                val enc = textEncodingOf(bytes)
                     ?: return Result(ctx.text(R.string.cli_cat_binary, pos[0], fmt(single.length())), 1)
                 var text = decodeTextStrict(bytes, enc)
                 if (text.length > CAT_MAX_CHARS) text = text.take(CAT_MAX_CHARS)
@@ -1170,7 +1170,7 @@ internal object UuCommands {
                     return Result(ctx.text(R.string.cli_set_no_entry, pos[1]), 1)
                 }
                 val bytes = readPrefix(f, CAT_MAX_BYTES)
-                val enc = detectBestEncoding(bytes)
+                val enc = textEncodingOf(bytes)
                     ?: return Result(ctx.text(R.string.cli_cat_binary, pos[1], fmt(f.length())), 1)
                 var text = decodeTextStrict(bytes, enc)
                 if (text.length > CAT_MAX_CHARS) text = text.take(CAT_MAX_CHARS)
@@ -1240,7 +1240,7 @@ internal object UuCommands {
                 if (!explicitFile && tempDir == null && f.extension.lowercase() !in TEXT_SEARCH_EXTS) return@forEach
                 if (f.length() > GREP_MAX_FILE_BYTES) return@forEach
                 val bytes = runCatching { readPrefix(f, GREP_MAX_FILE_BYTES) }.getOrNull() ?: return@forEach
-                val enc = detectBestEncoding(bytes) ?: return@forEach
+                val enc = textEncodingOf(bytes) ?: return@forEach
                 val text = runCatching { decodeTextStrict(bytes, enc) }.getOrNull() ?: return@forEach
                 var hit = false
                 var lineNo = 0
@@ -1596,6 +1596,9 @@ internal object UuCommands {
         }
         val bytes = runCatching { f.readBytes() }.getOrNull()
             ?: return Result(UuText.failed(ctx.str, f.name), 1)
+        // Deliberately NOT `textEncodingOf`: `uu enc` is an explicit conversion
+        // request, so a file that merely "looks binary" still gets converted
+        // when the user names the source encoding with `from`.
         val srcEnc = from ?: detectBestEncoding(bytes)
             ?: return Result(ctx.text(R.string.cli_enc_no_detect, f.name), 1)
         val text = decodeTextStrict(bytes, srcEnc)

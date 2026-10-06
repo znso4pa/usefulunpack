@@ -171,9 +171,59 @@ fun detectBomlessUtf16Le(data: ByteArray): String? {
     return if (asciiLe * 20 >= pairs) "UTF-16" else null
 }
 
+/**
+ * True when a head sample looks like decodable text, so a file whose extension
+ * nobody listed can still be previewed instead of being refused.
+ *
+ * The decision reuses the project's own encoding detection ([detectBestEncoding])
+ * rather than inventing a second heuristic, and adds the two signals that
+ * separate "binary that happens to decode" from real text:
+ *  - NUL bytes: text never contains them. The one legitimate shape that does —
+ *    BOM-less UTF-16LE — is recognised first and left to the detector.
+ *  - control characters: a decoded binary is full of them. Tab/newline/CR/FF
+ *    don't count, and the threshold is 1% of the sample.
+ */
+fun looksLikeText(data: ByteArray): Boolean {
+    if (data.isEmpty()) return false
+    if (detectBomlessUtf16Le(data) == null) {
+        var ctrl = 0
+        for (b in data) {
+            val c = b.toInt() and 0xFF
+            if (c == 0x00) return false
+            if (c < 0x20 && c != 0x09 && c != 0x0A && c != 0x0D && c != 0x0C) ctrl++
+        }
+        // Two thresholds, because one ratio cannot serve both sizes: a single
+        // ESC (colour codes are real in scripts and logs) is 2.7% of a 37-byte
+        // file but 0.0015% of a 64 KiB one, so a bare 1% rule rejected short
+        // text outright. Short samples therefore need an absolute floor as well;
+        // long ones keep the ratio, which is what catches a decoded binary.
+        val tooMany = if (data.size < 64) ctrl >= 4 else ctrl * 100 > data.size
+        if (tooMany) return false
+    }
+    return detectBestEncoding(data) != null
+}
+
+/**
+ * The ONE text/binary gate for callers that need an encoding rather than a
+ * yes/no answer.
+ *
+ * It runs [looksLikeText] first (NUL bytes and control-character density) and
+ * only then the encoding detector. `uu cat` used to call the detector alone, so
+ * a binary entry — 16 bytes of `0x00..0x0f` — decoded as "valid UTF-8" and the
+ * terminal printed control bytes as if they were text. Every text/binary
+ * decision in the app goes through here so the preview, `uu cat` and `uu grep`
+ * cannot disagree.
+ */
+fun textEncodingOf(data: ByteArray): String? =
+    if (looksLikeText(data)) detectBestEncoding(data) ?: "UTF-8" else null
+
+/** [looksLikeText] on the file's first [maxBytes] — never reads it whole, and
+ *  never throws (an unreadable file simply isn't text). */
+fun looksLikeTextFile(f: File, maxBytes: Int = 64 * 1024): Boolean =
+    runCatching { readPrefix(f, maxBytes.toLong()) }.getOrNull()?.let { looksLikeText(it) } ?: false
+
 /** Reads at most [maxBytes] from [file] — for preview/search of potentially
- *  huge files (a .log/.csv can be hundreds of MB) without loading it whole. */
-fun readPrefix(file: File, maxBytes: Long): ByteArray {
+ *  huge files (a .log/.csv can be hundreds of MB) without loading it whole. */fun readPrefix(file: File, maxBytes: Long): ByteArray {
     if (file.length() <= maxBytes) return file.readBytes()
     val len = maxBytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     return FileInputStream(file).use { ins ->
@@ -606,6 +656,9 @@ fun detectFormatByMagic(f: File): String? {
         has("RPA-4.0 ".toByteArray(Charsets.US_ASCII)) -> "rpa"
         has("RPA-2.0 ".toByteArray(Charsets.US_ASCII)) -> "rpa"
         has("ALT-1.0 ".toByteArray(Charsets.US_ASCII)) -> "rpa"
+        // CatSystem2's KIF archives (`.int`); the index key still comes from the
+        // game's exe, which the native side looks for next to the archive.
+        has(byteArrayOf(0x4B, 0x49, 0x46, 0x00)) -> "int"
         // RPG Maker RGSS: "RGSSAD\0" + the version byte (1 = XP, 2 = VX,
         // 3 = VX Ace), so a game using a non-standard archive name still opens.
         // All three map to the one read key — the parser reads the header.

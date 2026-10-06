@@ -218,8 +218,14 @@ internal fun MainActivity.select(tab: TabState, f: File) {
             return
         }
 
-        // Previewable non-archive files → show preview dialog
-        if (ext in PREVIEW_EXTS) {
+        // Previewable non-archive files → show preview dialog. An unknown
+        // extension is sniffed first: when the head decodes as text the file is
+        // previewable too (previewLocalFile falls through to the text viewer for
+        // anything that is not an image/audio/video extension).
+        // The sniff runs on the UI thread here (the tap is what triggers it), so
+        // it is bounded to a small head sample — enough for every encoding
+        // heuristic in `looksLikeText`, and a single short read on flash.
+        if (ext in PREVIEW_EXTS || looksLikeTextFile(f, maxBytes = 8 * 1024)) {
             // A previously selected archive's FAB would otherwise stay visible
             // and act on the old file — reset the selection state.
             tab.selectedFile = null

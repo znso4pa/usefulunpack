@@ -226,6 +226,8 @@ fun extractByFormat(
                      else NsaCore.nsaExtractSelected("", src, out, selected)
             "rpa" -> if (selected.isEmpty()) RpaCore.rpaExtract("", src, out)
                      else RpaCore.rpaExtractSelected("", src, out, selected)
+            "int" -> if (selected.isEmpty()) IntCore.intExtract("", src, out)
+                     else IntCore.intExtractSelected("", src, out, selected)
             "rar" -> rarExtractDispatch(src, out, selected, password)
             "lz4" -> Lz4Core.lz4Extract("", src, out)
             "gz" -> GzipCore.gzExtract("", src, out)

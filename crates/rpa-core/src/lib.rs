@@ -130,6 +130,25 @@ fn header_fields(line: &[u8]) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// Reads up to `n` bytes, looping until the buffer is full or EOF is reached.
+///
+/// A single `read` is allowed to return fewer bytes than asked for (short
+/// reads happen on FUSE/sdcardfs and when a large read crosses a page
+/// boundary); treating that as "the header is truncated" would reject a valid
+/// archive, so every header read goes through here.
+fn read_at_most(f: &mut File, n: usize) -> Result<Vec<u8>, String> {
+    let mut buf = vec![0u8; n];
+    let mut got = 0usize;
+    while got < n {
+        match f.read(&mut buf[got..]).map_err(|e| format!("RPA: read header: {e}"))? {
+            0 => break,
+            k => got += k,
+        }
+    }
+    buf.truncate(got);
+    Ok(buf)
+}
+
 /// Reads the index stream (zlib) and returns the decompressed pickle bytes.
 ///
 /// The decoder reads straight from the file rather than slurping a window into
@@ -269,10 +288,9 @@ pub fn open_rpa(path: &str) -> Result<Rpa, String> {
     // Read the header line from the very start: `header_fields` then yields
     // [magic, …] for every variant, so the field indices below are uniform.
     let (version, index_at, key): (&'static str, u64, u64) = if head == *b"RPA-3.0 " || head == *b"RPA-3.2 " || head == *b"RPA-4.0 " {
-        let mut line = [0u8; 64];
         f.seek(SeekFrom::Start(0)).map_err(|e| format!("RPA: seek: {e}"))?;
-        let n = f.read(&mut line).map_err(|e| format!("RPA: read header: {e}"))?;
-        let fields = header_fields(&line[..n]);
+        let line = read_at_most(&mut f, 64)?;
+        let fields = header_fields(&line);
         if fields.len() < 3 {
             return Err("RPA: truncated 3.x header".to_string());
         }
@@ -283,10 +301,9 @@ pub fn open_rpa(path: &str) -> Result<Rpa, String> {
         };
         (v, hex_u64(&fields[1], "index offset")?, hex_u64(&fields[2], "key")?)
     } else if head == *b"RPA-2.0 " {
-        let mut line = [0u8; 32];
         f.seek(SeekFrom::Start(0)).map_err(|e| format!("RPA: seek: {e}"))?;
-        let n = f.read(&mut line).map_err(|e| format!("RPA: read header: {e}"))?;
-        let fields = header_fields(&line[..n]);
+        let line = read_at_most(&mut f, 32)?;
+        let fields = header_fields(&line);
         if fields.len() < 2 {
             return Err("RPA: truncated 2.0 header".to_string());
         }
@@ -294,10 +311,9 @@ pub fn open_rpa(path: &str) -> Result<Rpa, String> {
     } else if head == *b"ALT-1.0 " {
         // unrpa's ALT1: the header holds `key ^ 0xDABE8DF0` then the offset,
         // i.e. the opposite order to RPA-3.0.
-        let mut line = [0u8; 48];
         f.seek(SeekFrom::Start(0)).map_err(|e| format!("RPA: seek: {e}"))?;
-        let n = f.read(&mut line).map_err(|e| format!("RPA: read header: {e}"))?;
-        let fields = header_fields(&line[..n]);
+        let line = read_at_most(&mut f, 48)?;
+        let fields = header_fields(&line);
         if fields.len() < 3 {
             return Err("RPA: truncated ALT-1.0 header".to_string());
         }
@@ -872,6 +888,115 @@ mod tests {
         let err = open_rpa(p.to_str().unwrap()).unwrap_err();
         assert!(err.contains("not valid UTF-8"), "got: {err}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A short header read must not be mistaken for a truncated header. (The
+    /// helper loops; here we can at least pin its EOF behaviour and that a
+    /// header-only file still parses its fields.)
+    #[test]
+    fn header_reads_survive_short_files() {
+        with_tmp("hdr", |dir| {
+            // 34-byte header with no payload at all: index offset points at EOF.
+            let p = dir.join("h.rpa");
+            std::fs::write(&p, b"RPA-3.0 0000000000000022 42424242\n").unwrap();
+            let err = open_rpa(p.to_str().unwrap()).unwrap_err();
+            assert!(err.contains("index"), "expected an index complaint, got: {err}");
+
+            // A header split across the probe window still yields all fields.
+            let mut f = File::open(&p).unwrap();
+            let line = read_at_most(&mut f, 64).unwrap();
+            assert_eq!(line.len(), 34);
+            let fields = header_fields(&line);
+            assert_eq!(fields.len(), 3);
+            assert_eq!(fields[1], b"0000000000000022");
+        });
+    }
+
+    /// Deterministic mutation fuzzer over the real fixtures: whatever bytes the
+    /// user hands us, `open_rpa` must return Ok or a message — never a panic and
+    /// never an unbounded walk.
+    fn mutate(base: &[u8], seed: u64, i: usize) -> Vec<u8> {
+        let mut r = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407 + i as u64);
+        let mut next = |n: usize| -> usize {
+            r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((r >> 33) as usize) % n.max(1)
+        };
+        let mut d = base.to_vec();
+        match i % 4 {
+            0 => {
+                let at = next(d.len());
+                d[at] ^= 1 << (i % 8);
+            }
+            1 => d.truncate(next(d.len())),
+            2 => {
+                let at = next(d.len());
+                let len = 1 + next(16);
+                for k in 0..len.min(d.len() - at) {
+                    d[at + k] = (i.wrapping_mul(17) & 0xFF) as u8;
+                }
+            }
+            _ => {
+                let at = next(d.len());
+                d.insert(at, (i & 0xFF) as u8);
+            }
+        }
+        d
+    }
+
+    #[test]
+    fn mutated_archives_never_panic() {
+        with_tmp("fuzz", |dir| {
+            let p = dir.join("m.rpa");
+            for name in ["official-renpy-8.5.3.rpa", "rpatool-v3-deadbeef.rpa", "v1.rpi", "truncated-v1.rpi"] {
+                let base = fixture(name);
+                for i in 0..300 {
+                    std::fs::write(&p, mutate(&base, 0x2545_F491_4F6C_DD1D, i)).unwrap();
+                    if let Ok(rpa) = open_rpa(p.to_str().unwrap()) {
+                        // Anything that parsed must stay inside the file.
+                        for e in &rpa.entries {
+                            if e.broken.is_none() {
+                                for part in &e.parts {
+                                    if let RpaPart::Chunk { offset, len } = part {
+                                        assert!(offset + len <= rpa.file_len, "{name}: {e:?} escaped the file");
+                                    }
+                                }
+                            }
+                        }
+                        let _ = rpa_list(p.to_str().unwrap());
+                    }
+                }
+            }
+        });
+    }
+
+    /// The pickle reader gets its own, more targeted fuzzing: the real index is
+    /// decompressed, mutated in place and re-injected, so the mutations land on
+    /// the opcode stream rather than on the payload.
+    #[test]
+    fn mutated_pickle_indexes_never_panic() {
+        with_tmp("fuzzpickle", |dir| {
+            let p = dir.join("m.rpa");
+            let base = fixture("official-renpy-8.5.3.rpa");
+            let index_at = usize::from_str_radix(std::str::from_utf8(&base[8..24]).unwrap(), 16).unwrap();
+            let mut z = flate2::read::ZlibDecoder::new(&base[index_at..]);
+            let mut idx = Vec::new();
+            std::io::Read::read_to_end(&mut z, &mut idx).unwrap();
+            assert!(!idx.is_empty());
+
+            for i in 0..400 {
+                let m = mutate(&idx, 0x9E37_79B9_7F4A_7C15, i);
+                if m.is_empty() {
+                    continue;
+                }
+                let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+                std::io::Write::write_all(&mut enc, &m).unwrap();
+                let packed = enc.finish().unwrap();
+                let mut file = base[..index_at].to_vec();
+                file.extend_from_slice(&packed);
+                std::fs::write(&p, &file).unwrap();
+                let _ = open_rpa(p.to_str().unwrap());
+            }
+        });
     }
 
     #[test]

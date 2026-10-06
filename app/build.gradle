@@ -11,7 +11,7 @@ android {
         applicationId "com.usefulunpacker"
         minSdk 26
         targetSdk 34
-        versionCode 29
+        versionCode 30
         versionName "6.2.0"
     }
 

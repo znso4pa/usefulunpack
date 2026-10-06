@@ -43,6 +43,7 @@ CRATES=(
     "archive_brotli-core:brotli_core"
     "archive_rgss-core:rgss_core"
     "archive_rpa-core:rpa_core"
+    "archive_int-core:int_core"
 )
 TARGETS=("aarch64-linux-android" "armv7-linux-androideabi" "x86_64-linux-android")
 

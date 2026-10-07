@@ -45,7 +45,10 @@ CRATES=(
     "archive_rpa-core:rpa_core"
     "archive_int-core:int_core"
 )
-TARGETS=("aarch64-linux-android" "armv7-linux-androideabi" "x86_64-linux-android")
+# Two ABIs only: arm64 for every current device and armeabi-v7a for old ones.
+# x86_64 (emulator / x86 tablets) was dropped — it tripled the .so payload for
+# a target no user runs this on.
+TARGETS=("aarch64-linux-android" "armv7-linux-androideabi")
 
 for target in "${TARGETS[@]}"; do
     echo "  → $target"
@@ -60,9 +63,9 @@ done
 # Copy .so files
 echo "  Copying .so files..."
 LIBDIR="$PROJECT_DIR/app/src/main/jniLibs"
-mkdir -p "$LIBDIR/arm64-v8a" "$LIBDIR/armeabi-v7a" "$LIBDIR/x86_64"
+mkdir -p "$LIBDIR/arm64-v8a" "$LIBDIR/armeabi-v7a"
 
-ARCH_MAP=("aarch64-linux-android:arm64-v8a" "armv7-linux-androideabi:armeabi-v7a" "x86_64-linux-android:x86_64")
+ARCH_MAP=("aarch64-linux-android:arm64-v8a" "armv7-linux-androideabi:armeabi-v7a")
 
 for pair in "${ARCH_MAP[@]}"; do
     target="${pair%%:*}"

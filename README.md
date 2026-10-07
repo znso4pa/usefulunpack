@@ -134,7 +134,7 @@ Minimum Android 8.0 (API 26). Requires "All files access" permission on Android 
 
 - [Rust](https://rustup.rs) with Android targets:
   ```bash
-  rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+  rustup target add aarch64-linux-android armv7-linux-androideabi
   ```
 - [Android NDK](https://developer.android.com/ndk) (r28+)
 - [cargo-ndk](https://github.com/bbqsrc/cargo-ndk): `cargo install cargo-ndk`

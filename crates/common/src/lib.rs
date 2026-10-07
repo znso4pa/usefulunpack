@@ -291,6 +291,46 @@ impl<T: std::io::Write + Unpin> tokio::io::AsyncWrite for SyncIo<T> {
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> { Poll::Ready(Ok(())) }
 }
 
+/// Collects the files under `base` into `(path, relative name)` pairs sorted by
+/// name — the shape every packing flow here wants.
+///
+/// ONE implementation because the galgame containers all name entries relative
+/// with `/` separators and want a stable order; a second copy is how two
+/// formats end up disagreeing about which of `A.txt` / `a.txt` comes first.
+/// A single file packs as itself, so a "pack this one file" flow works too.
+pub fn collect_files(base: &Path) -> Result<Vec<(PathBuf, String)>, String> {
+    let mut out = Vec::new();
+    if base.is_file() {
+        let name = base.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        if name.is_empty() {
+            return Err("empty filename".to_string());
+        }
+        out.push((base.to_path_buf(), name));
+        return Ok(out);
+    }
+    let mut stack = vec![(base.to_path_buf(), String::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .map_err(|e| format!("read_dir {}: {e}", dir.display()))?
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let meta = entry.metadata().map_err(|e| format!("metadata {}: {e}", path.display()))?;
+            if meta.is_dir() {
+                stack.push((path, child_rel));
+            } else if meta.is_file() {
+                out.push((path, child_rel));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(out)
+}
+
 pub fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {

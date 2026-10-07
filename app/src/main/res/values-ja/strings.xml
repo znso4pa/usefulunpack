@@ -397,7 +397,7 @@
         <item>RPG Maker MV/MZ (.rpgmvp/.rpgmvo/.rpgmvm) — 展開 &amp; 圧縮\n1 ファイルずつ難読化される素材：画像 (.rpgmvp)、音声 (.rpgmvo)、動画 (.rpgmvm)。16 バイトのヘッダーはファイル自身から復元できるため鍵は不要。出力は本来の拡張子で命名されるため、そのまま画像 / 音声プレビューを開ける\nRPG Maker MZ の .png_ / .ogg_ / .m4a_ にも対応。難読化されていないファイル（再パックされたゲーム）はそのまま出力\n注意：1 回タップすると「復号したファイル」1 件のアーカイブビューが開くので、もう一度タップで画像 / 音声プレビュー。一括モードでフォルダ全体をまとめて復号可能\n圧縮は 1 つの素材を難読化します（foo.png → foo.rpgmvp）。キーは圧縮オプションで入力: 32 桁の 16 進数はそのまま使用、他の文字は RPG Maker と同じく MD5 化、空欄ならデフォルトキー。一括モードで複数まとめて実行できます。形式ごとに型は 1 種類のみ: .rpgmvp は .png、.rpgmvo は .ogg、.rpgmvm は .m4a のみです。それ以外は拒否されます</item>
         <item>RGSS (.rgssad/.rgss2a/.rgss3a) — 解凍 + 圧縮\nRPG Maker 暗号化アーカイブ：XP (.rgssad)、VX (.rgss2a)、VX Ace (.rgss3a)。レイアウトはヘッダーから自動判別され、どの組み合わせでも開けます。ファイル名は UTF-8 / Shift-JIS\n圧縮時は対象バージョンを選択可。スクリプト編集可（name-cn.rgss3a として再パック）。圧縮産物は既定で Game.rgss3a という名前になります（RPG Maker が開くのはこの名前だけのため。圧縮オプションで変更可）\n注意：編集して再パックした場合は元の Game.rgss3a が存在するため上書きせず、-cn 名的ままになります。ゲームに読ませるには手動で差し替えてください\n制限：v3 のオフセットは 32 ビットのため、圧縮産物が 4GiB を超えることはありません</item>
         <item>RPA (.rpa/.rpi) — 解凍 + 圧縮\nRen\'Py アーカイブ。インデックスは zlib 圧縮された Python pickle で、3 つの形態があります：RPA-3.0（オフセットをヘッダーのキーで XOR。現行形式）、RPA-2.0（XOR なし）、RPA-1.0（.rpi、インデックスがファイル先頭）。RPA-3.2 / RPA-4.0 / ALT-1.0 も開けます。エントリー名は UTF-8 なので、日本語・中国語の名前や空白もそのまま復元されます\n圧縮は RPA-3.0 を書き出し、キーは Ren\'Py 公式アーカイバーと同じ固定値。インデックスは pickle プロトコル 2 なので、Python 2 時代（Ren\'Py 6.x）のエンジンでも現行エンジンでも読めます。スクリプト編集可（name-cn.rpa として再パック）\n注意：ZiX-12A/B はゲーム付属の renpy/loader.pyo からキーを導出する必要があるため、推測せずエラーとして報告します</item>
-        <item>INT (.int) — 解凍のみ\nCatSystem2（KIF）アーカイブ：エントリー名は個別に置換され、オフセット/サイズと内容は Blowfish で暗号化されています。鍵はゲームの exe 内にある key_code / v_code / v_code2 リソースから導出されるため、.int の隣に exe が必要です\n注意：exe が無い場合は推測せず明確にエラーにします。圧縮には未対応\n参考デコーダー付属の実サンプルと 13 個の期待出力でバイト単位に検証済み</item>
+        <item>INT (.int) — 解凍 + 圧縮\nCatSystem2（KIF）アーカイブ：エントリー名は個別に置換され、オフセット/サイズと内容は Blowfish で暗号化されています。鍵はゲームの exe 内にある key_code / v_code / v_code2 リソースから導出されるため、.int の隣に exe が必要です\n圧縮：出力の隣にゲームの exe があれば**暗号化変体**（エンジンが同じ鍵を使うためそのまま読めます）、無ければ平文変体（参考リーダー両方が対応）。エントリー名は保持されるので元のアーカイブを置き換えられます\n注意：exe が無い場合は推測せず明確にエラーにします。圧縮には未対応\n参考デコーダー付属の実サンプルと 13 個の期待出力でバイト単位に検証済み</item>
     </string-array>
         <string-array name="help_tutorials">
         <item>圧縮設定\n設定 → 圧縮：圧縮レベル（zip/7z/汎用）、分割サイズ（zip/7z）、ZIP エンコーディング、圧縮パスワード；「OK」で一括保存；作業モード（アーカイブ/圧縮）切替でタイトルバー更新</item>
@@ -565,6 +565,7 @@
     <string name="cli_list_dir_mark">&lt;dir&gt;</string>
     <string name="cli_list_enc_mark">🔒</string>
     <string name="cli_list_failed">%1$s を一覧できません</string>
+    <string name="cli_list_failed_why">%1$s を一覧できません：%2$s</string>
     <string name="cli_list_empty">%1$s は空です</string>
     <string name="cli_list_truncated">…他 %1$s 件（-a で全表示）</string>
     <string name="cli_scan_failed">スキャン失敗：%1$s</string>

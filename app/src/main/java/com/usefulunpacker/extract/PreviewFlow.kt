@@ -40,10 +40,12 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
                 if (entered == null) { runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss() }; return@thread }
                 pwd = entered
             }
-            val json = listEntriesJson(format, src, pwd, nestedOnly = false)
+            var listError = ""
+            val json = listEntriesJson(format, src, pwd, nestedOnly = false) { listError = it }
             runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss() }
             if (json == null) {
-                val msg = if (format in setOf("zip", "7z", "rar")) getString(R.string.err_cannot_read_maybe_pwd) else getString(R.string.msg_cannot_read)
+                val base = if (format in setOf("zip", "7z", "rar")) getString(R.string.err_cannot_read_maybe_pwd) else getString(R.string.msg_cannot_read)
+                val msg = if (listError.isNotEmpty()) "$base\n\n$listError" else base
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     // Auto-detection can be wrong (e.g. a mislabeled extension) —
@@ -1220,7 +1222,7 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
  *   another archive, i.e. the ones with more than one entry.
  */
 internal fun MainActivity.listEntriesJson(
-    format: String, src: File, pwd: String, nestedOnly: Boolean
+    format: String, src: File, pwd: String, nestedOnly: Boolean, onError: ((String) -> Unit)? = null
 ): String? = try {
     when (format) {
         "xp3" -> Xp3Core.xp3ListEntries(src.absolutePath)
@@ -1262,7 +1264,14 @@ internal fun MainActivity.listEntriesJson(
         "ksd" -> if (nestedOnly) null else KsdCore.ksdListEntries(src.absolutePath)
         else -> null
     }
-} catch (_: Exception) { null }
+} catch (e: Exception) {
+    // The native layer's message is the only thing that says *why* an archive
+    // could not be listed ("needs the game exe next to it", "unsupported ZiX
+    // variant", …). Swallowing it left the user staring at a generic "cannot
+    // read" with no way to act, so callers that can show it pass `onError`.
+    onError?.invoke(e.message ?: "")
+    null
+}
 
 /**
  * Lists an archive's entries for the in-tab preview, mirroring the dispatch

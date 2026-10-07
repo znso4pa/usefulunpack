@@ -353,8 +353,13 @@ internal object UuCommands {
             ?: return Result(UuText.extractBadFormat(ctx.str, "-"), 1)
         // 密码：先试空密码（大多数包没密码），失败再让用户加 -p。
         // 不弹模态 —— 模态在终端里很怪，而且可阻塞 30s 会冻住输出区。
+        lastListError = ""
         val json = listEntriesJsonFor(ctx, fmt, f, pwd)
-            ?: return Result(UuText.listFailed(ctx.str, f.name), 1)
+            ?: return Result(
+                if (lastListError.isNotEmpty()) UuText.listFailedWhy(ctx.str, f.name, lastListError)
+                else UuText.listFailed(ctx.str, f.name),
+                1,
+            )
         // 脚本接口：原样给 JNI 的那份 JSON（契约 [{"n":名字,"s":大小,"d":是否目录,"e":是否加密}]），
         // 不做截断也不加表头 —— 可解析性优先于好看。
         if (asJson) return Result(json)
@@ -588,8 +593,11 @@ internal object UuCommands {
 
     private fun listEntriesJsonFor(ctx: Ctx, fmt: String, f: File, pwd: String): String? {
         val host = ctx.activity ?: return null
-        return host.listEntriesJson(fmt, f, pwd, nestedOnly = false)
+        return host.listEntriesJson(fmt, f, pwd, nestedOnly = false) { lastListError = it }
     }
+
+    /** Why the last listing failed, when the native layer said so. */
+    private var lastListError: String = ""
 
     /**
      * `uu x <archive> [outdir] [entry...] [-p pw]`。

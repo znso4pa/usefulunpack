@@ -54,7 +54,7 @@
 mod pickle;
 
 use archive_common::{
-    compress_progress, derive_dirs, extract_progress, extract_result_json, json_escape, s,
+    collect_files, compress_progress, derive_dirs, extract_progress, extract_result_json, json_escape, s,
     safe_join, DestAllocator, ProgressWriter,
 };
 use flate2::read::ZlibDecoder;
@@ -591,41 +591,6 @@ const WRITE_KEY: u64 = 0x42424242;
 /// looks like a normal archive to a hex editor.
 const ENTRY_PADDING: &[u8] = b"Made with Ren'Py.";
 
-/// A single file packs as itself; a directory packs as its tree, names
-/// relative and sorted (a stable order is what makes our output
-/// reproducible).
-fn collect_files(base: &Path) -> Result<Vec<(PathBuf, String)>, String> {
-    let mut out = Vec::new();
-    if base.is_file() {
-        let name = base.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        if name.is_empty() {
-            return Err("RPA: empty filename".to_string());
-        }
-        out.push((base.to_path_buf(), name));
-        return Ok(out);
-    }
-    let mut stack = vec![(base.to_path_buf(), String::new())];
-    while let Some((dir, rel)) = stack.pop() {
-        let mut entries: Vec<_> = std::fs::read_dir(&dir)
-            .map_err(|e| format!("RPA: read_dir {}: {e}", dir.display()))?
-            .collect::<Result<_, _>>()
-            .map_err(|e| format!("RPA: read_dir {}: {e}", dir.display()))?;
-        entries.sort_by_key(|e| e.file_name());
-        for entry in entries {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
-            let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-            let meta = entry.metadata().map_err(|e| format!("RPA: metadata {}: {e}", path.display()))?;
-            if meta.is_dir() {
-                stack.push((path, child_rel));
-            } else if meta.is_file() {
-                out.push((path, child_rel));
-            }
-        }
-    }
-    out.sort_by(|a, b| a.1.cmp(&b.1));
-    Ok(out)
-}
 
 /// Packs `input` (a file or a directory) into an RPA archive at `output`.
 ///
@@ -633,7 +598,7 @@ fn collect_files(base: &Path) -> Result<Vec<(PathBuf, String)>, String> {
 /// 100% (an RPA stores payloads raw, so source and destination sizes agree
 /// anyway — but the padding and the index still mean they are not identical).
 pub fn rpa_create_archive(input: &str, output: &str) -> Result<u32, String> {
-    let files = collect_files(Path::new(input))?;
+    let files = collect_files(Path::new(input)).map_err(|e| format!("RPA: {e}"))?;
     if files.is_empty() {
         return Err("RPA: nothing to pack".to_string());
     }

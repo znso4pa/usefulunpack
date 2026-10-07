@@ -41,12 +41,12 @@ mod mt19937;
 mod pe;
 
 use archive_common::{
-    derive_dirs, extract_progress, extract_result_json, json_escape, s, safe_join, DestAllocator,
-    ProgressWriter,
+    collect_files, compress_progress, derive_dirs, extract_progress, extract_result_json, json_escape, s,
+    safe_join, DestAllocator, ProgressWriter,
 };
 use blowfish::Blowfish;
 use jni::objects::{JClass, JString};
-use jni::sys::{jlong, jstring};
+use jni::sys::{jboolean, jlong, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 use mt19937::Mt19937;
 use std::fs::File;
@@ -55,6 +55,10 @@ use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 4] = b"KIF\0";
 const NAME_FIELD: usize = 64;
+/// Name-field widths real archives use: 64 (the common one, and the only width
+/// the encrypted variant has) and 32 (older plain archives). GARbro — an
+/// independent reader — tries both in this order, so this reader does too.
+const NAME_FIELDS: [usize; 2] = [64, 32];
 const RECORD: usize = NAME_FIELD + 8;
 /// The index sits at the front; this bounds what we will read for it.
 const MAX_INDEX: u64 = 64 * 1024 * 1024;
@@ -147,10 +151,22 @@ fn trim_zero(b: &[u8]) -> &[u8] {
     &b[..end]
 }
 
+/// Entry name: UTF-8 when it decodes, otherwise Shift-JIS.
+///
+/// The writers of this format predate UTF-8 and GARbro — an independent reader —
+/// decodes names as CP932. Requiring UTF-8 rejected every archive with a
+/// Japanese filename (the same lesson the ZIP name handling learned: an
+/// encoding is not a flag, so decode the way the reference tools do). Pure ASCII
+/// decodes identically either way, so nothing that used to work changes.
 fn to_name(b: &[u8]) -> Result<String, String> {
-    std::str::from_utf8(b)
-        .map(|s| s.to_string())
-        .map_err(|_| "INT: entry name is not valid UTF-8".to_string())
+    if let Ok(s) = std::str::from_utf8(b) {
+        return Ok(s.to_string());
+    }
+    let (s, _, had_errors) = encoding_rs::SHIFT_JIS.decode(b);
+    if had_errors {
+        return Err("INT: entry name is neither UTF-8 nor Shift-JIS".to_string());
+    }
+    Ok(s.into_owned())
 }
 
 /// Collects `key_code` / `v_code` / `v_code2` from the executables next to the
@@ -158,6 +174,12 @@ fn to_name(b: &[u8]) -> Result<String, String> {
 /// the reference decoder's loop.
 fn keys_from_executables(dir: &Path) -> (Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>) {
     let (mut key_code, mut v_code, mut v_code2) = (None, None, None);
+    // Only the archive's own directory — exactly what arc_unpacker's decoder
+    // does (`find_executables(archive_path.parent())`). Searching the parent as
+    // well looked helpful for a `game/data/x.int` layout, but it made packing
+    // scan and read an unrelated directory (17 s of tests, from pulling in a
+    // large .exe), and an unrelated .exe supplies the *wrong* key: the archive
+    // then decrypts to noise instead of failing cleanly.
     let Ok(rd) = std::fs::read_dir(dir) else { return (key_code, v_code, v_code2) };
     let mut exes: Vec<PathBuf> = rd
         .flatten()
@@ -222,18 +244,23 @@ pub fn open_int(path: &str) -> Result<IntArchive, String> {
     if count > MAX_ENTRIES {
         return Err(format!("INT: implausible entry count {count}"));
     }
-    let index_len = count as u64 * RECORD as u64;
-    if 8 + index_len > file_len || index_len > MAX_INDEX {
+    // Read the index area. 64-byte names (72-byte records) is the widest layout
+    // any variant uses, so that is the upper bound; a 32-byte-name archive has a
+    // shorter index and the read simply stops at EOF.
+    let want = (count as u64 * RECORD as u64).min(file_len - 8).min(MAX_INDEX) as usize;
+    let mut index = vec![0u8; want];
+    f.read_exact(&mut index).map_err(|e| format!("INT: read index: {e}"))?;
+    if index.len() < 8 + 8 {
         return Err(format!("INT: index of {count} entries does not fit the file"));
     }
-    let mut index = vec![0u8; index_len as usize];
-    f.read_exact(&mut index).map_err(|e| format!("INT: read index: {e}"))?;
 
-    // Pass 1: is there a `__key__.dat` entry? Its *size* field (not the
-    // offset) seeds the payload key — reading the wrong one still decrypts the
-    // names, so it fails in a way that looks like a data problem.
-    let file_key = file_key_from_index(&index);
-    let encrypted = file_key.is_some();
+    // Variant detection, exactly as GARbro does it: the encrypted archives
+    // always carry `__key__.dat` as the first record (with 64-byte names).
+    let encrypted = name_at(&index, 0, NAME_FIELD) == b"__key__.dat";
+    let file_key = if encrypted { file_key_from_index(&index) } else { None };
+    if encrypted && file_key.is_none() {
+        return Err("INT: encrypted archive without a usable __key__.dat record".to_string());
+    }
 
     let (seed, bf) = if encrypted {
         let dir = Path::new(path).parent().unwrap_or(Path::new("."));
@@ -252,40 +279,89 @@ pub fn open_int(path: &str) -> Result<IntArchive, String> {
         (0, None)
     };
 
+    if encrypted {
+        return build_entries(&index, count, NAME_FIELD, file_len, seed, bf.as_ref(), file_key);
+    }
+    // Plain variant: the name width is not recorded anywhere, so both are
+    // tried (GARbro's NameSizes = {0x20, 0x40}) and the one that parses into a
+    // self-consistent layout wins — a wrong width turns the offsets into noise,
+    // so it scores near zero. Scoring rather than "first that fits" keeps a
+    // single corrupt entry from failing the whole archive: it stays listed and
+    // marked broken, the same as a corrupt entry in any other format here.
+    let mut best: Option<(usize, IntArchive)> = None;
+    for field in NAME_FIELDS {
+        let need = count as u64 * (field as u64 + 8);
+        if need > file_len - 8 || index.len() < need as usize {
+            continue;
+        }
+        if let Ok(ar) = build_entries(&index, count, field, file_len, 0, None, None) {
+            let score = ar.entries.iter().filter(|e| e.broken.is_none()).count();
+            if best.as_ref().map_or(true, |(b, _)| score > *b) {
+                best = Some((score, ar));
+            }
+        }
+    }
+    match best {
+        Some((score, ar)) if score > 0 => Ok(ar),
+        _ => Err("INT: index does not parse as a plain KIF archive (64- or 32-byte names)".to_string()),
+    }
+}
+
+/// The NUL-terminated name in record [i] of an index buffer whose name field is
+/// [field] bytes wide.
+fn name_at(index: &[u8], i: usize, field: usize) -> &[u8] {
+    let at = i * (field + 8);
+    match index.get(at..at + field) {
+        Some(slice) => trim_zero(slice),
+        None => &[],
+    }
+}
+
+/// Builds the entry list from an index buffer. Fails when any entry's range does
+/// not fit the file — the plain-variant layout probe relies on that (a wrong
+/// name width produces nonsense offsets), while the encrypted variant is already
+/// known-good, so its entries are marked broken instead of failing the open.
+fn build_entries(
+    index: &[u8], count: u32, field: usize, file_len: u64, seed: u32, bf: Option<&Blowfish>, file_key: Option<[u8; 4]>,
+) -> Result<IntArchive, String> {
+    let record = field + 8;
     let mut entries = Vec::with_capacity(count as usize);
     for i in 0..count as usize {
-        let rec = &index[i * RECORD..(i + 1) * RECORD];
-        let raw_name = &rec[..NAME_FIELD];
+        let Some(rec) = index.get(i * record..(i + 1) * record) else { return Err("INT: index is truncated".to_string()) };
+        let raw_name = &rec[..field];
         if trim_zero(raw_name) == b"__key__.dat" {
             continue;
         }
-        let (name, offset, size) = if let Some(bf) = &bf {
+        let (name, offset, size) = if let Some(bf) = bf {
             let name = to_name(trim_zero(&decrypt_name(raw_name, seed.wrapping_add(i as u32))))?;
             let mut blob = [0u8; 8];
-            blob.copy_from_slice(&rec[NAME_FIELD..NAME_FIELD + 8]);
+            blob.copy_from_slice(&rec[field..field + 8]);
             let first = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]).wrapping_add(i as u32);
             blob[0..4].copy_from_slice(&first.to_le_bytes());
             let dec = bf.decrypt(&blob);
-            (name, u32::from_le_bytes([dec[0], dec[1], dec[2], dec[3]]) as u64, u32::from_le_bytes([dec[4], dec[5], dec[6], dec[7]]) as u64)
+            (
+                name,
+                u32::from_le_bytes([dec[0], dec[1], dec[2], dec[3]]) as u64,
+                u32::from_le_bytes([dec[4], dec[5], dec[6], dec[7]]) as u64,
+            )
         } else {
             let name = to_name(trim_zero(raw_name))?;
-            let offset = u32::from_le_bytes([rec[NAME_FIELD], rec[NAME_FIELD + 1], rec[NAME_FIELD + 2], rec[NAME_FIELD + 3]]) as u64;
-            let size = u32::from_le_bytes([rec[NAME_FIELD + 4], rec[NAME_FIELD + 5], rec[NAME_FIELD + 6], rec[NAME_FIELD + 7]]) as u64;
+            let offset = u32::from_le_bytes([rec[field], rec[field + 1], rec[field + 2], rec[field + 3]]) as u64;
+            let size = u32::from_le_bytes([rec[field + 4], rec[field + 5], rec[field + 6], rec[field + 7]]) as u64;
             (name, offset, size)
         };
+        // Out-of-range entries are marked, never fatal: the caller picks the
+        // name width by score, so a single corrupt entry must not sink the
+        // layout that is otherwise right.
         let mut broken = None;
-        match offset.checked_add(size) {
-            Some(end) if end <= file_len => {}
-            _ => broken = Some(format!("INT: {name} runs past the end of the archive")),
-        }
-        if broken.is_none() {
-            if let Err(e) = safe_join(".", &name) {
-                broken = Some(e);
-            }
+        if offset.checked_add(size).map_or(true, |e| e > file_len) {
+            broken = Some(format!("INT: {name} runs past the end of the archive"));
+        } else if let Err(e) = safe_join(".", &name) {
+            broken = Some(e);
         }
         entries.push(IntEntry { name, offset, size, broken });
     }
-    Ok(IntArchive { encrypted, file_key, entries, file_len })
+    Ok(IntArchive { encrypted: bf.is_some(), file_key, entries, file_len })
 }
 
 /// JSON contract shared with every other format:
@@ -349,6 +425,28 @@ impl BlockAligner {
         out.extend_from_slice(&data[..aligned]);
         self.carry.clear();
         self.carry.extend_from_slice(&data[aligned..]);
+    }
+
+    /// The writer's direction of [push].
+    fn push_encrypt(&mut self, chunk: &[u8], bf: &Blowfish, out: &mut Vec<u8>) {
+        let mut data = Vec::with_capacity(self.carry.len() + chunk.len());
+        data.extend_from_slice(&self.carry);
+        data.extend_from_slice(chunk);
+        let aligned = data.len() / 8 * 8;
+        bf.encrypt_in_place(&mut data[..aligned]);
+        out.extend_from_slice(&data[..aligned]);
+        self.carry.clear();
+        self.carry.extend_from_slice(&data[aligned..]);
+    }
+
+    /// The writer's direction of [finish]: whatever is held back is the stream's
+    /// final partial block, which the cipher does not cover — but it still has
+    /// to be *encrypted* the same way the reader expects... it is not: the
+    /// reference leaves a partial tail untouched in both directions.
+    fn finish_encrypt(&mut self, bf: &Blowfish, out: &mut Vec<u8>) {
+        let _ = bf;
+        out.extend_from_slice(&self.carry);
+        self.carry.clear();
     }
 
     /// Appends whatever is still held back (only ever < 8 bytes).
@@ -449,6 +547,192 @@ pub fn extract_int_selected_host(input: &str, output: &str, sel: &str) -> Result
 }
 
 
+// ─── packing ───
+
+/// Per-entry padding the reference writer emits before each payload block:
+/// measured on the real fixture, where every entry starts exactly 72 bytes
+/// after the previous one ends (and the first starts 72 bytes after the index).
+/// Nothing reads it, but matching the reference keeps our output shaped like
+/// every archive in the wild.
+const ENTRY_PADDING: usize = 72;
+
+/// The value written into `__key__.dat`'s *size* field, which both reference
+/// readers turn into the payload key with MT19937. Any value works — this is
+/// obfuscation, not a secret — so the writer uses a fixed one.
+const DEFAULT_KEY_FIELD: u32 = 0x0001_0000;
+
+/// The name permutation's inverse: a plain byte is looked up in the forward
+/// alphabet and the *reversed* alphabet's byte at the same offset is emitted,
+/// which is exactly what `decrypt_name` undoes. Bytes outside the alphabet
+/// (`.` and the NUL padding) pass through in both directions.
+fn encrypt_name(input: &[u8], seed: u32) -> Vec<u8> {
+    const FWD: &[u8; 52] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let mut rev = *FWD;
+    rev.reverse();
+    let key = Mt19937::classic(seed).next_u32();
+    let mut shift = ((key >> 24) + (key >> 16) + (key >> 8) + key) as u8 as u32;
+    let mut out = input.to_vec();
+    for p in out.iter_mut() {
+        if let Some(k) = FWD.iter().position(|c| c == p) {
+            *p = rev[((shift + k as u32) % 52) as usize];
+        }
+        shift = shift.wrapping_add(1);
+    }
+    out
+}
+
+/// The table seed the writer needs: it comes from the game's executable, the
+/// same way the reader derives it.
+fn write_table_seed(dir: &Path) -> Option<u32> {
+    let (kc, _vc, vc2) = keys_from_executables(dir);
+    let (kc, vc2) = (kc?, vc2?);
+    let key: Vec<u8> = kc.iter().map(|b| b ^ 0xCD).collect();
+    let game_id = trim_zero(&Blowfish::new(&key).decrypt(&vc2)).to_vec();
+    if game_id.is_empty() {
+        return None;
+    }
+    Some(table_seed(&game_id))
+}
+
+/// Packs `input` (a file or a directory) into a KIF archive at `output`.
+///
+/// Variant: when the game's executable sits next to the output, the archive is
+/// written **encrypted** — the engine that shipped the original derives exactly
+/// the same keys, so that is the shape it can load. Without an executable the
+/// **plain** variant is written, which both reference readers accept.
+///
+/// Caliber: the compress bar counts source bytes, so it ends at exactly 100%.
+pub fn int_create_archive(input: &str, output: &str) -> Result<u32, String> {
+    int_create_archive_with_key_field(input, output, DEFAULT_KEY_FIELD)
+}
+
+/// [int_create_archive] with an explicit `__key__.dat` field value — the test
+/// harness uses it to reproduce a real archive's key exactly.
+#[doc(hidden)]
+pub fn int_create_archive_with_key_field(input: &str, output: &str, key_field: u32) -> Result<u32, String> {
+    let files = collect_files(Path::new(input)).map_err(|e| format!("INT: {e}"))?;
+    if files.is_empty() {
+        return Err("INT: nothing to pack".to_string());
+    }
+    let out_dir = Path::new(output).parent().unwrap_or(Path::new("."));
+    let table = write_table_seed(out_dir);
+    let encrypted = table.is_some();
+    let count = files.len() as u32 + if encrypted { 1 } else { 0 };
+    if count > MAX_ENTRIES {
+        return Err(format!("INT: too many entries ({count})"));
+    }
+    let file_key = file_key_from(key_field);
+    let bf = encrypted.then(|| Blowfish::new(&file_key));
+    let total: u64 = files.iter().map(|(p, _)| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)).sum();
+    compress_progress::reset(total);
+
+    let res = (|| -> Result<u32, String> {
+        let mut out = std::io::BufWriter::with_capacity(256 * 1024, File::create(output).map_err(|e| format!("INT: create {output}: {e}"))?);
+        // Header + index are written first; the payload follows and the index
+        // is patched in place, so offsets are known before any data is written.
+        out.write_all(MAGIC).map_err(|e| format!("INT: write: {e}"))?;
+        out.write_all(&count.to_le_bytes()).map_err(|e| format!("INT: write: {e}"))?;
+        let mut index: Vec<u8> = Vec::with_capacity(count as usize * RECORD);
+        if encrypted {
+            let mut rec = vec![0u8; RECORD];
+            rec[..11].copy_from_slice(b"__key__.dat");
+            rec[NAME_FIELD + 4..NAME_FIELD + 8].copy_from_slice(&key_field.to_le_bytes());
+            index.extend_from_slice(&rec);
+        }
+        let mut offset = 8 + count as u64 * RECORD as u64;
+        for (i, (path, name)) in files.iter().enumerate() {
+            let record_index = i as u32 + if encrypted { 1 } else { 0 };
+            let size = std::fs::metadata(path).map_err(|e| format!("INT: stat {}: {e}", path.display()))?.len();
+            offset += ENTRY_PADDING as u64;
+            let mut rec = vec![0u8; RECORD];
+            let raw_name = name.as_bytes();
+            if raw_name.len() >= NAME_FIELD {
+                return Err(format!("INT: name too long for the format: {name}"));
+            }
+            if let Some(table) = table {
+                let enc = encrypt_name(raw_name, table.wrapping_add(record_index));
+                rec[..enc.len()].copy_from_slice(&enc);
+                let mut blob = [0u8; 8];
+                blob[0..4].copy_from_slice(&(offset as u32).to_le_bytes());
+                blob[4..8].copy_from_slice(&(size as u32).to_le_bytes());
+                let mut enc = bf.as_ref().unwrap().encrypt(&blob);
+                // The reader adds the record index to the FIRST word *before*
+                // decrypting, so the writer subtracts it from the ciphertext —
+                // not from the plaintext (the first version did that, and the
+                // real fixture's own bytes caught it).
+                let first = u32::from_le_bytes([enc[0], enc[1], enc[2], enc[3]]).wrapping_sub(record_index);
+                enc[0..4].copy_from_slice(&first.to_le_bytes());
+                rec[NAME_FIELD..NAME_FIELD + 8].copy_from_slice(&enc);
+            } else {
+                rec[..raw_name.len()].copy_from_slice(raw_name);
+                rec[NAME_FIELD..NAME_FIELD + 4].copy_from_slice(&(offset as u32).to_le_bytes());
+                rec[NAME_FIELD + 4..NAME_FIELD + 8].copy_from_slice(&(size as u32).to_le_bytes());
+            }
+            index.extend_from_slice(&rec);
+            offset += size;
+        }
+        out.write_all(&index).map_err(|e| format!("INT: write: {e}"))?;
+
+        // Payload: the per-entry padding, then the (optionally encrypted) data.
+        let mut buf = vec![0u8; 256 * 1024];
+        for (path, name) in &files {
+            if compress_progress::cancelled() {
+                return Err("cancelled".to_string());
+            }
+            compress_progress::set_name(name);
+            let size = std::fs::metadata(path).map_err(|e| format!("INT: stat: {e}"))?.len();
+            compress_progress::set_file(size);
+            out.write_all(&[0u8; ENTRY_PADDING]).map_err(|e| format!("INT: write: {e}"))?;
+            let mut src = std::io::BufReader::with_capacity(256 * 1024, File::open(path).map_err(|e| format!("INT: open {}: {e}", path.display()))?);
+            let mut written = 0u64;
+            let mut aligner = BlockAligner::default();
+            let mut ready: Vec<u8> = Vec::with_capacity(buf.len() + 8);
+            loop {
+                if compress_progress::cancelled() {
+                    return Err("cancelled".to_string());
+                }
+                let n = src.read(&mut buf).map_err(|e| format!("INT: read {}: {e}", path.display()))?;
+                if n == 0 {
+                    break;
+                }
+                written += n as u64;
+                compress_progress::add_bytes(n as u64);
+                ready.clear();
+                // Encryption goes through the same aligner as extraction, with
+                // the cipher applied in the writer's direction.
+                if let Some(bf) = &bf {
+                    let mut chunk = buf[..n].to_vec();
+                    let _ = &mut chunk;
+                    aligner.push_encrypt(&chunk, bf, &mut ready);
+                } else {
+                    ready.extend_from_slice(&buf[..n]);
+                }
+                out.write_all(&ready).map_err(|e| format!("INT: write: {e}"))?;
+            }
+            if let Some(bf) = &bf {
+                ready.clear();
+                aligner.finish_encrypt(bf, &mut ready);
+                out.write_all(&ready).map_err(|e| format!("INT: write: {e}"))?;
+            }
+            if written != size {
+                return Err(format!("INT: {} changed size while packing", path.display()));
+            }
+        }
+        out.flush().map_err(|e| format!("INT: flush: {e}"))?;
+        Ok(files.len() as u32)
+    })();
+
+    if res.is_err() {
+        let _ = std::fs::remove_file(output);
+    }
+    res
+}
+
+#[doc(hidden)]
+pub fn create_int_host(input: &str, output: &str) -> Result<u32, String> {
+    int_create_archive(input, output)
+}
+
 // ─── JNI ───
 
 #[no_mangle]
@@ -530,6 +814,45 @@ pub extern "system" fn Java_com_usefulunpacker_IntCore_intExtractProgressName(e:
 #[no_mangle]
 pub extern "system" fn Java_com_usefulunpacker_IntCore_intExtractCancel(_: JNIEnv, _: JClass) {
     extract_progress::cancel();
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_IntCore_intCreateArchive(mut e: JNIEnv, _: JClass, _t: JString, i: JString, o: JString, _level: JString) -> jboolean {
+    compress_progress::clear_cancel();
+    let inp = s(&mut e, &i);
+    let out = s(&mut e, &o);
+    match guarded(move || int_create_archive(&inp, &out)) {
+        Ok(_) => JNI_TRUE,
+        Err(er) => {
+            let _ = e.throw_new("java/io/IOException", format!("intCreateArchive: {er}"));
+            JNI_FALSE
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_IntCore_intCompressProgressCount(_: JNIEnv, _: JClass) -> jlong {
+    compress_progress::bytes() as jlong
+}
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_IntCore_intCompressProgressTotal(_: JNIEnv, _: JClass) -> jlong {
+    compress_progress::total_bytes() as jlong
+}
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_IntCore_intCompressProgressFileCount(_: JNIEnv, _: JClass) -> jlong {
+    compress_progress::file_bytes() as jlong
+}
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_IntCore_intCompressProgressFileTotal(_: JNIEnv, _: JClass) -> jlong {
+    compress_progress::file_total() as jlong
+}
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_IntCore_intCompressProgressName(e: JNIEnv, _: JClass) -> jstring {
+    e.new_string(&compress_progress::name()).map(|v| v.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_IntCore_intCompressCancel(_: JNIEnv, _: JClass) {
+    compress_progress::cancel();
 }
 
 fn guarded<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
@@ -765,6 +1088,114 @@ mod tests {
         std::fs::write(&plain, plain_archive(&[("x.txt", b"hi")])).unwrap();
         let json = int_list(plain.to_str().unwrap()).unwrap();
         assert!(json.contains(r#"{"n":"x.txt","s":2,"d":false,"e":false}"#), "{json}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The writer's crypto must be the exact inverse of the reader's — checked
+    /// against the *real fixture's own ciphertext*, so it cannot pass by being
+    /// self-consistently wrong: decrypt the fixture's encrypted names and
+    /// offset/size fields, re-encrypt them, and require the original bytes back.
+    #[test]
+    fn crypto_round_trips_the_real_fixtures_bytes() {
+        let raw = std::fs::read(testdata("ptcl.int")).unwrap();
+        let count = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
+        // The fixture's own key material: seed field + the exe-derived table seed.
+        let key_field = u32::from_le_bytes([raw[8 + NAME_FIELD + 4], raw[8 + NAME_FIELD + 5], raw[8 + NAME_FIELD + 6], raw[8 + NAME_FIELD + 7]]);
+        assert_eq!(key_field, 1689447020, "the fixture's __key__.dat field");
+        let table = write_table_seed(&testdata("")).expect("fakegame.exe provides the keys");
+        let bf = Blowfish::new(&file_key_from(key_field));
+
+        let mut names = 0;
+        for i in 1..count as usize {
+            let rec = &raw[8 + i * RECORD..8 + (i + 1) * RECORD];
+            let enc_name = &rec[..NAME_FIELD];
+            let plain = decrypt_name(enc_name, table.wrapping_add(i as u32));
+            assert_eq!(encrypt_name(&plain, table.wrapping_add(i as u32)), enc_name, "name {i}");
+            names += 1;
+
+            let mut blob = [0u8; 8];
+            blob.copy_from_slice(&rec[NAME_FIELD..NAME_FIELD + 8]);
+            let mut to_decrypt = blob;
+            let first = u32::from_le_bytes([to_decrypt[0], to_decrypt[1], to_decrypt[2], to_decrypt[3]]).wrapping_add(i as u32);
+            to_decrypt[0..4].copy_from_slice(&first.to_le_bytes());
+            let dec = bf.decrypt(&to_decrypt);
+            // Re-encrypt the way the writer does: encrypt, then subtract the
+            // record index from the ciphertext's first word.
+            let mut re = [0u8; 8];
+            re.copy_from_slice(&dec);
+            let mut enc = bf.encrypt(&re);
+            let first = u32::from_le_bytes([enc[0], enc[1], enc[2], enc[3]]).wrapping_sub(i as u32);
+            enc[0..4].copy_from_slice(&first.to_le_bytes());
+            assert_eq!(enc, blob, "offset/size {i}");
+        }
+        assert_eq!(names, 13);
+    }
+
+    /// Packing a directory and reading it back: the plain variant (no exe next
+    /// to the output) round-trips names, sizes and content.
+    #[test]
+    fn plain_pack_round_trips() {
+        let dir = std::env::temp_dir().join(format!("uu_int_pack_plain_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("a.txt"), b"hello int").unwrap();
+        std::fs::write(src.join("sub/b.bin"), (0..64u8).collect::<Vec<u8>>()).unwrap();
+        let out = dir.join("packed.int");
+        assert_eq!(int_create_archive(src.to_str().unwrap(), out.to_str().unwrap()).unwrap(), 2);
+
+        let ar = open_int(out.to_str().unwrap()).unwrap();
+        assert!(!ar.encrypted, "no exe next to the output → plain variant");
+        let names: Vec<&str> = ar.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["a.txt", "sub/b.bin"]);
+        assert!(ar.entries.iter().all(|e| e.broken.is_none()));
+
+        let back = dir.join("out");
+        let (total, fail) = extract_int_host(out.to_str().unwrap(), back.to_str().unwrap()).unwrap();
+        assert_eq!((total, fail), (2, 0));
+        assert_eq!(std::fs::read(back.join("a.txt")).unwrap(), b"hello int");
+        assert_eq!(std::fs::read(back.join("sub/b.bin")).unwrap(), (0..64u8).collect::<Vec<u8>>());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With the game's executable next to the output, packing writes the
+    /// encrypted variant and the reader (which is verified against the
+    /// reference's own expected outputs) reads it back.
+    #[test]
+    fn encrypted_pack_round_trips() {
+        let dir = std::env::temp_dir().join(format!("uu_int_pack_enc_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(testdata("fakegame.exe"), dir.join("fakegame.exe")).unwrap();
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("one.kcs"), b"0123456789abcdefghij").unwrap();
+        std::fs::write(src.join("二.dat"), b"cjk name").unwrap();
+        let out = dir.join("encrypted.int");
+        assert_eq!(int_create_archive(src.to_str().unwrap(), out.to_str().unwrap()).unwrap(), 2);
+
+        let ar = open_int(out.to_str().unwrap()).unwrap();
+        assert!(ar.encrypted, "an exe next to the output → encrypted variant");
+        let names: Vec<&str> = ar.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["one.kcs", "二.dat"]);
+        let back = dir.join("out");
+        let (total, fail) = extract_int_host(out.to_str().unwrap(), back.to_str().unwrap()).unwrap();
+        assert_eq!((total, fail), (2, 0));
+        assert_eq!(std::fs::read(back.join("one.kcs")).unwrap(), b"0123456789abcdefghij");
+        assert_eq!(std::fs::read(back.join("二.dat")).unwrap(), b"cjk name");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed pack must not leave an archive behind.
+    #[test]
+    fn failed_pack_leaves_nothing() {
+        let dir = std::env::temp_dir().join(format!("uu_int_pack_fail_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("nope.int");
+        let err = int_create_archive(dir.join("missing").to_str().unwrap(), out.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("read_dir"), "got: {err}");
+        assert!(!out.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

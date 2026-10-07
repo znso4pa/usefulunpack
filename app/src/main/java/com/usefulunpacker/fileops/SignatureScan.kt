@@ -363,8 +363,12 @@ internal fun MainActivity.extractHit(f: File, hit: ScanHit) {
         toast(getString(R.string.scan_extract_not_archive))
         return
     }
-    // Formats that must be carved out first (native readers need byte-0).
-    if (fmt in NEEDS_CARVE) {
+    // Formats whose readers need the archive at byte 0 — carve only when it is
+    // not already there. A standalone .int/.rpa at offset 0 opens in place,
+    // which also keeps anything the reader needs *next to the file* (INT derives
+    // its index key from the game's exe) reachable; carving it into another
+    // folder would lose that.
+    if (fmt in NEEDS_CARVE && hit.offset > 0L) {
         showSeparateDestDialog(f, hit, extract = true, message = getString(R.string.msg_separate_needs_carve))
         return
     }
@@ -406,10 +410,14 @@ internal fun MainActivity.extractHit(f: File, hit: ScanHit) {
     }
     // ZIP at offset 0 and RAR (≤8MiB) can be previewed/extracted directly.
     thread {
+        // ONE dispatch for the in-place case too: the per-format listing lives in
+        // listEntriesJson, so a format added there is listable from a scan hit
+        // without touching this file (the hand-written zip/rar pair had already
+        // started to drift).
         val json = try {
             when (fmt) {
-                "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); ZipCore.zipListEntries(f.path) }
-                else -> RarCore.rarListEntries(f.path)
+                "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); listEntriesJson(fmt, f, "", false) }
+                else -> listEntriesJson(fmt, f, "", false)
             }
         } catch (_: Exception) { null }
         runOnUiThread {

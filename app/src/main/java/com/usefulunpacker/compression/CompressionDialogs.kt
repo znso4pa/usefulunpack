@@ -375,6 +375,10 @@ fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password
             // 2-tuple index form this writer emits is the shape Ren'Py's own
             // reader fast-paths.
             "rpa" -> RpaCore.rpaCreateArchive("", src.path, outFile.path, level.toString())
+            // INT: the variant (plain or encrypted) follows whether the game's
+            // exe sits next to the output, so the archive matches what the
+            // engine that shipped the original can load.
+            "int" -> IntCore.intCreateArchive("", src.path, outFile.path, level.toString())
             "iso" -> IsoCore.isoCreateArchive("", src.path, outFile.path) != null
             "ypf" -> YpfCore.ypfCreateArchive("", src.path, outFile.path, level.toString()) != null
             "rgssad", "rgss2a", "rgss3a" -> RgssCore.rgssCreateArchive("", src.path, outFile.path, rgssWriteVersionOf(fmt)) != null

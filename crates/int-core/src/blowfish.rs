@@ -99,6 +99,35 @@ impl Blowfish {
         }
     }
 
+    /// Encrypts every complete 8-byte block in place (the writer's direction;
+    /// the tail of a partial block is left untouched, mirroring `decrypt`).
+    pub fn encrypt_in_place(&self, data: &mut [u8]) {
+        let blocks = data.len() / 8;
+        for i in 0..blocks {
+            let off = i * 8;
+            let mut l = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+            let mut r = u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]);
+            // Canonical Blowfish: the same shape as `enc()` above, which is what
+            // the key schedule already relies on.
+            for i in 0..16 {
+                l ^= self.p[i];
+                r ^= f(&self.s, l);
+                std::mem::swap(&mut l, &mut r);
+            }
+            std::mem::swap(&mut l, &mut r);
+            r ^= self.p[16];
+            l ^= self.p[17];
+            data[off..off + 4].copy_from_slice(&l.to_le_bytes());
+            data[off + 4..off + 8].copy_from_slice(&r.to_le_bytes());
+        }
+    }
+
+    pub fn encrypt(&self, data: &[u8]) -> Vec<u8> {
+        let mut out = data.to_vec();
+        self.encrypt_in_place(&mut out);
+        out
+    }
+
     pub fn decrypt(&self, data: &[u8]) -> Vec<u8> {
         let mut out = data.to_vec();
         self.decrypt_in_place(&mut out);
@@ -146,6 +175,25 @@ mod tests {
             let bf = Blowfish::new(&hex(key));
             let got = bf.decrypt(&hex(want));
             assert_eq!(got, hex(plain), "key={key} want={want}");
+        }
+    }
+
+    /// The encryption direction must be the exact inverse of `decrypt` — the
+    /// writer depends on it, and a wrong round order here would produce
+    /// archives the engine cannot read.
+    #[test]
+    fn encrypt_is_the_inverse_of_decrypt() {
+        let bf = Blowfish::new(&[0x42, 0x42, 0x42, 0x42]);
+        let plain: Vec<u8> = (0..40u8).map(|i| i.wrapping_mul(13).wrapping_add(5)).collect();
+        let round = bf.decrypt(&bf.encrypt(&plain));
+        assert_eq!(round, plain);
+        // The standard vectors, in the encryption direction.
+        for (key, plain_hex, cipher_hex) in [
+            ("0000000000000000", "0000000000000000", "4597F94E78DD9861"),
+            ("fedcba9876543210", "0123456789abcdef", "0D474ADE6A100014"),
+        ] {
+            let bf = Blowfish::new(&hex(key));
+            assert_eq!(bf.encrypt(&hex(plain_hex)), hex(cipher_hex), "key={key}");
         }
     }
 

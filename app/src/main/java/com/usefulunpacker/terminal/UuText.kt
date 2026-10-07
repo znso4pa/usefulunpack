@@ -49,6 +49,7 @@ internal object UuText {
     fun listDirMark(str: StrFn) = str(R.string.cli_list_dir_mark, emptyArray())
     fun listEncMark(str: StrFn) = str(R.string.cli_list_enc_mark, emptyArray())
     fun listFailed(str: StrFn, name: String) = str(R.string.cli_list_failed, arrayOf(name))
+    fun listFailedWhy(str: StrFn, name: String, why: String) = str(R.string.cli_list_failed_why, arrayOf(name, why))
     fun listEmpty(str: StrFn, name: String) = str(R.string.cli_list_empty, arrayOf(name))
     fun listTruncated(str: StrFn, more: Int) = str(R.string.cli_list_truncated, arrayOf(more.toString()))
 

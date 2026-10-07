@@ -9,3 +9,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 archive_common = { path = "../common" }
 jni = "0.21"
+# Entry names in the plain variant are UTF-8 or Shift-JIS (GARbro decodes
+# CP932); the same discipline as the ZIP name handling in this project.
+encoding_rs = "0.8"

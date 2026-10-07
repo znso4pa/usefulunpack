@@ -74,7 +74,7 @@ class FolderFragment : Fragment() {
         tab.btnPreviewSearch.setOnClickListener { act.previewSearch(tab) }
         // 编辑：仅可封包格式；否则 toast 提示。
         fun doEdit() {
-            if (tab.previewFormat !in setOf("xp3", "pfs", "iso", "nsa", "7z", "ypf", "rgss", "rpa")) {
+            if (tab.previewFormat !in setOf("xp3", "pfs", "iso", "nsa", "7z", "ypf", "rgss", "rpa", "int")) {
                 act.toast(act.getString(R.string.edit_only_pack))
                 return
             }

@@ -12,4 +12,11 @@ object IntCore {
     external fun intExtractProgressFileTotal(): Long
     external fun intExtractProgressName(): String?
     external fun intExtractCancel()
+    external fun intCreateArchive(tool: String, input: String, output: String, level: String): Boolean
+    external fun intCompressProgressCount(): Long
+    external fun intCompressProgressTotal(): Long
+    external fun intCompressProgressFileCount(): Long
+    external fun intCompressProgressFileTotal(): Long
+    external fun intCompressProgressName(): String?
+    external fun intCompressCancel()
 }

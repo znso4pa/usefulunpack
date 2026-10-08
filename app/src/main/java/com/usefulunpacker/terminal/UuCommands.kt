@@ -98,7 +98,7 @@ internal object UuCommands {
         Cmd("docs",   Kind.DOCS,         "Full command & parameter reference (table)",      "uu docs"),
         Cmd("info",   Kind.INFO,         "Print detected format key(s), one per line",            "uu info <file>"),
         Cmd("l",      Kind.LIST,         "List entries (-j JSON / -t tree / -S by size)",  "uu l <archive> [-a] [-j] [-t] [-S] [-p pw]"),
-        Cmd("cat",    Kind.CAT,          "Print a text file or an archive's entry",        "uu cat <file|archive> [entry] [-p pw]"),
+        Cmd("cat",    Kind.CAT,          "Print a text file or an archive's entry",        "uu cat <file|archive> [entry] [-e enc] [-p pw]"),
         Cmd("hash",   Kind.HASH,         "Print the MD5 and SHA-256 of files",            "uu hash <file>"),
         Cmd("grep",   Kind.GREP,         "Search text inside a folder or archive",         "uu grep [-i] <pattern> <path>"),
         Cmd("cp",     Kind.COPY,         "Copy a file or folder (-f overwrites)",          "uu cp <src> <dst> [-f]"),
@@ -1130,11 +1130,24 @@ internal object UuCommands {
 
     // ─── cat / grep / 文件命令 / set / cso ──────────────────────────────
 
+
     /** `uu cat <archive> <entry> [-p pw]` → 打印包内文本条目（编码自动探测，有界读取）。 */
     private fun cat(args: List<String>, ctx: Ctx): Result {
-        val pa = splitFlags(args, listOf("-p"))
+        val pa = splitFlags(args, listOf("-p", "-e"))
         missingValueError(ctx, pa)?.let { return it }
         val (flags, _, pos) = Triple(pa.values, pa.bools, pa.pos)
+        // `-e <encoding>`: decode with the named encoding and skip the
+        // text/binary sniff entirely — an explicit request outranks a guess.
+        var forcedEnc: String? = null
+        flags["-e"]?.let { name ->
+            // "-e auto" is explicit auto-detection, which is what happens without
+            // the flag — accepted so the shared error message's list is truthful.
+            forcedEnc = when {
+                name.equals("auto", ignoreCase = true) -> null
+                else -> normalizeEncoding(name)
+                    ?: return Result(ctx.text(R.string.cli_enc_bad_encoding, name), 1)
+            }
+        }
         // 单参数 + 纯文本文件 = 像 shell cat 一样直接打印（脚本通用读取器，
         // 编码自动探测，2MB/100k 字符上限与归档条目一致）。归档或不存在 → 走
         // 原有的两参数流程 / 选择器。
@@ -1143,7 +1156,7 @@ internal object UuCommands {
             if (!single.exists()) return Result(UuText.notFound(ctx.str, pos[0]), 1)
             if (single.isFile && detectFormat(single) == null && detectFormatByMagic(single) == null) {
                 val bytes = readPrefix(single, CAT_MAX_BYTES)
-                val enc = textEncodingOf(bytes)
+                val enc = forcedEnc ?: textEncodingOf(bytes)
                     ?: return Result(ctx.text(R.string.cli_cat_binary, pos[0], fmt(single.length())), 1)
                 var text = decodeTextStrict(bytes, enc)
                 if (text.length > CAT_MAX_CHARS) text = text.take(CAT_MAX_CHARS)
@@ -1178,7 +1191,7 @@ internal object UuCommands {
                     return Result(ctx.text(R.string.cli_set_no_entry, pos[1]), 1)
                 }
                 val bytes = readPrefix(f, CAT_MAX_BYTES)
-                val enc = textEncodingOf(bytes)
+                val enc = forcedEnc ?: textEncodingOf(bytes)
                     ?: return Result(ctx.text(R.string.cli_cat_binary, pos[1], fmt(f.length())), 1)
                 var text = decodeTextStrict(bytes, enc)
                 if (text.length > CAT_MAX_CHARS) text = text.take(CAT_MAX_CHARS)
@@ -1577,6 +1590,8 @@ internal object UuCommands {
     // ─── enc / mvdec / rmd / add / find / diff / hex ─────────────────────
 
     /** 编码别名归一（与 TEXT_ENCODINGS 的四档对齐）。 */
+    /** The one encoding-name resolver: `uu cat -e` and `uu enc` both use it, so
+     *  the accepted set and the error message can never disagree. */
     private fun normalizeEncoding(name: String): String? = when (name.uppercase()) {
         "UTF-8", "UTF8" -> "UTF-8"
         "UTF-16", "UTF16", "UTF-16LE", "UTF16LE" -> "UTF-16"

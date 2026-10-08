@@ -123,7 +123,7 @@ thread {
 bash build.sh
 ```
 
-交叉编译全部 Rust workspace crate 到 `arm64-v8a`、`armeabi-v7a`、`x86_64`，复制 `.so` 到 `app/src/main/jniLibs/`，然后跑 `gradlew assembleRelease`。
+交叉编译全部 Rust workspace crate 到 `arm64-v8a`、`armeabi-v7a`，复制 `.so` 到 `app/src/main/jniLibs/`，然后跑 `gradlew assembleRelease`。`.so` 不入库（构建产物，见 `.gitignore`），新克隆的仓库必须先跑 `build.sh` 才有 native 库；`crates/*/testdata/` 里的真实样本同样不入库，缺失时相关测试打印 `SKIP …` 跳过。
 
 ## 新增归档格式
 

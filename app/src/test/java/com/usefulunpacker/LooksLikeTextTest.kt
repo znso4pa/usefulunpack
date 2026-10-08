@@ -74,7 +74,24 @@ class LooksLikeTextTest {
         assertEquals("UTF-8", textEncodingOf("hello 世界\n".toByteArray()))
         assertEquals("SHIFT-JIS", textEncodingOf(sjis("こんにちは、世界。")))
         assertNull(textEncodingOf(ByteArray(16) { it.toByte() }))   // 0x00..0x0f：NUL + 控制字节
+        // BOM-less UTF-16LE 的 ASCII 段本身是合法 UTF-8，所以判定顺序必须是
+        // 「先 UTF-16」——否则 krkr2 脚本会被逐字节解码成 "l a b e l"。
+        assertEquals("UTF-16", textEncodingOf(utf16le("label start:\n    return\n")))
         assertNull(textEncodingOf(ByteArray(64)))
+    }
+
+    @Test
+    fun realExecutableHeadsAreNotText() {
+        // 真实 PE 的前 8 KiB（arc_unpacker 的 fakegame.exe，随仓库保存）。
+        // 它曾被判成「无 BOM 的 UTF-16LE」，而那条分支会跳过 NUL 检查 —— 于是
+        // 点开 .exe 会预览成乱码文本。签名扫描一直认得出它是 PE。
+        val pe = javaClass.classLoader!!.getResourceAsStream("pe-head-8k.bin")!!.readBytes()
+        assertEquals(8192, pe.size)
+        assertFalse("a PE head must not sniff as text", looksLikeText(pe))
+        // 同一份数据取更长的前缀也一样（两种采样长度都不能漏）。
+        assertFalse(looksLikeText(pe.copyOfRange(0, 4096)))
+        // 而真正的无 BOM UTF-16LE 文本仍然要认（不能修过头）。
+        assertTrue(looksLikeText(utf16le("label start:\n    \"hello\"\n    return\n")))
     }
 
     @Test

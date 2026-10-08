@@ -133,8 +133,13 @@ fun isTjsBytecode(data: ByteArray): Boolean =
 fun detectBestEncoding(data: ByteArray): String? {
     detectBomEncoding(data)?.let { return it }
     if (data.isEmpty()) return null
-    if (looksLikeUtf8(data)) return "UTF-8"
+    // BOM-less UTF-16LE first: its ASCII runs are [printable, 0x00] pairs, which
+    // is *valid UTF-8* (0x00 is an ordinary code point), so the strict-UTF-8 test
+    // below used to claim every such script and decode it byte-wise — a
+    // Kirikiri2 .tjs previewed as "l a b e l   s t a r t". A single-byte text
+    // file never has that pair shape, so nothing else is affected.
     detectBomlessUtf16Le(data)?.let { return it }
+    if (looksLikeUtf8(data)) return "UTF-8"
     fun bad(s: String) = s.count { it == '\uFFFD' }
     val sjis = decodeTextStrict(data, "SHIFT-JIS")
     val gbk = decodeTextStrict(data, "GBK")
@@ -163,7 +168,15 @@ fun detectBomlessUtf16Le(data: ByteArray): String? {
     var i = 0
     while (i < data.size) {
         val lo = data[i].toInt() and 0xFF
-        if (data[i + 1] == 0.toByte() && lo in 0x20..0x7E) asciiLe++
+        val hi = data[i + 1].toInt() and 0xFF
+        // U+0000 — a [0, 0] pair — never appears in real text, while a binary's
+        // NUL runs (a PE header's aligned zeros, a .so's padding) are exactly
+        // that shape. Without this the 5%-of-pairs heuristic below claimed the
+        // first 8 KiB of every PE was UTF-16LE, and `looksLikeText` skips its
+        // NUL check for UTF-16 — so tapping an .exe previewed it as garbled
+        // text while the signature scan correctly called it a PE binary.
+        if (lo == 0 && hi == 0) return null
+        if (hi == 0 && lo in 0x20..0x7E) asciiLe++
         i += 2
     }
     // 5% of pairs: far above any non-UTF-16 noise, far below the actual share

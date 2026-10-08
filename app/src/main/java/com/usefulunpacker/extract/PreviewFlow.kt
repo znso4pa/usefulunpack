@@ -1269,7 +1269,9 @@ internal fun MainActivity.listEntriesJson(
     // could not be listed ("needs the game exe next to it", "unsupported ZiX
     // variant", …). Swallowing it left the user staring at a generic "cannot
     // read" with no way to act, so callers that can show it pass `onError`.
-    onError?.invoke(e.message ?: "")
+    // The JNI wrapper prefixes its own op name ("listEntries: …"); the native
+    // message already names the format, so drop the redundant prefix.
+    onError?.invoke((e.message ?: "").removePrefix("listEntries: "))
     null
 }
 

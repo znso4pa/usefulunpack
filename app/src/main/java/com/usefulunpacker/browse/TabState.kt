@@ -78,6 +78,11 @@ class TabState(val tabId: Int) {
     var previewFormat: String = ""
     var previewPwd: String = ""
     var previewOpenKey: String? = null
+    /** Encryption token of the open archive (xp3 only; see `xp3SchemeToken`).
+     *  Probed once when the preview opens — it cannot be derived from the
+     *  entry list, so it is state, and the title is built from it in one place
+     *  (`previewTitleOf`) for both the first render and a view rebuild. */
+    var previewEncNote: String = ""
     val previewSelected: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
     val previewExpanded: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
     var previewSearchQuery: String = ""

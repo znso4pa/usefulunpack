@@ -192,10 +192,55 @@ private fun xp3ExtractDispatch(src: String, out: String, selected: String): Stri
             null // probe failed / not actually cxdec — fall through to plain
         }
         if (json != null) return json
+        // The sidecar proves this IS a cxdec folder, so a scheme that does not
+        // match means plain extraction would write ciphertext to disk. Refuse
+        // and let the native reason surface (the INT-missing-exe precedent)
+        // instead of silently handing the user garbage.
+        if (xp3SchemeToken("xp3", File(src)) == "cxdec:?") {
+            throw IllegalStateException(
+                "XP3: 目录内有 cxdec 配套文件，但没有任何已知方案能解开这个归档（无法解密）")
+        }
     }
     return if (selected.isEmpty()) Xp3Core.xp3Extract("", src, out)
            else Xp3Core.xp3ExtractSelected("", src, out, selected)
 }
+
+/**
+ * The encryption state of one XP3 as a machine token, or "" when the probe
+ * cannot say (wrong format, unreadable archive). The token set is defined by
+ * the native probe (`probe_scheme_token`) so the UI and the extractor can
+ * never disagree about what an archive is.
+ *
+ * `plain`          — not protected (or no evidence either way)
+ * `cxdec:<scheme>` — cxdec-protected, scheme scored against real entries
+ * `cxdec:?`        — a cxdec folder, but no known scheme decrypts it
+ * `suspect`        — no sidecar, yet the index marks entries protected
+ */
+fun xp3SchemeToken(fmt: String, src: File): String {
+    if (fmt != "xp3") return ""
+    return try {
+        Xp3Core.xp3ProbeScheme(src.absolutePath) ?: ""
+    } catch (_: Exception) {
+        ""
+    }
+}
+
+/**
+ * Localized label for an [xp3SchemeToken] — the ONE place the four tokens turn
+ * into words, so the preview title, the scan row and `uu l` can never drift
+ * apart. "" means "say nothing" (plain archives and probe failures).
+ */
+fun xp3SchemeLabel(str: StrFn, token: String): String = when {
+    token == "cxdec:?" -> str(R.string.xp3_enc_unknown, emptyArray())
+    token.startsWith("cxdec:") -> str(R.string.xp3_enc_cxdec, emptyArray())
+    token == "suspect" -> str(R.string.xp3_enc_suspect, emptyArray())
+    token == "plain" -> str(R.string.xp3_enc_plain, emptyArray())
+    else -> ""
+}
+
+/** [StrFn] backed by a Context — the GUI counterpart of the CLI's text fn, so
+ *  both feed the same label mapping. */
+fun strFnOf(ctx: android.content.Context): StrFn = { id, args -> ctx.getString(id, *args) }
 
 fun extractByFormat(
     format: String, src: String, out: String, selected: String,

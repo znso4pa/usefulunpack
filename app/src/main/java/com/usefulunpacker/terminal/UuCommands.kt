@@ -110,7 +110,7 @@ internal object UuCommands {
         Cmd("du",     Kind.DU,           "Show total sizes (sums when given several paths)",        "uu du <path>"),
         Cmd("stat",   Kind.STAT,         "Show type / size / modified time",               "uu stat <path...>"),
         Cmd("x",      Kind.EXTRACT,      "Extract an archive, optionally selected entries", "uu x <archive> [-o outdir] [entry...] [-p pw]"),
-        Cmd("c",      Kind.PACK,         "Pack files or folders (merge / separate)",                          "uu c <src...> [out] [-c|-s] [-f key] [-l level] [-b splitMB] [-p pw]"),
+        Cmd("c",      Kind.PACK,         "Pack files or folders (merge / separate)",                          "uu c <src...> [out] [-c|-s] [-f key] [-l level] [-b splitMB] [-e cxdec] [-p pw]"),
         Cmd("set",    Kind.SET,          "Replace one entry inside an archive",            "uu set <archive> <entry> <localfile> [-p pw]"),
         Cmd("scan",   Kind.SCAN,         "Scan a file for embedded archive signatures",    "uu scan <file>"),
         Cmd("cso",    Kind.CSO,          "Convert ISO ↔ CSO",                              "uu cso <file> [out]"),
@@ -208,11 +208,15 @@ internal object UuCommands {
         val sb = StringBuilder()
         sb.append("UU CLI reference\n")
         sb.append("=".repeat(96)).append("\n")
-        sb.append("COMMAND".padEnd(8)).append("USAGE".padEnd(70)).append("DESCRIPTION\n")
-        sb.append("-".repeat(8)).append(' ').append("-".repeat(69)).append(' ').append("-".repeat(30)).append('\n')
+        // The usage column is DERIVED from the table, not hardcoded: a fixed
+        // width silently glues the longest usage to its description the moment
+        // any usage grows (it did, when `uu c` gained `-e cxdec`).
+        val usageWidth = table.maxOf { it.usage.length } + 2
+        sb.append("COMMAND".padEnd(8)).append("USAGE".padEnd(usageWidth)).append("DESCRIPTION\n")
+        sb.append("-".repeat(8)).append(' ').append("-".repeat(usageWidth - 1)).append(' ').append("-".repeat(30)).append('\n')
         for (c in table) {
             sb.append(c.name.padEnd(8))
-                .append(c.usage.padEnd(70))
+                .append(c.usage.padEnd(usageWidth))
                 .append(c.summary).append('\n')
         }
         sb.append('\n')
@@ -225,6 +229,7 @@ internal object UuCommands {
             "-c / -s       " to "merge into one archive / separate per source (uu c, multi-source)",
             "-l <level>    " to "compression level (uu c)",
             "-b <splitMB>  " to "split size in MB (uu c, zip/7z only)",
+            "-e cxdec      " to "encrypt the pack (uu c, xp3 only; needs xp3filter.tjs/.tpm or an encrypted .xp3 in the folder)",
             "-o <outdir>   " to "output directory (uu x; entries then follow unambiguously)",
             "-f            " to "permanent delete instead of recycle bin (uu rm)",
             "-i            " to "case-insensitive search (uu grep)",
@@ -371,7 +376,15 @@ internal object UuCommands {
         val entries = if (bySize && !asTree) entries0.sortedByDescending { it.size } else entries0
         val total = entries.sumOf { if (!it.isDirectory) it.size else 0L }
         val sb = StringBuilder()
-        sb.append(UuText.listHeader(ctx.str, displayName, entries.size, fmt(total))).append('\n')
+        sb.append(UuText.listHeader(ctx.str, displayName, entries.size, fmt(total)))
+        // The encryption state, appended to the header. `uu info` deliberately
+        // does NOT carry it: scripts branch on that key (`if v = xp3`), and a
+        // decorated key would silently send them down the wrong path.
+        val encLabel = xp3SchemeLabel(ctx.str, xp3SchemeToken(fmt, f))
+        if (encLabel.isNotEmpty()) {
+            sb.append(' ').append(ctx.text(R.string.enc_suffix_paren, encLabel))
+        }
+        sb.append('\n')
         // -t：树状视图（游戏归档嵌套很深，平铺列表读不动）。行数多时受 -a 同样的
         // 截断保护 —— 截断提示沿用列表那套。
         if (asTree) {
@@ -767,7 +780,7 @@ internal object UuCommands {
      * CLI 尊重用户显式名）。
      */
     /**
-     * `uu c <src...> [out] [-c|-s] [-f key] [level] [splitMB] [-p pw]`。
+     * `uu c <src...> [out] [-c|-s] [-f key] [level] [splitMB] [-e cxdec] [-p pw]`。
      *  - 单源 + out：`uu c dir out.zip` → out 是**最终输出路径**（产品要求）。
      *  - 单源无 out：落到默认单独路径（uu_cli/<src 名>.<ext>），格式必须 -f 给出。
      *  - `-c`：多源合并成一个包（暂存目录内重名按 `名字 (n)` 去重，默认名 archive.<ext>）。
@@ -775,7 +788,7 @@ internal object UuCommands {
      *  产物名**拿到调度槽之后**解析（排队互不撞名）；已存在拒绝；`.pfs` 二义必须 -f。
      */
     private fun pack(args: List<String>, ctx: Ctx): Result {
-        val pa = splitFlags(args, listOf("-p", "-f", "-l", "-b"), listOf("-c", "-s"))
+        val pa = splitFlags(args, listOf("-p", "-f", "-l", "-b", "-e"), listOf("-c", "-s"))
         missingValueError(ctx, pa)?.let { return it }
         val (flags, bools, pos) = Triple(pa.values, pa.bools, pa.pos)
         val merge = "-c" in bools
@@ -783,6 +796,10 @@ internal object UuCommands {
         if (merge && separate) return Result(UuText.failed(ctx.str, "-c / -s"), 1)
         val pw = flags["-p"] ?: ""
         val forceKey = flags["-f"]
+        // `-e cxdec`: only xp3 knows how to encrypt, and only cxdec is
+        // implemented — anything else is refused rather than ignored.
+        val enc = flags["-e"]?.lowercase() ?: ""
+        if (enc.isNotEmpty() && enc != "cxdec") return Result(UuText.packUnknownEnc(ctx.str, enc), 1)
         val cancelled = AtomicBoolean(false)
         if (pos.isEmpty()) return needFile(Picker.FILE_OR_FOLDER)
 
@@ -793,6 +810,7 @@ internal object UuCommands {
                 if (it !in COMPRESS_EXT.keys) return Result(UuText.packUnknownKey(ctx.str, it), 1)
                 it
             } ?: return Result(ctx.text(R.string.cli_pack_need_format), 1)
+            if (enc == "cxdec" && fmt != "xp3") return Result(UuText.packEncOnlyXp3(ctx.str), 1)
             // zip 的等级 GUI 走 zip_level（generic_level 不是它的档位）；-l 可覆盖
             val level = flags["-l"]?.toIntOrNull()
                 ?: ctx.prefs?.let { if (fmt == "zip") it.getInt("zip_level", 5) else it.getInt("generic_level", 6) } ?: 6
@@ -849,9 +867,13 @@ internal object UuCommands {
                             val outF = uniqueFile(outDir, "archive.$ext")
                             val ok = compressDispatch(staging, outF, fmt, level, pw, ctx.prefs
                                 ?: throw IllegalStateException("prefs required"),
-                                if (batchSplit > 0) batchSplit * 1024 * 1024 else null)
+                                if (batchSplit > 0) batchSplit * 1024 * 1024 else null, enc)
                             if (ok) okCount++ else failCount++
-                            if (ok) packResultLines.add(ctx.text(R.string.cli_pack_ok, outF.name))
+                            if (ok) {
+                                val note = if (enc == "cxdec") encNoteText(ctx.str) else ""
+                                packResultLines.add(ctx.text(R.string.cli_pack_ok, outF.name) +
+                                    if (note.isEmpty()) "" else " $note")
+                            }
                         } finally {
                             staging.deleteRecursively()
                         }
@@ -871,7 +893,7 @@ internal object UuCommands {
                                 val from = wrapDir ?: src
                                 val ok = compressDispatch(from, outF, fmt, level, pw, ctx.prefs
                                     ?: throw IllegalStateException("prefs required"),
-                                    if (batchSplit > 0) batchSplit * 1024 * 1024 else null)
+                                    if (batchSplit > 0) batchSplit * 1024 * 1024 else null, enc)
                                 if (ok) okCount++ else failCount++
                                 if (ok) packResultLines.add(ctx.text(R.string.cli_pack_ok, outF.name))
                             } finally {
@@ -883,7 +905,11 @@ internal object UuCommands {
                     done.set(true)
                     poller?.join(600)
                 }
-                if (okCount == 0) return Result(UuText.packFailed(ctx.str, ext), 1)
+                if (okCount == 0) {
+                    val why = PackErrors.last
+                    return Result(UuText.packFailed(ctx.str, ext) +
+                        if (why.isEmpty()) "" else "\n$why", 1)
+                }
                 val sb = StringBuilder()
                 for (line in packResultLines) { sb.append(line).append('\n') }
                 sb.append(ctx.text(R.string.cli_all_set))
@@ -924,6 +950,8 @@ internal object UuCommands {
             return Result(ctx.text(R.string.cli_pack_need_format), 1)
         }
 
+        if (enc == "cxdec" && fmt != "xp3") return Result(UuText.packEncOnlyXp3(ctx.str), 1)
+
         // 等级/分卷走 -l/-b 标志（位置式 3/4 参形态是死代码——曾被 arity 守卫拦死）
         val level = flags["-l"]?.toIntOrNull() ?: 6
         val splitMb = flags["-b"]?.toLongOrNull() ?: 0L
@@ -959,13 +987,20 @@ internal object UuCommands {
             // zip/7z/tar 系的 Rust 端 read_dir 不接受单文件输入：单文件需临时目录包裹
             val wrap = src.isFile && fmt in setOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")
             val wrapDir = if (wrap) File(ctx.cacheDir, "uu_pack/wrap_${System.nanoTime()}") else null
+            var encNote = ""
             val ok = try {
                 if (wrap) {
                     wrapDir!!.mkdirs()
                     src.copyTo(File(wrapDir, src.name))
                 }
-                compressDispatch(if (wrap) wrapDir!! else src, outFile, fmt, level, pw, ctx.prefs
-                    ?: throw IllegalStateException("prefs required"), splitBytes)
+                val packOk = compressDispatch(if (wrap) wrapDir!! else src, outFile, fmt, level, pw, ctx.prefs
+                    ?: throw IllegalStateException("prefs required"), splitBytes, enc)
+                // Which scheme an encrypted pack used is only known after it has
+                // run; the native side reports it. This branch builds its result
+                // text itself (packResultLines belongs to the batch branch), so
+                // the note has to be appended to THIS return.
+                if (packOk && enc == "cxdec") encNote = encNoteText(ctx.str)
+                packOk
             } finally {
                 wrapDir?.deleteRecursively()
                 done.set(true)
@@ -976,8 +1011,13 @@ internal object UuCommands {
                 outFile.delete()
                 return Result(UuText.extractCancelled(ctx.str), 1)
             }
-            if (!ok) return Result(UuText.packFailed(ctx.str, outFile.name), 1)
-            return Result(ctx.text(R.string.cli_pack_ok, outFile.name) + "\n" +
+            if (!ok) {
+                val why = PackErrors.last
+                return Result(UuText.packFailed(ctx.str, outFile.name) +
+                    if (why.isEmpty()) "" else "\n$why", 1)
+            }
+            return Result(ctx.text(R.string.cli_pack_ok, outFile.name) +
+                (if (encNote.isEmpty()) "" else "\n$encNote") + "\n" +
                 ctx.text(R.string.cli_all_set))
         } finally {
             opH?.release()
@@ -1096,7 +1136,7 @@ internal object UuCommands {
 
         val scan = ScanCore.scanFile(f.absolutePath)
             ?: return Result(UuText.scanFailed(ctx.str, f.name), 1)
-        val hits = parseScanHits(scan)
+        val hits = enrichScanHits(f, parseScanHits(scan))
         if (hits.isEmpty()) return Result(UuText.scanNone(ctx.str, f.name))
 
         // 非归档命中（png/jpeg/pdf…）只能 dd 出来，不能 x/l —— 它们没有容器。
@@ -1107,9 +1147,14 @@ internal object UuCommands {
         for ((i, h) in hits.withIndex()) {
             val fdTag = if (fds != null) "f${fds[i]}" else "-"
             val what = scanWhat(ctx, h)
+            // The note goes at the END of the line, not in the label column:
+            // it is CJK-width text, and padEnd counts characters, so a long
+            // suffix would glue itself to the next column.
+            val note = if (h.note.isEmpty()) ""
+            else ctx.text(R.string.enc_suffix_paren, xp3SchemeLabel(ctx.str, h.note))
             sb.append("  ").append(fdTag.padEnd(8))
                 .append(hexOffset(h.offset).padEnd(24))
-                .append(h.label.padEnd(26)).append(what).append('\n')
+                .append(h.label.padEnd(26)).append(what).append(note).append('\n')
         }
         if (fds != null) sb.append(UuText.scanFdHint(ctx.str, fds.size))
         return Result(sb.toString().trimEnd('\n'))
@@ -1513,8 +1558,12 @@ internal object UuCommands {
                 val level = ctx.prefs?.let {
                     if (fmt == "zip") it.getInt("zip_level", 5) else it.getInt("generic_level", 6)
                 } ?: 6
+                // Mirror the source archive's encryption, exactly like the GUI
+                // repack: a cxdec game's filter runs over every entry, so a plain
+                // result would be unreadable by the game it was made for.
+                val setEnc = if (fmt == "xp3" && xp3SchemeToken("xp3", archive).startsWith("cxdec:")) "cxdec" else ""
                 val ok = compressDispatch(staging, outF, fmt, level, pw, ctx.prefs
-                    ?: throw IllegalStateException("prefs required"))
+                    ?: throw IllegalStateException("prefs required"), null, setEnc)
                 if (!ok) return Result(UuText.packFailed(ctx.str, outF.name), 1)
                 return Result(ctx.text(R.string.cli_set_done, rel, outF.name) + "\n" +
                     ctx.text(R.string.cli_all_set))

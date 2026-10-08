@@ -863,16 +863,23 @@ fn validate_lzma(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
 /// XP3 (Kirikiri): 10-byte magic "XP3\r\n \n\x1a\x8b\x67" then:
 ///   byte 10      unused
 ///   bytes 11..19 u64 LE marker: 0x17 (current) or old-format index offset
-/// For the current format, skip u32 minor + u8(128) + u64 index_offset
-/// (relative), then read the u64 index offset. The index offset is relative
-/// to the archive start; a standalone archive extends to EOF (no total-size
-/// field in the header), so the reported extent is `file_len - off`.
+///   bytes 19..23 u32 minor          (current only)
+///   byte 23      0x80 version ident (current only)
+///   bytes 24..32 u64 displacement   (current only)
+///   bytes 32..40 u64 index offset   (current only, absolute from archive start)
+/// The value at 24..32 is a seek *from byte 32* — the marker at 11..19 is not a
+/// base for it. Three parsers in this tree read the pointer at byte 32
+/// (`vendor/xp3` reader + writer, `vendor/cxdec-tools`); reading it at
+/// `19 + marker` (as this validator did) rejected every real current-format
+/// archive, including the vendored `sample.xp3`, whose index sits at byte 60.
+/// A standalone archive extends to EOF (no total-size field in the header), so
+/// the reported extent is `file_len - off`.
 const XP3_MAGIC10: &[u8] = b"XP3\r\n \n\x1a\x8b\x67";
 const XP3_CURRENT_VER: u64 = 0x17;
 const XP3_VERSION_IDENTIFIER: u8 = 128;
 
 fn validate_xp3(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
-    let mut h = [0u8; 32];
+    let mut h = [0u8; 40];
     if !read_at(f, off, &mut h) {
         return None;
     }
@@ -885,8 +892,8 @@ fn validate_xp3(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
             if h[23] != XP3_VERSION_IDENTIFIER {
                 return None;
             }
-            let rel = u64le(&h, 24);
-            let read_pos = off + 19 + rel;
+            let disp = u64le(&h, 24);
+            let read_pos = off.checked_add(32)?.checked_add(disp)?;
             let mut buf = [0u8; 8];
             if !read_at(f, read_pos, &mut buf) {
                 return None;
@@ -1810,7 +1817,7 @@ validators! {
         if kind != 1 && kind != 2 { return None; }
         let count = u16le(&h, 4) as usize;
         if count == 0 || count > 255 { return None; }
-        // "   " is common in binary data, so every directory entry (not
+        // "\x00\x00\x01\x00" is common in binary data, so every directory entry (not
         // just the first) has to point at real bytes inside the file.
         let dir_end = (6 + count * 16) as u64;
         if count > 64 { return None; }
@@ -1896,7 +1903,7 @@ validators! {
         if num_tables == 0 || num_tables > 512 { return None; }
         let dir_end = 12 + num_tables * 16;
         if dir_end > file_len - off { return None; }
-        // "   " is an ordinary 4-byte value in binary data, so the magic
+        // "\x00\x01\x00\x00" is an ordinary 4-byte value in binary data, so the magic
         // alone identified 165 "fonts" inside /usr/bin/python3 and 389 inside a
         // real font collection. The table directory is what separates a font
         // from noise: every table must lie inside the file, and at least one
@@ -3142,8 +3149,10 @@ mod tests {
         assert_eq!(info.size, Some(blob.len() as u64));
     }
 
-    /// Current-format XP3: version identifier 0x17 + minor + u8(128) + relative
-    /// index offset, then the absolute index offset.
+    /// Current-format XP3: marker 0x17 + minor + u8(128) + a displacement
+    /// counted from byte 32, then the absolute index offset at 32 + disp.
+    /// The synthetic blob keeps a NONZERO displacement so the base is pinned:
+    /// reading it at 19 + marker (the old bug) lands somewhere else entirely.
     #[test]
     fn xp3_current_format_validates() {
         let mut blob = vec![0u8; 8192];
@@ -3151,14 +3160,27 @@ mod tests {
         blob[11..19].copy_from_slice(&XP3_CURRENT_VER.to_le_bytes()); // 0x17
         blob[19..23].copy_from_slice(&0u32.to_le_bytes()); // minor
         blob[23] = XP3_VERSION_IDENTIFIER; // 128
-        blob[24..32].copy_from_slice(&64u64.to_le_bytes()); // relative skip to the absolute-offset field
-        // At offset 11+8+64 = 83: the absolute index offset.
-        blob[83..91].copy_from_slice(&2048u64.to_le_bytes());
+        blob[24..32].copy_from_slice(&64u64.to_le_bytes()); // displacement from byte 32
+        // At offset 32 + 64 = 96: the absolute index offset.
+        blob[96..104].copy_from_slice(&2048u64.to_le_bytes());
         blob[2048..2052].copy_from_slice(b"File");
         let p = tmp("current.xp3", &blob);
         let mut f = File::open(&p).unwrap();
         let info = validate_xp3(&mut f, 0, blob.len() as u64).expect("valid current-format xp3");
         assert_eq!(info.size, Some(blob.len() as u64));
+    }
+
+    /// The vendored real `sample.xp3` (current format, index at byte 60) must
+    /// validate. This is the case the old `19 + marker` arithmetic missed —
+    /// every real current-format archive was rejected while the synthetic test
+    /// above stayed green because it encoded the same wrong base.
+    #[test]
+    fn xp3_real_sample_validates() {
+        let real: &[u8] = include_bytes!("../../vendor/xp3/sample.xp3");
+        let p = tmp("real_sample.xp3", real);
+        let mut f = File::open(&p).unwrap();
+        let info = validate_xp3(&mut f, 0, real.len() as u64).expect("real sample.xp3 must validate");
+        assert_eq!(info.size, Some(real.len() as u64));
     }
 
     /// Wrong magic at 0 → rejected.

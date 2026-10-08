@@ -127,6 +127,10 @@ private fun MainActivity.restorePreviews(previews: Array<PendingPreview?>) {
         val tab = tabs.getOrNull(i) ?: continue
         thread {
             val entries = listPreviewEntries(pending.fmt, pending.src, pending.pwd)
+            // Re-probe on restore: the note is not persisted, and a probe is
+            // cheaper than storing a value that could go stale if the game
+            // folder changes between launches.
+            val encNote = xp3SchemeToken(pending.fmt, pending.src)
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (entries.isNullOrEmpty()) return@runOnUiThread
@@ -135,7 +139,7 @@ private fun MainActivity.restorePreviews(previews: Array<PendingPreview?>) {
                 // Force-takeover: the dying activity's tab may still own the
                 // key during the rotation window; the restoring tab wins.
                 OpenArchiveRegistry.forceRegister(openKey, tab)
-                renderPreview(tab, pending.src, entries, pending.fmt, pending.pwd, openKey)
+                renderPreview(tab, pending.src, entries, pending.fmt, pending.pwd, openKey, encNote)
             }
         }
     }

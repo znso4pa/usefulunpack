@@ -49,6 +49,11 @@ internal object UuText {
     fun listDirMark(str: StrFn) = str(R.string.cli_list_dir_mark, emptyArray())
     fun listEncMark(str: StrFn) = str(R.string.cli_list_enc_mark, emptyArray())
     fun listFailed(str: StrFn, name: String) = str(R.string.cli_list_failed, arrayOf(name))
+    /** `-e cxdec` on a format that cannot be encrypted — an error, never a
+     *  silent no-op (a dropped flag would hand back an unencrypted archive). */
+    fun packEncOnlyXp3(str: StrFn) = str(R.string.cli_enc_only_xp3, emptyArray())
+    /** Unknown `-e` value. */
+    fun packUnknownEnc(str: StrFn, enc: String) = str(R.string.cli_pack_enc_unknown, arrayOf(enc))
     fun listFailedWhy(str: StrFn, name: String, why: String) = str(R.string.cli_list_failed_why, arrayOf(name, why))
     fun listEmpty(str: StrFn, name: String) = str(R.string.cli_list_empty, arrayOf(name))
     fun listTruncated(str: StrFn, more: Int) = str(R.string.cli_list_truncated, arrayOf(more.toString()))

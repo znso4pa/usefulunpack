@@ -426,11 +426,26 @@ mod tests {
         }
     }
 
+    /// The vendored real `sample.xp3` is current-format, and its index offset
+    /// lives at byte 32 — the position the validator used to get wrong, which
+    /// made every real XP3 miss while the synthetic test stayed green.
+    #[test]
+    fn real_xp3_sample_is_identified() {
+        let _guard = SCAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let real: &[u8] = include_bytes!("../../vendor/xp3/sample.xp3");
+        let dir = std::env::temp_dir().join("uu_scan_xp3_real");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("sample.xp3");
+        std::fs::write(&p, real).unwrap();
+        let json = scan_file_json(p.to_str().unwrap()).unwrap();
+        assert!(json.contains("\"l\":\"XP3 archive\""), "{json}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Nothing in the table may panic on a truncated file — that is how a
     /// validator with an undersized header buffer took down the whole scan.
     #[test]
-    fn truncated_fixtures_never_panic() {
-        let _guard = SCAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    fn truncated_fixtures_never_panic() {        let _guard = SCAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join("uu_scan_trunc");
         let _ = std::fs::create_dir_all(&dir);
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");

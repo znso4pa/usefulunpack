@@ -19,8 +19,31 @@ private fun MainActivity.dp(id: Int) = resources.getDimensionPixelSize(id)
 private fun MainActivity.spx(id: Int) = resources.getDimension(id) / resources.displayMetrics.scaledDensity
 
 /** One detected signature: file offset + a technical format label, plus
- *  optional parsed metadata (ZIP EOCD validation gives size + file count). */
-data class ScanHit(val offset: Long, val label: String, val size: Long? = null, val fileCount: Int? = null)
+ *  optional parsed metadata (ZIP EOCD validation gives size + file count).
+ *
+ *  [note] is DISPLAY ONLY and never part of the label: the archive tables
+ *  (`ARCHIVE_LABELS`, `ARCHIVE_EXT_FOR_LABEL`, the CLI's fdN key lookup) all
+ *  match on the native label string, so enriching the label itself would break
+ *  routing. It carries the XP3 encryption state, which no magic can express. */
+data class ScanHit(
+    val offset: Long, val label: String, val size: Long? = null,
+    val fileCount: Int? = null, val note: String = ""
+)
+
+/**
+ * Adds the notes a label cannot carry. One place, called by both the scan
+ * window and `uu scan`, so the two can never disagree about what a hit is.
+ * Only XP3 needs it today: a cxdec archive's header and index are identical to
+ * a plain one, so nothing in the bytes distinguishes them — the game folder
+ * does (see `xp3SchemeToken`).
+ */
+fun enrichScanHits(f: File, hits: List<ScanHit>): List<ScanHit> = hits.map { h ->
+    if (ARCHIVE_LABELS[h.label] != "xp3") h
+    else {
+        val token = xp3SchemeToken("xp3", f)
+        if (token.isEmpty() || token == "plain") h else h.copy(note = token)
+    }
+}
 
 /**
  * Parses the scan-core JNI result: `[{"o":offset,"l":"label","s":size,"c":count}]`.
@@ -270,7 +293,7 @@ internal fun MainActivity.showSignatureScan(f: File) {
         val start = System.currentTimeMillis()
         val json = try { ScanCore.scanFile(f.absolutePath) } catch (_: Exception) { null }
         val elapsed = System.currentTimeMillis() - start
-        val hits = parseScanHits(json)
+        val hits = enrichScanHits(f, parseScanHits(json))
         poller.interrupt()
         runOnUiThread {
             // pd.isShowing alone can't catch a finished activity — the result
@@ -319,6 +342,9 @@ private fun MainActivity.showScanResultDialog(f: File, hits: List<ScanHit>, elap
             val hit = hits.getOrNull(pos) ?: return row
             val desc = buildString {
                 append(hit.label)
+                if (hit.note.isNotEmpty()) {
+                    append(getString(R.string.enc_suffix_paren, xp3SchemeLabel(strFnOf(this@showScanResultDialog), hit.note)))
+                }
                 if (hit.fileCount != null) append(getString(R.string.scan_zip_info, hit.fileCount))
                 if (hit.size != null) append(", ${fmt(hit.size)}")
             }

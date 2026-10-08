@@ -84,24 +84,40 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
                 }
                 return@thread
             }
+            // Encryption probe runs on this background thread with the listing
+            // (it reads the game folder's sidecar and scores real entries).
+            val encNote = xp3SchemeToken(format, src)
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
-                renderPreview(activeTab, src, entries, format, pwd, openKey)
+                renderPreview(activeTab, src, entries, format, pwd, openKey, encNote)
             }
         }
     }
+
+/**
+ * The preview title bar text. ONE place builds it, because two render paths
+ * write that view — the initial render here and a fragment rebuild in
+ * FolderFragment — and a title written in only one of them goes stale exactly
+ * like `displayPath()` once did (see AGENTS.md).
+ */
+internal fun MainActivity.previewTitleOf(tab: TabState): String {
+    val base = tab.previewSrc?.name ?: ""
+    val label = xp3SchemeLabel(strFnOf(this), tab.previewEncNote)
+    return if (label.isEmpty()) base else base + getString(R.string.enc_suffix_paren, label)
+}
 
 /**
  * Renders an archive preview INSIDE the given tab (no modal dialog), so the
  * ViewPager above stays swipeable and the user can flip windows while looking
  * at archive contents. Entries/selection state live on the TabState.
  */
-internal fun MainActivity.renderPreview(tab: TabState, src: File, entries: List<ArchiveEntry>, format: String, pwd: String, openKey: String) {
+internal fun MainActivity.renderPreview(tab: TabState, src: File, entries: List<ArchiveEntry>, format: String, pwd: String, openKey: String, encNote: String = "") {
     tab.previewActive = true
     tab.previewSrc = src
     tab.previewFormat = format
     tab.previewPwd = pwd
     tab.previewOpenKey = openKey
+    tab.previewEncNote = encNote
     tab.previewEntries = entries
     tab.previewSelected.clear()
     tab.previewExpanded.clear()
@@ -111,7 +127,7 @@ internal fun MainActivity.renderPreview(tab: TabState, src: File, entries: List<
         tab.fabExtract.visibility = View.GONE
         tab.bottomBar.visibility = View.GONE
         tab.batchBar?.visibility = View.GONE
-        tab.tvPreviewTitle.text = src.name
+        tab.tvPreviewTitle.text = previewTitleOf(tab)
         // Preview top-bar: search icon + overflow menu (编辑/条目/转换 live in
         // the menu and toast when the format doesn't apply — see FolderFragment).
         tab.btnPreviewSearch.visibility = View.VISIBLE
@@ -799,7 +815,12 @@ internal fun MainActivity.mergeIntoArchive(
                     // unencrypted copy of a protected archive.
                     val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                     val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
-                    val ok = compressDispatch(stageDir, outF, targetFmt, defaultCompressLevel(prefs, targetFmt), password, prefs)
+                    // Merging into an xp3 mirrors the TARGET archive's
+                    // encryption, for the same reason the repack does: a cxdec
+                    // game's filter runs over every entry, so a plain merge
+                    // result is unreadable by the game it is meant for.
+                    val mergeEnc = if (targetFmt == "xp3" && xp3SchemeToken("xp3", target).startsWith("cxdec:")) "cxdec" else ""
+                    val ok = compressDispatch(stageDir, outF, targetFmt, defaultCompressLevel(prefs, targetFmt), password, prefs, null, mergeEnc)
                     // 失败/取消清半成品（产物名可能是 root.pfs）。
                     if (cancelled || !ok) outF.delete()
                     runOnUiThread {
@@ -959,7 +980,15 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
                 gameNaming, ext
             )
             val ok = when (format) {
-                "xp3" -> Xp3Core.xp3CreateArchive("", editDir.path, outF.path, prefs.getInt("generic_level", 6).toString()) != null
+                // Mirror the source archive's encryption: a cxdec game's krkr2
+                // filter runs over EVERY entry, so a plain repack of an
+                // encrypted archive would be unreadable by the game that owns
+                // it. The original is still on disk and is the oracle the
+                // scheme is resolved from.
+                "xp3" -> Xp3Core.xp3CreateArchive(
+                    "", editDir.path, outF.path, prefs.getInt("generic_level", 6).toString(),
+                    if (ownerTab.previewEncNote.startsWith("cxdec:")) "cxdec" else ""
+                ) != null
                 "nsa" -> NsaCore.nsaCreateArchive("", editDir.path, outF.path, "2") != null
                 "iso" -> IsoCore.isoCreateArchive("", editDir.path, outF.path) != null
                 "ypf" -> YpfCore.ypfCreateArchive("", editDir.path, outF.path, prefs.getInt("generic_level", 6).toString()) != null
@@ -1313,6 +1342,10 @@ internal fun MainActivity.listEntriesJson(
             // off the UI thread (this callback runs on it).
             thread {
                 val entries = listPreviewEntries(nestedFmt, extracted, "")
+                // A nested cxdec archive has no sidecar of its own (it was just
+                // carved out of its parent), so the probe can only report
+                // "suspect" here — which is exactly the warning the user needs.
+                val encNote = xp3SchemeToken(nestedFmt, extracted)
                 runOnUiThread {
                     if (isFinishing || isDestroyed) { outDir.deleteRecursively(); return@runOnUiThread }
                     if (entries.isNullOrEmpty()) {
@@ -1334,7 +1367,7 @@ internal fun MainActivity.listEntriesJson(
                         if (winner != null) toast(getString(R.string.msg_archive_open_in_tab, tabTitle(winner)))
                         return@runOnUiThread
                     }
-                    renderPreview(newTab, extracted, entries, nestedFmt, "", openKey)
+                    renderPreview(newTab, extracted, entries, nestedFmt, "", openKey, encNote)
                 }
             }
             }

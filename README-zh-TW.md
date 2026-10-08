@@ -12,7 +12,7 @@
 
 | 功能 | 說明 |
 |------|------|
-| ✂️ **XP3** | 解壓 + 封包吉里吉里 `.xp3` |
+| ✂️ **XP3** | 解壓 + 封包吉里吉里 `.xp3`；**cxdec 內容過濾**（經典）可識別、可顯示（預覽標題 / 掃描 / `uu l`）並**可回寫** —— 重封 cxdec 遊戲的封包會保持原加密 |
 | 📦 **PFS** | 解壓 + 封包 Artemis `.pfs` / `.pf6` / `.pf8` |
 | 📜 **NSA/SAR** | 解壓 NScripter `.nsa` / `.sar` 封包（LZSS + SPB） |
 | 📦 **YPF** | 解壓 YU-RIS `.ypf` 封包，三層自適應邊界檢測 |
@@ -58,7 +58,7 @@
 | 🛡️ **防連點** | 800ms 冷卻 |
 | 🌙 **深色主題** | 護眼暗色 |
 | 🔬 **簽名掃描** | Rust scan-core 引擎：32 種簽名 / 83 個魔數模式任意偏移偵測，逐格式頭部驗證（真實大小 + 檔案數），**gzip/xz/lzma 解壓 dry-run 降誤報**，**頭加密 RAR5 兜底**，AhoCorasick 多模式匹配，串流掃描（整檔不進記憶體），一鍵解壓或切割（dd）原始片段 |
-| 🖥️ **內建終端機（CLI）** | 全螢幕終端機 + `uu` 命令集——`uu fmt / help / info / l / cat / hash / grep / cp / mv / rn / rm / mkdir / tree / du / stat / x / c / set / scan / cso / enc / mvdec / rmd / add / find / diff / hex / img / fd / b64`；支援管線（`| grep/head/tail/wc/sort`）、`> 檔案` 重導向、`&&` / `;` 串接，以及 `uu run <file.uut>` 的 **UUT 指令碼**（變數、`$1`/`$argc` 指令碼參數、`$(...)` 擷取輸出、行內與區塊式 `if`/`else`、`for a in *.zip ... end`、`for i in 1..5` 計數迴圈、`while` + `break`/`continue`、`else if` 鏈、整數算術（`set n = $n + 1`）、數值比較（`if n > 3`）、`||` 串接、`for x in $(指令)` 按行遍歷輸出、`if exist &lt;路徑&gt;` 檔案測試、`$?`（上一條退出碼）與 `return [退出碼]`；只允許 `uu`/`ls`/`cd`/`pwd`/`help`/`echo`，指令碼永遠不會變成 shell）。`am start --es uut <路徑>` 可無介面執行指令碼（供自動化：結果寫進終端機工作階段，同時留下一份 `<指令碼>.log`）。解壓/封包的進度**只寫在終端機裡**（約 30 字元 ASCII 條 + 位元組數/目前檔名/條目計數，不彈任何對話框），完成給 all set 提示。解壓可用萬用字元挑條目（`uu x game.xp3 "*.png"`），`uu l -j` 輸出原始條目 JSON（`n/s/d/e`）給指令碼用、`uu l -t` 把條目畫成樹；`uu cp / uu mv` 支援 `-f` 覆蓋（冪等指令碼）、`uu l -S` 按大小排序、`uu cat` 可直接讀純文字檔（`-e` 強制編碼）、`uu rmd` 條目萬用字元、UUT 行尾支援 `#` 註解；掃描命中註冊為 `fN` 位元組區間描述符：`uu scan video.mp4` 後 `uu l f3` 直接列內嵌 ZIP，無需先落盤；內建 `ls / pwd / cd`（cd 導航終端機紮根的視窗），其餘命令走系統 shell。按 tab 紮根：切走隱藏、切回工作階段還在 |
+| 🖥️ **內建終端機（CLI）** | 全螢幕終端機 + `uu` 命令集——`uu fmt / help / info / l / cat / hash / grep / cp / mv / rn / rm / mkdir / tree / du / stat / x / c / set / scan / cso / enc / mvdec / rmd / add / find / diff / hex / img / fd / b64`；支援管線（`| grep/head/tail/wc/sort`）、`> 檔案` 重導向、`&&` / `;` 串接，以及 `uu run <file.uut>` 的 **UUT 指令碼**（變數、`$1`/`$argc` 指令碼參數、`$(...)` 擷取輸出、行內與區塊式 `if`/`else`、`for a in *.zip ... end`、`for i in 1..5` 計數迴圈、`while` + `break`/`continue`、`else if` 鏈、整數算術（`set n = $n + 1`）、數值比較（`if n > 3`）、`||` 串接、`for x in $(指令)` 按行遍歷輸出、`if exist &lt;路徑&gt;` 檔案測試、`$?`（上一條退出碼）與 `return [退出碼]`；只允許 `uu`/`ls`/`cd`/`pwd`/`help`/`echo`，指令碼永遠不會變成 shell）。`am start --es uut <路徑>` 可無介面執行指令碼（供自動化：結果寫進終端機工作階段，同時留下一份 `<指令碼>.log`）。解壓/封包的進度**只寫在終端機裡**（約 30 字元 ASCII 條 + 位元組數/目前檔名/條目計數，不彈任何對話框），完成給 all set 提示。解壓可用萬用字元挑條目（`uu x game.xp3 "*.png"`），`uu l -j` 輸出原始條目 JSON（`n/s/d/e`）給指令碼用、`uu l -t` 把條目畫成樹；`uu cp / uu mv` 支援 `-f` 覆蓋（冪等指令碼）、`uu l -S` 按大小排序（`uu l` 還會報出吉里吉里封包的 cxdec 加密狀態）、`uu cat` 可直接讀純文字檔（`-e` 強制編碼）、`uu rmd` 條目萬用字元、UUT 行尾支援 `#` 註解；掃描命中註冊為 `fN` 位元組區間描述符：`uu scan video.mp4` 後 `uu l f3` 直接列內嵌 ZIP，無需先落盤；內建 `ls / pwd / cd`（cd 導航終端機紮根的視窗），其餘命令走系統 shell。按 tab 紮根：切走隱藏、切回工作階段還在 |
 | 🪟 **預覽工作區** | 封包預覽 ⋮ →「在視窗中開啟」：封包內容實體化成普通瀏覽視窗，多選/複製/移動/重新命名/分享/檔案資訊全部白拿；套娃封包天然遞迴（工作區裡還能再開工作區）；大封包（>200MB）先確認；關閉時可選清理快取；快取仍在時工作階段還原直接開回 |
 | 🔤 **文字編碼** | 全域文字編碼設定（UTF-8 / SHIFT-JIS / GBK / UTF-16）嚴格套用於所有文字預覽與內容搜尋（UTF-8/UTF-16 自動去 BOM）；偵測到大量亂碼時提示到設定切換 |
 | ✂️ **精確切割** | 簽名掃描的切割/解壓依驗證出的歸檔大小（zip/rar/7z/zstd/lz4/iso）精確擷取——夾在其它檔案中間的歸檔（如 `mp4 + zip + mp4`）能乾淨抽出，不帶尾部資料，解壓成功 |

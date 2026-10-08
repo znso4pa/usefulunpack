@@ -280,7 +280,8 @@ class UuCommandsTest {
         assertTrue(r.text.contains("PARAMETERS"))
         assertTrue(r.text.contains("-p <password>"))
         assertTrue(r.text.contains("fN"))
-        // 列宽契约：最长的 usage（uu c，68 字符）后面至少留 2 空格，禁止与说明粘连
+        // 列宽契约：最长的 usage（uu c，79 字符，含 -e cxdec）后面至少留 2 空格，
+        // 禁止与说明粘连。usage 变长时这里和 padEnd 必须一起改。
         assertTrue(r.text.contains("[-p pw]  Pack files or folders"))
         // UUT 段落必须在使用文档里（`uu run` 的语法只有这一处可查）
         assertTrue(r.text.contains("UUT SCRIPT"))

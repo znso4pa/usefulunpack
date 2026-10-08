@@ -8,7 +8,7 @@ Human-facing docs: [README](README.md) · [CONTRIBUTING](CONTRIBUTING.md) (中�
 ## Commands
 
 ```bash
-bash build.sh                      # full build: Rust cross-compile (3 ABIs) -> jniLibs -> assembleRelease -> ./UsefulUnpack.apk (needs NDK)
+bash build.sh                      # full build: Rust cross-compile (arm64-v8a + armeabi-v7a) -> jniLibs -> assembleRelease -> ./UsefulUnpack.apk (needs NDK)
 ./gradlew :app:assembleRelease     # Kotlin-only changes (output lands in app/build/outputs/apk/release/ — NOT the root APK)
 cargo test --workspace             # Rust suite — must stay green
 ./gradlew lintDebug                # baseline: 0 errors / 271 warnings — NEVER introduce new errors
@@ -119,6 +119,6 @@ Download the RPG Maker files with `curl` from `raw.githubusercontent.com/uuksu/R
 1. `cargo test --workspace` green (if Rust touched)
 2. `./gradlew lintDebug` — no new errors (if Kotlin/resources touched)
 3. `bash build.sh` completes (if JNI surface changed)
-4. If a format or codec was touched, run the real-file corpora above — synthetic round-trips are necessary, not sufficient
+4. If a format or codec was touched, run the real-file corpora above — synthetic round-trips are necessary, not sufficient. `crates/*/testdata` fixtures and `app/src/main/jniLibs/*.so` are **not in git** (copyright / build output): with them absent the affected tests print `SKIP …` and CI goes green without running a single real-file assertion, so the local corpus run is the real gate
 5. Behavioral checklist for UI-sensitive changes: rotation survival, cancel mid-op cleanup, parallel smoke (different formats overlap; same format queues; queued-cancel isolates), Honor scrollbar avoidance
 6. Four-locale string set comparison (same key set in all four `strings.xml`, and every `help_tutorials` item has a `Title\nBody` split)

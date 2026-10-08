@@ -188,16 +188,24 @@ pub fn resources_of(path: &std::path::Path) -> Result<BTreeMap<String, Vec<u8>>,
 mod tests {
     use super::*;
 
-    fn fixture() -> Vec<u8> {
+    /// The executable fixture is a real game file and is **not** distributed in
+    /// git (see `testdata/README.md`). `None` means it is absent — the caller
+    /// skips with a note, so a checkout without the corpus (CI) still passes.
+    fn fixture() -> Option<Vec<u8>> {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/fakegame.exe");
-        std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+        if !p.is_file() {
+            eprintln!("SKIP fakegame.exe: not present — the real fixture is not distributed in git (see crates/int-core/testdata/README.md)");
+            return None;
+        }
+        Some(std::fs::read(&p).unwrap())
     }
 
     /// The fixture is the executable arc_unpacker ships with its `.int` sample;
     /// it carries exactly the three resources the format keys itself from.
     #[test]
     fn finds_the_three_key_resources_in_the_real_fixture() {
-        let res = resource_map(&fixture());
+        let Some(data) = fixture() else { return; };
+        let res = resource_map(&data);
         let keys: Vec<&str> = res.keys().map(|s| s.as_str()).collect();
         assert!(keys.iter().any(|k| k.to_lowercase().contains("key_code")), "{keys:?}");
         assert!(keys.iter().any(|k| k.to_lowercase().contains("v_code2")), "{keys:?}");
@@ -213,11 +221,13 @@ mod tests {
     /// this parser runs on whatever the user's game folder happens to contain.
     #[test]
     fn malformed_images_are_survivable() {
-        // Truncated at every interesting boundary.
-        let real = fixture();
-        for cut in [0usize, 2, 0x40, 0x80, 0x90, 0x100, 0x1000] {
-            let slice = &real[..cut.min(real.len())];
-            let _ = resource_map(slice); // must not panic
+        // Truncated at every interesting boundary. The real fixture is optional
+        // (not distributed in git); the synthetic images below are not.
+        if let Some(real) = fixture() {
+            for cut in [0usize, 2, 0x40, 0x80, 0x90, 0x100, 0x1000] {
+                let slice = &real[..cut.min(real.len())];
+                let _ = resource_map(slice); // must not panic
+            }
         }
         // A PE header with an absurd section count / optional-header size.
         let mut b = vec![0u8; 0x200];
@@ -259,7 +269,7 @@ mod tests {
     /// us at, the PE walk returns a map (possibly empty) and never loops.
     #[test]
     fn mutated_executables_never_panic() {
-        let base = fixture();
+        let Some(base) = fixture() else { return; };
         for i in 0..1500usize {
             let mut d = base.clone();
             let mut r = (i as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);

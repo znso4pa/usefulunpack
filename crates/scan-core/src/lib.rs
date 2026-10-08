@@ -370,8 +370,13 @@ mod tests {
             ("c.dex.head", "Dalvik executable"),
         ];
         let mut checked = 0;
+        let mut absent = Vec::new();
         for (name, label) in cases {
             let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join(name);
+            if !p.is_file() {
+                absent.push(*name);
+                continue;
+            }
             let json = scan_file_json(p.to_str().unwrap()).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(
                 json.contains(&format!("\"l\":\"{label}\"")),
@@ -379,7 +384,15 @@ mod tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, cases.len());
+        if !absent.is_empty() {
+            eprintln!(
+                "SKIP {} of {} signature fixtures (not distributed in git — see crates/scan-core/testdata/README.md): {}",
+                absent.len(),
+                cases.len(),
+                absent.join(", ")
+            );
+        }
+        assert_eq!(checked + absent.len(), cases.len(), "every case must be either checked or reported absent");
     }
 
     /// The RPA and INT fixtures come from the sibling crates (no second copy to
@@ -388,15 +401,25 @@ mod tests {
     #[test]
     fn rpa_and_int_fixtures_are_identified() {
         let _guard = SCAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        for (bytes, label) in [
-            (&include_bytes!("../../rpa-core/testdata/official-renpy-8.5.3.rpa")[..], "Ren'Py archive"),
-            (&include_bytes!("../../int-core/testdata/ptcl.int")[..], "CatSystem2 INT archive"),
-            (&include_bytes!("../../rpa-core/testdata/rpatool-v2.rpa")[..], "Ren'Py archive"),
+        // Read at run time rather than with `include_bytes!`: these are real
+        // game files and are no longer distributed in git (the sibling crates'
+        // testdata/README.md records their provenance), so a checkout without
+        // the corpus must skip — not fail to compile.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for (rel, label) in [
+            ("../rpa-core/testdata/official-renpy-8.5.3.rpa", "Ren'Py archive"),
+            ("../int-core/testdata/ptcl.int", "CatSystem2 INT archive"),
+            ("../rpa-core/testdata/rpatool-v2.rpa", "Ren'Py archive"),
         ] {
+            let src = manifest.join(rel);
+            let Ok(bytes) = std::fs::read(&src) else {
+                eprintln!("SKIP {rel}: not present — real fixtures are not distributed in git");
+                continue;
+            };
             let dir = std::env::temp_dir().join(format!("uu_scan_fx_{}", bytes.len()));
             let _ = std::fs::create_dir_all(&dir);
             let p = dir.join("x.bin");
-            std::fs::write(&p, bytes).unwrap();
+            std::fs::write(&p, &bytes).unwrap();
             let json = scan_file_json(p.to_str().unwrap()).unwrap();
             assert!(json.contains(&format!("\"l\":\"{label}\"")), "{}: {json}", p.display());
             let _ = std::fs::remove_dir_all(&dir);
@@ -411,6 +434,10 @@ mod tests {
         let dir = std::env::temp_dir().join("uu_scan_trunc");
         let _ = std::fs::create_dir_all(&dir);
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
+        if !base.is_dir() {
+            eprintln!("SKIP truncated-fixture fuzz: crates/scan-core/testdata is absent (fixtures are not distributed in git)");
+            return;
+        }
         for entry in std::fs::read_dir(&base).unwrap().flatten() {
             let data = std::fs::read(entry.path()).unwrap();
             for cut in [1usize, 2, 3, 4, 8, 16, 24, 32, 64, 128, 512] {

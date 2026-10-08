@@ -123,7 +123,7 @@ Always go through `PollingProgressDialog` — since v5.14 it renders onto a shar
 bash build.sh
 ```
 
-This cross-compiles all Rust workspace crates for `arm64-v8a`, `armeabi-v7a`, `x86_64`, copies `.so` files into `app/src/main/jniLibs/`, then runs `gradlew assembleRelease`.
+This cross-compiles all Rust workspace crates for `arm64-v8a` and `armeabi-v7a`, copies `.so` files into `app/src/main/jniLibs/`, then runs `gradlew assembleRelease`. The `.so` payload is **not** in git (build output — see `.gitignore`), so a fresh clone has no native libraries until `build.sh` runs; the real-file fixtures under `crates/*/testdata/` are not in git either, so tests needing them print `SKIP …` and pass.
 
 ## Adding a New Archive Format
 

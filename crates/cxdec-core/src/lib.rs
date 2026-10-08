@@ -14,9 +14,13 @@
 //! pipeline (that is Cxdec_Tools' separate `recover` flow).
 
 use archive_common::{extract_progress, derive_dirs, json_escape, safe_join, DestAllocator};
-use cxdec_tools::crypto::hxv4_shellcode::{
-    read_control_block_from_tpm, CxEncryption, CxScheme, CONTROL_BLOCK_SIGNATURE,
-};
+use cxdec_tools::crypto::hxv4_shellcode::{read_control_block_from_tpm, CxScheme};
+/// Re-exported so `xp3-core` (the encrypted writer) can name the cipher type
+/// without depending on the vendored tool crate directly.
+pub use cxdec_tools::crypto::hxv4_shellcode::CxEncryption;
+/// The 24-byte marker a control block must start with. Re-exported for callers
+/// that build a synthetic game folder (tests) or scan for one themselves.
+pub use cxdec_tools::crypto::hxv4_shellcode::CONTROL_BLOCK_SIGNATURE;
 use cxdec_tools::r#struct::xp3::{Xp3Archive, Xp3Cipher, Xp3Entry};
 use std::fs;
 use std::io;
@@ -282,9 +286,231 @@ pub fn detect_cipher(
     archive: &str,
 ) -> Result<(CxEncryption, &'static str), String> {
     let cb = find_control_block(game_dir)?;
-    let tjs_text = fs::read_to_string(game_dir.join("xp3filter.tjs")).ok();
-    let tjs_params = tjs_text.as_deref().and_then(tjs_scheme_params);
+    score_schemes(&cb, tjs_params_of(game_dir), archive)
+}
 
+/// The mask/offset the game's own `xp3filter.tjs` decode entry uses
+/// (`bondary = (hash & 0x275) + 0x380` in the feng template).
+fn tjs_params_of(game_dir: &Path) -> Option<(u32, u32)> {
+    fs::read_to_string(game_dir.join("xp3filter.tjs"))
+        .ok()
+        .as_deref()
+        .and_then(tjs_scheme_params)
+}
+
+/// What a scheme probe could establish about one archive. The three "no" cases
+/// are kept apart on purpose: "no control block" means this is not a cxdec game
+/// folder (the archive may well be plain), while "no scheme match" means the
+/// folder *is* cxdec but no known scheme decrypts this archive — the caller
+/// shows a different message for each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemeProbe {
+    Detected(&'static str),
+    NoControlBlock,
+    NoSchemeMatch,
+}
+
+/// Answers "which cxdec scheme protects this archive?" without extracting
+/// anything. Reads the control block once and scores it against the archive's
+/// first entries — the same work `detect_cipher` does, so the two can never
+/// disagree about which scheme an archive uses.
+pub fn probe_scheme(game_dir: &Path, archive: &str) -> SchemeProbe {
+    let cb = match find_control_block(game_dir) {
+        Ok(cb) => cb,
+        Err(_) => return SchemeProbe::NoControlBlock,
+    };
+    match score_schemes(&cb, tjs_params_of(game_dir), archive) {
+        Ok((_, name)) => SchemeProbe::Detected(name),
+        Err(_) => SchemeProbe::NoSchemeMatch,
+    }
+}
+
+/// Builds the cipher for a game folder + a scheme NAME, as reported by
+/// `probe_scheme`/`detect_cipher`. For the encrypted writer, where the scheme
+/// is already known from an existing encrypted archive of the same game — it
+/// never guesses a scheme, and it is deterministic: the same name + folder
+/// always rebuilds the same cipher the reader would have used.
+///
+/// Why the tjs constants matter even though detection cannot verify them:
+/// `mask`/`offset` only decide the length of the leading run decoded with the
+/// raw hash (`base_offset = (hash & mask) + offset`, typically under ~1.5 KB),
+/// and any entry shorter than that decrypts identically under every
+/// mask/offset. Detection scores 64-byte prefixes, so it pins the *branch
+/// orders* and leaves mask/offset to the script — which is exactly why they
+/// must come from the game's own tjs here.
+pub fn cipher_by_name(game_dir: &Path, scheme_name: &str) -> Result<CxEncryption, String> {
+    let cb = find_control_block(game_dir)?;
+    let spec = spec_by_name(scheme_name, tjs_params_of(game_dir))
+        .ok_or_else(|| format!("cxdec: unknown scheme name {scheme_name}"))?;
+    cipher_for(spec, &cb.words, cb.from_tjs)
+}
+
+/// Whether the archive looks like an encrypted one whose key material is gone.
+///
+/// The INFO protected flag ALONE is not evidence — measured on a real
+/// 294 MB / 7926-entry Kirikiri archive from a game with no filter: every
+/// entry carries the flag, yet the stored segments inflate to perfectly good
+/// WebP/TJS bytes. So the rule needs both halves: the packer says a filter
+/// applies, AND nothing in the archive reads as content. A plain archive whose
+/// first entries are recognizable stays `false`; a real cxdec archive without
+/// its sidecar (inflated prefixes are uniform noise) is `true`.
+///
+/// `false` also covers "could not tell" — the label this feeds is a warning,
+/// and a warning that fires on healthy archives is worse than none.
+pub fn content_looks_encrypted(archive: &str) -> bool {
+    let mut arch = match Xp3Archive::open(Path::new(archive)) {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    if !arch.entries.iter().any(|e| e.is_encrypted) {
+        return false;
+    }
+    // A no-op cipher: `read_entry_prefix` inflates the segment and hands the
+    // bytes to the cipher, so leaving them alone is exactly the "before
+    // decryption" content this test is about.
+    let mut noop = |_h: u32, _o: u64, _d: &mut [u8]| Ok(());
+    let probe = arch.entries.len().min(8);
+    for i in 0..probe {
+        match arch.read_entry_prefix(i, 64, &mut noop) {
+            Ok(data) => {
+                if looks_decrypted(&data) || looks_like_text(&data) {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
+/// Text-ish prefix — deliberately narrow, because the obvious tests do not
+/// work at 64 bytes:
+/// * "few control bytes" passes ciphertext (a short ASCII plaintext XORed with
+///   a high keystream comes out all high bytes) — measured on this crate's own
+///   fixtures, it said "text" for every encrypted entry;
+/// * "valid Shift-JIS pairs" is nearly meaningless (random high bytes usually
+///   pair up).
+/// So only the two shapes a Kirikiri script really has count: a UTF-16 BOM, or
+/// the BOM-less UTF-16LE fingerprint ([printable, 0x00] pairs — what krkr2's
+/// .tjs/.ks files actually look like). Anything else is "not obviously text",
+/// which biases the caller toward NOT warning on healthy archives.
+fn looks_like_text(data: &[u8]) -> bool {
+    if data.len() < 4 {
+        return false;
+    }
+    if data.starts_with(&[0xFF, 0xFE]) || data.starts_with(&[0xFE, 0xFF]) {
+        return true;
+    }
+    // BOM-less UTF-16LE: every other byte is NUL and its neighbour is printable.
+    let pairs = data.len() / 2;
+    if pairs >= 8 {
+        let le = data.chunks_exact(2).filter(|p| p[1] == 0 && (0x20..0x7F).contains(&p[0])).count();
+        if le * 10 >= pairs * 8 {
+            return true;
+        }
+    }
+    // Plain single-byte text (an ASCII config/script): no NULs and almost
+    // entirely printable. Shift-JIS-heavy scripts fall through here, which is
+    // fine — the caller probes several entries and one recognizable file is
+    // enough; being generous here would only make the warning fire on healthy
+    // archives.
+    if data.contains(&0) {
+        return false;
+    }
+    let printable = data
+        .iter()
+        .filter(|&&b| (0x20..0x7F).contains(&b) || b == b'\n' || b == b'\r' || b == b'\t')
+        .count();
+    printable * 10 >= data.len() * 9
+}
+
+/// Reads one named entry with an explicit cipher — the encrypted writer's
+/// self-check. Names are matched as stored (the writer emits `/` separators,
+/// which is also what the reader reports).
+pub fn read_named_with(
+    archive: &str,
+    name: &str,
+    cx: &mut CxEncryption,
+) -> Result<Vec<u8>, String> {
+    read_named_impl(archive, name, cx, None)
+}
+
+/// Same, but only the first `max_len` bytes — for entries too large to buffer
+/// whole during a verification pass.
+pub fn read_named_prefix_with(
+    archive: &str,
+    name: &str,
+    max_len: usize,
+    cx: &mut CxEncryption,
+) -> Result<Vec<u8>, String> {
+    read_named_impl(archive, name, cx, Some(max_len))
+}
+
+fn read_named_impl(
+    archive: &str,
+    name: &str,
+    cx: &mut CxEncryption,
+    max_len: Option<usize>,
+) -> Result<Vec<u8>, String> {
+    let mut arch = Xp3Archive::open(Path::new(archive)).map_err(|e| format!("XP3: {e}"))?;
+    let idx = arch
+        .entries
+        .iter()
+        .position(|e| e.name == name)
+        .ok_or_else(|| format!("XP3: 归档内没有条目 {name}"))?;
+    let mut cipher_fn = |hash: u32, offset: u64, data: &mut [u8]| {
+        cx.decrypt(hash, offset, data)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+    };
+    match max_len {
+        Some(n) => arch.read_entry_prefix(idx, n, &mut cipher_fn),
+        None => arch.read_entry(idx, &mut cipher_fn),
+    }
+    .map_err(|e| format!("XP3: {e}"))
+}
+
+/// The scheme a given name refers to, across the tjs/feng/default/game-table
+/// universe — the inverse of the names `score_schemes` reports. The tjs
+/// constants override the template ones exactly as they do in the candidate
+/// list, so a tjs-derived scheme name round-trips.
+fn spec_by_name(name: &str, tjs_params: Option<(u32, u32)>) -> Option<SchemeSpec> {
+    if let Some((mask, offset)) = tjs_params {
+        if name == FENG_TEMPLATE.name {
+            return Some(SchemeSpec { mask, offset, ..FENG_TEMPLATE });
+        }
+        if name == DEFAULT_ORDERS.name {
+            return Some(SchemeSpec { mask, offset, ..DEFAULT_ORDERS });
+        }
+    }
+    [FENG_TEMPLATE, DEFAULT_ORDERS]
+        .into_iter()
+        .chain(SCHEME_TABLE)
+        .find(|spec| spec.name == name)
+}
+
+/// Builds a cipher from an explicit spec + control block. Only valid where the
+/// scheme is already known (see `cipher_by_name`), never for guessing.
+fn cipher_for(spec: SchemeSpec, cb_words: &[u32], from_tjs: bool) -> Result<CxEncryption, String> {
+    // Same inversion rule as `score_schemes`: the TJS array holds the script's
+    // raw values and the VM complements at load, so it is inverted once here.
+    let words: Vec<u32> = if from_tjs {
+        cb_words.iter().map(|w| !w).collect()
+    } else {
+        cb_words.to_vec()
+    };
+    let mut scheme = CxScheme::base(spec.mask, spec.offset, words);
+    scheme.prolog_order = spec.prolog_order;
+    scheme.even_branch_order = spec.even_branch_order;
+    scheme.odd_branch_order = spec.odd_branch_order;
+    CxEncryption::new(scheme, None).map_err(|e| format!("cxdec: {e:?}"))
+}
+
+/// Scores every candidate scheme against the archive's first entries.
+fn score_schemes(
+    cb: &ControlBlock,
+    tjs_params: Option<(u32, u32)>,
+    archive: &str,
+) -> Result<(CxEncryption, &'static str), String> {
     // The vendored VM complements each control-block word on every ECB load
     // (MovEaxIndirect), and its TPM reader pre-complements — the two cancel
     // out for TPM games. The TJS array holds the script's raw values, so the
@@ -688,9 +914,6 @@ mod tests {
         for (i, b) in raw.iter_mut().enumerate().skip(CONTROL_BLOCK_SIGNATURE.len()) {
             *b = (i % 251) as u8;
         }
-        let words: Vec<u32> = raw.chunks_exact(4)
-            .map(|q| !u32::from_le_bytes([q[0], q[1], q[2], q[3]]))
-            .collect();
         // The reader yields the inverted words and the effective table must
         // equal them; since encrypt_entry hands the VM inverted words, feed
         // it the raw bytes' words instead (double inversion = identity).
@@ -733,6 +956,77 @@ mod tests {
             dir.to_str().unwrap(), xp3.to_str().unwrap(), dir.join("out").to_str().unwrap(), None,
         ).unwrap_err();
         assert!(err.contains("control block"), "got {err}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The UI probe must report the same scheme `detect_cipher` scores, and the
+    /// name it reports must be enough to rebuild that cipher from the folder
+    /// alone — that round-trip is what the encrypted writer relies on.
+    #[test]
+    fn probe_scheme_reports_and_rebuilds_the_scoring_cipher() {
+        let dir = tmp("probe_detected");
+        fs::create_dir_all(&dir).unwrap();
+        let words = fake_control_block();
+        // The game's own constants deliberately differ from the feng template's
+        // (0x275/0x380): if the rebuild ignored the tjs and used the template
+        // constants, the cipher would be wrong and the decrypt below would not
+        // reproduce the plaintext. With identical constants the test could not
+        // tell the two apart — it would pass either way.
+        let spec = SchemeSpec { mask: 0x2AB, offset: 0x4C1, ..FENG_TEMPLATE };
+        fs::write(dir.join("xp3filter.tjs"), make_tjs(&words, spec.mask, spec.offset)).unwrap();
+        // 4096 bytes, not 64: mask/offset only decide how long the leading
+        // "prolog" run is (base_offset = (hash & mask) + offset, ~1.5 KB), and
+        // below that length every mask/offset yields the same keystream. A short
+        // entry would make this test insensitive to the tjs constants.
+        let plain = png_plaintext(4096);
+        let (hash, enc) = encrypt_entry(&spec, &words, &plain);
+        let xp3 = dir.join("data.xp3");
+        fs::write(&xp3, build_xp3(&[("bg/logo.png", hash, enc)])).unwrap();
+
+        let name = match probe_scheme(&dir, xp3.to_str().unwrap()) {
+            SchemeProbe::Detected(name) => name,
+            other => panic!("expected Detected, got {other:?}"),
+        };
+        assert!(name.contains("feng"), "got {name}");
+
+        // Rebuild the cipher from the NAME alone and decrypt the entry back to
+        // the original bytes: the writer has nothing else to go on.
+        let mut cx = cipher_by_name(&dir, name).expect("name must rebuild the cipher");
+        let mut arch = Xp3Archive::open(&xp3).unwrap();
+        let mut cipher_fn = |h: u32, off: u64, data: &mut [u8]| {
+            cx.decrypt(h, off, data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        };
+        assert_eq!(arch.read_entry(0, &mut cipher_fn).unwrap(), plain);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// "No control block" (not a cxdec folder) and "control block but no scheme
+    /// fits" (a cxdec folder we cannot decrypt) must stay apart — the UI shows a
+    /// different message for each.
+    #[test]
+    fn probe_scheme_distinguishes_missing_sidecar_from_no_match() {
+        let dir = tmp("probe_states");
+        fs::create_dir_all(&dir).unwrap();
+        let words = fake_control_block();
+        let xp3 = dir.join("data.xp3");
+
+        // No sidecar at all → NoControlBlock, whatever the archive holds.
+        fs::write(&xp3, build_xp3(&[("f.bin", 0x1234_5678, vec![0u8; 64])])).unwrap();
+        assert_eq!(probe_scheme(&dir, xp3.to_str().unwrap()), SchemeProbe::NoControlBlock);
+
+        // Sidecar present but nothing scores → NoSchemeMatch. The constant byte
+        // is searched rather than assumed: a wrong cipher can still produce a
+        // 2-byte magic by chance (MP3 frame sync is 1 in 2048) and flake.
+        fs::write(dir.join("xp3filter.tjs"), make_tjs(&words, 0x275, 0x380)).unwrap();
+        let mut witness = None;
+        for b in 0u16..=255 {
+            fs::write(&xp3, build_xp3(&[("f.bin", 0x1234_5678, vec![b as u8; 64])])).unwrap();
+            if probe_scheme(&dir, xp3.to_str().unwrap()) == SchemeProbe::NoSchemeMatch {
+                witness = Some(b as u8);
+                break;
+            }
+        }
+        assert!(witness.is_some(), "no constant payload stayed unscored");
         fs::remove_dir_all(&dir).ok();
     }
 }

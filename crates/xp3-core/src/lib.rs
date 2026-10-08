@@ -3,9 +3,10 @@ use jni::objects::{JClass, JString};
 use jni::sys::{jstring, jlong};
 use archive_common::{s, SyncIo, oneshot_async, json_escape, derive_dirs, safe_join, extract_result_json, ProgressWriter, ProgressReader, DestAllocator};
 use archive_common::{extract_progress, compress_progress};
+use archive_cxdec_core::CxEncryption;
 use xp3::read::XP3Archive;
 use xp3::header::XP3Version;
-use xp3::write::XP3Writer;
+use xp3::write::{XP3Writer, TransformFn};
 use std::fs::{self, File};
 use std::collections::HashSet;
 use std::io::{BufReader, BufWriter};
@@ -167,6 +168,46 @@ fn extract_xp3(input: &str, output: &str) -> Result<(u32, u32), String> {
         }
     }
     Ok((total, fail))
+}
+
+/// Encryption state of one XP3, as a machine token the UI localizes:
+///   `plain`          — no protection (or no evidence either way)
+///   `cxdec:<scheme>` — cxdec-protected; the scheme scored against real entries
+///   `cxdec:?`        — a cxdec game folder, but no known scheme decrypts it
+///   `suspect`        — no cxdec sidecar, yet the index marks entries protected
+///
+/// Deliberately does NOT call `clear_cancel()` and never touches the progress
+/// store: it shares this .so (and that store) with extraction, so clearing
+/// anything here would wipe a running operation's counters.
+fn probe_scheme_token(archive: &str) -> String {
+    let dir = Path::new(archive).parent().unwrap_or_else(|| Path::new("."));
+    match archive_cxdec_core::probe_scheme(dir, archive) {
+        archive_cxdec_core::SchemeProbe::Detected(name) => format!("cxdec:{name}"),
+        archive_cxdec_core::SchemeProbe::NoSchemeMatch => "cxdec:?".to_string(),
+        archive_cxdec_core::SchemeProbe::NoControlBlock => {
+            // No sidecar left to work with. The flag alone is not evidence (a
+            // real filter-less archive sets it on every entry and still reads
+            // as plain), so this asks whether the CONTENT is unrecognizable too.
+            if archive_cxdec_core::content_looks_encrypted(archive) {
+                "suspect".to_string()
+            } else {
+                "plain".to_string()
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3ProbeScheme(
+    mut env: JNIEnv, _: JClass, input: JString,
+) -> jstring {
+    let inp = s(&mut env, &input);
+    // A probe failure must never break preview/listing, so it returns null
+    // ("no note") instead of throwing.
+    match guarded(move || Ok::<String, String>(probe_scheme_token(&inp))) {
+        Ok(tok) => match env.new_string(&tok) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() },
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
 fn list_xp3(input: &str) -> Result<String, String> {
@@ -346,11 +387,173 @@ fn collect_files_xp3(base: &Path) -> Result<Vec<(PathBuf, String)>, String> {
     Ok(out)
 }
 
-fn create_xp3(input: &str, output: &str, level: i32) -> Result<u32, String> {
+/// How an encrypted pack resolved its scheme. Read by Kotlin right after a
+/// successful `xp3CreateArchive` (same .so, and the xp3 format slot is held for
+/// the whole operation, so no other pack can overwrite it in between).
+static LAST_ENC_NOTE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+fn set_last_enc_note(note: &str) {
+    if let Ok(mut g) = LAST_ENC_NOTE.lock() {
+        *g = note.to_string();
+    }
+}
+
+/// Machine-readable note for the UI: which scheme was used, where it came from,
+/// and whether it could be checked against real ciphertext.
+fn enc_note_json(scheme: &str, source: &str, verified: bool) -> String {
+    format!(
+        r#"{{"scheme":"{}","source":"{}","verified":{}}}"#,
+        json_escape(scheme), json_escape(source), verified
+    )
+}
+
+/// Resolves the cxdec scheme to encrypt a new archive with.
+///
+/// Only two sources exist, and they are not equally trustworthy:
+/// 1. an existing encrypted `.xp3` in the output/source folder — its scheme was
+///    scored against real game ciphertext by `detect_cipher`, so it is verified;
+/// 2. the game's own `xp3filter.tjs` constants + the feng template ordering —
+///    nothing can check this, so the note marks it unverified.
+/// With neither, the pack is refused rather than guessed at.
+fn resolve_writer_cipher(input: &Path, output: &Path) -> Result<(CxEncryption, String), String> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(d) = output.parent() {
+        dirs.push(d.to_path_buf());
+    }
+    if input.is_dir() && !dirs.contains(&input.to_path_buf()) {
+        dirs.push(input.to_path_buf());
+    }
+
+    for dir in &dirs {
+        let mut oracles: Vec<PathBuf> = match fs::read_dir(dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.is_file()
+                        && p != output
+                        && p.extension().map(|e| e.eq_ignore_ascii_case("xp3")).unwrap_or(false)
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        oracles.sort();
+        for cand in oracles {
+            if let Ok((cx, name)) = archive_cxdec_core::detect_cipher(dir, &cand.to_string_lossy()) {
+                let src = cand
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                return Ok((cx, enc_note_json(name, &src, true)));
+            }
+        }
+    }
+
+    for dir in &dirs {
+        let params = fs::read_to_string(dir.join("xp3filter.tjs"))
+            .ok()
+            .as_deref()
+            .and_then(archive_cxdec_core::tjs_scheme_params);
+        if params.is_some() {
+            let name = archive_cxdec_core::FENG_TEMPLATE.name;
+            let cx = archive_cxdec_core::cipher_by_name(dir, name)?;
+            return Ok((cx, enc_note_json(name, "xp3filter.tjs", false)));
+        }
+    }
+
+    Err("XP3: cxdec 加密需要目录内有一份已加密的 .xp3 用于确定方案，或配套的 xp3filter.tjs / .tpm 控制表".to_string())
+}
+
+/// Entry size up to which the post-pack verification reads the entry back in
+/// full. Above it only a prefix is checked: the cipher is offset-addressed and
+/// the layout uniform, so the head catches the mistakes that matter, while a
+/// whole-entry read would buffer hundreds of MB of a movie in RAM.
+const VERIFY_FULL_MAX: u64 = 64 * 1024 * 1024;
+const VERIFY_PREFIX: usize = 64 * 1024;
+
+fn adler32_of(path: &Path) -> Result<u32, String> {
+    use std::io::Read as _;
+    let mut f = File::open(path).map_err(|e| format!("XP3 open {}: {e}", path.display()))?;
+    let mut hasher = adler32::RollingAdler32::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| format!("XP3 read {}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update_buffer(&buf[..n]);
+    }
+    Ok(hasher.hash())
+}
+
+/// Reads back what an encrypted pack just wrote, with the same cipher, and
+/// compares it against the source bytes. Catches layout mistakes (protected
+/// flag, segment sizes, index) and a cipher/ADLR disagreement — the reader
+/// keys the cipher off the STORED checksum, so if our key derivation had used
+/// a different value the decrypted bytes would not match.
+fn verify_encrypted_pack(
+    output: &str,
+    files: &[(PathBuf, String)],
+    cipher: &std::sync::Arc<std::sync::Mutex<CxEncryption>>,
+    full_max: u64,
+) -> Result<(), String> {
+    use std::io::Read as _;
+    for (src, name) in files {
+        if compress_progress::cancelled() {
+            return Err("cancelled".to_string());
+        }
+        compress_progress::set_name(name);
+        let size = src.metadata().map(|m| m.len()).unwrap_or(0);
+        let got = {
+            let mut g = cipher.lock().map_err(|_| "XP3: cipher lock poisoned".to_string())?;
+            if size <= full_max {
+                archive_cxdec_core::read_named_with(output, name, &mut g)?
+            } else {
+                archive_cxdec_core::read_named_prefix_with(output, name, VERIFY_PREFIX, &mut g)?
+            }
+        };
+        let expect_len = if size <= full_max { size } else { VERIFY_PREFIX.min(size as usize) as u64 };
+        if got.len() as u64 != expect_len {
+            return Err(format!("XP3: 自校验失败（{name}: 读回 {} 字节，应为 {expect_len}）", got.len()));
+        }
+        let mut f = File::open(src).map_err(|e| format!("XP3 open {}: {e}", src.display()))?;
+        let mut expect = vec![0u8; got.len()];
+        f.read_exact(&mut expect).map_err(|e| format!("XP3 read {}: {e}", src.display()))?;
+        if got != expect {
+            return Err(format!("XP3: 自校验失败（{name}: 解回的字节与源文件不一致）"));
+        }
+        // Count the WHOLE entry even when only a prefix was read: the total is
+        // 2 x the payload (write pass + verify pass), so anything less would
+        // leave the bar short of 100% on an archive with large entries.
+        compress_progress::add_bytes(if size <= full_max { got.len() as u64 } else { size });
+    }
+    Ok(())
+}
+
+fn create_xp3(input: &str, output: &str, level: i32, enc: &str) -> Result<u32, String> {
     let files = collect_files_xp3(Path::new(input))?;
     if files.is_empty() { return Err("XP3: no files to archive".to_string()); }
     let total: u64 = files.iter().map(|(p, _)| p.metadata().map(|m| m.len()).unwrap_or(0)).sum();
-    compress_progress::reset(total);
+
+    let encrypted = enc.eq_ignore_ascii_case("cxdec");
+    let cipher = if encrypted {
+        let (cx, note) = resolve_writer_cipher(Path::new(input), Path::new(output))?;
+        set_last_enc_note(&note);
+        Some(std::sync::Arc::new(std::sync::Mutex::new(cx)))
+    } else {
+        set_last_enc_note("");
+        None
+    };
+
+    // Encrypted entries are written STORED (un-packed). That is the only layout
+    // this project has evidence for: the reader inflates before it decrypts, so
+    // a packed encrypted segment would have to hold zlib(ciphertext) — plausible
+    // but unverified, and pointless to boot (compressing ciphertext). The level
+    // therefore does not apply to an encrypted pack.
+    //
+    // The total covers the verify pass too: it re-reads every entry, and a bar
+    // that sits at 100% while the archive is still being checked is worse than
+    // no bar at all (same rule as the recycle bin's cross-volume copy).
+    compress_progress::reset(if encrypted { total.saturating_mul(2) } else { total });
 
     let out_file = File::create(output).map_err(|e| format!("XP3 create {output}: {e}"))?;
     let mut writer = oneshot_async(XP3Writer::new(
@@ -367,32 +570,87 @@ fn create_xp3(input: &str, output: &str, level: i32) -> Result<u32, String> {
         compress_progress::set_file(size);
         // level 0 = raw store (no zlib wrapper), matching "store" semantics
         let compression: Option<u8> = if lvl == 0 { None } else { Some(lvl) };
-        let mut fw = oneshot_async(writer.file(name.clone(), false, compression))
-            .map_err(|e| format!("XP3 add {name}: {e}"))?;
         let src_file = File::open(src).map_err(|e| format!("XP3 open {}: {e}", src.display()))?;
         let mut reader = SyncIo(ProgressReader::compress(BufReader::new(src_file)));
-        if oneshot_async(tokio::io::copy(&mut reader, &mut fw)).is_err() {
+        let write_result = match &cipher {
+            Some(cx) => {
+                // The cipher keys off adler32(plaintext), which is also the ADLR
+                // the writer stores — it needs the value before the first byte,
+                // so it is computed in its own pass over the file.
+                let hash = adler32_of(src)?;
+                let shared = std::sync::Arc::clone(cx);
+                let transform = TransformFn::new(move |off: u64, data: &mut [u8]| {
+                    let mut g = shared
+                        .lock()
+                        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "cipher lock"))?;
+                    g.encrypt(hash, off, data)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+                });
+                oneshot_async(async {
+                    let mut fw = writer.file_transformed(name.clone(), true, transform).await?;
+                    tokio::io::copy(&mut reader, &mut fw).await?;
+                    fw.finish().await?;
+                    Ok::<(), std::io::Error>(())
+                })
+            }
+            None => oneshot_async(async {
+                let mut fw = writer.file(name.clone(), false, compression).await?;
+                tokio::io::copy(&mut reader, &mut fw).await?;
+                fw.finish().await?;
+                Ok::<(), std::io::Error>(())
+            }),
+        };
+        if write_result.is_err() {
+            let _ = fs::remove_file(output);
             return Err(format!("XP3 write {name}: io error"));
         }
-        oneshot_async(fw.finish()).map_err(|e| format!("XP3 finish {name}: {e}"))?;
         count += 1;
     }
-    oneshot_async(writer.finish(None)).map_err(|e| format!("XP3 finalize: {e}"))?;
-    if compress_progress::cancelled() { return Err("cancelled".to_string()); }
+    if oneshot_async(writer.finish(None)).is_err() {
+        let _ = fs::remove_file(output);
+        return Err("XP3 finalize: io error".to_string());
+    }
+    if compress_progress::cancelled() {
+        let _ = fs::remove_file(output);
+        return Err("cancelled".to_string());
+    }
+    if let Some(cx) = &cipher {
+        if let Err(e) = verify_encrypted_pack(output, &files, cx, VERIFY_FULL_MAX) {
+            // A pack that cannot be read back is not left on disk: the game
+            // would either reject it or, worse, load garbage.
+            let _ = fs::remove_file(output);
+            return Err(e);
+        }
+    }
     Ok(count)
 }
 
 #[no_mangle]
 pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CreateArchive(
     mut env: JNIEnv, _: JClass, _t: JString, input: JString, output: JString, level: JString,
+    enc: JString,
 ) -> jstring {
     compress_progress::clear_cancel();
     let inp = s(&mut env, &input); let out = s(&mut env, &output);
     let lvl: i32 = s(&mut env, &level).parse().unwrap_or(5);
-    match guarded(move || create_xp3(&inp, &out, lvl)) {
+    // "" = plain, "cxdec" = cxdec-encrypted (the scheme is resolved from the
+    // folder; see resolve_writer_cipher).
+    let enc = s(&mut env, &enc);
+    match guarded(move || create_xp3(&inp, &out, lvl, &enc)) {
         Ok(total) => { let json = extract_result_json(total, total, 0); match env.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
         Err(er) => { let _ = env.throw_new("java/io/IOException", er); std::ptr::null_mut() }
     }
+}
+/// Note describing the scheme the last encrypted pack used, as JSON
+/// (`{"scheme","source","verified"}`), or an empty string for a plain pack.
+/// Only meaningful right after a successful `xp3CreateArchive`: the format slot
+/// is held for the whole operation, so nothing else can overwrite it meanwhile.
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3LastEncNote(
+    mut env: JNIEnv, _: JClass,
+) -> jstring {
+    let note = LAST_ENC_NOTE.lock().map(|g| g.clone()).unwrap_or_default();
+    match env.new_string(&note) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }
 }
 #[no_mangle]
 pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CompressProgressCount(_: JNIEnv, _: JClass) -> jlong { compress_progress::bytes() as jlong }
@@ -438,7 +696,7 @@ mod tests {
         std::fs::write(dir.join("sub/b.bin"), &big).unwrap();
         let xp3 = dir.join("out.xp3");
         let out = dir.join("out");
-        create_xp3(dir.to_str().unwrap(), xp3.to_str().unwrap(), 6).unwrap();
+        create_xp3(dir.to_str().unwrap(), xp3.to_str().unwrap(), 6, "").unwrap();
         std::fs::create_dir_all(&out).unwrap();
         extract_xp3(xp3.to_str().unwrap(), out.to_str().unwrap()).unwrap();
         assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"hello xp3");
@@ -454,7 +712,7 @@ mod tests {
         std::fs::write(dir.join("one.dat"), vec![9u8; 5000]).unwrap();
         let xp3 = dir.join("one.xp3");
         let out = dir.join("out");
-        create_xp3(dir.join("one.dat").to_str().unwrap(), xp3.to_str().unwrap(), 0).unwrap();
+        create_xp3(dir.join("one.dat").to_str().unwrap(), xp3.to_str().unwrap(), 0, "").unwrap();
         std::fs::create_dir_all(&out).unwrap();
         extract_xp3(xp3.to_str().unwrap(), out.to_str().unwrap()).unwrap();
         assert_eq!(std::fs::read(out.join("one.dat")).unwrap(), vec![9u8; 5000]);
@@ -483,7 +741,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("script.txt"), &wrapper).unwrap();
         let xp3 = dir.join("ksd.xp3");
-        create_xp3(dir.to_str().unwrap(), xp3.to_str().unwrap(), 6).unwrap();
+        create_xp3(dir.to_str().unwrap(), xp3.to_str().unwrap(), 6, "").unwrap();
         let out = dir.join("out");
         std::fs::create_dir_all(&out).unwrap();
         extract_xp3(xp3.to_str().unwrap(), out.to_str().unwrap()).unwrap();
@@ -528,6 +786,253 @@ mod tests {
         let folded: HashSet<String> = names.iter().map(|n| n.to_lowercase()).collect();
         assert_eq!(folded.len(), 2, "case-only collision must be renamed, got {names:?}");
         assert!(names.iter().any(|n| n.contains("(1)")), "renamed variant expected, got {names:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The token the UI keys off, for the two states that need no cxdec folder:
+    /// a plain pack says `plain`, and an archive whose index marks entries
+    /// protected says `suspect` — which is also the shape of the vendored real
+    /// `sample.xp3` (flag set, content plain).
+    #[test]
+    fn probe_token_reports_plain_and_suspect() {
+        let _g = progress_lock();
+        let dir = tmp("probe_token");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"hello".to_vec()).unwrap();
+        let plain = dir.join("plain.xp3");
+        create_xp3(dir.to_str().unwrap(), plain.to_str().unwrap(), 6, "").unwrap();
+        assert_eq!(probe_scheme_token(plain.to_str().unwrap()), "plain");
+
+        // A protected entry whose content is NOT readable, written by hand:
+        // both halves of the evidence (flag set + nothing recognizable) are
+        // needed. With readable content this is "plain" — see the sample below.
+        let prot = dir.join("prot.xp3");
+        let noise: Vec<u8> = (0..64u8).map(|i| 0x80 | (i & 0x3F)).collect();
+        {
+            let out_file = File::create(&prot).unwrap();
+            let mut writer = oneshot_async(XP3Writer::new(
+                XP3Version::Current { minor: 0 },
+                SyncIo(BufWriter::new(out_file)),
+            )).unwrap();
+            let mut fw = oneshot_async(writer.file("a.bin".to_string(), true, Some(6))).unwrap();
+            let mut payload: &[u8] = &noise;
+            oneshot_async(tokio::io::copy(&mut payload, &mut fw)).unwrap();
+            oneshot_async(fw.finish()).unwrap();
+            oneshot_async(writer.finish(None)).unwrap();
+        }
+        assert_eq!(probe_scheme_token(prot.to_str().unwrap()), "suspect");
+
+        // The real vendored sample: current format, protected flag 1, but its
+        // payload reads as plaintext. That combination is exactly what a real
+        // filter-less Kirikiri archive looks like (measured on a 294 MB /
+        // 7926-entry one: every entry flagged, every segment inflating to a
+        // valid WebP/TJS), so the flag alone must NOT raise the warning.
+        let real = dir.join("sample.xp3");
+        std::fs::write(&real, include_bytes!("../../vendor/xp3/sample.xp3")).unwrap();
+        assert_eq!(probe_scheme_token(real.to_str().unwrap()), "plain");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The same archive reports its scheme inside the game folder and `suspect`
+    /// once copied out of it — that is exactly the third state the user asked
+    /// for, and it is the only signal left when the sidecar is gone.
+    #[test]
+    fn probe_token_reports_cxdec_then_suspect_when_copied_out() {
+        let _g = progress_lock();
+        let dir = tmp("probe_cxdec_token");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("xp3filter.tjs"), fake_tjs(0x275, 0x380)).unwrap();
+        std::fs::write(dir.join("bg.png"), png_bytes(3000)).unwrap();
+        let xp3 = dir.join("data.xp3");
+        create_xp3(dir.to_str().unwrap(), xp3.to_str().unwrap(), 6, "cxdec").unwrap();
+        let token = probe_scheme_token(xp3.to_str().unwrap());
+        assert!(token.starts_with("cxdec:"), "{token}");
+        assert!(token.contains("feng"), "{token}");
+
+        let lonely = tmp("probe_cxdec_lonely");
+        std::fs::create_dir_all(&lonely).unwrap();
+        let copy = lonely.join("data.xp3");
+        std::fs::copy(&xp3, &copy).unwrap();
+        assert_eq!(probe_scheme_token(copy.to_str().unwrap()), "suspect");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&lonely).ok();
+    }
+
+    /// The verify pass accounts for the whole entry even when it only reads a
+    /// prefix, so the bar (total = 2 x payload) lands exactly on 100% instead
+    /// of stopping short — a bar that never fills reads as "still working".
+    /// The threshold is a parameter precisely so this branch is reachable with
+    /// a small file instead of a 64 MiB one.
+    #[test]
+    fn verify_prefix_path_still_lands_on_total() {
+        let _g = progress_lock();
+        let dir = tmp("enc_prefix");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("xp3filter.tjs"), fake_tjs(0x275, 0x380)).unwrap();
+        // Bigger than the verify prefix (64 KiB), so the prefix branch really
+        // reads less than the entry — with a small file it would read it whole
+        // and the accounting under test would be indistinguishable.
+        std::fs::write(dir.join("big.png"), png_bytes(100_000)).unwrap();
+        let xp3 = dir.join("data.xp3");
+        create_xp3(dir.to_str().unwrap(), xp3.to_str().unwrap(), 6, "cxdec").unwrap();
+        assert_eq!(
+            compress_progress::bytes(),
+            compress_progress::total_bytes(),
+            "an encrypted pack must finish at exactly its total",
+        );
+
+        // Same verify, threshold below the entry size: the prefix branch must
+        // still account for the whole entry.
+        compress_progress::reset(200_000);
+        let cx = archive_cxdec_core::cipher_by_name(&dir, "cxdec feng template").unwrap();
+        let files = vec![(dir.join("big.png"), "big.png".to_string())];
+        verify_encrypted_pack(xp3.to_str().unwrap(), &files, &std::sync::Arc::new(std::sync::Mutex::new(cx)), 1000)
+            .unwrap();
+        assert_eq!(compress_progress::bytes(), 100_000, "prefix verify counts the full entry");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A synthetic cxdec game folder: `xp3filter.tjs` carrying a control block
+    /// (the marker plus filler — the cipher only needs both sides to agree) and
+    /// the game's own mask/offset constants in the decode entry.
+    fn fake_tjs(mask: u32, offset: u32) -> String {
+        let mut bytes = archive_cxdec_core::CONTROL_BLOCK_SIGNATURE.to_vec();
+        // Varied filler, not a constant: a constant block makes the generated
+        // key stream degenerate (measured: it left ASCII plaintext readable
+        // after "encryption", so the encryption-evidence test looked broken
+        // while the fixture was the broken part).
+        bytes.extend((bytes.len()..4096).map(|i| ((i * 37 + 11) % 251) as u8));
+        let arr: Vec<String> = bytes.iter().map(|b| format!("0x{b:02X}")).collect();
+        format!(
+            "@set(_DEBUG=0)\nclass cxdec {{\n    var tempBlock = [{}];\n\
+             function cxdec_decode(hash, offset, buf, len) {{\n\
+             var bondary = (hash & 0x{mask:X}) + 0x{offset:X};\n    }}\n}}\n",
+            arr.join(", "),
+        )
+    }
+
+    /// Entries have to LOOK like something for the scheme scorer to score them
+    /// (it matches 13 plaintext magics on 64-byte prefixes), and their bytes
+    /// have to VARY like a real file's: a constant run, XORed with a constant
+    /// stretch of the keystream, leaves a constant ciphertext run that reads as
+    /// text — which made the encryption evidence test lie about its own fixture.
+    fn png_bytes(n: usize) -> Vec<u8> {
+        let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+        v.extend((v.len()..n).map(|i| ((i * 31 + 7) % 251) as u8));
+        v
+    }
+
+    /// The tjs path: no other archive to learn the scheme from, so the writer
+    /// uses the script's constants + the feng ordering, and says so.
+    #[test]
+    fn encrypted_pack_round_trips_and_notes_the_tjs_source() {
+        let _g = progress_lock();
+        let dir = tmp("enc_tjs");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Constants deliberately NOT the feng template's, and one entry far
+        // larger than a single write chunk (tokio::io::copy hands over 8 KiB at
+        // a time): that is what exercises the cipher's running offset and the
+        // base_offset split, which a 3 KB file never would.
+        std::fs::write(dir.join("xp3filter.tjs"), fake_tjs(0x2AB, 0x4C1)).unwrap();
+        std::fs::write(dir.join("bg.png"), png_bytes(3000)).unwrap();
+        std::fs::write(dir.join("big.png"), png_bytes(200_000)).unwrap();
+        std::fs::write(dir.join("script.ks"), b"*start\nhello\n".to_vec()).unwrap();
+        let xp3 = dir.join("data.xp3");
+        create_xp3(dir.to_str().unwrap(), xp3.to_str().unwrap(), 6, "cxdec").unwrap();
+
+        let note = LAST_ENC_NOTE.lock().unwrap().clone();
+        assert!(note.contains("\"verified\":false"), "{note}");
+        assert!(note.contains("xp3filter.tjs"), "{note}");
+        assert!(note.contains("feng"), "{note}");
+
+        // The entries must be marked protected (that is what makes a krkr2
+        // filter run over them) and must decrypt back to the source bytes.
+        assert!(archive_cxdec_core::content_looks_encrypted(xp3.to_str().unwrap()));
+        let mut cx = archive_cxdec_core::cipher_by_name(&dir, "cxdec feng template").unwrap();
+        let back = archive_cxdec_core::read_named_with(xp3.to_str().unwrap(), "bg.png", &mut cx).unwrap();
+        assert_eq!(back, png_bytes(3000));
+        let back2 = archive_cxdec_core::read_named_with(xp3.to_str().unwrap(), "big.png", &mut cx).unwrap();
+        assert_eq!(back2, png_bytes(200_000));
+        let back3 = archive_cxdec_core::read_named_with(xp3.to_str().unwrap(), "script.ks", &mut cx).unwrap();
+        assert_eq!(back3, b"*start\nhello\n".to_vec());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The verified path: an already-encrypted archive in the folder is the
+    /// oracle, and the note says the scheme came from it.
+    #[test]
+    fn encrypted_pack_prefers_an_existing_encrypted_archive() {
+        let _g = progress_lock();
+        let odir = tmp("enc_oracle");
+        std::fs::create_dir_all(&odir).unwrap();
+        std::fs::write(odir.join("xp3filter.tjs"), fake_tjs(0x275, 0x380)).unwrap();
+        std::fs::write(odir.join("bg.png"), png_bytes(3000)).unwrap();
+        let oracle = odir.join("patch.xp3");
+        create_xp3(odir.to_str().unwrap(), oracle.to_str().unwrap(), 6, "cxdec").unwrap();
+
+        // Target folder: the game's script (the control block lives there, and
+        // without it nothing can be encrypted) PLUS the oracle next to the
+        // output. The oracle decides the scheme; the script only supplies the
+        // key table.
+        let tdir = tmp("enc_target");
+        std::fs::create_dir_all(&tdir).unwrap();
+        std::fs::write(tdir.join("xp3filter.tjs"), fake_tjs(0x275, 0x380)).unwrap();
+        std::fs::write(tdir.join("bg.png"), png_bytes(4096)).unwrap();
+        std::fs::copy(&oracle, tdir.join("patch.xp3")).unwrap();
+        let out = tdir.join("data.xp3");
+        create_xp3(tdir.to_str().unwrap(), out.to_str().unwrap(), 6, "cxdec").unwrap();
+
+        let note = LAST_ENC_NOTE.lock().unwrap().clone();
+        assert!(note.contains("\"verified\":true"), "{note}");
+        assert!(note.contains("patch.xp3"), "{note}");
+
+        // Read back with the scheme the ORACLE scores — nothing else is available
+        // in this folder, and that is exactly the point.
+        let (mut cx, _) =
+            archive_cxdec_core::detect_cipher(&tdir, tdir.join("patch.xp3").to_str().unwrap()).unwrap();
+        let back = archive_cxdec_core::read_named_with(out.to_str().unwrap(), "bg.png", &mut cx).unwrap();
+        assert_eq!(back, png_bytes(4096));
+        std::fs::remove_dir_all(&odir).ok();
+        std::fs::remove_dir_all(&tdir).ok();
+    }
+
+    /// With neither source the pack is refused — and leaves nothing behind.
+    #[test]
+    fn encrypted_pack_refuses_without_a_scheme_source() {
+        let _g = progress_lock();
+        let dir = tmp("enc_refuse");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"plain".to_vec()).unwrap();
+        let out = dir.join("out.xp3");
+        let err = create_xp3(dir.to_str().unwrap(), out.to_str().unwrap(), 6, "cxdec").unwrap_err();
+        assert!(err.contains("cxdec"), "{err}");
+        assert!(!out.exists(), "a refused pack must not leave a file");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The post-pack verification must actually refuse a bad archive: feeding it
+    /// a cipher built from a different scheme has to fail loudly rather than
+    /// pass an archive the game could not read.
+    #[test]
+    fn verify_rejects_a_wrong_cipher() {
+        let _g = progress_lock();
+        let dir = tmp("enc_verify");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("xp3filter.tjs"), fake_tjs(0x275, 0x380)).unwrap();
+        std::fs::write(dir.join("bg.png"), png_bytes(3000)).unwrap();
+        let xp3 = dir.join("data.xp3");
+        create_xp3(dir.to_str().unwrap(), xp3.to_str().unwrap(), 6, "cxdec").unwrap();
+
+        let wrong = archive_cxdec_core::cipher_by_name(&dir, "cxdec default orders").unwrap();
+        let files = vec![(dir.join("bg.png"), "bg.png".to_string())];
+        let err = verify_encrypted_pack(
+            xp3.to_str().unwrap(),
+            &files,
+            &std::sync::Arc::new(std::sync::Mutex::new(wrong)),
+            VERIFY_FULL_MAX,
+        )
+        .unwrap_err();
+        assert!(err.contains("自校验失败"), "{err}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

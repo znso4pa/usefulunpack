@@ -12,7 +12,7 @@
 
 | 功能 | 说明 |
 |------|------|
-| ✂️ **XP3** | 解压 + 封包吉里吉里 `.xp3` |
+| ✂️ **XP3** | 解压 + 封包吉里吉里 `.xp3`；**cxdec 内容过滤**（经典）可识别、可显示（预览标题 / 扫描 / `uu l`）并**可回写** —— 重封 cxdec 游戏的归档会保持原加密 |
 | 📦 **PFS** | 解压 + 封包 Artemis `.pfs` / `.pf6` / `.pf8` |
 | 📜 **NSA/SAR** | 解压 NScripter `.nsa` / `.sar` 封包（LZSS + SPB），**封包**（stored / LZSS） |
 | 📦 **YPF** | 解压 YU-RIS `.ypf` 封包，三层自适应边界检测 |
@@ -60,7 +60,7 @@
 | 🛡️ **防连点** | 800ms 冷却 |
 | 🌙 **深色主题** | 护眼暗色 |
 | 🔬 **签名扫描** | Rust scan-core 引擎：**118 种签名 / 203 个魔数模式**任意偏移检测（含 **tar** `ustar` 与 **ISO 9660**），逐格式头部验证（真实大小 + 文件数），**gzip/xz/lzma 解压 dry-run 降误报**，**头加密 RAR5 兜底**，AhoCorasick 多模式匹配，流式扫描（整文件不进内存），一键解压或切割（dd）原始片段——夹在其它文件中间的归档也能找出来 |
-| 🖥️ **内置终端（CLI）** | 全屏终端 + `uu` 命令集——`uu fmt / help / info / l / cat / hash / grep / cp / mv / rn / rm / mkdir / tree / du / stat / x / c / set / scan / cso / enc / mvdec / rmd / add / find / diff / hex / img / fd / b64`；支持管道（`| grep/head/tail/wc/sort`）、`> 文件` 重定向、`&&` / `;` 串联，以及 `uu run <file.uut>` 的 **UUT 脚本**（变量、`$1`/`$argc` 脚本参数、`$(...)` 捕获输出、行内与块式 `if`/`else`、`for a in *.zip ... end`、`for i in 1..5` 计数循环、`while` + `break`/`continue`、`else if` 链、整数算术（`set n = $n + 1`）、数值比较（`if n > 3`）、`||` 串联、`for x in $(命令)` 按行遍历输出、`if exist <路径>` 文件测试、`$?`（上一条退出码）与 `return [退出码]`；只允许 `uu`/`ls`/`cd`/`pwd`/`help`/`echo`，脚本永远不会变成 shell）。`am start --es uut <路径>` 可无界面跑脚本（供自动化：结果写进终端会话，同时落一份 `<脚本>.log`）。解压/封包的进度**只写在终端里**（约 30 字符 ASCII 条 + 字节数/当前文件名/条目计数，不弹任何对话框），完成给 all set 提示。解压可按通配符挑条目（`uu x game.xp3 "*.png"`），`uu l -j` 输出原始条目 JSON（`n/s/d/e`）给脚本用、`uu l -t` 把条目画成树；`uu cp / uu mv` 支持 `-f` 覆盖（幂等脚本）、`uu l -S` 按大小排序、`uu cat` 可直接读纯文本文件（`-e` 强制编码）、`uu rmd` 条目通配、UUT 行尾支持 `#` 注释；扫描命中注册为 `fN` 字节区间描述符：`uu scan video.mp4` 后 `uu l f3` 直接列内嵌 ZIP，无需先落盘；内建 `ls / pwd / cd`（cd 导航终端扎根的窗口），其余命令走系统 shell。按 tab 扎根：切走隐藏、切回会话还在 |
+| 🖥️ **内置终端（CLI）** | 全屏终端 + `uu` 命令集——`uu fmt / help / info / l / cat / hash / grep / cp / mv / rn / rm / mkdir / tree / du / stat / x / c / set / scan / cso / enc / mvdec / rmd / add / find / diff / hex / img / fd / b64`；支持管道（`| grep/head/tail/wc/sort`）、`> 文件` 重定向、`&&` / `;` 串联，以及 `uu run <file.uut>` 的 **UUT 脚本**（变量、`$1`/`$argc` 脚本参数、`$(...)` 捕获输出、行内与块式 `if`/`else`、`for a in *.zip ... end`、`for i in 1..5` 计数循环、`while` + `break`/`continue`、`else if` 链、整数算术（`set n = $n + 1`）、数值比较（`if n > 3`）、`||` 串联、`for x in $(命令)` 按行遍历输出、`if exist <路径>` 文件测试、`$?`（上一条退出码）与 `return [退出码]`；只允许 `uu`/`ls`/`cd`/`pwd`/`help`/`echo`，脚本永远不会变成 shell）。`am start --es uut <路径>` 可无界面跑脚本（供自动化：结果写进终端会话，同时落一份 `<脚本>.log`）。解压/封包的进度**只写在终端里**（约 30 字符 ASCII 条 + 字节数/当前文件名/条目计数，不弹任何对话框），完成给 all set 提示。解压可按通配符挑条目（`uu x game.xp3 "*.png"`），`uu l -j` 输出原始条目 JSON（`n/s/d/e`）给脚本用、`uu l -t` 把条目画成树；`uu cp / uu mv` 支持 `-f` 覆盖（幂等脚本）、`uu l -S` 按大小排序（`uu l` 还会报出吉里吉里归档的 cxdec 加密状态）、`uu cat` 可直接读纯文本文件（`-e` 强制编码）、`uu rmd` 条目通配、UUT 行尾支持 `#` 注释；扫描命中注册为 `fN` 字节区间描述符：`uu scan video.mp4` 后 `uu l f3` 直接列内嵌 ZIP，无需先落盘；内建 `ls / pwd / cd`（cd 导航终端扎根的窗口），其余命令走系统 shell。按 tab 扎根：切走隐藏、切回会话还在 |
 | 🪟 **预览工作区** | 归档预览 ⋮ →「在窗口中打开」：包内容实体化成普通浏览窗口，多选/复制/移动/重命名/分享/文件信息全部白拿；套娃归档天然递归（工作区里还能再开工作区）；大包（>200MB）先确认；关闭时可选清理缓存；缓存仍在时会话恢复直接还原 |
 | 🔤 **文本编码** | 全局文本编码设置（UTF-8 / SHIFT-JIS / GBK / UTF-16）严格应用于所有文本预览与内容搜索；UTF-8/UTF-16 自动去 BOM 且 **按 BOM 自动探测**（UTF-16 脚本开箱即显）；预览/编辑器内置编码切换行，切完立即重渲染；乱码提示 + 严格 UTF-8 校验兜住"合法但错"的交叉误读 |
 | ✏️ **归档文本编辑** | 在 XP3/PFS 归档里改脚本/文本：解包 → 选脚本（`.ks`/`.tjs`/`.csv`…）→ 显式编码 + 原 BOM 保真地编辑 → 重新打包成 `原名-cn.xp3/pfs`，应用内完整闭环 |

@@ -1,5 +1,7 @@
 mod stream;
 
+pub use self::stream::TransformFn;
+
 use core::{
     pin::Pin,
     task::{Context, Poll, ready},
@@ -68,13 +70,44 @@ where
         protected: bool,
         compression: Option<u8>,
     ) -> io::Result<XP3FileWriter<'a, T>> {
+        self.file_inner(name, protected, compression, None).await
+    }
+
+    /// Same as [`XP3Writer::file`], but every chunk is passed through
+    /// `transform` on its way into the archive (see `TransformFn`). The entry
+    /// is stored un-packed — the transform must be length-preserving, so
+    /// `size == archive_size` still holds — and the ADLR checksum is the one
+    /// over what the CALLER writes. That is what an encrypted entry needs: the
+    /// cipher's key seed is the checksum of the *plaintext*, not of the
+    /// ciphertext the archive ends up holding.
+    pub async fn file_transformed<'a>(
+        &'a mut self,
+        name: String,
+        protected: bool,
+        transform: TransformFn,
+    ) -> io::Result<XP3FileWriter<'a, T>> {
+        self.file_inner(name, protected, None, Some(transform)).await
+    }
+
+    async fn file_inner<'a>(
+        &'a mut self,
+        name: String,
+        protected: bool,
+        compression: Option<u8>,
+        transform: Option<TransformFn>,
+    ) -> io::Result<XP3FileWriter<'a, T>> {
         let file_start = self.stream.stream_position().await? - self.start;
-        let stream = match compression {
-            Some(level) => XP3FileStream::Compressed(ZlibEncoder::with_quality(
+        let stream = match (compression, transform) {
+            (Some(level), _) => XP3FileStream::Compressed(ZlibEncoder::with_quality(
                 &mut self.stream,
                 Level::Precise(level as _),
             )),
-            None => XP3FileStream::Raw {
+            (None, Some(transform)) => XP3FileStream::Transformed {
+                written: 0,
+                stream: &mut self.stream,
+                transform,
+            },
+            (None, None) => XP3FileStream::Raw {
                 written: 0,
                 stream: &mut self.stream,
             },

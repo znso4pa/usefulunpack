@@ -29,8 +29,8 @@ fun showCompressFormatPicker(
                 Toast.makeText(activity, activity.getString(R.string.msg_mv_ext_mismatch, mvRequiredExt(fmt)), Toast.LENGTH_SHORT).show()
                 return@showFormatPicker
             }
-            showCompressOptionsDialog(activity, prefs, fmt) { level, split, artemisNaming, gameNaming, mvKey ->
-                runCompress(activity, dir, currentDir, prefs, fmt, level, split, onComplete, ownerTab, artemisNaming, gameNaming, mvKey)
+            showCompressOptionsDialog(activity, prefs, fmt) { level, split, artemisNaming, gameNaming, mvKey, xp3Enc ->
+                runCompress(activity, dir, currentDir, prefs, fmt, level, split, onComplete, ownerTab, artemisNaming, gameNaming, mvKey, xp3Enc)
                 true
             }
         },
@@ -60,7 +60,7 @@ internal fun defaultCompressLevel(prefs: SharedPreferences, fmt: String): Int = 
 fun showCompressOptionsDialog(
     activity: AppCompatActivity, prefs: SharedPreferences,
     fmt: String,
-    onResolved: (level: Int, splitBytes: Long, pfsArtemisNaming: Boolean, gameNaming: Boolean, mvKey: String) -> Boolean
+    onResolved: (level: Int, splitBytes: Long, pfsArtemisNaming: Boolean, gameNaming: Boolean, mvKey: String, xp3Enc: String) -> Boolean
 ) {
     val isZip = fmt == "zip"
     val isSz = fmt == "7z"
@@ -109,6 +109,11 @@ fun showCompressOptionsDialog(
     // default key, which is what an unset `encryptionKey` produces and by far
     // the most common case.
     var mvKey = if (isMvPackKey(fmt)) (prefs.getString(PREF_MV_KEY, "") ?: "") else ""
+    // XP3 only: plain (default) or cxdec. The scheme itself is not chosen here —
+    // it is resolved at pack time from the game folder, and the pack is refused
+    // when there is nothing to resolve it from (see resolve_writer_cipher).
+    val isXp3 = fmt == "xp3"
+    var xp3Enc = ""
     // Byte-split volumes are named `.001/.002/…` (7-Zip `-v` semantics) — never
     // PKWARE `.z01` true disks, which this writer does not produce. Show the
     // suffix on the row so a user isn't left guessing which split scheme they got.
@@ -120,6 +125,7 @@ fun showCompressOptionsDialog(
     // update the var AND the row label so the dialog reflects the choice).
     var levelRow: android.widget.TextView? = null
     var splitRow: android.widget.TextView? = null
+    var encRow: android.widget.TextView? = null
     // Held so the positive-button handler can read the keystream the user
     // actually typed (tapping Confirm does not necessarily blur the field).
     var mvKeyField: android.widget.EditText? = null
@@ -184,6 +190,36 @@ fun showCompressOptionsDialog(
                 .show().also { it.keepTabsTappable() }
         }
         addView(levelRow)
+        if (isXp3) {
+            addView(android.view.View(activity).apply {
+                setBackgroundColor(C["divider_subtle"]!!)
+                layoutParams = android.widget.LinearLayout.LayoutParams(MATCH, 1).apply { setMargins(24, 0, 24, 0) }
+            })
+            fun encLabel(v: String) = if (v.isEmpty()) activity.getString(R.string.enc_none) else activity.getString(R.string.enc_cxdec)
+            encRow = row("${activity.getString(R.string.title_encryption)}: ${encLabel(xp3Enc)}") {
+                val opts = arrayOf(activity.getString(R.string.enc_none), activity.getString(R.string.enc_cxdec))
+                val checked = if (xp3Enc.isEmpty()) 0 else 1
+                android.app.AlertDialog.Builder(activity)
+                    .setTitle(activity.getString(R.string.title_encryption))
+                    .setSingleChoiceItems(opts, checked) { d, w ->
+                        xp3Enc = if (w == 0) "" else "cxdec"
+                        encRow?.text = "${activity.getString(R.string.title_encryption)}: ${encLabel(xp3Enc)}"
+                        d.dismiss()
+                    }
+                    .setNegativeButton(activity.getString(R.string.action_cancel), null)
+                    .show().also { it.keepTabsTappable() }
+            }
+            addView(encRow)
+            // The requirement, spelled out under the row — packing without the
+            // sidecar / an existing encrypted archive cannot work, and a
+            // half-explained failure at pack time is worse than saying it here.
+            addView(android.widget.TextView(activity).apply {
+                text = activity.getString(R.string.enc_cxdec_hint)
+                setTextColor(C["hint"]!!)
+                setTextSize(12f)
+                setPadding(24, 4, 24, 8)
+            })
+        }
         if (canSplit) {
             addView(android.view.View(activity).apply {
                 setBackgroundColor(C["divider_subtle"]!!)
@@ -215,7 +251,7 @@ fun showCompressOptionsDialog(
             }
             addView(splitRow)
         }
-        if (isPfs || isRgss || isMvPackKey(fmt)) {
+        if (isPfs || isRgss || isMvPackKey(fmt)) {  // xp3's divider is drawn above its row
             addView(android.view.View(activity).apply {
                 setBackgroundColor(C["divider_subtle"]!!)
                 layoutParams = android.widget.LinearLayout.LayoutParams(MATCH, 1).apply { setMargins(24, 0, 24, 0) }
@@ -275,7 +311,7 @@ fun showCompressOptionsDialog(
                 mvKey = field.text.toString().trim()
                 prefs.edit().putString(PREF_MV_KEY, mvKey).apply()
             }
-            if (!onResolved(levelVals[level], chosenSplit, artemisNaming, gameNaming, mvKey)) return@setPositiveButton
+            if (!onResolved(levelVals[level], chosenSplit, artemisNaming, gameNaming, mvKey, xp3Enc)) return@setPositiveButton
         }
         .setNegativeButton(activity.getString(R.string.action_cancel), null)
         .show().also { it.keepTabsTappable() }
@@ -285,7 +321,7 @@ private fun runCompress(
     activity: AppCompatActivity, dir: File, currentDir: File, prefs: SharedPreferences,
     fmt: String, level: Int, splitSize: Long, onComplete: () -> Unit,
     ownerTab: TabState? = null, artemisNaming: Boolean = false,
-    gameNaming: Boolean = false, mvKey: String = ""
+    gameNaming: Boolean = false, mvKey: String = "", xp3Enc: String = ""
 ) {
     val ext = COMPRESS_EXT[fmt] ?: fmt
     // 产物名的三种规则：
@@ -328,7 +364,10 @@ private fun runCompress(
             // RPG Maker only opens `Game.<ext>`, so resolve that name here
             // rather than writing something the game silently ignores.
             val (finalFile, renamed) = resolveRgssOutName(outFile, gameNaming, ext)
-            val ok = compressDispatch(dir, finalFile, fmt, level, if (isMvPackKey(fmt)) mvKey else password, prefs, splitSize)
+            val ok = compressDispatch(dir, finalFile, fmt, level, if (isMvPackKey(fmt)) mvKey else password, prefs, splitSize, xp3Enc)
+            // Which scheme an encrypted pack actually used is only known once it
+            // has run; the native side reports it for the result message.
+            val encNote = if (ok && xp3Enc == "cxdec") encNoteText(strFnOf(activity)) else ""
             if (cancelled || !ok) {
                 // split_volumes already removed the original; remove the
                 // `.001/.002/...` parts too, not just the output.
@@ -349,10 +388,16 @@ private fun runCompress(
                         activity.getString(R.string.msg_renamed_to, shown) + " " +
                             activity.getString(R.string.rgss_game_naming_note)
                     } else "${activity.getString(R.string.msg_extract_complete)} $shown"
-                    Toast.makeText(activity, label, if (renamed) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+                    val full = if (encNote.isEmpty()) label else "$label $encNote"
+                    Toast.makeText(activity, full, if (renamed || encNote.isNotEmpty()) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
                     onComplete()
                 }
-                else Toast.makeText(activity, activity.getString(R.string.title_compress_failed), Toast.LENGTH_SHORT).show()
+                else {
+                    val why = PackErrors.last
+                    val msg = activity.getString(R.string.title_compress_failed) +
+                        if (why.isEmpty()) "" else "\n$why"
+                    Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
+                }
             }
         } finally {
             opH.release()
@@ -361,13 +406,52 @@ private fun runCompress(
 }
 
 /** 通用压缩派发：任何来源（单文件/目录/临时合并目录）→ 指定格式，供单文件、批量合并、批量分别共用。 */
-fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password: String, prefs: SharedPreferences, splitOverride: Long? = null): Boolean {
+/**
+ * Human sentence for the scheme the last xp3 pack used ("" when it was plain or
+ * the native note is unreadable). The note distinguishes a scheme scored
+ * against a real encrypted archive from one derived from the game's script —
+ * the second is not verifiable, and saying so is the point.
+ */
+fun encNoteText(str: StrFn): String {
+    val json = try { Xp3Core.xp3LastEncNote() } catch (_: Exception) { null }
+    if (json.isNullOrEmpty()) return ""
+    return try {
+        val o = org.json.JSONObject(json)
+        // The scheme NAME stays in the native JSON (a diagnostic, and a script
+        // can read it) but is not shown: the label says cxdec and that is all
+        // the user asked for. What matters in the message is whether the scheme
+        // could be checked against real ciphertext, which is what it says.
+        val source = o.optString("source", "")
+        if (o.optBoolean("verified", false))
+            str(R.string.enc_note_verified, arrayOf(source))
+        else str(R.string.enc_note_unverified, arrayOf(source))
+    } catch (_: Exception) {
+        ""
+    }
+}
+
+/**
+ * Why the last [compressDispatch] failed ("" = none). The native layer explains
+ * WHAT is wrong — a refused cxdec pack names what the folder is missing — and a
+ * bare "failed" hides exactly the part the user needs. Same idea as the CLI's
+ * `lastListError`; safe as a holder because one format slot is held for the
+ * whole operation, so no two packs of the same format run at once.
+ */
+object PackErrors {
+    @Volatile var last: String = ""
+}
+
+fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password: String, prefs: SharedPreferences, splitOverride: Long? = null, enc: String = ""): Boolean {
+    PackErrors.last = ""
     // 分卷大小（字节），仅 zip/7z 支持；0 = 不分卷。inline 压缩选项可传显式值。
     val split = splitOverride ?: prefs.getLong("compress_split_size", 0L)
     val splitStr = if (split > 0 && fmt in setOf("zip", "7z")) split.toString() else "0"
     return try {
         when (fmt) {
-            "xp3" -> Xp3Core.xp3CreateArchive("", src.path, outFile.path, level.toString()) != null
+            // enc: "" = plain, "cxdec" = cxdec-encrypted. The scheme is resolved
+            // from the folder at pack time (an existing encrypted archive, else
+            // the game's own xp3filter.tjs) — see Xp3Core.xp3CreateArchive.
+            "xp3" -> Xp3Core.xp3CreateArchive("", src.path, outFile.path, level.toString(), enc) != null
             "pfs" -> PfsCore.pfsCreateArchive("", src.path, outFile.path) != null
             "pf6" -> PfsCore.pfsCreateArchivePf6("", src.path, outFile.path) != null
             "nsa" -> NsaCore.nsaCreateArchive("", src.path, outFile.path, if (level > 0) "2" else "0") != null
@@ -399,5 +483,8 @@ fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password
             "br" -> BrotliCore.brotliCompress("", src.path, outFile.path, level.toString())
             else -> false
         }
-    } catch (_: Exception) { false }
+    } catch (e: Exception) {
+        PackErrors.last = e.message ?: ""
+        false
+    }
 }

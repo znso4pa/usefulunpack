@@ -6,7 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 
 use crate::{
     XP3_INDEX_ADLR_IDENTIFIER, XP3_INDEX_FILE_IDENTIFIER, XP3_INDEX_INFO_IDENTIFIER,
-    XP3_INDEX_SEGM_IDENTIFIER, XP3_INDEX_TIME_IDENTIFIER, XP3_PROTECTED_FLAG,
+    XP3_INDEX_SEGM_IDENTIFIER, XP3_INDEX_TIME_IDENTIFIER,
     entry::{DataSegment, XP3Entries, XP3FileEntry},
     read::error::XP3OpenError,
 };
@@ -99,8 +99,12 @@ impl XP3Entries {
                 Cursor::new(&cursor.get_ref()[cursor.position() as usize..][..index_size as usize]);
             match key {
                 XP3_INDEX_INFO_IDENTIFIER => {
-                    entry.protected = ReadBytesExt::read_u32::<LittleEndian>(&mut sub_data)?
-                        == XP3_PROTECTED_FLAG;
+                    // Any nonzero value means protected: krkr2 reads it that way,
+                    // and real archives (plus this fork's own writer) store 1. The
+                    // old `== 0x80000000` exact match reported `false` for every
+                    // real protected entry, including files this crate wrote.
+                    entry.protected =
+                        ReadBytesExt::read_u32::<LittleEndian>(&mut sub_data)? != 0;
                     entry.size = ReadBytesExt::read_u64::<LittleEndian>(&mut sub_data)?;
                     entry.archive_size = ReadBytesExt::read_u64::<LittleEndian>(&mut sub_data)?;
 

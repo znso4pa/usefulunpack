@@ -40,7 +40,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                 .setView(inp)
                 .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                     val name = inp.text.toString().trim().ifEmpty { "archive" }
-                    showCompressOptionsDialog(this, prefs, fmt) { level, chosenSplit, artemisNaming, gameNaming, mvKey ->
+                    showCompressOptionsDialog(this, prefs, fmt) { level, chosenSplit, artemisNaming, gameNaming, mvKey, xp3Enc ->
                         val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                         val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
                         // Sanitize the staging subdir name (reject ../ and path
@@ -99,7 +99,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                 // silently overwritten: the Rust compress entry
                                 // clears the cancel flag on entry, so honor the
                                 // Kotlin-side flag here instead.
-                                val ok = if (cancelled) false else compressDispatch(tmpDir, outF, fmt, level, password, prefs, chosenSplit)
+                                val ok = if (cancelled) false else compressDispatch(tmpDir, outF, fmt, level, password, prefs, chosenSplit, xp3Enc)
                                 tmpDir.deleteRecursively()
                                 // 失败/取消必须清掉半成品：产物名可能是 root.pfs，
                                 // 留个截断的 root.pfs 会被游戏当分层补丁挂载。
@@ -157,7 +157,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                 toast(getString(R.string.msg_mv_ext_mismatch, mvRequiredExt(fmt))); return@showFormatPicker
             }
             // 压缩选项（等级/分卷）内联，与单文件压缩流一致。
-            showCompressOptionsDialog(this, prefs, fmt) { level, chosenSplit, artemisNaming, gameNaming, mvKey ->
+            showCompressOptionsDialog(this, prefs, fmt) { level, chosenSplit, artemisNaming, gameNaming, mvKey, xp3Enc ->
                 val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                 val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
                 // Lock first, then the progress dialog (see extractAll).
@@ -194,7 +194,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                             val outF = resolvePfsOutName(uniqueFile(f.parentFile ?: currentDir, outName), artemisNaming)
                             // zip/7z/tar 的 Rust 端 read_dir 不接受单文件输入，需临时目录包裹
                             val ok2 = if (f.isDirectory || fmt !in setOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")) {
-                                compressDispatch(f, outF, fmt, level, if (isMvPackKey(fmt)) mvKey else password, prefs, chosenSplit)
+                                compressDispatch(f, outF, fmt, level, if (isMvPackKey(fmt)) mvKey else password, prefs, chosenSplit, xp3Enc)
                             } else {
                                 val tmpDir = File(cacheDir, "batch_compress/${f.nameWithoutExtension}")
                                 // 先清掉上次崩溃/失败可能留下的残留，否则旧文件会被
@@ -203,7 +203,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                                 tmpDir.mkdirs()
                                 val result = try {
                                     f.copyTo(File(tmpDir, f.name), overwrite = true)
-                                    compressDispatch(tmpDir, outF, fmt, level, password, prefs, chosenSplit)
+                                    compressDispatch(tmpDir, outF, fmt, level, password, prefs, chosenSplit, xp3Enc)
                                 } finally {
                                     tmpDir.deleteRecursively()
                                 }

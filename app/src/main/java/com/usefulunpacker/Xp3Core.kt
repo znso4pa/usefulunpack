@@ -7,13 +7,26 @@ object Xp3Core {
     external fun xp3CxdecExtract(tool: String, gameDir: String, input: String, output: String): String?
     external fun xp3CxdecExtractSelected(tool: String, gameDir: String, input: String, output: String, selected: String): String?
     external fun xp3ListEntries(input: String): String?
+    /**
+     * Encryption state of one archive, as a machine token (see
+     * [com.usefulunpacker.archive.xp3SchemeToken]): `plain` / `cxdec:<scheme>` /
+     * `cxdec:?` / `suspect`, or null when the probe cannot say. Read-only: it
+     * does not touch the progress/cancel store, so it is safe beside a running
+     * extraction in the same .so.
+     */
+    external fun xp3ProbeScheme(input: String): String?
     external fun xp3ExtractProgressCount(): Long
     external fun xp3ExtractProgressTotal(): Long
     external fun xp3ExtractProgressFileCount(): Long
     external fun xp3ExtractProgressFileTotal(): Long
     external fun xp3ExtractProgressName(): String?
     external fun xp3ExtractCancel()
-    external fun xp3CreateArchive(tool: String, input: String, output: String, level: String): String?
+    /** [enc] is `""` (plain) or `"cxdec"`; the cxdec scheme is resolved from the
+     *  folder (an existing encrypted archive, else the game's own script). */
+    external fun xp3CreateArchive(tool: String, input: String, output: String, level: String, enc: String): String?
+    /** JSON note (`scheme`/`source`/`verified`) about the scheme the last pack
+     *  used, or empty. Read right after a successful [xp3CreateArchive]. */
+    external fun xp3LastEncNote(): String?
     external fun xp3CompressProgressCount(): Long
     external fun xp3CompressProgressTotal(): Long
     external fun xp3CompressProgressFileCount(): Long

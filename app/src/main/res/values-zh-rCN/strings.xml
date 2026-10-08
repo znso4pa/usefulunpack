@@ -343,6 +343,21 @@
     <string name="extract_result_stats">总条目：%1$d\n✅ 成功：%2$d\n❌ 错误：%3$d\n📦 其他：%4$d</string>
     <string name="extract_new_folder">📁 %1$s: %2$s</string>
     <string name="preview_stats">共 %1$d 文件，%2$s  |  已选 %3$d 项，%4$s</string>
+    <!-- XP3 cxdec 加密：四态标签来自同一个探测（xp3SchemeToken），预览标题 /
+         扫描结果 / uu l 三处共用，措辞必须一致。 -->
+    <string name="xp3_enc_plain">普通格式</string>
+    <string name="xp3_enc_cxdec">cxdec 加密</string>
+    <string name="xp3_enc_unknown">cxdec 加密，方案未知</string>
+    <string name="xp3_enc_suspect">疑似 cxdec 加密，目录内缺少 xp3filter.tjs / .tpm</string>
+    <string name="enc_suffix_paren">（%1$s）</string>
+    <string name="title_encryption">加密方式</string>
+    <string name="enc_none">不加密</string>
+    <string name="enc_cxdec">cxdec 加密</string>
+    <string name="enc_cxdec_hint">cxdec 加密需要目录内配套 xp3filter.tjs / .tpm，或一份已加密的 .xp3 用于确定方案；加密条目不压缩。</string>
+    <string name="enc_note_verified">方案取自 %1$s</string>
+    <string name="enc_note_unverified">方案由 %1$s 推导，未经密文校验</string>
+    <string name="cli_pack_enc_unknown">未知的 -e 值：%1$s（只支持 cxdec）</string>
+    <string name="cli_enc_only_xp3">-e cxdec 只适用于 xp3</string>
     <string name="preview_title">预览 %1$s</string>
     <string name="bg_set">✅ 已设置自定义背景</string>
     <string name="bg_change">更换</string>
@@ -431,7 +446,7 @@
         <item>编码与乱码\n每个预览/编辑器都有编码行：点它切换 UTF-8/SHIFT-JIS/GBK/UTF-16，文本立即重渲染；带 BOM 的 UTF-16/UTF-8 文件自动按正确编码打开；用错的非 UTF-8 编码读文件时会提示「看起来是 UTF-8」</item>
         <item>滚动与自动刷新\n长列表右侧有常显可拖把手（抓住拖动即可跳转）；文本预览/编辑器也有可拖滚动条。当前目录内容变化（重命名/移动/删除/解压/压缩或 USB 等外部改动）时文件列表自动刷新</item>
         <item>回收站\n删除操作默认将文件移到回收站而非直接永久删除（可在设置中关闭）。点工具栏回收站图标查看、恢复或永久删除项目。自动清理可设置保留天数（7/14/30/60/90天或从不）。回收站中的文件占用存储空间。注意：回收站存储在应用私有目录，卸载应用时会清除</item>
-        <item>终端与 uu 命令\n工具栏 ⋋ 打开全屏终端，扎根于当前窗口：切走隐藏、切回时输出/历史/cd 原样还在。输入 "uu help" 查看命令集：uu fmt（支持的格式）、uu info &lt;文件&gt;（单行格式 key）、uu l &lt;归档&gt; [-a]（列条目）、uu scan &lt;文件&gt;（签名扫描）。ls 会按应用的排序方式给每个文件发一个 fN 标签（只编文件）；每个扫描命中注册为 fN 字节区间描述符——"uu l f0" 无需落盘直接列内嵌 ZIP；宿主文件被改动后描述符失效。内建命令：ls / pwd / cd（导航扎根的窗口）/ help；其余命令由系统 shell 执行。"uu x &lt;归档&gt; [-o 输出目录] [条目] [-p 密码]" 解压（条目支持通配符，按完整条目路径匹配，例如「uu x game.xp3 "*.png"」；「uu l -j」输出原始条目 JSON）（进度直接画在终端里——滚动的进度条 + 字节数 + 当前文件名 + 条目计数，不弹对话框），完成输出 all set；"uu c &lt;源&gt; &lt;产物.ext&gt; [-f key] [等级] [分卷MB] [-p 密码]" 封包（out.pfs 需 -f pfs 或 -f pf6）。uu hash 输出 MD5 + SHA-256；uu cp / mv / rn / rm 管文件（rm 默认进回收站，-f 永久删）；uu cat 看包内文本（-e shift-jis/utf-8/utf-16/gbk 强制编码）、uu grep -i 搜目录或归档里的文本、uu set 替换包内单个条目（存为 -cn 副本）；tree / du / stat / mkdir / cso 补齐其余，通配符全命令可用（uu x *.zip）。也支持管道与串联：「uu l a.zip | grep main」「uu l a.zip > list.txt」「cd sub &amp;&amp; uu x *.zip」，以及「uu run 脚本.uut」执行 UUT 脚本——变量（"set v = 文本"）、脚本参数（"uu run x.uut a b" → $1/$2/$argc/$args）、捕获输出（"set v = $(uu info a.zip)"，随后 "if v = xp3 then uu x a.zip"）、行内与块式分支（"if v = xp3" … "else" … "end"）、循环（"for a in *.zip" … "end"，计数用 "for i in 1..5"）、文件测试（"if exist out/"）、「上一条命令的退出码」"$?"（"a ; echo rc=$?" 里也能读到）、带 "break"/"continue" 的 "while" 循环、"else if" 链、整数算术（"set n = $n + 1"）、数值比较（"if n &gt; 3"）、"||" 串联、按行遍历命令输出的 "for x in $(命令)"，以及提前结束的 "return [退出码]"。「uu l -t」把归档条目画成树、「uu l -S」按大小排序、「uu cat」可直接读纯文本文件、「uu rmd」条目通配；「uu cp / uu mv -f」可覆盖（脚本可重复跑）；UUT 行尾支持 "# 注释"；管道过滤器新增 "sort [-r]"；脚本里只允许 uu / ls / cd / pwd / help / echo，所以它永远不会变成 shell。出错即停（"-k" 继续），每行都有回显。「uu img &lt;源…&gt; &lt;jpg|png|webp&gt; [-o 目录] [-q 1-100]」转换图片（永不覆盖，逐条打印实际输出路径），「uu fd [fN…]」列出 fN 描述符（含大小、偏移与新鲜度）。也可以一个字都不敲就跑脚本："am start --es uut /sdcard/x.uut" 无界面执行，并同时落一份 &lt;脚本&gt;.log。运行中点进度行可取消</item>
+        <item>终端与 uu 命令\n工具栏 ⋋ 打开全屏终端，扎根于当前窗口：切走隐藏、切回时输出/历史/cd 原样还在。输入 "uu help" 查看命令集：uu fmt（支持的格式）、uu info &lt;文件&gt;（单行格式 key）、uu l &lt;归档&gt; [-a]（列条目）、uu scan &lt;文件&gt;（签名扫描）。ls 会按应用的排序方式给每个文件发一个 fN 标签（只编文件）；每个扫描命中注册为 fN 字节区间描述符——"uu l f0" 无需落盘直接列内嵌 ZIP；宿主文件被改动后描述符失效。内建命令：ls / pwd / cd（导航扎根的窗口）/ help；其余命令由系统 shell 执行。"uu x &lt;归档&gt; [-o 输出目录] [条目] [-p 密码]" 解压（条目支持通配符，按完整条目路径匹配，例如「uu x game.xp3 "*.png"」；「uu l -j」输出原始条目 JSON）（进度直接画在终端里——滚动的进度条 + 字节数 + 当前文件名 + 条目计数，不弹对话框），完成输出 all set；"uu c &lt;源&gt; &lt;产物.ext&gt; [-f key] [等级] [分卷MB] [-p 密码]" 封包（out.pfs 需 -f pfs 或 -f pf6）。uu hash 输出 MD5 + SHA-256；uu cp / mv / rn / rm 管文件（rm 默认进回收站，-f 永久删）；uu cat 看包内文本（-e shift-jis/utf-8/utf-16/gbk 强制编码）、uu grep -i 搜目录或归档里的文本、uu set 替换包内单个条目（存为 -cn 副本）；吉里吉里归档的 cxdec 加密状态由「uu l」与预览标题报出，封包时可用「uu c ... -e cxdec」还原（需目录内有 xp3filter.tjs/.tpm 或一份已加密的 .xp3）；tree / du / stat / mkdir / cso 补齐其余，通配符全命令可用（uu x *.zip）。也支持管道与串联：「uu l a.zip | grep main」「uu l a.zip > list.txt」「cd sub &amp;&amp; uu x *.zip」，以及「uu run 脚本.uut」执行 UUT 脚本——变量（"set v = 文本"）、脚本参数（"uu run x.uut a b" → $1/$2/$argc/$args）、捕获输出（"set v = $(uu info a.zip)"，随后 "if v = xp3 then uu x a.zip"）、行内与块式分支（"if v = xp3" … "else" … "end"）、循环（"for a in *.zip" … "end"，计数用 "for i in 1..5"）、文件测试（"if exist out/"）、「上一条命令的退出码」"$?"（"a ; echo rc=$?" 里也能读到）、带 "break"/"continue" 的 "while" 循环、"else if" 链、整数算术（"set n = $n + 1"）、数值比较（"if n &gt; 3"）、"||" 串联、按行遍历命令输出的 "for x in $(命令)"，以及提前结束的 "return [退出码]"。「uu l -t」把归档条目画成树、「uu l -S」按大小排序、「uu cat」可直接读纯文本文件、「uu rmd」条目通配；「uu cp / uu mv -f」可覆盖（脚本可重复跑）；UUT 行尾支持 "# 注释"；管道过滤器新增 "sort [-r]"；脚本里只允许 uu / ls / cd / pwd / help / echo，所以它永远不会变成 shell。出错即停（"-k" 继续），每行都有回显。「uu img &lt;源…&gt; &lt;jpg|png|webp&gt; [-o 目录] [-q 1-100]」转换图片（永不覆盖，逐条打印实际输出路径），「uu fd [fN…]」列出 fN 描述符（含大小、偏移与新鲜度）。也可以一个字都不敲就跑脚本："am start --es uut /sdcard/x.uut" 无界面执行，并同时落一份 &lt;脚本&gt;.log。运行中点进度行可取消</item>
     </string-array>
 
 

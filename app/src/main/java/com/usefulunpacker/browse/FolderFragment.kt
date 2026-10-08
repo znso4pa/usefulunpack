@@ -258,7 +258,9 @@ class FolderFragment : Fragment() {
                 // 预览分支不经过 navTab：必须手动回填路径栏，否则重建出的
                 // 视图停留在 XML 默认文本「/」（预览盖住列表，路径条却暴露）。
                 tab.tvPath.text = tab.displayPath().absolutePath
-                tab.tvPreviewTitle.text = tab.previewSrc?.name ?: ""
+                // ONE title builder: writing src.name here (as this used to)
+                // dropped the encryption note the first render had put up.
+                tab.tvPreviewTitle.text = act2.previewTitleOf(tab)
                 act2.syncPreview(tab)
                 act2.updatePreviewStats(tab)
             } else {

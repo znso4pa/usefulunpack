@@ -2474,7 +2474,10 @@ pub const SIGNATURES: &[Sig] = &[
     // KSD (Kirikiri2 save data): 2-byte prefix "FE FE" followed by mode byte.
     // Note: "FE FE" alone is too short (high false-positive), so we require the
     // subsequent pattern "FE FE 0x02 FF FE" (mode 2) or "FE FE 0x00" (mode 0/1).
-    Sig { magics: &[b"\xfe\xfe\x02\xff\xfe", b"\xfe\xfe\x01\xff\xfe", b"\xfe\xfe\x00"], label: "KSD save data", confidence: CONFIDENCE_MEDIUM, validate: validate_ksd },
+    // All three modes carry the full 5-byte header (ksd-core's reader requires
+    // `FE FE <mode> FF FE` for every mode); the 3-byte mode-0 magic that used to
+    // be here fired six times inside a font collection.
+    Sig { magics: &[b"\xfe\xfe\x00\xff\xfe", b"\xfe\xfe\x01\xff\xfe", b"\xfe\xfe\x02\xff\xfe"], label: "KSD save data", confidence: CONFIDENCE_MEDIUM, validate: validate_ksd },
     // RGSS (RPG Maker XP / VX / VX Ace): "RGSSAD\0" + a version byte. The
     // 7-byte magic plus the version check is specific enough for HIGH.
     Sig { magics: &[b"RGSSAD\x00"], label: "RGSS archive", confidence: CONFIDENCE_HIGH, validate: validate_rgss },
@@ -2735,6 +2738,36 @@ fn validate_mp3(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
     // Check sample rate index (bits 3-2 of buf[2]): not 0x03 (reserved)
     let sample_rate_index = (buf[2] >> 2) & 0x03;
     if sample_rate_index == 0x03 { return None; }
+    // A single header is not enough: the bit checks pass about once per 500
+    // bytes of arbitrary data, which is why two hits appeared inside a font
+    // collection. Every MP3 scanner's rule is "the next frame must start where
+    // this one says it ends", so the length is computed from the standard
+    // bitrate/sample-rate tables and the following header checked — but only
+    // when there is room, so a one-frame file at EOF still matches.
+    if layer != 1 {
+        return None; // every magic in this table is Layer III
+    }
+    const BITRATES_V1: [u32; 16] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+    const BITRATES_V2: [u32; 16] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+    const RATES: [[u32; 3]; 3] = [[44100, 48000, 32000], [22050, 24000, 16000], [11025, 12000, 8000]];
+    let v1 = version == 0x03;
+    let bitrate = if v1 { BITRATES_V1[bitrate_index as usize] } else { BITRATES_V2[bitrate_index as usize] };
+    let rate = RATES[if v1 { 0 } else if version == 0x02 { 1 } else { 2 }][(sample_rate_index & 0x03) as usize];
+    if bitrate == 0 || rate == 0 { return None; }
+    let padding = ((buf[2] >> 1) & 1) as u64;
+    let frame_len = (if v1 { 144 } else { 72 } * bitrate as u64 * 1000) / rate as u64 + padding;
+    if frame_len < 24 { return None; }
+    if off + frame_len + 4 <= file_len {
+        let mut next = [0u8; 4];
+        if !read_at(f, off + frame_len, &mut next) { return None; }
+        if next[0] != 0xFF || (next[1] & 0xE0) != 0xE0 { return None; }
+        let nver = (next[1] >> 3) & 0x03;
+        let nlayer = (next[1] >> 1) & 0x03;
+        if nver != version || nlayer != layer { return None; }
+        let nbitrate = (next[2] >> 4) & 0x0F;
+        if nbitrate == 0x00 || nbitrate == 0x0F { return None; }
+        if ((next[2] >> 2) & 0x03) == 0x03 { return None; }
+    }
     Some(HitInfo { size: None, count: None })
 }
 

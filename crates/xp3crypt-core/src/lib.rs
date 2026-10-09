@@ -53,18 +53,25 @@
 //! Signal (1) only works on members that *have* a signature, which is the flaw
 //! real archives expose: a small patch archive can hold nothing but script and
 //! config text, which decrypts to perfectly ordinary text. No signature list can
-//! name that. Signal (2) covers exactly this gap — it is
-//! content-agnostic, because the XP3 index already stores a checksum of the
-//! plaintext, so the decryption can simply be *verified* against it. Both halves
+//! name that. Signal (2) covers exactly this gap — it is content-agnostic,
+//! because for these schemes the XP3 index stores a checksum of the plaintext,
+//! so the decryption can simply be *verified* against it. Both halves
 //! of (2) are load-bearing for the same reason as in (1): a plain archive has
 //! `adler32(raw) == stored_adlr` and so is rejected, and a 2⁻³² collision is the
 //! only way a wrong scheme can pass.
 //!
 //! (2) needs the WHOLE entry, so it is evaluated only for entries at or below
-//! [`PROBE_ADLR_MAX`]. It also cannot see archives whose stored ADLR covers the
-//! *ciphertext* — there `adler32(raw) == stored_adlr`, so the second half fails
-//! by construction — but those are the image/audio/video archives that signal
-//! (1) handles anyway.
+//! `PROBE_ADLR_MAX`. It also cannot see an archive whose stored ADLR covers
+//! the *ciphertext*: there `adler32(raw) == stored_adlr`, so the second half
+//! fails by construction. **No content-only test can recover that case** — a
+//! plain archive and a ciphertext-ADLR archive produce byte-identical ADLR
+//! relations, so in that direction the stored checksum carries no information at
+//! all. Real archives using the convention are media packs that signal (1)
+//! handles anyway, *but* [`Scheme::hash_after_crypt`] makes the packer write it
+//! for `FateCrypt` regardless of what the folder holds — so a text-only
+//! FateCrypt pack this app produced comes back as "cannot say". Extraction is
+//! unaffected (the scheme is passed in explicitly); only auto-detection is
+//! blind. Recorded in `TODO.md`.
 //!
 //! ## Why the protected flag is not trusted
 //!
@@ -165,7 +172,7 @@ const PROBE_MAX_PACKED: u64 = 64 * 1024 * 1024;
 
 /// Entries at or below this unpacked size are sampled WHOLE, which unlocks the
 /// ADLR identity (see [`probe_scheme`]). 1 MiB keeps the probe's worst-case read
-/// at [`PROBE_SAMPLES`] × 1 MiB, and real script/config members — the ones that
+/// at `PROBE_SAMPLES` × 1 MiB, and real script/config members — the ones that
 /// need it, because they carry no binary signature — are far below it.
 const PROBE_ADLR_MAX: u64 = 1024 * 1024;
 
@@ -442,7 +449,7 @@ impl Xp3Cipher for SchemeCipher {
 /// Identifies the keyless scheme protecting `archive`, if any.
 ///
 /// Read-only and side-effect-free — it opens the archive, samples up to
-/// [`PROBE_SAMPLES`] entries and scores each scheme with the two signals
+/// `PROBE_SAMPLES` entries and scores each scheme with the two signals
 /// described in the module docs (file signature, and the stored-ADLR identity).
 /// `None` covers every "cannot say" outcome: not an XP3, no readable entries, or
 /// content no candidate scheme explains.
@@ -513,7 +520,7 @@ pub fn probe_scheme(archive: &str) -> Option<Scheme> {
                 signature || adlr
             })
             .count();
-        if hits > 0 && best.map_or(true, |(score, _)| hits > score) {
+        if hits > 0 && best.is_none_or(|(score, _)| hits > score) {
             best = Some((hits, scheme));
         }
     }
@@ -805,10 +812,17 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// The text-only shape: FateCrypt with a PLAINTEXT ADLR over content that
-    /// carries no binary signature (a script/config text). The signature signal
-    /// cannot see it, so this only passes if the ADLR identity is evaluated —
-    /// which requires the entry to be sampled whole.
+    /// The text-only shape: FateCrypt over content that carries no binary
+    /// signature (a script/config text). The signature signal cannot see it, so
+    /// this only passes if the ADLR identity is evaluated — which requires the
+    /// entry to be sampled whole.
+    ///
+    /// Note the fixture's ADLR is the PLAINTEXT's, which is the convention most
+    /// real archives use and the only one signal (2) can test. `create_xp3` does
+    /// not produce this for FateCrypt (see `hash_after_crypt`), so this test
+    /// deliberately hand-builds the archive rather than packing one — the packer
+    /// path is covered by `keyless_pack_round_trips_through_probe_and_extract`,
+    /// which keeps a signature on every member for exactly that reason.
     #[test]
     fn text_only_archive_is_detected_by_the_adlr_identity() {
         let dir = tmp("text_only");

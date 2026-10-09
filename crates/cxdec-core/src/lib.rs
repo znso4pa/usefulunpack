@@ -26,6 +26,12 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+mod recover;
+pub use recover::{
+    adler32, extract_recovered, probe_recovery, solve_constant_keystream, Keystream,
+    RecoverReport,
+};
+
 /// Buffered whole-entry decode cap (`read_entry` materializes the entry in
 /// RAM). Legit cxdec archives top out far below this; a hostile index can't
 /// use the cxdec path to pin gigabytes.
@@ -632,6 +638,14 @@ pub fn extract(
     output: &str,
     selected: Option<&str>,
 ) -> Result<(u32, u32), String> {
+    // Lone archive: no xp3filter.tjs / .tpm / EXE carries the control block, so
+    // the VM cannot be built at all. Fall back to recovering the constant-only
+    // keystreams from the entries' own ADLRs, which decrypts what it can and
+    // reports the rest as failures rather than erroring out on the whole file.
+    if find_control_block(Path::new(game_dir)).is_err() {
+        let rep = extract_recovered(archive, output, selected)?;
+        return Ok((rep.solved, rep.unresolved));
+    }
     let (mut cipher, _scheme) = detect_cipher(Path::new(game_dir), archive)?;
     let mut arch = Xp3Archive::open(Path::new(archive))
         .map_err(|e| format!("XP3: {e}"))?;
@@ -751,15 +765,6 @@ mod tests {
 
     fn tmp(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("uu_cxdec_{}_{}", std::process::id(), tag))
-    }
-
-    fn adler32(data: &[u8]) -> u32 {
-        let (mut a, mut b) = (1u32, 0u32);
-        for &byte in data {
-            a = (a + byte as u32) % 65521;
-            b = (b + a) % 65521;
-        }
-        (b << 16) | a
     }
 
     /// Synthetic 4096-byte control block starting with the real signature.
@@ -1044,8 +1049,13 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// A missing control block no longer aborts the whole archive: extraction
+    /// falls back to recovering the constant-only keystream from the entries'
+    /// own ADLRs. Whether this particular entry is solvable depends on its
+    /// fixups, but the archive must never hard-fail and must never write garbage
+    /// for an entry it refused.
     #[test]
-    fn missing_control_block_errors_cleanly() {
+    fn missing_control_block_falls_back_to_recovery() {
         let dir = tmp("nocb");
         fs::create_dir_all(&dir).unwrap();
         let plain = png_plaintext(64);
@@ -1053,10 +1063,19 @@ mod tests {
         let (hash, enc) = encrypt_entry(&FENG_TEMPLATE, &words, &plain);
         let xp3 = dir.join("data.xp3");
         fs::write(&xp3, build_xp3(&[("a.png", hash, enc)])).unwrap();
-        let err = extract(
-            dir.to_str().unwrap(), xp3.to_str().unwrap(), dir.join("out").to_str().unwrap(), None,
-        ).unwrap_err();
-        assert!(err.contains("control block"), "got {err}");
+        let out = dir.join("out");
+        fs::create_dir_all(&out).unwrap();
+        let (done, fail) = extract(
+            dir.to_str().unwrap(), xp3.to_str().unwrap(), out.to_str().unwrap(), None,
+        )
+        .unwrap();
+        assert_eq!(done + fail, 1, "the archive must no longer hard-fail");
+        // A refused entry leaves nothing behind, so a partial output never mixes
+        // in garbage.
+        assert_eq!(out.join("a.png").exists(), done == 1);
+        if done == 1 {
+            assert_eq!(fs::read(out.join("a.png")).unwrap(), plain);
+        }
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -210,6 +210,9 @@ fun showCompressOptionsDialog(
                 "crypt:FlyingShineCrypt" to activity.getString(R.string.enc_flyingshinecrypt),
                 "crypt:AlteredPinkCrypt" to activity.getString(R.string.enc_alteredpinkcrypt),
                 "crypt:DameganeCrypt" to activity.getString(R.string.enc_dameganecrypt),
+                "crypt:NatsupochiCrypt" to activity.getString(R.string.enc_natsupochicrypt),
+                "crypt:OkibaCrypt" to activity.getString(R.string.enc_okibacrypt),
+                "crypt:DieselmineCrypt" to activity.getString(R.string.enc_dieselminecrypt),
             )
             fun encLabel(v: String) =
                 encChoices.firstOrNull { it.first == v }?.second ?: activity.getString(R.string.enc_none)

@@ -42,6 +42,9 @@ class Xp3RepackEncTest {
         assertEquals("crypt:FlyingShineCrypt", xp3RepackEnc("crypt:FlyingShineCrypt"))
         assertEquals("crypt:AlteredPinkCrypt", xp3RepackEnc("crypt:AlteredPinkCrypt"))
         assertEquals("crypt:DameganeCrypt", xp3RepackEnc("crypt:DameganeCrypt"))
+        assertEquals("crypt:NatsupochiCrypt", xp3RepackEnc("crypt:NatsupochiCrypt"))
+        assertEquals("crypt:OkibaCrypt", xp3RepackEnc("crypt:OkibaCrypt"))
+        assertEquals("crypt:DieselmineCrypt", xp3RepackEnc("crypt:DieselmineCrypt"))
     }
 
     /** CLI `-e <name>` → 打包参数。大小写不敏感，落到打包器的一律是规范拼写。 */
@@ -56,6 +59,9 @@ class Xp3RepackEncTest {
         assertEquals("crypt:FlyingShineCrypt", UuCommands.normalizePackEnc("flyingShineCrypt"))
         assertEquals("crypt:AlteredPinkCrypt", UuCommands.normalizePackEnc("alteredpinkcrypt"))
         assertEquals("crypt:DameganeCrypt", UuCommands.normalizePackEnc("DAMEGANECRYPT"))
+        assertEquals("crypt:NatsupochiCrypt", UuCommands.normalizePackEnc("natsupochicrypt"))
+        assertEquals("crypt:OkibaCrypt", UuCommands.normalizePackEnc(" OkibaCrypt "))
+        assertEquals("crypt:DieselmineCrypt", UuCommands.normalizePackEnc("dieselminecrypt"))
         // `fsn` = arc_unpacker 的插件名，也是 FateCrypt 唯一接受的别名。
         assertEquals("crypt:FateCrypt", UuCommands.normalizePackEnc("fsn"))
         assertEquals("crypt:FateCrypt", UuCommands.normalizePackEnc("FSn"))

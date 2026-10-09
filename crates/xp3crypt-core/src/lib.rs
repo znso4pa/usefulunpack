@@ -1,7 +1,7 @@
 //! Keyless Kirikiri XP3 content ciphers — the "simple" family GARbro carries in
 //! `ArcFormats/KiriKiri/CryptAlgorithms.cs`.
 //!
-//! Six schemes, each a different shape of "transform keyed by the entry's own
+//! Nine schemes, each a different shape of "transform keyed by the entry's own
 //! ADLR", so that between them they cover the structural variety GARbro's
 //! catalogue has to offer without any of them needing outside information:
 //!
@@ -13,10 +13,13 @@
 //! | [`Scheme::FlyingShineCrypt`] | XOR a key byte, then ROTATE right by a count derived from the same hash |
 //! | [`Scheme::AlteredPinkCrypt`] | XOR a fixed 256-byte table indexed by `offset & 0xFF` |
 //! | [`Scheme::DameganeCrypt`] | XOR `entry.Hash` at odd offsets, the offset itself at even ones |
+//! | [`Scheme::NatsupochiCrypt`] | XOR one key byte, `Hash >> 3`                  |
+//! | [`Scheme::OkibaCrypt`]    | XOR `Hash >> 4` below offset `0x65`, then a byte-rotated hash |
+//! | [`Scheme::DieselmineCrypt`] | four offset bands, each multiplying the low hash byte |
 //!
-//! [`Scheme::FlyingShineCrypt`] is the only one that is **not** an involution —
-//! its `encrypt` genuinely differs from its `decrypt` — which is why
-//! [`Scheme::encrypt`] is a real inverse rather than an alias.
+//! Two are **not** involutions — [`Scheme::FlyingShineCrypt`] (rotation is
+//! directional) and [`Scheme::DieselmineCrypt`] (two bands add rather than XOR)
+//! — which is why [`Scheme::encrypt`] is a real inverse rather than an alias.
 //!
 //! ## The stored ADLR is always the plaintext's
 //!
@@ -268,16 +271,22 @@ pub enum Scheme {
     FlyingShineCrypt,
     AlteredPinkCrypt,
     DameganeCrypt,
+    NatsupochiCrypt,
+    OkibaCrypt,
+    DieselmineCrypt,
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 6] = [
+    pub const ALL: [Scheme; 9] = [
         Scheme::HashCrypt,
         Scheme::FateCrypt,
         Scheme::AppliqueCrypt,
         Scheme::FlyingShineCrypt,
         Scheme::AlteredPinkCrypt,
         Scheme::DameganeCrypt,
+        Scheme::NatsupochiCrypt,
+        Scheme::OkibaCrypt,
+        Scheme::DieselmineCrypt,
     ];
 
     /// Stable machine name — this is what rides in the UI token (`crypt:<name>`)
@@ -290,6 +299,9 @@ impl Scheme {
             Scheme::FlyingShineCrypt => "FlyingShineCrypt",
             Scheme::AlteredPinkCrypt => "AlteredPinkCrypt",
             Scheme::DameganeCrypt => "DameganeCrypt",
+            Scheme::NatsupochiCrypt => "NatsupochiCrypt",
+            Scheme::OkibaCrypt => "OkibaCrypt",
+            Scheme::DieselmineCrypt => "DieselmineCrypt",
         }
     }
 
@@ -300,7 +312,7 @@ impl Scheme {
     ///
     /// The others are deliberately left out: `xor` and `rebirth` are
     /// arc_unpacker's internal plugin ids, not names anyone knows a scheme by,
-    /// and `xor` in particular is vague enough to be misleading. The three later
+    /// and `xor` in particular is vague enough to be misleading. The six later
     /// schemes have no arc_unpacker plugin at all.
     pub fn alias(self) -> Option<&'static str> {
         match self {
@@ -395,16 +407,65 @@ impl Scheme {
                     *b ^= if off & 1 != 0 { hash as u8 } else { off as u8 };
                 }
             }
+            // Another single constant byte, but taken from bits 3..10 rather than
+            // 0..7 — the shape `HashCrypt` has, with a different slice of the hash.
+            Scheme::NatsupochiCrypt => {
+                let key = (hash >> 3) as u8;
+                for b in data.iter_mut() {
+                    *b ^= key;
+                }
+            }
+            // Two phases split at absolute offset 0x65. Before it, bits 4..11 of
+            // the hash; from it on, the hash's four bytes reordered `[1,0,3,2]`
+            // and then shifted down by `(offset - 0x65) % 4` bytes, so the key
+            // cycles through all four of them. Small members never leave phase 1.
+            Scheme::OkibaCrypt => {
+                for (i, b) in data.iter_mut().enumerate() {
+                    let off = offset + i as u64;
+                    let key = if off < 0x65 {
+                        (hash >> 4) as u8
+                    } else {
+                        let k = ((hash & 0x00ff_0000) << 8)
+                            | ((hash & 0xff00_0000) >> 8)
+                            | ((hash & 0x0000_ff00) >> 8)
+                            | ((hash & 0x0000_00ff) << 8);
+                        (k >> (8 * ((off - 0x65) & 3))) as u8
+                    };
+                    *b ^= key;
+                }
+            }
+            // Four offset bands, each multiplying the hash's low byte by its own
+            // constant; bands 1 and 3 XOR, bands 2 and 4 add. The multipliers are
+            // the low bytes of `21 * key`, `-32 * key`, `43 * key`, `-54 * key`.
+            Scheme::DieselmineCrypt => {
+                let key = hash as u8;
+                for (i, b) in data.iter_mut().enumerate() {
+                    let off = offset + i as u64;
+                    if off > 0xffff_ffff {
+                        break;
+                    }
+                    if off < 123 {
+                        *b ^= key.wrapping_mul(21);
+                    } else if off < 246 {
+                        *b = b.wrapping_add((key as i32).wrapping_mul(-32) as u8);
+                    } else if off < 369 {
+                        *b ^= key.wrapping_mul(43);
+                    } else {
+                        *b = b.wrapping_add((key as i32).wrapping_mul(-54) as u8);
+                    }
+                }
+            }
         }
     }
 
     /// Encrypts `data` — the true inverse of [`Scheme::decrypt`], not a copy of
-    /// it. Five of the six schemes happen to be involutions over XOR with a
+    /// it. Seven of the nine schemes happen to be involutions over XOR with a
     /// fixed key, so for them this forwards to `decrypt` (matching GARbro, whose
     /// `Encrypt` either forwards to `Decrypt` or repeats its body verbatim).
-    /// [`Scheme::FlyingShineCrypt`] is the exception: rotation is directional, so
-    /// its inverse is `rotate_left` *then* XOR — the two operations do not
-    /// commute.
+    /// Two are exceptions: [`Scheme::FlyingShineCrypt`], where rotation is
+    /// directional so the inverse is `rotate_left` *then* XOR, and
+    /// [`Scheme::DieselmineCrypt`], whose two additive bands have to be undone
+    /// with a subtraction.
     ///
     /// Every arm is per-byte and offset-addressed, so chunking composes: the
     /// pack path hands the whole member to the vendored writer's transform
@@ -416,6 +477,24 @@ impl Scheme {
                 let (key, shift) = flying_shine_key(hash);
                 for b in data.iter_mut() {
                     *b = b.rotate_left(shift) ^ key;
+                }
+            }
+            Scheme::DieselmineCrypt => {
+                let key = hash as u8;
+                for (i, b) in data.iter_mut().enumerate() {
+                    let off = offset + i as u64;
+                    if off > 0xffff_ffff {
+                        break;
+                    }
+                    if off < 123 {
+                        *b ^= key.wrapping_mul(21);
+                    } else if off < 246 {
+                        *b = b.wrapping_sub((key as i32).wrapping_mul(-32) as u8);
+                    } else if off < 369 {
+                        *b ^= key.wrapping_mul(43);
+                    } else {
+                        *b = b.wrapping_sub((key as i32).wrapping_mul(-54) as u8);
+                    }
                 }
             }
             _ => self.decrypt(hash, offset, data),
@@ -997,6 +1076,66 @@ mod tests {
         assert_eq!(enc[3], 0xAB);
         assert_eq!(enc[4], 0x04);
         assert_eq!(enc[5], 0xAB);
+    }
+
+    /// `NatsupochiCrypt` is `HashCrypt`'s shape — one constant byte over the
+    /// whole member — but the byte comes from bits 3..10 rather than 0..7, so
+    /// for the same hash the two must disagree. A round-trip cannot tell them
+    /// apart; only the pinned bytes can.
+    #[test]
+    fn natsupochi_keys_from_bits_three_to_ten() {
+        let hash = 0x1234_56AB;
+        let mut shifted = vec![0u8; 4];
+        Scheme::NatsupochiCrypt.encrypt(hash, 0, &mut shifted);
+        assert_eq!(shifted, vec![0xD5; 4], "(0x123456AB >> 3) & 0xFF == 0xD5");
+
+        let mut low = vec![0u8; 4];
+        Scheme::HashCrypt.encrypt(hash, 0, &mut low);
+        assert_eq!(low, vec![0xAB; 4], "HashCrypt takes the low byte instead");
+    }
+
+    /// `OkibaCrypt` changes key at absolute offset `0x65`: below it bits 4..11 of
+    /// the hash, from it on the hash's four bytes reordered `[1,0,3,2]` and
+    /// consumed one per position, cycling every four. A member shorter than
+    /// `0x65` never leaves the first phase.
+    #[test]
+    fn okiba_switches_key_at_offset_0x65() {
+        let hash = 0x1234_56AB;
+
+        let mut below = vec![0u8; 0x65];
+        Scheme::OkibaCrypt.encrypt(hash, 0, &mut below);
+        assert!(below.iter().all(|&b| b == 0x6A), "(0x123456AB >> 4) & 0xFF");
+
+        // [AB,56,34,12] reordered to [56,AB,12,34] is 0x3412AB56, read a byte at
+        // a time from the bottom.
+        let mut at = vec![0u8; 8];
+        Scheme::OkibaCrypt.encrypt(hash, 0x65, &mut at);
+        assert_eq!(at[..4], [0x56, 0xAB, 0x12, 0x34]);
+        assert_eq!(at[4..], [0x56, 0xAB, 0x12, 0x34], "the cycle repeats");
+    }
+
+    /// `DieselmineCrypt` has four offset bands; bands 1 and 3 XOR, bands 2 and 4
+    /// add. Two of the four are additive, so `encrypt` has to be a real inverse
+    /// rather than the alias seven of the nine schemes get away with.
+    #[test]
+    fn dieselmine_bands_and_inverts() {
+        let hash = 0x1234_56AB; // low byte 0xAB
+        // 21*0xAB == 0x07, -32*0xAB == 0xA0, 43*0xAB == 0xB9, -54*0xAB == 0xEE
+        let mut dec = vec![0u8; 400];
+        Scheme::DieselmineCrypt.decrypt(hash, 0, &mut dec);
+        assert_eq!(dec[122], 0x07, "band 1 runs to 122 and XORs");
+        assert_eq!(dec[123], 0xA0, "band 2 starts at 123 and adds");
+        assert_eq!(dec[245], 0xA0);
+        assert_eq!(dec[246], 0xB9, "band 3 starts at 246 and XORs");
+        assert_eq!(dec[368], 0xB9);
+        assert_eq!(dec[369], 0xEE, "band 4 starts at 369 and adds");
+        assert_eq!(dec[399], 0xEE);
+
+        // The pack direction subtracts in exactly the two bands that add here —
+        // forwarding it to `decrypt` would leave those bands wrong.
+        let mut back = dec.clone();
+        Scheme::DieselmineCrypt.encrypt(hash, 0, &mut back);
+        assert_eq!(back, vec![0u8; 400], "the additive bands must subtract back");
     }
 
     /// The scheme name is the UI token and the pack argument, so the round-trip

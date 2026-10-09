@@ -702,11 +702,15 @@ fn create_xp3(input: &str, output: &str, level: i32, enc: &str) -> Result<u32, S
                     Ok::<(), std::io::Error>(())
                 })
             }
-            // A keyless scheme whose ADLR covers the PLAINTEXT (HashCrypt,
-            // AppliqueCrypt): same shape as cxdec — the transform path encrypts
-            // on the way out while checksumming what the caller handed in, and
-            // the key IS that checksum, so one pass over the file seeds it.
-            Some(PackCipher::Keyless(scheme)) if !scheme.hash_after_crypt() => {
+            // A keyless scheme — one shape for all six. The transform path
+            // encrypts on the way out while checksumming the PLAINTEXT the caller
+            // handed in, and the stored ADLR must be that same value: for five of
+            // the six schemes the key material *is* that checksum, and for
+            // FateCrypt — whose transform ignores the hash — spending the ADLR on
+            // the plaintext is what keeps a pack this app wrote readable back by
+            // its own probe (signal (2) can only test the plaintext direction).
+            // See the `archive_xp3crypt-core` module doc.
+            Some(PackCipher::Keyless(scheme)) => {
                 let scheme = *scheme;
                 let hash = adler32_of(src)?;
                 let transform = TransformFn::new(move |off: u64, data: &mut [u8]| {
@@ -716,34 +720,6 @@ fn create_xp3(input: &str, output: &str, level: i32, enc: &str) -> Result<u32, S
                 oneshot_async(async {
                     let mut fw = writer.file_transformed(name.clone(), true, transform).await?;
                     tokio::io::copy(&mut reader, &mut fw).await?;
-                    fw.finish().await?;
-                    Ok::<(), std::io::Error>(())
-                })
-            }
-            // FateCrypt: `HashAfterCrypt`, so the stored ADLR must cover the
-            // CIPHERTEXT. The transform path would store the plaintext's, which
-            // a Kirikiri reader compares against the bytes it actually reads —
-            // i.e. the ciphertext — and would reject. Encrypting on the way in
-            // and using the plain `file()` path makes the writer checksum the
-            // encrypted bytes, which is exactly the value the game expects.
-            // Streaming (not a buffered pre-pass) keeps a movie-sized member out
-            // of RAM; the scheme is an involution, so chunks compose.
-            Some(PackCipher::Keyless(scheme)) => {
-                let scheme = *scheme;
-                oneshot_async(async {
-                    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-                    let mut fw = writer.file(name.clone(), true, None).await?;
-                    let mut off = 0u64;
-                    let mut buf = vec![0u8; 64 * 1024];
-                    loop {
-                        let n = reader.read(&mut buf).await?;
-                        if n == 0 {
-                            break;
-                        }
-                        scheme.encrypt(0, off, &mut buf[..n]);
-                        fw.write_all(&buf[..n]).await?;
-                        off += n as u64;
-                    }
                     fw.finish().await?;
                     Ok::<(), std::io::Error>(())
                 })
@@ -1209,9 +1185,9 @@ mod tests {
     /// bytes.
     ///
     /// This is the only place the writer's ADLR choice is checked against the
-    /// reader. FateCrypt stores the CIPHERTEXT's checksum while the other two
-    /// store the PLAINTEXT's; getting that backwards still produces a
-    /// well-formed archive, so nothing but a real read-back catches it.
+    /// reader. Every scheme must store the PLAINTEXT's checksum; getting that
+    /// wrong still produces a well-formed archive, so nothing but a real
+    /// read-back catches it.
     #[test]
     fn keyless_pack_round_trips_through_probe_and_extract() {
         let _g = progress_lock();
@@ -1323,5 +1299,55 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("未知的加密方案"), "{err}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The shape the packer used to lose: an archive whose members carry no
+    /// binary signature, so signal (1) has nothing to key on and the ADLR
+    /// identity is the only evidence there is. `create_xp3` stores the
+    /// plaintext's ADLR for every scheme, which is what makes this round-trip —
+    /// while `FateCrypt` stored the ciphertext's, a text-only pack of its own
+    /// came back as "cannot say".
+    #[test]
+    fn keyless_pack_detects_a_text_only_fate_archive() {
+        let _g = progress_lock();
+        for scheme in archive_xp3crypt_core::Scheme::ALL {
+            let dir = tmp(&format!("textonly_{}", scheme.name()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let text: Vec<u8> = b"// plain script text, no binary signature at all\n".repeat(60);
+            std::fs::write(dir.join("script.tjs"), &text).unwrap();
+            let xp3 = dir.join("data.xp3");
+            create_xp3(
+                dir.to_str().unwrap(),
+                xp3.to_str().unwrap(),
+                6,
+                &format!("crypt:{}", scheme.name()),
+            )
+            .unwrap();
+
+            assert_eq!(
+                probe_scheme_token(xp3.to_str().unwrap()),
+                format!("crypt:{}", scheme.name()),
+                "{}",
+                scheme.name()
+            );
+
+            let out = dir.join("out");
+            std::fs::create_dir_all(&out).unwrap();
+            let (done, fail) = crypt_extract(
+                xp3.to_str().unwrap(),
+                out.to_str().unwrap(),
+                scheme.name(),
+                None,
+            )
+            .unwrap();
+            assert_eq!((done, fail), (1, 0), "{}", scheme.name());
+            assert_eq!(
+                std::fs::read(out.join("script.tjs")).unwrap(),
+                text,
+                "{}",
+                scheme.name()
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 }

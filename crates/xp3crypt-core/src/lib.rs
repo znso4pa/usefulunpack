@@ -14,11 +14,32 @@
 //! | [`Scheme::AlteredPinkCrypt`] | XOR a fixed 256-byte table indexed by `offset & 0xFF` |
 //! | [`Scheme::DameganeCrypt`] | XOR `entry.Hash` at odd offsets, the offset itself at even ones |
 //!
-//! [`Scheme::FateCrypt`] is the only one whose stored ADLR is computed over the
-//! CIPHERTEXT (`HashAfterCrypt`); the other five checksum the plaintext. And
 //! [`Scheme::FlyingShineCrypt`] is the only one that is **not** an involution —
 //! its `encrypt` genuinely differs from its `decrypt` — which is why
 //! [`Scheme::encrypt`] is a real inverse rather than an alias.
+//!
+//! ## The stored ADLR is always the plaintext's
+//!
+//! GARbro marks `FateCrypt` as `HashAfterCrypt`, i.e. it writes the ADLR of the
+//! *ciphertext* when packing, and real archives of that family are built that
+//! way. This crate deliberately writes the *plaintext*'s instead, for every
+//! scheme.
+//!
+//! That is safe, and provably so. `FateCrypt`'s transform is a fixed `0x36` plus
+//! two absolute-offset fixups — it never reads the hash — and GARbro recovers
+//! real archives with exactly that hash-independent transform, so the game's own
+//! filter cannot be keyed on the ADLR either (a keyed filter would make a
+//! fixed-key decrypt impossible). Kirikiri itself never checks the value: the
+//! engine reads `adlr` into `FileHash` purely to hand it to the registered
+//! extraction filter (`base/XP3Archive.cpp`, `tTVPXP3ArchiveStream::Read`), and
+//! that filter is invoked unconditionally — the `protected` flag is not
+//! consulted on the read path at all. So the ADLR is free, and spending it on
+//! the plaintext's checksum is what keeps detection working: signal (2) below
+//! can only ever test the plaintext direction, so a ciphertext-ADLR archive is
+//! invisible to it by construction.
+//!
+//! The one thing this costs is byte-identity with GARbro's writer: 4 bytes per
+//! entry. The archive itself stays loadable, which is the property that matters.
 //!
 //! What makes these "keyless" (and worth a separate crate from cxdec) is that
 //! they need **no sidecar**: the key material is the entry's own ADLR, which the
@@ -61,17 +82,19 @@
 //! only way a wrong scheme can pass.
 //!
 //! (2) needs the WHOLE entry, so it is evaluated only for entries at or below
-//! `PROBE_ADLR_MAX`. It also cannot see an archive whose stored ADLR covers
-//! the *ciphertext*: there `adler32(raw) == stored_adlr`, so the second half
-//! fails by construction. **No content-only test can recover that case** — a
-//! plain archive and a ciphertext-ADLR archive produce byte-identical ADLR
-//! relations, so in that direction the stored checksum carries no information at
-//! all. Real archives using the convention are media packs that signal (1)
-//! handles anyway, *but* [`Scheme::hash_after_crypt`] makes the packer write it
-//! for `FateCrypt` regardless of what the folder holds — so a text-only
-//! FateCrypt pack this app produced comes back as "cannot say". Extraction is
-//! unaffected (the scheme is passed in explicitly); only auto-detection is
-//! blind. Recorded in `TODO.md`.
+//! `PROBE_ADLR_MAX`.
+//!
+//! It still cannot see an archive whose stored ADLR covers the *ciphertext* —
+//! there `adler32(raw) == stored_adlr`, so the second half fails by
+//! construction, and **no content-only test can recover that case**: a plain
+//! archive and a ciphertext-ADLR archive produce byte-identical ADLR relations,
+//! so in that direction the stored checksum carries no information at all. That
+//! is exactly why this crate's own packer writes the plaintext's ADLR even for
+//! `FateCrypt` (see "The stored ADLR is always the plaintext's" above), so
+//! anything this app produced can be read back. A foreign packer that wrote the
+//! ciphertext's stays out of reach — but only for auto-detection: extraction is
+//! unaffected, because there the scheme is passed in explicitly. Recorded in
+//! `TODO.md`.
 //!
 //! ## Why the protected flag is not trusted
 //!
@@ -301,17 +324,6 @@ impl Scheme {
         })
     }
 
-    /// Whether the archive's stored ADLR covers the CIPHERTEXT rather than the
-    /// plaintext (GARbro's `ICrypt.HashAfterCrypt`). Only FateCrypt does.
-    ///
-    /// This decides the pack layout: the vendored writer checksums whatever the
-    /// caller writes, so a `true` scheme must be fed already-encrypted bytes
-    /// (the checksum then lands on the ciphertext) while a `false` scheme goes
-    /// through the transform path, which checksums the plaintext.
-    pub fn hash_after_crypt(self) -> bool {
-        matches!(self, Scheme::FateCrypt)
-    }
-
     /// Decrypts `data`, whose first byte sits at absolute `offset` within the
     /// entry. Byte-for-byte the GARbro `ICrypt.Decrypt(entry, offset, values,
     /// pos, count)` bodies with `pos = 0` and `count = data.len()`.
@@ -394,10 +406,10 @@ impl Scheme {
     /// its inverse is `rotate_left` *then* XOR — the two operations do not
     /// commute.
     ///
-    /// Every arm is per-byte, so chunking composes: the pack path streams a
-    /// member in 64 KiB pieces and needs `encrypt(0, off, chunk)` over the pieces
-    /// to equal one call over the whole entry. (That path is only taken by
-    /// schemes whose ADLR covers the ciphertext — see `hash_after_crypt`.)
+    /// Every arm is per-byte and offset-addressed, so chunking composes: the
+    /// pack path hands the whole member to the vendored writer's transform
+    /// stream, which calls `encrypt(hash, off, chunk)` once per 64 KiB piece,
+    /// and that must equal one call over the whole entry.
     pub fn encrypt(self, hash: u32, offset: u64, data: &mut [u8]) {
         match self {
             Scheme::FlyingShineCrypt => {
@@ -664,9 +676,9 @@ mod tests {
     }
 
     /// A minimal uncompressed-index XP3 whose stored segment payloads are the
-    /// given bytes, with an explicit ADLR per entry (the caller decides whether
-    /// that is the plaintext's or the ciphertext's checksum — the whole point of
-    /// the `HashAfterCrypt` split).
+    /// given bytes, with an explicit ADLR per entry — so a test can hand-build
+    /// either convention (this crate's plaintext-ADLR, or the ciphertext-ADLR a
+    /// foreign packer writes) and see what the probe makes of it.
     fn build_xp3(entries: &[(&str, u32, Vec<u8>)]) -> Vec<u8> {
         build_xp3_flagged(entries, 1)
     }
@@ -711,14 +723,13 @@ mod tests {
     }
 
     /// Encrypts `plaintext` under `scheme` and returns the (hash, ciphertext)
-    /// pair to store — the hash is the plaintext's for a `HashAfterCrypt=false`
-    /// scheme and the ciphertext's for FateCrypt, exactly as a real packer does.
+    /// pair to store. The hash is always the plaintext's — the one convention
+    /// this crate's writer uses for every scheme.
     fn encrypt_entry(scheme: Scheme, plaintext: &[u8]) -> (u32, Vec<u8>) {
         let plain_hash = adler32(plaintext);
         let mut payload = plaintext.to_vec();
         scheme.encrypt(plain_hash, 0, &mut payload);
-        let stored = if scheme.hash_after_crypt() { adler32(&payload) } else { plain_hash };
-        (stored, payload)
+        (plain_hash, payload)
     }
 
     /// A PNG-headed payload: the 8-byte signature is what every scheme's probe
@@ -817,12 +828,9 @@ mod tests {
     /// this only passes if the ADLR identity is evaluated — which requires the
     /// entry to be sampled whole.
     ///
-    /// Note the fixture's ADLR is the PLAINTEXT's, which is the convention most
-    /// real archives use and the only one signal (2) can test. `create_xp3` does
-    /// not produce this for FateCrypt (see `hash_after_crypt`), so this test
-    /// deliberately hand-builds the archive rather than packing one — the packer
-    /// path is covered by `keyless_pack_round_trips_through_probe_and_extract`,
-    /// which keeps a signature on every member for exactly that reason.
+    /// Hand-built rather than packed, so the fixture stays independent of the
+    /// writer's own ADLR choice; the packed equivalent — the case that used to
+    /// fail — is `keyless_pack_detects_a_text_only_fate_archive` in `xp3-core`.
     #[test]
     fn text_only_archive_is_detected_by_the_adlr_identity() {
         let dir = tmp("text_only");

@@ -145,14 +145,17 @@
 //! additionally accepted as an input alias for [`Scheme::FateCrypt`] — see
 //! [`Scheme::alias`].
 //!
-//! The three later additions — [`Scheme::FlyingShineCrypt`],
-//! [`Scheme::AlteredPinkCrypt`], [`Scheme::DameganeCrypt`] — have **no** second
-//! implementation to check against: neither arc_unpacker nor yuzu_xp3 carries
-//! them. They are GARbro-only, transcribed the same way, and their fidelity
-//! rests on the tests in this file rather than on agreement between sources.
-//! Their rotation primitive is GARbro's `Binary.RotByteR/L`, which is a plain
-//! 8-bit rotate (`count &= 7`, the `<< 8` term truncated away) — i.e. Rust's
-//! `u8::rotate_right`/`rotate_left` with the count pre-masked.
+//! The later additions — [`Scheme::FlyingShineCrypt`],
+//! [`Scheme::AlteredPinkCrypt`], [`Scheme::DameganeCrypt`],
+//! [`Scheme::NatsupochiCrypt`], [`Scheme::OkibaCrypt`],
+//! [`Scheme::DieselmineCrypt`] — have **no** second implementation to check
+//! against: neither arc_unpacker nor yuzu_xp3 carries them. They are
+//! GARbro-only, transcribed the same way, and their fidelity rests on the tests
+//! in this file rather than on agreement between sources.
+//! [`Scheme::FlyingShineCrypt`]'s rotation primitive is GARbro's
+//! `Binary.RotByteR/L`, which is a plain 8-bit rotate (`count &= 7`, the `<< 8`
+//! term truncated away) — i.e. Rust's `u8::rotate_right`/`rotate_left` with the
+//! count pre-masked.
 //!
 //! Two caveats this comparison surfaced, both deliberate:
 //!

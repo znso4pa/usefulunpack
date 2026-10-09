@@ -174,7 +174,7 @@ fn extract_xp3(input: &str, output: &str) -> Result<(u32, u32), String> {
 ///   `plain`          — no protection (or no evidence either way)
 ///   `cxdec:<scheme>` — cxdec-protected; the scheme scored against real entries
 ///   `cxdec:?`        — a cxdec game folder, but no known scheme decrypts it
-///   `crypt:<scheme>` — a keyless scheme (HashCrypt / FateCrypt / AppliqueCrypt)
+///   `crypt:<scheme>` — a keyless scheme (`Scheme::ALL` in `xp3crypt-core`)
 ///                      scored against real entries; no sidecar needed
 ///   `suspect`        — no scheme matched, yet the index marks entries protected
 ///
@@ -375,7 +375,7 @@ pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CxdecExtractSelected(
     }
 }
 
-// ─── XP3 keyless ciphers (HashCrypt / FateCrypt / AppliqueCrypt) ──────────
+// ─── XP3 keyless ciphers (`crypt:<scheme>`) ────────────────────────────────
 // No sidecar is involved, so unlike the cxdec pair there is nothing to
 // discover: the scheme is named by the content probe (`probe_scheme_token`)
 // and the caller hands that same name straight back, which keeps the bytes
@@ -702,13 +702,14 @@ fn create_xp3(input: &str, output: &str, level: i32, enc: &str) -> Result<u32, S
                     Ok::<(), std::io::Error>(())
                 })
             }
-            // A keyless scheme — one shape for all six. The transform path
+            // A keyless scheme — one shape for all of them. The transform path
             // encrypts on the way out while checksumming the PLAINTEXT the caller
-            // handed in, and the stored ADLR must be that same value: for five of
-            // the six schemes the key material *is* that checksum, and for
-            // FateCrypt — whose transform ignores the hash — spending the ADLR on
-            // the plaintext is what keeps a pack this app wrote readable back by
-            // its own probe (signal (2) can only test the plaintext direction).
+            // handed in, and the stored ADLR must be that same value: most of
+            // these schemes derive their key from that checksum, and for the ones
+            // that do not (FateCrypt's fixed 0x36, AlteredPinkCrypt's fixed
+            // table) spending the ADLR on the plaintext is what keeps a pack this
+            // app wrote readable back by its own probe — signal (2) can only test
+            // the plaintext direction.
             // See the `archive_xp3crypt-core` module doc.
             Some(PackCipher::Keyless(scheme)) => {
                 let scheme = *scheme;

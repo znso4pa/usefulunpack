@@ -799,6 +799,9 @@ internal object UuCommands {
         "flyingshinecrypt" -> "crypt:FlyingShineCrypt"
         "alteredpinkcrypt" -> "crypt:AlteredPinkCrypt"
         "dameganecrypt" -> "crypt:DameganeCrypt"
+        "natsupochicrypt" -> "crypt:NatsupochiCrypt"
+        "okibacrypt" -> "crypt:OkibaCrypt"
+        "dieselminecrypt" -> "crypt:DieselmineCrypt"
         else -> null
     }
 

@@ -348,7 +348,10 @@
     <string name="enc_flyingshinecrypt">FlyingShineCrypt</string>
     <string name="enc_alteredpinkcrypt">AlteredPinkCrypt</string>
     <string name="enc_dameganecrypt">DameganeCrypt</string>
-    <string name="enc_cxdec_hint">cxdec にはフォルダ内の xp3filter.tjs / .tpm、または方式判定用の暗号化済み .xp3 が必要です。サイドカー不要の方式（HashCrypt、FateCrypt、AppliqueCrypt、FlyingShineCrypt、AlteredPinkCrypt、DameganeCrypt）は追加ファイル不要。暗号化エントリは無圧縮で保存されます。</string>
+    <string name="enc_natsupochicrypt">NatsupochiCrypt</string>
+    <string name="enc_okibacrypt">OkibaCrypt</string>
+    <string name="enc_dieselminecrypt">DieselmineCrypt</string>
+    <string name="enc_cxdec_hint">cxdec にはフォルダ内の xp3filter.tjs / .tpm、または方式判定用の暗号化済み .xp3 が必要です。サイドカー不要の方式（HashCrypt、FateCrypt、AppliqueCrypt、FlyingShineCrypt、AlteredPinkCrypt、DameganeCrypt、NatsupochiCrypt、OkibaCrypt、DieselmineCrypt）は追加ファイル不要。暗号化エントリは無圧縮で保存されます。</string>
     <string name="enc_note_verified">方式は %1$s から</string>
     <string name="enc_note_unverified">方式は %1$s から推定、暗号文での検証なし</string>
     <string name="enc_note_scheme">%1$s で暗号化</string>

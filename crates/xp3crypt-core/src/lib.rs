@@ -21,15 +21,17 @@
 //! ## How a scheme is identified
 //!
 //! GARbro resolves these from a game-name database. This crate instead scores
-//! the archive's own first entries, which needs no database and cannot go stale:
-//! an entry counts as a **hit** for a candidate scheme when
+//! the archive's own first entries, which needs no database and cannot go stale.
+//! An entry counts as a **hit** for a candidate scheme when **either** signal
+//! fires:
 //!
 //! ```text
-//! looks_decrypted(decrypt(raw)) && !looks_decrypted(raw)
+//! (1) looks_decrypted(decrypt(raw)) && !looks_decrypted(raw)      // signature
+//! (2) adler32(decrypt(raw)) == stored_adlr && adler32(raw) != stored_adlr
 //! ```
 //!
-//! i.e. decrypting produced a recognizable file signature that the raw bytes did
-//! NOT already have. Both halves matter:
+//! Signal (1) is the cheap one: decrypting produced a recognizable file
+//! signature that the raw bytes did NOT already have. Both halves matter:
 //!
 //! * the first half rejects a plain archive (decrypting plaintext with a wrong
 //!   key yields noise, which matches no signature);
@@ -40,13 +42,48 @@
 //!   uses full-length signatures (`TLG5.0\0`, the 8-byte PNG signature) rather
 //!   than the usual 2–4 byte abbreviations.
 //!
-//! The protected flag is respected exactly as GARbro does (`ArcXP3.cs`): the
-//! cipher applies to an entry only when the index marks it protected, so a
-//! mixed archive whose unencrypted members carry no flag is left intact.
+//! Signal (1) only works on members that *have* a signature, which is the flaw
+//! real archives expose: a small patch archive can hold nothing but script and
+//! config text, which decrypts to perfectly ordinary text. No signature list can
+//! name that. Signal (2) covers exactly this gap — it is
+//! content-agnostic, because the XP3 index already stores a checksum of the
+//! plaintext, so the decryption can simply be *verified* against it. Both halves
+//! of (2) are load-bearing for the same reason as in (1): a plain archive has
+//! `adler32(raw) == stored_adlr` and so is rejected, and a 2⁻³² collision is the
+//! only way a wrong scheme can pass.
+//!
+//! (2) needs the WHOLE entry, so it is evaluated only for entries at or below
+//! [`PROBE_ADLR_MAX`]. It also cannot see archives whose stored ADLR covers the
+//! *ciphertext* — there `adler32(raw) == stored_adlr`, so the second half fails
+//! by construction — but those are the image/audio/video archives that signal
+//! (1) handles anyway.
+//!
+//! ## Why the protected flag is not trusted
+//!
+//! GARbro gates the cipher on the per-entry flag (`ArcXP3.cs`:
+//! `entry.IsEncrypted = 0 != header.ReadUInt32()`, then `if (m_entry.IsEncrypted)
+//! Decrypt(…)`), and that reads as the natural design — the flag is the game's
+//! own statement about which members the filter runs over. Real archives,
+//! however, disprove it in **both** directions:
+//!
+//! * one packer writes the cipher over an entire archive while leaving the flag
+//!   **clear** on every entry, so a flag gate yields nothing but ciphertext;
+//! * another mixes a genuinely-plain planted decoy (flag clear, its body a
+//!   literal ASCII anti-piracy notice) among encrypted entries that all carry a
+//!   non-zero flag. Here the flag happens to be right, which is exactly why it
+//!   looks trustworthy.
+//!
+//! Kirikiri registers an extraction filter (`xp3filter.tjs`) for the whole
+//! archive and runs it over every member, so the honest question is the
+//! archive-level one — "did some scheme explain this content?" — which is what
+//! [`probe_scheme`] answers from the bytes themselves. Once a scheme is
+//! identified, the entire archive is decrypted; the per-entry flag is consulted
+//! for nothing. The cost is that a planted decoy comes out scrambled, which is
+//! the cheaper error: it is an anti-piracy notice, not game data.
 //!
 //! ## Provenance and independent confirmation
 //!
-//! The three `decrypt` bodies were transcribed from GARbro's
+//! The three original `decrypt` bodies were transcribed from GARbro's
 //! `ArcFormats/KiriKiri/CryptAlgorithms.cs`, then cross-checked byte-for-byte
 //! against two further independent implementations:
 //!
@@ -62,25 +99,25 @@
 //! — `Xp3ArchiveDecoder::read_file_impl` calls `decrypt_func(data,
 //! entry->adlr_chunk->key)` — matching GARbro's `entry.Hash`.)
 //!
-//! Note the arc_unpacker names are how the games are usually catalogued
-//! (`fsn` = Fate/Stay Night, `rebirth` = Re:birth colony ~Lost azurite~), so
-//! they are handy when hunting for real samples. `fsn` is additionally accepted
-//! as an input alias for [`Scheme::FateCrypt`] — see [`Scheme::alias`].
+//! Note the arc_unpacker plugin ids are often how a scheme is catalogued
+//! upstream, so they are handy when hunting for real samples. `fsn` is
+//! additionally accepted as an input alias for [`Scheme::FateCrypt`] — see
+//! [`Scheme::alias`].
 //!
 //! Two caveats this comparison surfaced, both deliberate:
 //!
 //! * **No reference auto-detects the scheme from content.** GARbro picks it
 //!   from a filename→title database and arc_unpacker from a user-selected
 //!   plugin. The probe below is therefore original work, and its reliability
-//!   rests on the signatures in `archive_common::looks_decrypted` rather than
-//!   on any upstream guarantee — hence the appetite for real test archives.
-//! * **arc_unpacker applies the cipher to every entry unconditionally**, while
-//!   GARbro (and this crate) gate on the per-entry protected flag. The flag is
-//!   the game's own statement about which members the filter runs over, so
-//!   honouring it is the safer of the two.
+//!   rests on the two signals described in "How a scheme is identified" rather
+//!   than on any upstream guarantee — hence the appetite for real test archives.
+//! * **arc_unpacker applies the cipher to every entry unconditionally**, which
+//!   this crate also now does (see "Why the protected flag is not trusted").
+//!   GARbro's per-entry flag gate is the outlier here, and the real archives
+//!   above show it is the wrong reading.
 
 use archive_common::{extract_progress, looks_decrypted, safe_join, DestAllocator};
-use cxdec_tools::r#struct::xp3::{Xp3Archive, Xp3Cipher};
+use cxdec_tools::r#struct::xp3::{Xp3Archive, Xp3Cipher, Xp3Entry};
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::Path;
@@ -109,6 +146,23 @@ const PROBE_PREFIX: usize = 64;
 /// multi-GB member would be a full allocation just to look at 64 bytes.
 const PROBE_MAX_PACKED: u64 = 64 * 1024 * 1024;
 
+/// Entries at or below this unpacked size are sampled WHOLE, which unlocks the
+/// ADLR identity (see [`probe_scheme`]). 1 MiB keeps the probe's worst-case read
+/// at [`PROBE_SAMPLES`] × 1 MiB, and real script/config members — the ones that
+/// need it, because they carry no binary signature — are far below it.
+const PROBE_ADLR_MAX: u64 = 1024 * 1024;
+
+/// Adler-32, matching the XP3 `adlr` chunk's own definition (RFC 1950, initial
+/// value 1). Used by the probe to test a decryption against the stored checksum.
+fn adler32(data: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for &byte in data {
+        a = (a + byte as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
+}
+
 /// The keyless schemes, in probe order. Order is irrelevant to correctness
 /// (exactly one scheme scores on a real archive) but keeps the report stable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -132,13 +186,13 @@ impl Scheme {
     }
 
     /// The name this scheme goes by in arc_unpacker's plugin list, where one is
-    /// worth accepting. Only [`Scheme::FateCrypt`] has one: `fsn` (Fate/Stay
-    /// Night) is how the scheme is usually catalogued, so it is the name a user
-    /// is most likely to reach for.
+    /// worth accepting. Only [`Scheme::FateCrypt`] has one: `fsn`, the plugin id
+    /// the scheme is usually catalogued under, so it is the name a user is most
+    /// likely to reach for.
     ///
     /// The other two are deliberately left out. `xor` and `rebirth` are
-    /// arc_unpacker's internal plugin ids, not names anyone knows a game by, and
-    /// `xor` in particular is vague enough to be misleading.
+    /// arc_unpacker's internal plugin ids, not names anyone knows a scheme by,
+    /// and `xor` in particular is vague enough to be misleading.
     pub fn alias(self) -> Option<&'static str> {
         match self {
             Scheme::FateCrypt => Some("fsn"),
@@ -231,9 +285,7 @@ impl Scheme {
 
 /// [`Xp3Cipher`] adapter so the vendored reader can drive a [`Scheme`].
 ///
-/// `is_encrypted` is left at its default (`entry.is_encrypted`) on purpose: the
-/// protected flag is the game's own statement about which members the filter
-/// runs over, and GARbro honours it the same way.
+/// `is_encrypted` is overridden — see the trait impl below.
 pub struct SchemeCipher {
     scheme: Scheme,
 }
@@ -249,6 +301,17 @@ impl SchemeCipher {
 }
 
 impl Xp3Cipher for SchemeCipher {
+    /// Always `true`, deliberately ignoring the INFO `protected` flag.
+    ///
+    /// The decision to run a cipher is made **once for the whole archive** by
+    /// [`probe_scheme`], from content; once made, every member is decrypted. The
+    /// flag is not consulted — see "Why the protected flag is not trusted" in the
+    /// module docs for the real-archive evidence that it is unreliable in both
+    /// directions.
+    fn is_encrypted(&self, _entry: &Xp3Entry) -> bool {
+        true
+    }
+
     fn decrypt(&mut self, hash: u32, offset: u64, data: &mut [u8]) -> io::Result<()> {
         self.scheme.decrypt(hash, offset, data);
         Ok(())
@@ -257,37 +320,59 @@ impl Xp3Cipher for SchemeCipher {
 
 /// Identifies the keyless scheme protecting `archive`, if any.
 ///
-/// Read-only and side-effect-free — it opens the archive, reads up to
-/// [`PROBE_SAMPLES`] small protected entries' prefixes and scores each scheme.
-/// `None` covers every "cannot say" outcome: not an XP3, no protected entries,
-/// or content no candidate scheme explains.
+/// Read-only and side-effect-free — it opens the archive, samples up to
+/// [`PROBE_SAMPLES`] entries and scores each scheme with the two signals
+/// described in the module docs (file signature, and the stored-ADLR identity).
+/// `None` covers every "cannot say" outcome: not an XP3, no readable entries, or
+/// content no candidate scheme explains.
+///
+/// The protected flag is deliberately **not** consulted: real archives carry the
+/// cipher with the flag clear, so gating on it would miss them. The
+/// content test below is self-policing on plain archives — see the module docs.
 pub fn probe_scheme(archive: &str) -> Option<Scheme> {
     let mut arch = Xp3Archive::open(Path::new(archive)).ok()?;
 
-    // Collect (hash, raw prefix) for small protected entries. The raw prefix is
-    // read with a no-op cipher: `read_entry_prefix` gates on `is_encrypted`, and
-    // a no-op leaves the bytes exactly as stored, which is what both halves of
-    // the hit test need.
-    let mut samples: Vec<(u32, Vec<u8>)> = Vec::with_capacity(PROBE_SAMPLES);
+    // A sampled entry: its stored ADLR, its bytes as stored, and whether those
+    // bytes are the WHOLE entry — signal (2) is only sound on a whole entry,
+    // signal (1) is happy with a prefix.
+    struct Sample {
+        hash: u32,
+        bytes: Vec<u8>,
+        whole: bool,
+    }
+
+    // The raw bytes are read with a no-op cipher: both `read_entry` and
+    // `read_entry_prefix` gate on `is_encrypted`, but a no-op leaves the bytes
+    // exactly as stored either way, which is what both signals need.
+    let mut samples: Vec<Sample> = Vec::with_capacity(PROBE_SAMPLES);
     let mut noop = |_h: u32, _o: u64, _d: &mut [u8]| Ok(());
     for i in 0..arch.entries.len().min(PROBE_SCAN_MAX) {
         if samples.len() >= PROBE_SAMPLES {
             break;
         }
-        let (protected, hash, packed) = {
+        let (hash, packed, unpacked) = {
             let e = &arch.entries[i];
             (
-                e.is_encrypted,
                 e.hash,
                 e.segments.iter().map(|s| s.packed_size).sum::<u64>(),
+                e.unpacked_size,
             )
         };
-        if !protected || packed > PROBE_MAX_PACKED {
+        if packed > PROBE_MAX_PACKED {
             continue;
         }
-        if let Ok(raw) = arch.read_entry_prefix(i, PROBE_PREFIX, &mut noop) {
-            if !raw.is_empty() {
-                samples.push((hash, raw));
+        // Small entries are taken whole so the ADLR identity applies; larger ones
+        // fall back to a prefix, which still supports the signature signal.
+        let sample = if unpacked <= PROBE_ADLR_MAX {
+            arch.read_entry(i, &mut noop).ok().map(|bytes| Sample { hash, bytes, whole: true })
+        } else {
+            arch.read_entry_prefix(i, PROBE_PREFIX, &mut noop)
+                .ok()
+                .map(|bytes| Sample { hash, bytes, whole: false })
+        };
+        if let Some(s) = sample {
+            if !s.bytes.is_empty() {
+                samples.push(s);
             }
         }
     }
@@ -299,10 +384,12 @@ pub fn probe_scheme(archive: &str) -> Option<Scheme> {
     for scheme in Scheme::ALL {
         let hits = samples
             .iter()
-            .filter(|(hash, raw)| {
-                let mut dec = raw.clone();
-                scheme.decrypt(*hash, 0, &mut dec);
-                looks_decrypted(&dec) && !looks_decrypted(raw)
+            .filter(|s| {
+                let mut dec = s.bytes.clone();
+                scheme.decrypt(s.hash, 0, &mut dec);
+                let signature = looks_decrypted(&dec) && !looks_decrypted(&s.bytes);
+                let adlr = s.whole && adler32(&dec) == s.hash && adler32(&s.bytes) != s.hash;
+                signature || adlr
             })
             .count();
         if hits > 0 && best.map_or(true, |(score, _)| hits > score) {
@@ -441,15 +528,6 @@ mod tests {
         std::env::temp_dir().join(format!("uu_xp3crypt_{}_{}", std::process::id(), tag))
     }
 
-    fn adler32(data: &[u8]) -> u32 {
-        let (mut a, mut b) = (1u32, 0u32);
-        for &byte in data {
-            a = (a + byte as u32) % 65521;
-            b = (b + a) % 65521;
-        }
-        (b << 16) | a
-    }
-
     fn chunk(sig: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut v = sig.to_vec();
         v.extend_from_slice(&(payload.len() as i64).to_le_bytes());
@@ -576,18 +654,67 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// An archive whose protected flag is NOT set carries no filter, so nothing
-    /// may be decrypted — and the probe must not guess from content alone.
+    /// The flag must NOT gate the probe: a real archive can carry the cipher on
+    /// every entry with the flag cleared, and a flag gate would leave it as
+    /// ciphertext. Detection is from content, so a clear flag changes nothing.
     #[test]
-    fn unflagged_entries_are_not_probed() {
-        let dir = tmp("unflagged");
+    fn ciphertext_with_clear_flag_is_still_detected() {
+        let dir = tmp("unflagged_cipher");
         fs::create_dir_all(&dir).unwrap();
-        // Real HashCrypt ciphertext, but with the flag cleared: the game itself
-        // would read these bytes raw, so the probe must not claim a scheme.
         let plain = png_plaintext(4096);
         let (hash, enc) = encrypt_entry(Scheme::HashCrypt, &plain);
         let xp3 = dir.join("data.xp3");
         fs::write(&xp3, build_xp3_flagged(&[("bg/a.png", hash, enc)], 0)).unwrap();
+        assert_eq!(probe_scheme(xp3.to_str().unwrap()), Some(Scheme::HashCrypt));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The converse lie: a SET flag over genuinely-plain content — the shape of a
+    /// planted decoy. Content wins, so nothing is claimed
+    /// — a flag gate would have decrypted the plaintext into noise.
+    #[test]
+    fn plaintext_with_set_flag_is_not_detected() {
+        let dir = tmp("flagged_plain");
+        fs::create_dir_all(&dir).unwrap();
+        let entries: Vec<(&str, u32, Vec<u8>)> =
+            vec![("bg/a.png", adler32(&png_plaintext(4096)), png_plaintext(4096))];
+        let xp3 = dir.join("data.xp3");
+        fs::write(&xp3, build_xp3_flagged(&entries, 1)).unwrap();
+        assert_eq!(probe_scheme(xp3.to_str().unwrap()), None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The text-only shape: FateCrypt with a PLAINTEXT ADLR over content that
+    /// carries no binary signature (a script/config text). The signature signal
+    /// cannot see it, so this only passes if the ADLR identity is evaluated —
+    /// which requires the entry to be sampled whole.
+    #[test]
+    fn text_only_archive_is_detected_by_the_adlr_identity() {
+        let dir = tmp("text_only");
+        fs::create_dir_all(&dir).unwrap();
+        let plain = b"// plain script text, no binary signature at all\n".to_vec();
+        assert!(!looks_decrypted(&plain), "precondition: no signature to key on");
+        let hash = adler32(&plain);
+        let mut enc = plain.clone();
+        Scheme::FateCrypt.encrypt(hash, 0, &mut enc);
+        assert_ne!(adler32(&enc), hash, "precondition: the stored ADLR covers the plaintext");
+        let xp3 = dir.join("data.xp3");
+        fs::write(&xp3, build_xp3_flagged(&[("script/main.tjs", hash, enc)], 0)).unwrap();
+        assert_eq!(probe_scheme(xp3.to_str().unwrap()), Some(Scheme::FateCrypt));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The ADLR signal must not resurrect the plain-archive false positive: a
+    /// plain member satisfies `adler32(raw) == stored`, which the test's second
+    /// half rejects.
+    #[test]
+    fn plain_text_archive_is_not_detected_by_the_adlr_identity() {
+        let dir = tmp("plain_text");
+        fs::create_dir_all(&dir).unwrap();
+        let plain = b"// plain script text, no binary signature at all\n".to_vec();
+        let entries: Vec<(&str, u32, Vec<u8>)> = vec![("script/main.tjs", adler32(&plain), plain)];
+        let xp3 = dir.join("data.xp3");
+        fs::write(&xp3, build_xp3(&entries)).unwrap();
         assert_eq!(probe_scheme(xp3.to_str().unwrap()), None);
         fs::remove_dir_all(&dir).ok();
     }

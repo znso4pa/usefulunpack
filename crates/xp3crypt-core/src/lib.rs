@@ -1,16 +1,24 @@
 //! Keyless Kirikiri XP3 content ciphers — the "simple" family GARbro carries in
 //! `ArcFormats/KiriKiri/CryptAlgorithms.cs`.
 //!
-//! Three schemes, chosen as the first step beyond plain + cxdec precisely
-//! because they are structurally different from each other and from cxdec:
+//! Six schemes, each a different shape of "transform keyed by the entry's own
+//! ADLR", so that between them they cover the structural variety GARbro's
+//! catalogue has to offer without any of them needing outside information:
 //!
-//! * [`Scheme::HashCrypt`]     — every byte XORed with one key byte,
-//!   `(byte)entry.Hash`. The classic "keyed by the ADLR" shape.
-//! * [`Scheme::FateCrypt`]     — every byte XORed with the constant `0x36`, plus
-//!   two single-byte fixups at fixed absolute offsets. The only one of the three
-//!   whose stored ADLR is computed over the CIPHERTEXT (`HashAfterCrypt`).
-//! * [`Scheme::AppliqueCrypt`] — the first 5 bytes are stored verbatim, the rest
-//!   XORed with `(byte)(entry.Hash >> 12)`.
+//! | scheme                  | transform                                        |
+//! |-------------------------|--------------------------------------------------|
+//! | [`Scheme::HashCrypt`]     | XOR with one key byte, `(byte)entry.Hash`        |
+//! | [`Scheme::FateCrypt`]     | XOR `0x36` + 2 absolute-offset fixups            |
+//! | [`Scheme::AppliqueCrypt`] | 5-byte verbatim prefix, then XOR `Hash >> 12`    |
+//! | [`Scheme::FlyingShineCrypt`] | XOR a key byte, then ROTATE right by a count derived from the same hash |
+//! | [`Scheme::AlteredPinkCrypt`] | XOR a fixed 256-byte table indexed by `offset & 0xFF` |
+//! | [`Scheme::DameganeCrypt`] | XOR `entry.Hash` at odd offsets, the offset itself at even ones |
+//!
+//! [`Scheme::FateCrypt`] is the only one whose stored ADLR is computed over the
+//! CIPHERTEXT (`HashAfterCrypt`); the other five checksum the plaintext. And
+//! [`Scheme::FlyingShineCrypt`] is the only one that is **not** an involution —
+//! its `encrypt` genuinely differs from its `decrypt` — which is why
+//! [`Scheme::encrypt`] is a real inverse rather than an alias.
 //!
 //! What makes these "keyless" (and worth a separate crate from cxdec) is that
 //! they need **no sidecar**: the key material is the entry's own ADLR, which the
@@ -104,6 +112,15 @@
 //! additionally accepted as an input alias for [`Scheme::FateCrypt`] — see
 //! [`Scheme::alias`].
 //!
+//! The three later additions — [`Scheme::FlyingShineCrypt`],
+//! [`Scheme::AlteredPinkCrypt`], [`Scheme::DameganeCrypt`] — have **no** second
+//! implementation to check against: neither arc_unpacker nor yuzu_xp3 carries
+//! them. They are GARbro-only, transcribed the same way, and their fidelity
+//! rests on the tests in this file rather than on agreement between sources.
+//! Their rotation primitive is GARbro's `Binary.RotByteR/L`, which is a plain
+//! 8-bit rotate (`count &= 7`, the `<< 8` term truncated away) — i.e. Rust's
+//! `u8::rotate_right`/`rotate_left` with the count pre-masked.
+//!
 //! Two caveats this comparison surfaced, both deliberate:
 //!
 //! * **No reference auto-detects the scheme from content.** GARbro picks it
@@ -163,17 +180,75 @@ fn adler32(data: &[u8]) -> u32 {
     (b << 16) | a
 }
 
-/// The keyless schemes, in probe order. Order is irrelevant to correctness
-/// (exactly one scheme scores on a real archive) but keeps the report stable.
+/// `AlteredPinkCrypt`'s keystream: a fixed 256-byte table indexed by
+/// `offset & 0xFF`. Transcribed verbatim from GARbro
+/// (`CryptAlgorithms.cs`, `AlteredPinkCrypt.KeyTable`); 16 rows of 16.
+///
+/// It is a *constant* table, not a derived one — the contrast with cxdec, whose
+/// keystream must be reconstructed from the game's control block, is exactly
+/// what makes this scheme keyless.
+#[rustfmt::skip]
+const ALTERED_PINK_TABLE: [u8; 256] = [
+    0x43, 0xF8, 0xAD, 0x08, 0xDF, 0xB7, 0x26, 0x44, 0xF0, 0xD9, 0xE9, 0x24, 0x1A, 0xC1, 0xEE, 0xB4,
+    0x11, 0x4B, 0xE4, 0xAF, 0x01, 0x5B, 0xF0, 0xAB, 0x6A, 0x70, 0x78, 0x84, 0xB0, 0x78, 0x4F, 0xED,
+    0x39, 0x52, 0x69, 0xAF, 0xC4, 0x92, 0x2A, 0x21, 0xDE, 0xDC, 0x6E, 0x63, 0x9D, 0x9B, 0x63, 0xE1,
+    0xB1, 0x94, 0x40, 0x6E, 0x3A, 0x52, 0x5A, 0x28, 0x08, 0x4D, 0xFB, 0x22, 0x18, 0xEB, 0xBA, 0x98,
+    0x49, 0x77, 0xBF, 0xAA, 0x43, 0x75, 0xF5, 0xD3, 0x83, 0x71, 0x58, 0xA4, 0xAF, 0x1B, 0x53, 0x99,
+    0x8A, 0x27, 0x5B, 0xC2, 0x7F, 0x7A, 0xCD, 0x8D, 0x33, 0x59, 0xEB, 0xA6, 0xFA, 0x7C, 0x00, 0x19,
+    0xC4, 0xAA, 0x24, 0xF8, 0x84, 0xCD, 0xF7, 0x20, 0x4B, 0xAB, 0xF1, 0xD5, 0x01, 0x6F, 0x7C, 0x91,
+    0x08, 0x7D, 0x8D, 0x89, 0x7C, 0x71, 0x65, 0x99, 0x9B, 0x6F, 0x3A, 0x1C, 0x49, 0xE3, 0xAF, 0x1F,
+    0xC6, 0xA5, 0x79, 0xFE, 0xAE, 0xA1, 0xCA, 0x59, 0x3C, 0xEE, 0xC1, 0x02, 0xBD, 0x2B, 0x8E, 0xC5,
+    0x7D, 0x38, 0x80, 0x8F, 0x72, 0xF3, 0x86, 0x5D, 0xF4, 0x20, 0x0A, 0x5B, 0xA0, 0xE3, 0x85, 0xB5,
+    0x67, 0x43, 0x96, 0xBB, 0x75, 0x86, 0x8D, 0x7E, 0x7E, 0xE6, 0xAA, 0x18, 0x57, 0xC4, 0xAA, 0x87,
+    0xDC, 0x74, 0x05, 0xAA, 0xBD, 0x5E, 0x4F, 0xA9, 0xB5, 0x5E, 0xC5, 0xE8, 0x11, 0x6D, 0x68, 0x89,
+    0x17, 0x7C, 0x10, 0x05, 0xA2, 0xBA, 0x43, 0x01, 0xD6, 0xFD, 0x26, 0x19, 0x57, 0xFA, 0x4D, 0x01,
+    0xB0, 0xED, 0x3A, 0x55, 0xEB, 0x65, 0x8E, 0xD1, 0x58, 0x27, 0xAD, 0xA1, 0x5E, 0x57, 0x3F, 0xA0,
+    0xEF, 0x59, 0x3E, 0xA4, 0xEB, 0x12, 0x15, 0x60, 0xBE, 0x95, 0x61, 0x0B, 0x98, 0xF5, 0xF4, 0x12,
+    0x1C, 0xD8, 0x62, 0x3F, 0xFD, 0xCF, 0x01, 0x3A, 0xE7, 0xC2, 0x19, 0x38, 0x6C, 0xC3, 0x90, 0x3E,
+];
+
+/// `FlyingShineCrypt`'s two per-entry parameters, from GARbro's
+/// `FlyingShineCrypt.Adjust`: the XOR key is bits 8..15 of the hash, the
+/// rotation count is its low byte.
+///
+/// A zero field is replaced (`0x0f` for the count, `0xf0` for the key) so a
+/// degenerate hash cannot silently turn the cipher into the identity. The count
+/// is then masked to 3 bits, which is what GARbro's `RotByteR/L` does internally
+/// (`count &= 7`).
+fn flying_shine_key(hash: u32) -> (u8, u32) {
+    let mut shift = hash & 0xff;
+    if shift == 0 {
+        shift = 0x0f;
+    }
+    let mut key = ((hash >> 8) & 0xff) as u8;
+    if key == 0 {
+        key = 0xf0;
+    }
+    (key, shift & 7)
+}
+
+/// The keyless schemes, in probe order. Order matters only for the probe's
+/// tie-break (the first scheme with the top score wins), and the original three
+/// lead so that their existing results cannot shift.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Scheme {
     HashCrypt,
     FateCrypt,
     AppliqueCrypt,
+    FlyingShineCrypt,
+    AlteredPinkCrypt,
+    DameganeCrypt,
 }
 
 impl Scheme {
-    pub const ALL: [Scheme; 3] = [Scheme::HashCrypt, Scheme::FateCrypt, Scheme::AppliqueCrypt];
+    pub const ALL: [Scheme; 6] = [
+        Scheme::HashCrypt,
+        Scheme::FateCrypt,
+        Scheme::AppliqueCrypt,
+        Scheme::FlyingShineCrypt,
+        Scheme::AlteredPinkCrypt,
+        Scheme::DameganeCrypt,
+    ];
 
     /// Stable machine name — this is what rides in the UI token (`crypt:<name>`)
     /// and comes back on the pack path, so it must never change casually.
@@ -182,6 +257,9 @@ impl Scheme {
             Scheme::HashCrypt => "HashCrypt",
             Scheme::FateCrypt => "FateCrypt",
             Scheme::AppliqueCrypt => "AppliqueCrypt",
+            Scheme::FlyingShineCrypt => "FlyingShineCrypt",
+            Scheme::AlteredPinkCrypt => "AlteredPinkCrypt",
+            Scheme::DameganeCrypt => "DameganeCrypt",
         }
     }
 
@@ -190,13 +268,14 @@ impl Scheme {
     /// the scheme is usually catalogued under, so it is the name a user is most
     /// likely to reach for.
     ///
-    /// The other two are deliberately left out. `xor` and `rebirth` are
+    /// The others are deliberately left out: `xor` and `rebirth` are
     /// arc_unpacker's internal plugin ids, not names anyone knows a scheme by,
-    /// and `xor` in particular is vague enough to be misleading.
+    /// and `xor` in particular is vague enough to be misleading. The three later
+    /// schemes have no arc_unpacker plugin at all.
     pub fn alias(self) -> Option<&'static str> {
         match self {
             Scheme::FateCrypt => Some("fsn"),
-            Scheme::HashCrypt | Scheme::AppliqueCrypt => None,
+            _ => None,
         }
     }
 
@@ -272,14 +351,56 @@ impl Scheme {
                     *b ^= key;
                 }
             }
+            // Key byte in bits 8..15, rotation count in the low byte. Note this
+            // is NOT an involution: the inverse is `rotate_left` then XOR, which
+            // is what `encrypt` below does.
+            Scheme::FlyingShineCrypt => {
+                let (key, shift) = flying_shine_key(hash);
+                for b in data.iter_mut() {
+                    *b = (*b ^ key).rotate_right(shift);
+                }
+            }
+            // A fixed keystream table addressed by the low 8 bits of the offset.
+            Scheme::AlteredPinkCrypt => {
+                for (i, b) in data.iter_mut().enumerate() {
+                    *b ^= ALTERED_PINK_TABLE[((offset + i as u64) & 0xff) as usize];
+                }
+            }
+            // Odd offsets use the hash, even ones the offset itself. The even
+            // case leaves offset 0 alone, so the first byte is stored verbatim —
+            // which is still enough to break a file signature, because byte 1 is
+            // XORed with the hash.
+            Scheme::DameganeCrypt => {
+                for (i, b) in data.iter_mut().enumerate() {
+                    let off = offset + i as u64;
+                    *b ^= if off & 1 != 0 { hash as u8 } else { off as u8 };
+                }
+            }
         }
     }
 
-    /// All three ciphers are involutions over XOR/byte-adjust with a fixed key,
-    /// so encryption is the same transform — matching GARbro, whose `Encrypt`
-    /// either forwards to `Decrypt` or repeats its body verbatim.
+    /// Encrypts `data` — the true inverse of [`Scheme::decrypt`], not a copy of
+    /// it. Five of the six schemes happen to be involutions over XOR with a
+    /// fixed key, so for them this forwards to `decrypt` (matching GARbro, whose
+    /// `Encrypt` either forwards to `Decrypt` or repeats its body verbatim).
+    /// [`Scheme::FlyingShineCrypt`] is the exception: rotation is directional, so
+    /// its inverse is `rotate_left` *then* XOR — the two operations do not
+    /// commute.
+    ///
+    /// Every arm is per-byte, so chunking composes: the pack path streams a
+    /// member in 64 KiB pieces and needs `encrypt(0, off, chunk)` over the pieces
+    /// to equal one call over the whole entry. (That path is only taken by
+    /// schemes whose ADLR covers the ciphertext — see `hash_after_crypt`.)
     pub fn encrypt(self, hash: u32, offset: u64, data: &mut [u8]) {
-        self.decrypt(hash, offset, data);
+        match self {
+            Scheme::FlyingShineCrypt => {
+                let (key, shift) = flying_shine_key(hash);
+                for b in data.iter_mut() {
+                    *b = b.rotate_left(shift) ^ key;
+                }
+            }
+            _ => self.decrypt(hash, offset, data),
+        }
     }
 }
 
@@ -765,6 +886,95 @@ mod tests {
         assert_eq!(whole, chunked, "per-chunk decryption must match whole-entry");
         assert_eq!(whole[0x13], plain[0x13] ^ 0x36 ^ 1, "offset 0x13 carries the extra ^1");
         assert_eq!(whole[0x14], plain[0x14] ^ 0x36, "offset 0x14 is plain 0x36");
+    }
+
+    /// Every scheme must survive `decrypt(encrypt(x))`, and — because the pack
+    /// path streams a member in 64 KiB pieces — a chunked pass must agree with a
+    /// single whole-entry pass.
+    ///
+    /// `FlyingShineCrypt` is what makes this worth writing: it is the only
+    /// non-involution, so an `encrypt` that merely forwarded to `decrypt` would
+    /// pass every other test in this file and fail only here.
+    #[test]
+    fn every_scheme_round_trips_whole_and_in_chunks() {
+        let hash = 0x5A17_3C9E;
+        let plain: Vec<u8> = (0..4096u32).map(|i| ((i * 37 + 11) % 256) as u8).collect();
+
+        for scheme in Scheme::ALL {
+            let mut whole = plain.clone();
+            scheme.encrypt(hash, 0, &mut whole);
+            assert_ne!(whole, plain, "{}: encrypt must actually change the bytes", scheme.name());
+
+            let mut back = whole.clone();
+            scheme.decrypt(hash, 0, &mut back);
+            assert_eq!(back, plain, "{}: decrypt must invert encrypt", scheme.name());
+
+            // An awkward chunk size: it straddles AlteredPinkCrypt's 256-byte
+            // table period and both parities for DameganeCrypt, and it starts
+            // chunks past AppliqueCrypt's 5-byte prefix.
+            let mut chunked = plain.clone();
+            let chunk = 251usize;
+            let mut off = 0usize;
+            while off < chunked.len() {
+                let end = (off + chunk).min(chunked.len());
+                scheme.encrypt(hash, off as u64, &mut chunked[off..end]);
+                off = end;
+            }
+            assert_eq!(chunked, whole, "{}: chunked encrypt must match whole-entry", scheme.name());
+        }
+    }
+
+    /// `FlyingShineCrypt`'s parameter derivation, including the zero
+    /// substitutions that keep a degenerate hash from degenerating the cipher,
+    /// and the 3-bit mask GARbro's `RotByteR/L` applies internally.
+    #[test]
+    fn flying_shine_key_masks_and_substitutes() {
+        // Both fields zero: the substitutions fire.
+        assert_eq!(flying_shine_key(0x0000_0000), (0xf0, 7));
+        // Ordinary hash: key from bits 8..15, count from the low byte.
+        assert_eq!(flying_shine_key(0x0000_3A05), (0x3a, 5));
+        // A low byte that survives as non-zero but masks to 0 (8 & 7 == 0) is
+        // NOT substituted — the substitution happens before the mask.
+        assert_eq!(flying_shine_key(0x0000_3A08), (0x3a, 0));
+
+        // And the transform itself: rotate-then-XOR out, XOR-then-rotate back.
+        let h = 0x0000_0301; // key 0x03, shift 1
+        let mut b = [0b1011_0001u8];
+        Scheme::FlyingShineCrypt.encrypt(h, 0, &mut b);
+        assert_eq!(b[0], 0b0110_0011 ^ 0x03);
+        Scheme::FlyingShineCrypt.decrypt(h, 0, &mut b);
+        assert_eq!(b[0], 0b1011_0001);
+    }
+
+    /// `AlteredPinkCrypt` is a pure table lookup: the index is `offset & 0xFF`,
+    /// so it wraps at 256, and the entry's hash plays no part at all.
+    #[test]
+    fn altered_pink_indexes_its_table_by_offset() {
+        let mut enc = vec![0u8; 300];
+        Scheme::AlteredPinkCrypt.encrypt(0, 0, &mut enc);
+        assert_eq!(enc[0], ALTERED_PINK_TABLE[0]);
+        assert_eq!(enc[255], ALTERED_PINK_TABLE[255]);
+        assert_eq!(enc[256], ALTERED_PINK_TABLE[0], "the index wraps at 256");
+        assert_eq!(enc[299], ALTERED_PINK_TABLE[43]);
+
+        let mut other = vec![0u8; 300];
+        Scheme::AlteredPinkCrypt.encrypt(0xDEAD_BEEF, 0, &mut other);
+        assert_eq!(other, enc, "the hash must not affect this scheme");
+    }
+
+    /// `DameganeCrypt` alternates its key by offset parity, which leaves offset 0
+    /// verbatim — byte 1 is what still breaks a file signature.
+    #[test]
+    fn damegane_alternates_by_offset_parity() {
+        let hash = 0x1234_56AB;
+        let mut enc = vec![0u8; 6];
+        Scheme::DameganeCrypt.encrypt(hash, 0, &mut enc);
+        assert_eq!(enc[0], 0x00, "offset 0 is even, and XOR 0 is a no-op");
+        assert_eq!(enc[1], 0xAB, "offset 1 is odd: XOR the low byte of the hash");
+        assert_eq!(enc[2], 0x02, "offset 2 is even: XOR the offset itself");
+        assert_eq!(enc[3], 0xAB);
+        assert_eq!(enc[4], 0x04);
+        assert_eq!(enc[5], 0xAB);
     }
 
     /// The scheme name is the UI token and the pack argument, so the round-trip

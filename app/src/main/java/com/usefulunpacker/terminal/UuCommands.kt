@@ -229,7 +229,7 @@ internal object UuCommands {
             "-c / -s       " to "merge into one archive / separate per source (uu c, multi-source)",
             "-l <level>    " to "compression level (uu c)",
             "-b <splitMB>  " to "split size in MB (uu c, zip/7z only)",
-            "-e <scheme>   " to "encrypt the pack (uu c, xp3 only): cxdec | hashcrypt | fatecrypt (alias fsn) | appliquecrypt — cxdec needs xp3filter.tjs/.tpm or an encrypted .xp3 in the folder, the other three need nothing",
+            "-e <scheme>   " to "encrypt the pack (uu c, xp3 only): cxdec | hashcrypt | fatecrypt (alias fsn) | appliquecrypt | flyingshinecrypt | alteredpinkcrypt | dameganecrypt — cxdec needs xp3filter.tjs/.tpm or an encrypted .xp3 in the folder, the keyless ones need nothing",
             "-o <outdir>   " to "output directory (uu x; entries then follow unambiguously)",
             "-f            " to "permanent delete instead of recycle bin (uu rm)",
             "-i            " to "case-insensitive search (uu grep)",
@@ -786,9 +786,9 @@ internal object UuCommands {
      * picking FateCrypt take the identical path.
      *
      * `fsn` is accepted as an alias for FateCrypt — it is arc_unpacker's plugin
-     * name and how the game (Fate/Stay Night) is usually catalogued, so it is
-     * the name users are most likely to type. The other two schemes have no
-     * alias; see `archive_xp3crypt_core::Scheme::alias`.
+     * id and the name the scheme is usually catalogued under, so it is the name
+     * users are most likely to type. The other schemes have no alias; see
+     * `archive_xp3crypt_core::Scheme::alias`.
      */
     internal fun normalizePackEnc(v: String): String? = when (v.trim().lowercase()) {
         "" -> ""
@@ -796,6 +796,9 @@ internal object UuCommands {
         "hashcrypt" -> "crypt:HashCrypt"
         "fatecrypt", "fsn" -> "crypt:FateCrypt"
         "appliquecrypt" -> "crypt:AppliqueCrypt"
+        "flyingshinecrypt" -> "crypt:FlyingShineCrypt"
+        "alteredpinkcrypt" -> "crypt:AlteredPinkCrypt"
+        "dameganecrypt" -> "crypt:DameganeCrypt"
         else -> null
     }
 

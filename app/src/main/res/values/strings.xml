@@ -367,11 +367,14 @@
     <string name="enc_hashcrypt">HashCrypt</string>
     <string name="enc_fatecrypt">FateCrypt</string>
     <string name="enc_appliquecrypt">AppliqueCrypt</string>
-    <string name="enc_cxdec_hint">cxdec needs xp3filter.tjs / .tpm in the folder, or an already-encrypted .xp3 to take the scheme from. HashCrypt / FateCrypt / AppliqueCrypt need nothing extra. Encrypted entries are stored uncompressed.</string>
+    <string name="enc_flyingshinecrypt">FlyingShineCrypt</string>
+    <string name="enc_alteredpinkcrypt">AlteredPinkCrypt</string>
+    <string name="enc_dameganecrypt">DameganeCrypt</string>
+    <string name="enc_cxdec_hint">cxdec needs xp3filter.tjs / .tpm in the folder, or an already-encrypted .xp3 to take the scheme from. The keyless schemes (HashCrypt, FateCrypt, AppliqueCrypt, FlyingShineCrypt, AlteredPinkCrypt, DameganeCrypt) need nothing extra. Encrypted entries are stored uncompressed.</string>
     <string name="enc_note_verified">scheme from %1$s</string>
     <string name="enc_note_unverified">scheme derived from %1$s, not checked against real ciphertext</string>
     <string name="enc_note_scheme">encrypted with %1$s</string>
-    <string name="cli_pack_enc_unknown">Unknown -e value: %1$s (only cxdec / hashcrypt / fatecrypt (alias fsn) / appliquecrypt)</string>
+    <string name="cli_pack_enc_unknown">Unknown -e value: %1$s (only cxdec / hashcrypt / fatecrypt (alias fsn) / appliquecrypt / flyingshinecrypt / alteredpinkcrypt / dameganecrypt)</string>
     <string name="cli_enc_only_xp3">-e cxdec applies to xp3 only</string>
     <string name="preview_title">Preview %1$s</string>
     <string name="bg_set">✅ Custom background set</string>

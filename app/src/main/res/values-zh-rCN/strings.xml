@@ -357,11 +357,14 @@
     <string name="enc_hashcrypt">HashCrypt</string>
     <string name="enc_fatecrypt">FateCrypt</string>
     <string name="enc_appliquecrypt">AppliqueCrypt</string>
-    <string name="enc_cxdec_hint">cxdec 需要目录内配套 xp3filter.tjs / .tpm，或一份已加密的 .xp3 用于确定方案；HashCrypt / FateCrypt / AppliqueCrypt 无需额外文件。加密条目不压缩。</string>
+    <string name="enc_flyingshinecrypt">FlyingShineCrypt</string>
+    <string name="enc_alteredpinkcrypt">AlteredPinkCrypt</string>
+    <string name="enc_dameganecrypt">DameganeCrypt</string>
+    <string name="enc_cxdec_hint">cxdec 需要目录内配套 xp3filter.tjs / .tpm，或一份已加密的 .xp3 用于确定方案；无侧车方案（HashCrypt、FateCrypt、AppliqueCrypt、FlyingShineCrypt、AlteredPinkCrypt、DameganeCrypt）无需额外文件。加密条目不压缩。</string>
     <string name="enc_note_verified">方案取自 %1$s</string>
     <string name="enc_note_unverified">方案由 %1$s 推导，未经密文校验</string>
     <string name="enc_note_scheme">已用 %1$s 加密</string>
-    <string name="cli_pack_enc_unknown">未知的 -e 值：%1$s（只支持 cxdec / hashcrypt / fatecrypt（别名 fsn）/ appliquecrypt）</string>
+    <string name="cli_pack_enc_unknown">未知的 -e 值：%1$s（只支持 cxdec / hashcrypt / fatecrypt（别名 fsn）/ appliquecrypt / flyingshinecrypt / alteredpinkcrypt / dameganecrypt）</string>
     <string name="cli_enc_only_xp3">-e 加密只适用于 xp3</string>
     <string name="preview_title">预览 %1$s</string>
     <string name="bg_set">✅ 已设置自定义背景</string>

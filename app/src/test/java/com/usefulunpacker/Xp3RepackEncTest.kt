@@ -39,6 +39,9 @@ class Xp3RepackEncTest {
         assertEquals("crypt:HashCrypt", xp3RepackEnc("crypt:HashCrypt"))
         assertEquals("crypt:FateCrypt", xp3RepackEnc("crypt:FateCrypt"))
         assertEquals("crypt:AppliqueCrypt", xp3RepackEnc("crypt:AppliqueCrypt"))
+        assertEquals("crypt:FlyingShineCrypt", xp3RepackEnc("crypt:FlyingShineCrypt"))
+        assertEquals("crypt:AlteredPinkCrypt", xp3RepackEnc("crypt:AlteredPinkCrypt"))
+        assertEquals("crypt:DameganeCrypt", xp3RepackEnc("crypt:DameganeCrypt"))
     }
 
     /** CLI `-e <name>` → 打包参数。大小写不敏感，落到打包器的一律是规范拼写。 */
@@ -50,10 +53,13 @@ class Xp3RepackEncTest {
         assertEquals("crypt:HashCrypt", UuCommands.normalizePackEnc("hashcrypt"))
         assertEquals("crypt:FateCrypt", UuCommands.normalizePackEnc("FateCrypt"))
         assertEquals("crypt:AppliqueCrypt", UuCommands.normalizePackEnc(" appliquecrypt "))
+        assertEquals("crypt:FlyingShineCrypt", UuCommands.normalizePackEnc("flyingShineCrypt"))
+        assertEquals("crypt:AlteredPinkCrypt", UuCommands.normalizePackEnc("alteredpinkcrypt"))
+        assertEquals("crypt:DameganeCrypt", UuCommands.normalizePackEnc("DAMEGANECRYPT"))
         // `fsn` = arc_unpacker 的插件名，也是 FateCrypt 唯一接受的别名。
         assertEquals("crypt:FateCrypt", UuCommands.normalizePackEnc("fsn"))
         assertEquals("crypt:FateCrypt", UuCommands.normalizePackEnc("FSn"))
-        // 另外两个方案没有别名：`xor` / `rebirth` 是插件内部 id，不是玩家认得的名字。
+        // 其他方案没有别名：`xor` / `rebirth` 是插件内部 id，不是玩家认得的名字。
         assertNull(UuCommands.normalizePackEnc("xor"))
         assertNull(UuCommands.normalizePackEnc("rebirth"))
         // 未知名字返回 null —— 调用方据此报错，绝不静默降级成明文。

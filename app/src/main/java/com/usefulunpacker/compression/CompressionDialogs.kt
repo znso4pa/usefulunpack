@@ -197,7 +197,7 @@ fun showCompressOptionsDialog(
             })
             // The choices are (value handed to the packer, label). cxdec is a
             // bare family name because the packer discovers the concrete scheme
-            // from the folder; the keyless three carry `crypt:<Name>` because
+            // from the folder; the keyless ones carry `crypt:<Name>` because
             // their key is each entry's own ADLR and there is nothing to
             // discover — which also means they are always available, sidecar or
             // not, unlike cxdec.
@@ -207,6 +207,9 @@ fun showCompressOptionsDialog(
                 "crypt:HashCrypt" to activity.getString(R.string.enc_hashcrypt),
                 "crypt:FateCrypt" to activity.getString(R.string.enc_fatecrypt),
                 "crypt:AppliqueCrypt" to activity.getString(R.string.enc_appliquecrypt),
+                "crypt:FlyingShineCrypt" to activity.getString(R.string.enc_flyingshinecrypt),
+                "crypt:AlteredPinkCrypt" to activity.getString(R.string.enc_alteredpinkcrypt),
+                "crypt:DameganeCrypt" to activity.getString(R.string.enc_dameganecrypt),
             )
             fun encLabel(v: String) =
                 encChoices.firstOrNull { it.first == v }?.second ?: activity.getString(R.string.enc_none)

@@ -214,6 +214,14 @@ impl Xp3Archive {
     }
 
     // Reads entry prefix.
+    //
+    // Only `max_len` bytes of each segment are ever materialized. That matters
+    // because callers bound the PACKED size (to keep the probe's file reads
+    // small) but the UNPACKED size is declared by the index and can be orders of
+    // magnitude larger: inflating a whole segment to hand back 64 bytes lets one
+    // high-ratio member — or a hostile index — allocate far more than the caller
+    // bargained for. `ZlibDecoder` is a sequential stream, so the first `max_len`
+    // plaintext bytes always come from its first `max_len` output bytes.
     pub fn read_entry_prefix<C: Xp3Cipher>(
         &mut self,
         entry_index: usize,
@@ -231,22 +239,40 @@ impl Xp3Archive {
             if out.len() >= max_len {
                 break;
             }
+            let want = max_len - out.len();
 
-            let mut data = vec![0u8; segment.packed_size as usize];
-            self.file.seek(SeekFrom::Start(segment.offset))?;
-            self.file.read_exact(&mut data)?;
-            if segment.is_compressed {
-                data = zlib(&data)?;
-            }
-            if data.len() as u64 != segment.size {
+            let mut data = if segment.is_compressed {
+                self.file.seek(SeekFrom::Start(segment.offset))?;
+                let decoder = ZlibDecoder::new((&mut self.file).take(segment.packed_size));
+                let mut buf = Vec::with_capacity(want);
+                decoder.take(want as u64).read_to_end(&mut buf)?;
+                buf
+            } else {
+                if segment.packed_size != segment.size {
+                    return Err(invalid("XP3 segment unpacked size mismatch"));
+                }
+                let n = segment.size.min(want as u64) as usize;
+                let mut buf = vec![0u8; n];
+                self.file.seek(SeekFrom::Start(segment.offset))?;
+                self.file.read_exact(&mut buf)?;
+                buf
+            };
+
+            // A prefix read cannot verify the declared unpacked size the way a
+            // full read does (we deliberately stop early), but the stream must
+            // still not produce MORE than the index promised.
+            if data.len() as u64 > segment.size {
                 return Err(invalid("XP3 segment unpacked size mismatch"));
             }
+
             if cipher.is_encrypted(&entry) {
                 cipher.decrypt_entry(&entry, logical_offset, &mut data)?;
             }
-            logical_offset += data.len() as u64;
+            // Advance by the segment's DECLARED size, not by how much of it we
+            // read — a later segment's absolute offset depends on the full one.
+            logical_offset += segment.size;
 
-            let take = (max_len - out.len()).min(data.len());
+            let take = want.min(data.len());
             out.extend_from_slice(&data[..take]);
         }
         Ok(out)
@@ -823,6 +849,53 @@ mod tests {
         out
     }
 
+    /// One entry, stored zlib-compressed, with a DECLARED unpacked size that may
+    /// deliberately disagree with what the stream actually inflates to — which
+    /// is exactly the situation a prefix read has to survive.
+    fn build_xp3_compressed(name: &str, plain: &[u8], declared_unpacked: i64, protected: u32) -> Vec<u8> {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write as _;
+
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(plain).unwrap();
+        let packed = enc.finish().unwrap();
+
+        let mut info = Vec::new();
+        info.extend_from_slice(&protected.to_le_bytes());
+        info.extend_from_slice(&declared_unpacked.to_le_bytes());
+        info.extend_from_slice(&(packed.len() as i64).to_le_bytes());
+        let units: Vec<u16> = name.encode_utf16().collect();
+        info.extend_from_slice(&(units.len() as i16).to_le_bytes());
+        for u in units {
+            info.extend_from_slice(&u.to_le_bytes());
+        }
+
+        let data_base = (MAGIC.len() + 8) as i64;
+        let mut segm = Vec::new();
+        segm.extend_from_slice(&1i32.to_le_bytes()); // compressed
+        segm.extend_from_slice(&data_base.to_le_bytes());
+        segm.extend_from_slice(&declared_unpacked.to_le_bytes());
+        segm.extend_from_slice(&(packed.len() as i64).to_le_bytes());
+
+        let mut file_chunk = chunk(b"info", &info);
+        file_chunk.extend(chunk(b"segm", &segm));
+        file_chunk.extend(chunk(b"adlr", &0u32.to_le_bytes()));
+        let index = chunk(b"File", &file_chunk);
+
+        let mut out = Vec::new();
+        out.extend_from_slice(MAGIC);
+        let offset_pos = out.len();
+        out.extend_from_slice(&0i64.to_le_bytes());
+        out.extend_from_slice(&packed);
+        let index_offset = out.len() as i64;
+        out.extend_from_slice(&INDEX_UNCOMPRESSED.to_le_bytes());
+        out.extend_from_slice(&(index.len() as i64).to_le_bytes());
+        out.extend_from_slice(&index);
+        out[offset_pos..offset_pos + 8].copy_from_slice(&index_offset.to_le_bytes());
+        out
+    }
+
     fn open_bytes(bytes: &[u8], tag: &str) -> std::io::Result<Xp3Archive> {
         let path = std::env::temp_dir().join(format!("uu_xp3_{}_{}.xp3", std::process::id(), tag));
         std::fs::write(&path, bytes).unwrap();
@@ -838,9 +911,8 @@ mod tests {
     /// intact, and the archive must still open.
     #[test]
     fn entry_name_longer_than_256_chars_is_read_not_rejected() {
-        let long: String = std::iter::repeat("padding for an unusually long entry name ")
-            .take(10)
-            .collect::<String>()
+        let long: String = "padding for an unusually long entry name "
+            .repeat(10)
             .chars()
             .take(300)
             .collect();
@@ -898,4 +970,28 @@ mod tests {
         assert_eq!(arch.entries[1].name, "scenario/first.ks");
         assert!(arch.entries.iter().all(|e| e.is_encrypted), "0x80000000 is non-zero");
     }
+
+    /// A prefix read must return the same leading bytes a full read would, and
+    /// must size its work by `max_len` rather than by the segment's DECLARED
+    /// unpacked size — that declared value is index-supplied and unbounded, so
+    /// trusting it is what makes a whole-segment inflate a memory hazard.
+    #[test]
+    fn compressed_entry_prefix_matches_a_full_read() {
+        let plain: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        // Declares 64 MiB while the stream really holds 100 KB: a prefix read
+        // must take what the stream gives and not try to honour the claim.
+        let bytes = build_xp3_compressed("big.bin", &plain, 64 * 1024 * 1024, 0);
+        let mut arch = open_bytes(&bytes, "prefix_compressed").unwrap();
+        assert_eq!(arch.entries.len(), 1);
+
+        let mut noop = |_h: u32, _o: u64, _d: &mut [u8]| Ok(());
+        let head = arch.read_entry_prefix(0, 64, &mut noop).unwrap();
+        assert_eq!(head, plain[..64]);
+
+        // Asking for more than the stream holds yields the whole stream, not an
+        // error — a prefix is allowed to be short.
+        let head = arch.read_entry_prefix(0, 1_000_000, &mut noop).unwrap();
+        assert_eq!(head, plain);
+    }
+
 }

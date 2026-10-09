@@ -1255,8 +1255,59 @@ mod tests {
         }
     }
 
-    /// A pack must refuse a scheme it does not know rather than silently write a
-    /// plain archive the user believes is encrypted.
+    /// The round-trip test above uses members well under the pack path's 64 KiB
+    /// chunk, so nothing there exercises chunk composition end to end. This one
+    /// crosses the chunk boundary and both of FateCrypt's absolute fixups
+    /// (0x13 and 0x2ea29) — a per-chunk bug there would show up as a byte
+    /// difference, not a crash. 8 is the smallest size that still carries the
+    /// PNG signature the probe keys on.
+    #[test]
+    fn keyless_pack_round_trips_members_spanning_several_chunks() {
+        let _g = progress_lock();
+        for size in [8usize, 19, 20, 65_535, 65_536, 65_537, 192_040, 192_041, 192_042, 300_000] {
+            for scheme in archive_xp3crypt_core::Scheme::ALL {
+                let dir = tmp(&format!("bigchunk_{}_{}", scheme.name(), size));
+                std::fs::create_dir_all(&dir).unwrap();
+                let big = png_bytes(size);
+                std::fs::write(dir.join("bg.png"), &big).unwrap();
+                let xp3 = dir.join("data.xp3");
+                create_xp3(
+                    dir.to_str().unwrap(),
+                    xp3.to_str().unwrap(),
+                    6,
+                    &format!("crypt:{}", scheme.name()),
+                )
+                .unwrap();
+
+                assert_eq!(
+                    probe_scheme_token(xp3.to_str().unwrap()),
+                    format!("crypt:{}", scheme.name()),
+                    "{} size={}",
+                    scheme.name(),
+                    size
+                );
+
+                let out = dir.join("out");
+                std::fs::create_dir_all(&out).unwrap();
+                let (done, fail) = crypt_extract(
+                    xp3.to_str().unwrap(),
+                    out.to_str().unwrap(),
+                    scheme.name(),
+                    None,
+                )
+                .unwrap();
+                assert_eq!((done, fail), (1, 0), "{} size={}", scheme.name(), size);
+                assert_eq!(
+                    std::fs::read(out.join("bg.png")).unwrap(),
+                    big,
+                    "{} size={}",
+                    scheme.name(),
+                    size
+                );
+                std::fs::remove_dir_all(&dir).ok();
+            }
+        }
+    }
     #[test]
     fn keyless_pack_rejects_an_unknown_scheme() {
         let _g = progress_lock();

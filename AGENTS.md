@@ -11,7 +11,7 @@ Human-facing docs: [README](README.md) · [CONTRIBUTING](CONTRIBUTING.md) (中�
 bash build.sh                      # full build: Rust cross-compile (arm64-v8a + armeabi-v7a) -> jniLibs -> assembleRelease -> ./UsefulUnpack.apk (needs NDK)
 ./gradlew :app:assembleRelease     # Kotlin-only changes (output lands in app/build/outputs/apk/release/ — NOT the root APK)
 cargo test --workspace             # Rust suite — must stay green
-./gradlew lintDebug                # baseline: 0 errors / 271 warnings — NEVER introduce new errors
+./gradlew lintDebug                # baseline: 0 errors / 287 warnings — NEVER introduce new errors
 ```
 
 > `build.sh` is the only script that refreshes the root `UsefulUnpack.apk`. A bare
@@ -61,6 +61,8 @@ cargo test --workspace             # Rust suite — must stay green
 - An M4A validation that searched for a box type at the position implied by the value it had just derived — unfalsifiable by construction.
 
 When adding a format, **get real samples and check them against an independent oracle**, and prefer byte-identity over "it extracted without error": re-packing must reproduce the original file exactly. See the RPG Maker corpus note below.
+
+> **Exception — XP3 under a keyless cipher.** A repack is *not* expected to be byte-identical to the archive it came from, and the packer must not be "fixed" towards that. It stores the plaintext's ADLR for every scheme and sorts the index, so the container bytes differ by construction. The contract is **content equivalence**: unpack → repack → unpack returns every member byte-for-byte, and the engine still opens the result. Rationale lives in the "stored ADLR is always the plaintext's" section of `crates/xp3crypt-core`; the harness is `repack_real_archive_round_trips` (`UU_REPACK_IN`, `SKIP` when unset).
 
 ## Real-file regression corpora
 

@@ -174,7 +174,9 @@ fn extract_xp3(input: &str, output: &str) -> Result<(u32, u32), String> {
 ///   `plain`          — no protection (or no evidence either way)
 ///   `cxdec:<scheme>` — cxdec-protected; the scheme scored against real entries
 ///   `cxdec:?`        — a cxdec game folder, but no known scheme decrypts it
-///   `suspect`        — no cxdec sidecar, yet the index marks entries protected
+///   `crypt:<scheme>` — a keyless scheme (HashCrypt / FateCrypt / AppliqueCrypt)
+///                      scored against real entries; no sidecar needed
+///   `suspect`        — no scheme matched, yet the index marks entries protected
 ///
 /// Deliberately does NOT call `clear_cancel()` and never touches the progress
 /// store: it shares this .so (and that store) with extraction, so clearing
@@ -185,9 +187,18 @@ fn probe_scheme_token(archive: &str) -> String {
         archive_cxdec_core::SchemeProbe::Detected(name) => format!("cxdec:{name}"),
         archive_cxdec_core::SchemeProbe::NoSchemeMatch => "cxdec:?".to_string(),
         archive_cxdec_core::SchemeProbe::NoControlBlock => {
-            // No sidecar left to work with. The flag alone is not evidence (a
-            // real filter-less archive sets it on every entry and still reads
-            // as plain), so this asks whether the CONTENT is unrecognizable too.
+            // No cxdec sidecar. Two very different things live here, and they
+            // are checked in order of how much they can prove:
+            //
+            // 1. A keyless scheme needs no sidecar at all — its key is the
+            //    entry's own ADLR — so the content alone can name it. This is
+            //    the ONLY way such an archive is ever identified.
+            // 2. Otherwise the flag alone is not evidence (a real filter-less
+            //    archive sets it on every entry and still reads as plain), so
+            //    this asks whether the CONTENT is unrecognizable too.
+            if let Some(scheme) = archive_xp3crypt_core::probe_scheme(archive) {
+                return format!("crypt:{}", scheme.name());
+            }
             if archive_cxdec_core::content_looks_encrypted(archive) {
                 "suspect".to_string()
             } else {
@@ -355,6 +366,52 @@ pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CxdecExtractSelected(
     }
 }
 
+// ─── XP3 keyless ciphers (HashCrypt / FateCrypt / AppliqueCrypt) ──────────
+// No sidecar is involved, so unlike the cxdec pair there is nothing to
+// discover: the scheme is named by the content probe (`probe_scheme_token`)
+// and the caller hands that same name straight back, which keeps the bytes
+// decrypted here identical to the scheme the UI said it would decrypt.
+// Progress and cancel share this cdylib's extract store, so the app's existing
+// "xp3" polling accessors and OpScheduler key work unchanged.
+
+fn crypt_extract(
+    input: &str,
+    output: &str,
+    scheme: &str,
+    selected: Option<&str>,
+) -> Result<(u32, u32), String> {
+    let scheme = archive_xp3crypt_core::Scheme::from_name(scheme.trim())
+        .ok_or_else(|| format!("XP3: 未知的加密方案 {scheme}"))?;
+    archive_xp3crypt_core::extract(input, output, scheme, selected)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CryptExtract(
+    mut env: JNIEnv, _: JClass,
+    _t: JString, input: JString, output: JString, scheme: JString,
+) -> jstring {
+    extract_progress::clear_cancel();
+    let inp = s(&mut env, &input); let out = s(&mut env, &output); let sch = s(&mut env, &scheme);
+    match guarded(move || crypt_extract(&inp, &out, &sch, None)) {
+        Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match env.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
+        Err(er) => { let _ = env.throw_new("java/io/IOException", er); std::ptr::null_mut() }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CryptExtractSelected(
+    mut env: JNIEnv, _: JClass,
+    _t: JString, input: JString, output: JString, scheme: JString, selected: JString,
+) -> jstring {
+    extract_progress::clear_cancel();
+    let inp = s(&mut env, &input); let out = s(&mut env, &output);
+    let sch = s(&mut env, &scheme); let sel_str = s(&mut env, &selected);
+    match guarded(move || crypt_extract(&inp, &out, &sch, Some(&sel_str))) {
+        Ok((total, error)) => { let json = extract_result_json(total, total - error, error); match env.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
+        Err(er) => { let _ = env.throw_new("java/io/IOException", er); std::ptr::null_mut() }
+    }
+}
+
 // ─── XP3 Pack (封包) ──────────────────────
 
 /// Collects files under `base` (or the single file itself) with `/`-separated
@@ -405,6 +462,39 @@ fn enc_note_json(scheme: &str, source: &str, verified: bool) -> String {
         r#"{{"scheme":"{}","source":"{}","verified":{}}}"#,
         json_escape(scheme), json_escape(source), verified
     )
+}
+
+/// The cipher a pack runs with, if any. The two arms are not interchangeable:
+/// cxdec keys off a control block discovered in the game folder, a keyless
+/// scheme keys off each entry's own ADLR, and the two need different WRITER
+/// paths (see `create_xp3`).
+enum PackCipher {
+    Cxdec(std::sync::Arc<std::sync::Mutex<CxEncryption>>),
+    Keyless(archive_xp3crypt_core::Scheme),
+}
+
+impl PackCipher {
+    /// Reads one entry back with the pack's own cipher — the self-check's core.
+    /// `full` reads the whole entry; otherwise only [`VERIFY_PREFIX`] bytes,
+    /// which is what keeps a movie-sized member out of RAM during verification.
+    fn read_back(&self, archive: &str, name: &str, full: bool) -> Result<Vec<u8>, String> {
+        match self {
+            PackCipher::Cxdec(cx) => {
+                let mut g = cx.lock().map_err(|_| "XP3: cipher lock poisoned".to_string())?;
+                if full {
+                    archive_cxdec_core::read_named_with(archive, name, &mut g)
+                } else {
+                    archive_cxdec_core::read_named_prefix_with(archive, name, VERIFY_PREFIX, &mut g)
+                }
+            }
+            PackCipher::Keyless(scheme) => archive_xp3crypt_core::read_named_with(
+                archive,
+                name,
+                *scheme,
+                if full { None } else { Some(VERIFY_PREFIX) },
+            ),
+        }
+    }
 }
 
 /// Resolves the cxdec scheme to encrypt a new archive with.
@@ -493,7 +583,7 @@ fn adler32_of(path: &Path) -> Result<u32, String> {
 fn verify_encrypted_pack(
     output: &str,
     files: &[(PathBuf, String)],
-    cipher: &std::sync::Arc<std::sync::Mutex<CxEncryption>>,
+    cipher: &PackCipher,
     full_max: u64,
 ) -> Result<(), String> {
     use std::io::Read as _;
@@ -503,15 +593,9 @@ fn verify_encrypted_pack(
         }
         compress_progress::set_name(name);
         let size = src.metadata().map(|m| m.len()).unwrap_or(0);
-        let got = {
-            let mut g = cipher.lock().map_err(|_| "XP3: cipher lock poisoned".to_string())?;
-            if size <= full_max {
-                archive_cxdec_core::read_named_with(output, name, &mut g)?
-            } else {
-                archive_cxdec_core::read_named_prefix_with(output, name, VERIFY_PREFIX, &mut g)?
-            }
-        };
-        let expect_len = if size <= full_max { size } else { VERIFY_PREFIX.min(size as usize) as u64 };
+        let full = size <= full_max;
+        let got = cipher.read_back(output, name, full)?;
+        let expect_len = if full { size } else { VERIFY_PREFIX.min(size as usize) as u64 };
         if got.len() as u64 != expect_len {
             return Err(format!("XP3: 自校验失败（{name}: 读回 {} 字节，应为 {expect_len}）", got.len()));
         }
@@ -534,15 +618,31 @@ fn create_xp3(input: &str, output: &str, level: i32, enc: &str) -> Result<u32, S
     if files.is_empty() { return Err("XP3: no files to archive".to_string()); }
     let total: u64 = files.iter().map(|(p, _)| p.metadata().map(|m| m.len()).unwrap_or(0)).sum();
 
-    let encrypted = enc.eq_ignore_ascii_case("cxdec");
-    let cipher = if encrypted {
+    // Three shapes on the pack side:
+    //   ""            — plain, no cipher at all;
+    //   "cxdec"       — the scheme is DISCOVERED from the folder (an existing
+    //                   encrypted archive, else the game's own xp3filter.tjs),
+    //                   so it can be refused when there is nothing to resolve it
+    //                   from — see resolve_writer_cipher;
+    //   "crypt:<name>"— a keyless scheme the caller CHOSE. Nothing has to be
+    //                   discovered: the key is each entry's own ADLR, which the
+    //                   writer computes as it goes.
+    let cipher: Option<PackCipher> = if enc.eq_ignore_ascii_case("cxdec") {
         let (cx, note) = resolve_writer_cipher(Path::new(input), Path::new(output))?;
         set_last_enc_note(&note);
-        Some(std::sync::Arc::new(std::sync::Mutex::new(cx)))
+        Some(PackCipher::Cxdec(std::sync::Arc::new(std::sync::Mutex::new(cx))))
+    } else if let Some(name) = enc.strip_prefix("crypt:") {
+        let scheme = archive_xp3crypt_core::Scheme::from_name(name.trim())
+            .ok_or_else(|| format!("XP3: 未知的加密方案 {name}"))?;
+        // No source archive and nothing to check against: the user picked the
+        // scheme, so the note says what was used rather than where it came from.
+        set_last_enc_note(&enc_note_json(scheme.name(), "", true));
+        Some(PackCipher::Keyless(scheme))
     } else {
         set_last_enc_note("");
         None
     };
+    let encrypted = cipher.is_some();
 
     // Encrypted entries are written STORED (un-packed). That is the only layout
     // this project has evidence for: the reader inflates before it decrypts, so
@@ -573,7 +673,7 @@ fn create_xp3(input: &str, output: &str, level: i32, enc: &str) -> Result<u32, S
         let src_file = File::open(src).map_err(|e| format!("XP3 open {}: {e}", src.display()))?;
         let mut reader = SyncIo(ProgressReader::compress(BufReader::new(src_file)));
         let write_result = match &cipher {
-            Some(cx) => {
+            Some(PackCipher::Cxdec(cx)) => {
                 // The cipher keys off adler32(plaintext), which is also the ADLR
                 // the writer stores — it needs the value before the first byte,
                 // so it is computed in its own pass over the file.
@@ -589,6 +689,52 @@ fn create_xp3(input: &str, output: &str, level: i32, enc: &str) -> Result<u32, S
                 oneshot_async(async {
                     let mut fw = writer.file_transformed(name.clone(), true, transform).await?;
                     tokio::io::copy(&mut reader, &mut fw).await?;
+                    fw.finish().await?;
+                    Ok::<(), std::io::Error>(())
+                })
+            }
+            // A keyless scheme whose ADLR covers the PLAINTEXT (HashCrypt,
+            // AppliqueCrypt): same shape as cxdec — the transform path encrypts
+            // on the way out while checksumming what the caller handed in, and
+            // the key IS that checksum, so one pass over the file seeds it.
+            Some(PackCipher::Keyless(scheme)) if !scheme.hash_after_crypt() => {
+                let scheme = *scheme;
+                let hash = adler32_of(src)?;
+                let transform = TransformFn::new(move |off: u64, data: &mut [u8]| {
+                    scheme.encrypt(hash, off, data);
+                    Ok(())
+                });
+                oneshot_async(async {
+                    let mut fw = writer.file_transformed(name.clone(), true, transform).await?;
+                    tokio::io::copy(&mut reader, &mut fw).await?;
+                    fw.finish().await?;
+                    Ok::<(), std::io::Error>(())
+                })
+            }
+            // FateCrypt: `HashAfterCrypt`, so the stored ADLR must cover the
+            // CIPHERTEXT. The transform path would store the plaintext's, which
+            // a Kirikiri reader compares against the bytes it actually reads —
+            // i.e. the ciphertext — and would reject. Encrypting on the way in
+            // and using the plain `file()` path makes the writer checksum the
+            // encrypted bytes, which is exactly the value the game expects.
+            // Streaming (not a buffered pre-pass) keeps a movie-sized member out
+            // of RAM; the scheme is an involution, so chunks compose.
+            Some(PackCipher::Keyless(scheme)) => {
+                let scheme = *scheme;
+                oneshot_async(async {
+                    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+                    let mut fw = writer.file(name.clone(), true, None).await?;
+                    let mut off = 0u64;
+                    let mut buf = vec![0u8; 64 * 1024];
+                    loop {
+                        let n = reader.read(&mut buf).await?;
+                        if n == 0 {
+                            break;
+                        }
+                        scheme.encrypt(0, off, &mut buf[..n]);
+                        fw.write_all(&buf[..n]).await?;
+                        off += n as u64;
+                    }
                     fw.finish().await?;
                     Ok::<(), std::io::Error>(())
                 })
@@ -614,8 +760,8 @@ fn create_xp3(input: &str, output: &str, level: i32, enc: &str) -> Result<u32, S
         let _ = fs::remove_file(output);
         return Err("cancelled".to_string());
     }
-    if let Some(cx) = &cipher {
-        if let Err(e) = verify_encrypted_pack(output, &files, cx, VERIFY_FULL_MAX) {
+    if let Some(cipher) = &cipher {
+        if let Err(e) = verify_encrypted_pack(output, &files, cipher, VERIFY_FULL_MAX) {
             // A pack that cannot be read back is not left on disk: the game
             // would either reject it or, worse, load garbage.
             let _ = fs::remove_file(output);
@@ -634,7 +780,8 @@ pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CreateArchive(
     let inp = s(&mut env, &input); let out = s(&mut env, &output);
     let lvl: i32 = s(&mut env, &level).parse().unwrap_or(5);
     // "" = plain, "cxdec" = cxdec-encrypted (the scheme is resolved from the
-    // folder; see resolve_writer_cipher).
+    // folder; see resolve_writer_cipher), "crypt:<name>" = a keyless scheme the
+    // caller chose (see xp3crypt-core).
     let enc = s(&mut env, &enc);
     match guarded(move || create_xp3(&inp, &out, lvl, &enc)) {
         Ok(total) => { let json = extract_result_json(total, total, 0); match env.new_string(&json) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() } }
@@ -647,7 +794,7 @@ pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3CreateArchive(
 /// is held for the whole operation, so nothing else can overwrite it meanwhile.
 #[no_mangle]
 pub extern "system" fn Java_com_usefulunpacker_Xp3Core_xp3LastEncNote(
-    mut env: JNIEnv, _: JClass,
+    env: JNIEnv, _: JClass,
 ) -> jstring {
     let note = LAST_ENC_NOTE.lock().map(|g| g.clone()).unwrap_or_default();
     match env.new_string(&note) { Ok(js) => js.into_raw(), _ => std::ptr::null_mut() }
@@ -886,8 +1033,13 @@ mod tests {
         compress_progress::reset(200_000);
         let cx = archive_cxdec_core::cipher_by_name(&dir, "cxdec feng template").unwrap();
         let files = vec![(dir.join("big.png"), "big.png".to_string())];
-        verify_encrypted_pack(xp3.to_str().unwrap(), &files, &std::sync::Arc::new(std::sync::Mutex::new(cx)), 1000)
-            .unwrap();
+        verify_encrypted_pack(
+            xp3.to_str().unwrap(),
+            &files,
+            &PackCipher::Cxdec(std::sync::Arc::new(std::sync::Mutex::new(cx))),
+            1000,
+        )
+        .unwrap();
         assert_eq!(compress_progress::bytes(), 100_000, "prefix verify counts the full entry");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1028,11 +1180,81 @@ mod tests {
         let err = verify_encrypted_pack(
             xp3.to_str().unwrap(),
             &files,
-            &std::sync::Arc::new(std::sync::Mutex::new(wrong)),
+            &PackCipher::Cxdec(std::sync::Arc::new(std::sync::Mutex::new(wrong))),
             VERIFY_FULL_MAX,
         )
         .unwrap_err();
         assert!(err.contains("自校验失败"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The keyless pack path, end to end: pack with each scheme, then the
+    /// content probe must NAME it and the extractor must reproduce the source
+    /// bytes.
+    ///
+    /// This is the only place the writer's ADLR choice is checked against the
+    /// reader. FateCrypt stores the CIPHERTEXT's checksum while the other two
+    /// store the PLAINTEXT's; getting that backwards still produces a
+    /// well-formed archive, so nothing but a real read-back catches it.
+    #[test]
+    fn keyless_pack_round_trips_through_probe_and_extract() {
+        let _g = progress_lock();
+        for scheme in archive_xp3crypt_core::Scheme::ALL {
+            let dir = tmp(&format!("keyless_{}", scheme.name()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("bg.png"), png_bytes(4096)).unwrap();
+            // A second, signature-less member: the probe must not need every
+            // entry to be recognizable, and extraction must not depend on it.
+            let blob: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+            std::fs::write(dir.join("data.bin"), &blob).unwrap();
+            let xp3 = dir.join("data.xp3");
+            create_xp3(
+                dir.to_str().unwrap(),
+                xp3.to_str().unwrap(),
+                6,
+                &format!("crypt:{}", scheme.name()),
+            )
+            .unwrap();
+
+            assert_eq!(
+                probe_scheme_token(xp3.to_str().unwrap()),
+                format!("crypt:{}", scheme.name()),
+                "{}",
+                scheme.name()
+            );
+
+            let out = dir.join("out");
+            std::fs::create_dir_all(&out).unwrap();
+            let (done, fail) = crypt_extract(
+                xp3.to_str().unwrap(),
+                out.to_str().unwrap(),
+                scheme.name(),
+                None,
+            )
+            .unwrap();
+            assert_eq!((done, fail), (2, 0), "{}", scheme.name());
+            assert_eq!(std::fs::read(out.join("bg.png")).unwrap(), png_bytes(4096));
+            assert_eq!(std::fs::read(out.join("data.bin")).unwrap(), blob);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// A pack must refuse a scheme it does not know rather than silently write a
+    /// plain archive the user believes is encrypted.
+    #[test]
+    fn keyless_pack_rejects_an_unknown_scheme() {
+        let _g = progress_lock();
+        let dir = tmp("keyless_unknown");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.bin"), b"hello").unwrap();
+        let err = create_xp3(
+            dir.to_str().unwrap(),
+            dir.join("o.xp3").to_str().unwrap(),
+            6,
+            "crypt:NoSuchCipher",
+        )
+        .unwrap_err();
+        assert!(err.contains("未知的加密方案"), "{err}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

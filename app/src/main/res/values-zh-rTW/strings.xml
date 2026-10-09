@@ -338,21 +338,26 @@
     <string name="extract_result_stats">總條目：%1$d\n✅ 成功：%2$d\n❌ 錯誤：%3$d\n📦 其他：%4$d</string>
     <string name="extract_new_folder">📁 %1$s: %2$s</string>
     <string name="preview_stats">共 %1$d 檔案，%2$s  |  已選 %3$d 項，%4$s</string>
-    <!-- XP3 cxdec 加密：四態標籤來自同一個探測（xp3SchemeToken），預覽標題 /
-         掃描結果 / uu l 三處共用，措辭必須一致。 -->
+    <!-- XP3 加密：狀態標籤來自同一個探測（xp3SchemeToken），預覽標題 /
+         掃描結果 / uu l 三處共用，措辭必須一致。帶方案的兩種家族會把方案名
+         帶出來 ——「是哪一種」正是使用者要問的。 -->
     <string name="xp3_enc_plain">普通格式</string>
-    <string name="xp3_enc_cxdec">cxdec 加密</string>
+    <string name="xp3_enc_named">加密：%1$s</string>
     <string name="xp3_enc_unknown">cxdec 加密，方案未知</string>
-    <string name="xp3_enc_suspect">疑似 cxdec 加密，目錄內缺少 xp3filter.tjs / .tpm</string>
+    <string name="xp3_enc_suspect">疑似加密 —— 沒有已知方案匹配（cxdec 需要目錄內有 xp3filter.tjs / .tpm）</string>
     <string name="enc_suffix_paren">（%1$s）</string>
     <string name="title_encryption">加密方式</string>
     <string name="enc_none">不加密</string>
-    <string name="enc_cxdec">cxdec 加密</string>
-    <string name="enc_cxdec_hint">cxdec 加密需要目錄內配套 xp3filter.tjs / .tpm，或一份已加密的 .xp3 用於確定方案；加密條目不壓縮。</string>
+    <string name="enc_cxdec">cxdec</string>
+    <string name="enc_hashcrypt">HashCrypt</string>
+    <string name="enc_fatecrypt">FateCrypt</string>
+    <string name="enc_appliquecrypt">AppliqueCrypt</string>
+    <string name="enc_cxdec_hint">cxdec 需要目錄內配套 xp3filter.tjs / .tpm，或一份已加密的 .xp3 用於確定方案；HashCrypt / FateCrypt / AppliqueCrypt 無需額外檔案。加密條目不壓縮。</string>
     <string name="enc_note_verified">方案取自 %1$s</string>
     <string name="enc_note_unverified">方案由 %1$s 推導，未經密文校驗</string>
-    <string name="cli_pack_enc_unknown">未知的 -e 值：%1$s（只支援 cxdec）</string>
-    <string name="cli_enc_only_xp3">-e cxdec 只適用於 xp3</string>
+    <string name="enc_note_scheme">已用 %1$s 加密</string>
+    <string name="cli_pack_enc_unknown">未知的 -e 值：%1$s（只支援 cxdec / hashcrypt / fatecrypt（別名 fsn）/ appliquecrypt）</string>
+    <string name="cli_enc_only_xp3">-e 加密只適用於 xp3</string>
     <string name="preview_title">預覽 %1$s</string>
     <string name="bg_set">✅ 已設定自訂背景</string>
     <string name="bg_change">更換</string>

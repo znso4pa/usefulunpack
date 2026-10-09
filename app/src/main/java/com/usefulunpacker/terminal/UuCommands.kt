@@ -229,7 +229,7 @@ internal object UuCommands {
             "-c / -s       " to "merge into one archive / separate per source (uu c, multi-source)",
             "-l <level>    " to "compression level (uu c)",
             "-b <splitMB>  " to "split size in MB (uu c, zip/7z only)",
-            "-e cxdec      " to "encrypt the pack (uu c, xp3 only; needs xp3filter.tjs/.tpm or an encrypted .xp3 in the folder)",
+            "-e <scheme>   " to "encrypt the pack (uu c, xp3 only): cxdec | hashcrypt | fatecrypt (alias fsn) | appliquecrypt — cxdec needs xp3filter.tjs/.tpm or an encrypted .xp3 in the folder, the other three need nothing",
             "-o <outdir>   " to "output directory (uu x; entries then follow unambiguously)",
             "-f            " to "permanent delete instead of recycle bin (uu rm)",
             "-i            " to "case-insensitive search (uu grep)",
@@ -780,11 +780,31 @@ internal object UuCommands {
      * CLI 尊重用户显式名）。
      */
     /**
-     * `uu c <src...> [out] [-c|-s] [-f key] [level] [splitMB] [-e cxdec] [-p pw]`。
+     * `-e <name>` → the `enc` argument the packer wants, or null when the name
+     * is not one we implement. Case-insensitive, and the CANONICAL spelling is
+     * what reaches the packer, so a user typing `-e fatecrypt` and the GUI
+     * picking FateCrypt take the identical path.
+     *
+     * `fsn` is accepted as an alias for FateCrypt — it is arc_unpacker's plugin
+     * name and how the game (Fate/Stay Night) is usually catalogued, so it is
+     * the name users are most likely to type. The other two schemes have no
+     * alias; see `archive_xp3crypt_core::Scheme::alias`.
+     */
+    internal fun normalizePackEnc(v: String): String? = when (v.trim().lowercase()) {
+        "" -> ""
+        "cxdec" -> "cxdec"
+        "hashcrypt" -> "crypt:HashCrypt"
+        "fatecrypt", "fsn" -> "crypt:FateCrypt"
+        "appliquecrypt" -> "crypt:AppliqueCrypt"
+        else -> null
+    }
+
+    /**
+     * `uu c <src...> [out] [-c|-s] [-f key] [level] [splitMB] [-e scheme] [-p pw]`。
      *  - 单源 + out：`uu c dir out.zip` → out 是**最终输出路径**（产品要求）。
      *  - 单源无 out：落到默认单独路径（uu_cli/<src 名>.<ext>），格式必须 -f 给出。
      *  - `-c`：多源合并成一个包（暂存目录内重名按 `名字 (n)` 去重，默认名 archive.<ext>）。
-     *  - `-s`：多源分别压缩（单文件 + zip/7z/tar 系自动临时目录包裹）。
+     *  - `-s`：多源分别压缩（单文件 + zip/7z/tar 系自动临时目录包装）。
      *  产物名**拿到调度槽之后**解析（排队互不撞名）；已存在拒绝；`.pfs` 二义必须 -f。
      */
     private fun pack(args: List<String>, ctx: Ctx): Result {
@@ -796,10 +816,14 @@ internal object UuCommands {
         if (merge && separate) return Result(UuText.failed(ctx.str, "-c / -s"), 1)
         val pw = flags["-p"] ?: ""
         val forceKey = flags["-f"]
-        // `-e cxdec`: only xp3 knows how to encrypt, and only cxdec is
-        // implemented — anything else is refused rather than ignored.
-        val enc = flags["-e"]?.lowercase() ?: ""
-        if (enc.isNotEmpty() && enc != "cxdec") return Result(UuText.packUnknownEnc(ctx.str, enc), 1)
+        // `-e <scheme>`: only xp3 knows how to encrypt. The value is normalized
+        // to what the packer expects — `cxdec` stays a bare family name (the
+        // packer DISCOVERS the concrete scheme from the folder, and refuses when
+        // there is nothing to resolve it from), while a keyless scheme becomes
+        // `crypt:<Name>` because its key is each entry's own ADLR and there is
+        // nothing to discover. An unrecognized name is refused, not ignored.
+        val encArg = flags["-e"] ?: ""
+        val enc = normalizePackEnc(encArg) ?: return Result(UuText.packUnknownEnc(ctx.str, encArg), 1)
         val cancelled = AtomicBoolean(false)
         if (pos.isEmpty()) return needFile(Picker.FILE_OR_FOLDER)
 
@@ -810,7 +834,7 @@ internal object UuCommands {
                 if (it !in COMPRESS_EXT.keys) return Result(UuText.packUnknownKey(ctx.str, it), 1)
                 it
             } ?: return Result(ctx.text(R.string.cli_pack_need_format), 1)
-            if (enc == "cxdec" && fmt != "xp3") return Result(UuText.packEncOnlyXp3(ctx.str), 1)
+            if (enc.isNotEmpty() && fmt != "xp3") return Result(UuText.packEncOnlyXp3(ctx.str), 1)
             // zip 的等级 GUI 走 zip_level（generic_level 不是它的档位）；-l 可覆盖
             val level = flags["-l"]?.toIntOrNull()
                 ?: ctx.prefs?.let { if (fmt == "zip") it.getInt("zip_level", 5) else it.getInt("generic_level", 6) } ?: 6
@@ -870,7 +894,7 @@ internal object UuCommands {
                                 if (batchSplit > 0) batchSplit * 1024 * 1024 else null, enc)
                             if (ok) okCount++ else failCount++
                             if (ok) {
-                                val note = if (enc == "cxdec") encNoteText(ctx.str) else ""
+                                val note = if (enc.isNotEmpty()) encNoteText(ctx.str) else ""
                                 packResultLines.add(ctx.text(R.string.cli_pack_ok, outF.name) +
                                     if (note.isEmpty()) "" else " $note")
                             }
@@ -950,7 +974,7 @@ internal object UuCommands {
             return Result(ctx.text(R.string.cli_pack_need_format), 1)
         }
 
-        if (enc == "cxdec" && fmt != "xp3") return Result(UuText.packEncOnlyXp3(ctx.str), 1)
+        if (enc.isNotEmpty() && fmt != "xp3") return Result(UuText.packEncOnlyXp3(ctx.str), 1)
 
         // 等级/分卷走 -l/-b 标志（位置式 3/4 参形态是死代码——曾被 arity 守卫拦死）
         val level = flags["-l"]?.toIntOrNull() ?: 6
@@ -999,7 +1023,7 @@ internal object UuCommands {
                 // run; the native side reports it. This branch builds its result
                 // text itself (packResultLines belongs to the batch branch), so
                 // the note has to be appended to THIS return.
-                if (packOk && enc == "cxdec") encNote = encNoteText(ctx.str)
+                if (packOk && enc.isNotEmpty()) encNote = encNoteText(ctx.str)
                 packOk
             } finally {
                 wrapDir?.deleteRecursively()
@@ -1559,9 +1583,9 @@ internal object UuCommands {
                     if (fmt == "zip") it.getInt("zip_level", 5) else it.getInt("generic_level", 6)
                 } ?: 6
                 // Mirror the source archive's encryption, exactly like the GUI
-                // repack: a cxdec game's filter runs over every entry, so a plain
+                // repack: a game's filter runs over every entry, so a plain
                 // result would be unreadable by the game it was made for.
-                val setEnc = if (fmt == "xp3" && xp3SchemeToken("xp3", archive).startsWith("cxdec:")) "cxdec" else ""
+                val setEnc = if (fmt == "xp3") xp3RepackEnc(xp3SchemeToken("xp3", archive)) else ""
                 val ok = compressDispatch(staging, outF, fmt, level, pw, ctx.prefs
                     ?: throw IllegalStateException("prefs required"), null, setEnc)
                 if (!ok) return Result(UuText.packFailed(ctx.str, outF.name), 1)

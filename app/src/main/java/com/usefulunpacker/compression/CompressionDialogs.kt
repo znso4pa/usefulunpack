@@ -195,14 +195,28 @@ fun showCompressOptionsDialog(
                 setBackgroundColor(C["divider_subtle"]!!)
                 layoutParams = android.widget.LinearLayout.LayoutParams(MATCH, 1).apply { setMargins(24, 0, 24, 0) }
             })
-            fun encLabel(v: String) = if (v.isEmpty()) activity.getString(R.string.enc_none) else activity.getString(R.string.enc_cxdec)
+            // The choices are (value handed to the packer, label). cxdec is a
+            // bare family name because the packer discovers the concrete scheme
+            // from the folder; the keyless three carry `crypt:<Name>` because
+            // their key is each entry's own ADLR and there is nothing to
+            // discover — which also means they are always available, sidecar or
+            // not, unlike cxdec.
+            val encChoices = listOf(
+                "" to activity.getString(R.string.enc_none),
+                "cxdec" to activity.getString(R.string.enc_cxdec),
+                "crypt:HashCrypt" to activity.getString(R.string.enc_hashcrypt),
+                "crypt:FateCrypt" to activity.getString(R.string.enc_fatecrypt),
+                "crypt:AppliqueCrypt" to activity.getString(R.string.enc_appliquecrypt),
+            )
+            fun encLabel(v: String) =
+                encChoices.firstOrNull { it.first == v }?.second ?: activity.getString(R.string.enc_none)
             encRow = row("${activity.getString(R.string.title_encryption)}: ${encLabel(xp3Enc)}") {
-                val opts = arrayOf(activity.getString(R.string.enc_none), activity.getString(R.string.enc_cxdec))
-                val checked = if (xp3Enc.isEmpty()) 0 else 1
+                val labels = encChoices.map { it.second }.toTypedArray()
+                val checked = encChoices.indexOfFirst { it.first == xp3Enc }.coerceAtLeast(0)
                 android.app.AlertDialog.Builder(activity)
                     .setTitle(activity.getString(R.string.title_encryption))
-                    .setSingleChoiceItems(opts, checked) { d, w ->
-                        xp3Enc = if (w == 0) "" else "cxdec"
+                    .setSingleChoiceItems(labels, checked) { d, w ->
+                        xp3Enc = encChoices[w].first
                         encRow?.text = "${activity.getString(R.string.title_encryption)}: ${encLabel(xp3Enc)}"
                         d.dismiss()
                     }
@@ -408,23 +422,27 @@ private fun runCompress(
 /** 通用压缩派发：任何来源（单文件/目录/临时合并目录）→ 指定格式，供单文件、批量合并、批量分别共用。 */
 /**
  * Human sentence for the scheme the last xp3 pack used ("" when it was plain or
- * the native note is unreadable). The note distinguishes a scheme scored
- * against a real encrypted archive from one derived from the game's script —
- * the second is not verifiable, and saying so is the point.
+ * the native note is unreadable).
+ *
+ * A cxdec pack resolves its scheme from somewhere, and the note distinguishes a
+ * scheme scored against a real encrypted archive from one derived from the
+ * game's script — the second is not verifiable, and saying so is the point. A
+ * keyless pack resolves nothing (the key is each entry's own ADLR), so it has no
+ * source to name and reports the scheme itself instead.
  */
 fun encNoteText(str: StrFn): String {
     val json = try { Xp3Core.xp3LastEncNote() } catch (_: Exception) { null }
     if (json.isNullOrEmpty()) return ""
     return try {
         val o = org.json.JSONObject(json)
-        // The scheme NAME stays in the native JSON (a diagnostic, and a script
-        // can read it) but is not shown: the label says cxdec and that is all
-        // the user asked for. What matters in the message is whether the scheme
-        // could be checked against real ciphertext, which is what it says.
         val source = o.optString("source", "")
-        if (o.optBoolean("verified", false))
-            str(R.string.enc_note_verified, arrayOf(source))
-        else str(R.string.enc_note_unverified, arrayOf(source))
+        when {
+            // No source = a keyless scheme the user picked: there is nothing to
+            // derive it from, so the useful thing to say is which one it was.
+            source.isEmpty() -> str(R.string.enc_note_scheme, arrayOf(o.optString("scheme", "")))
+            o.optBoolean("verified", false) -> str(R.string.enc_note_verified, arrayOf(source))
+            else -> str(R.string.enc_note_unverified, arrayOf(source))
+        }
     } catch (_: Exception) {
         ""
     }
@@ -448,9 +466,11 @@ fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password
     val splitStr = if (split > 0 && fmt in setOf("zip", "7z")) split.toString() else "0"
     return try {
         when (fmt) {
-            // enc: "" = plain, "cxdec" = cxdec-encrypted. The scheme is resolved
-            // from the folder at pack time (an existing encrypted archive, else
-            // the game's own xp3filter.tjs) — see Xp3Core.xp3CreateArchive.
+            // enc: "" = plain, "cxdec" = cxdec-encrypted (the scheme is resolved
+            // from the folder at pack time — an existing encrypted archive, else
+            // the game's own xp3filter.tjs), "crypt:<Name>" = a keyless scheme
+            // the user chose, which needs nothing resolved.
+            // See Xp3Core.xp3CreateArchive.
             "xp3" -> Xp3Core.xp3CreateArchive("", src.path, outFile.path, level.toString(), enc) != null
             "pfs" -> PfsCore.pfsCreateArchive("", src.path, outFile.path) != null
             "pf6" -> PfsCore.pfsCreateArchivePf6("", src.path, outFile.path) != null

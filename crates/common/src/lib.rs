@@ -347,6 +347,57 @@ pub fn json_escape(s: &str) -> String {
     out
 }
 
+/// Whether a decoded byte prefix looks like a recognizable file — the scoring
+/// primitive behind every XP3 scheme probe (cxdec's `score_schemes` and
+/// xp3crypt's keyless detection).
+///
+/// Some signatures are deliberately the LONG form, not the usual 2–4 byte
+/// abbreviation. A cipher that leaves a short prefix untouched would otherwise
+/// pass on the raw ciphertext: AppliqueCrypt stores the first 5 bytes verbatim,
+/// so a 4-byte `TLG5` / `\x89PNG` / `RIFF` test matches BEFORE decryption and
+/// the entry can never be told apart from plaintext. `TLG5.0\0` (7), the full
+/// PNG signature (8) and the `RIFF….WEBP/WAVE/AVI ` form type (12) all cross the
+/// 5-byte line, which is exactly what makes "decrypting produced a magic the
+/// raw bytes did not have" a usable signal.
+///
+/// Signatures at or below 5 bytes are kept short because they cannot
+/// discriminate anyway (AppliqueCrypt preserves them too), and lengthening them
+/// would only cost sensitivity elsewhere.
+///
+/// Biased toward NOT matching: a false "this is plaintext" costs a missed
+/// scheme, while a false "this is ciphertext" makes a healthy archive look
+/// encrypted. See `content_looks_encrypted` in cxdec-core.
+pub fn looks_decrypted(data: &[u8]) -> bool {
+    const MAGICS: &[&[u8]] = &[
+        // Kirikiri TLG images — the full 7-byte header, past the 5-byte prefix.
+        b"TLG0.0\x00", b"TLG5.0\x00", b"TLG6.0\x00",
+        b"\x89PNG\r\n\x1a\n", // PNG signature (8), full
+        b"\xff\xd8\xff",      // JPEG SOI
+        b"BM",                // BMP
+        b"OggS",              // Ogg page header
+        b"ID3",               // MP3 with an ID3 tag
+        b"PK\x03\x04",        // zip local file header
+        b"MThd",              // MIDI
+        b"MZ",                // PE executable
+        b"\xfe\xfe",          // Kirikiri KSD script wrapper
+    ];
+    if MAGICS.iter().any(|m| data.starts_with(m)) {
+        return true;
+    }
+    // RIFF container: the form type sits at offset 8, past AppliqueCrypt's
+    // untouched prefix, so the long form is what discriminates. The bare `RIFF`
+    // tag is deliberately absent — it would match the raw bytes and defeat the
+    // whole test.
+    if data.len() >= 12 && &data[..4] == b"RIFF" {
+        let form = &data[8..12];
+        if form == b"WEBP" || form == b"WAVE" || form == b"AVI " {
+            return true;
+        }
+    }
+    // Raw MP3 frame sync (no ID3 tag).
+    data.len() >= 2 && data[0] == 0xff && (data[1] & 0xe0) == 0xe0
+}
+
 pub fn derive_dirs(paths: &[&str]) -> BTreeSet<String> {
     let mut dirs = BTreeSet::new();
     for path in paths {

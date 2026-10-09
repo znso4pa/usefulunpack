@@ -177,12 +177,24 @@ fun hasCxdecFilterSidecar(src: String): Boolean {
 }
 
 /**
- * XP3 extraction with cxdec routing: when a filter sidecar sits next to the
- * archive, the cxdec decrypt path runs first (classic cxdec games extract as
- * garbage through the plain path), falling back to the plain extractor when
- * the cxdec probe finds no matching scheme.
+ * XP3 extraction routing: cxdec when a filter sidecar sits next to the archive,
+ * a keyless scheme when the content probe names one, plain otherwise.
+ *
+ * The two encrypted families are routed differently because they are
+ * DISCOVERED differently. cxdec needs a sidecar, and a sidecar is a cheap,
+ * definitive signal the caller already has. A keyless scheme has no sidecar at
+ * all — the token is the only signal that exists, so it is computed here and
+ * the scheme name it carries is handed to the extractor, which re-derives the
+ * identical cipher. That is what keeps the bytes decrypted identical to the
+ * scheme the preview and scan already showed the user.
  */
 private fun xp3ExtractDispatch(src: String, out: String, selected: String): String? {
+    // Memoized so an extraction probes at most once. The probe opens the
+    // archive and scores entries, which is real work, and the cxdec-success
+    // path — the common one — must not pay for it at all.
+    var cached: String? = null
+    fun tokenOf(): String = cached ?: xp3SchemeToken("xp3", File(src)).also { cached = it }
+
     val gameDir = File(src).parent
     if (gameDir != null && hasCxdecFilterSidecar(src)) {
         val json = try {
@@ -196,10 +208,25 @@ private fun xp3ExtractDispatch(src: String, out: String, selected: String): Stri
         // match means plain extraction would write ciphertext to disk. Refuse
         // and let the native reason surface (the INT-missing-exe precedent)
         // instead of silently handing the user garbage.
-        if (xp3SchemeToken("xp3", File(src)) == "cxdec:?") {
+        if (tokenOf() == "cxdec:?") {
             throw IllegalStateException(
                 "XP3: 目录内有 cxdec 配套文件，但没有任何已知方案能解开这个归档（无法解密）")
         }
+    }
+    val token = tokenOf()
+    if (token.startsWith("crypt:")) {
+        val scheme = token.removePrefix("crypt:")
+        val json = try {
+            if (selected.isEmpty()) Xp3Core.xp3CryptExtract("", src, out, scheme)
+            else Xp3Core.xp3CryptExtractSelected("", src, out, scheme, selected)
+        } catch (e: Exception) {
+            null
+        }
+        if (json != null) return json
+        // Unlike the cxdec branch above, the scheme here was scored off the
+        // archive's OWN content, so a failure is a real decryption failure —
+        // there is no "maybe it wasn't encrypted after all" to fall back on.
+        throw IllegalStateException("XP3: 检测到 $scheme 加密，但解密失败")
     }
     return if (selected.isEmpty()) Xp3Core.xp3Extract("", src, out)
            else Xp3Core.xp3ExtractSelected("", src, out, selected)
@@ -214,7 +241,10 @@ private fun xp3ExtractDispatch(src: String, out: String, selected: String): Stri
  * `plain`          — not protected (or no evidence either way)
  * `cxdec:<scheme>` — cxdec-protected, scheme scored against real entries
  * `cxdec:?`        — a cxdec folder, but no known scheme decrypts it
- * `suspect`        — no sidecar, yet the index marks entries protected
+ * `crypt:<scheme>` — a keyless scheme (HashCrypt / FateCrypt / AppliqueCrypt),
+ *                    scored against real entries; needs no sidecar
+ * `suspect`        — no sidecar and no scheme matched, yet the index marks
+ *                    entries protected
  */
 fun xp3SchemeToken(fmt: String, src: File): String {
     if (fmt != "xp3") return ""
@@ -226,15 +256,47 @@ fun xp3SchemeToken(fmt: String, src: File): String {
 }
 
 /**
- * Localized label for an [xp3SchemeToken] — the ONE place the four tokens turn
- * into words, so the preview title, the scan row and `uu l` can never drift
- * apart. "" means "say nothing" (plain archives and probe failures).
+ * Localized label for an [xp3SchemeToken] — the ONE place the tokens turn into
+ * words, so the preview title, the scan row and `uu l` can never drift apart.
+ * The two scheme-bearing families carry the scheme NAME through, because "which
+ * one" is the whole question a user is asking. "" means "say nothing" (plain
+ * archives and probe failures).
  */
-fun xp3SchemeLabel(str: StrFn, token: String): String = when {
-    token == "cxdec:?" -> str(R.string.xp3_enc_unknown, emptyArray())
-    token.startsWith("cxdec:") -> str(R.string.xp3_enc_cxdec, emptyArray())
-    token == "suspect" -> str(R.string.xp3_enc_suspect, emptyArray())
-    token == "plain" -> str(R.string.xp3_enc_plain, emptyArray())
+fun xp3SchemeLabel(str: StrFn, token: String): String {
+    // Checked before the prefix match below: `cxdec:?` is a sentinel, not a
+    // scheme named "?".
+    if (token == "cxdec:?") return str(R.string.xp3_enc_unknown, emptyArray())
+    val name = when {
+        token.startsWith("cxdec:") -> token.removePrefix("cxdec:")
+        token.startsWith("crypt:") -> token.removePrefix("crypt:")
+        else -> null
+    }
+    if (name != null) {
+        // A bare prefix with no name would render as "encrypted: " — say
+        // nothing instead, same rule as an unrecognized token.
+        return if (name.isEmpty()) "" else str(R.string.xp3_enc_named, arrayOf(name))
+    }
+    return when (token) {
+        "suspect" -> str(R.string.xp3_enc_suspect, emptyArray())
+        "plain" -> str(R.string.xp3_enc_plain, emptyArray())
+        else -> ""
+    }
+}
+
+/**
+ * The `enc` argument [Xp3Core.xp3CreateArchive] needs in order to mirror a
+ * source archive's encryption — used by the GUI repack, the merge path and the
+ * CLI alike, so all three cannot disagree.
+ *
+ * `cxdec` goes through as the bare family name because the packer DISCOVERS the
+ * concrete cxdec scheme from the folder. A keyless scheme has nothing to
+ * discover (its key is each entry's own ADLR), so its `crypt:<name>` token is
+ * passed through verbatim. `""` covers plain, and also `suspect` / `cxdec:?`,
+ * where there is no scheme to mirror — a guess would be worse than plain.
+ */
+fun xp3RepackEnc(token: String): String = when {
+    token.startsWith("crypt:") -> token
+    token.startsWith("cxdec:") && token != "cxdec:?" -> "cxdec"
     else -> ""
 }
 

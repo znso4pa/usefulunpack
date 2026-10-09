@@ -816,10 +816,10 @@ internal fun MainActivity.mergeIntoArchive(
                     val pwEnabled = prefs.getBoolean("compress_password_enabled", false)
                     val password = if (pwEnabled) prefs.getString("compress_password", "") ?: "" else ""
                     // Merging into an xp3 mirrors the TARGET archive's
-                    // encryption, for the same reason the repack does: a cxdec
-                    // game's filter runs over every entry, so a plain merge
-                    // result is unreadable by the game it is meant for.
-                    val mergeEnc = if (targetFmt == "xp3" && xp3SchemeToken("xp3", target).startsWith("cxdec:")) "cxdec" else ""
+                    // encryption, for the same reason the repack does: a game's
+                    // filter runs over every entry, so a plain merge result is
+                    // unreadable by the game it is meant for.
+                    val mergeEnc = if (targetFmt == "xp3") xp3RepackEnc(xp3SchemeToken("xp3", target)) else ""
                     val ok = compressDispatch(stageDir, outF, targetFmt, defaultCompressLevel(prefs, targetFmt), password, prefs, null, mergeEnc)
                     // 失败/取消清半成品（产物名可能是 root.pfs）。
                     if (cancelled || !ok) outF.delete()
@@ -980,14 +980,14 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
                 gameNaming, ext
             )
             val ok = when (format) {
-                // Mirror the source archive's encryption: a cxdec game's krkr2
-                // filter runs over EVERY entry, so a plain repack of an
-                // encrypted archive would be unreadable by the game that owns
-                // it. The original is still on disk and is the oracle the
-                // scheme is resolved from.
+                // Mirror the source archive's encryption: a game's krkr2 filter
+                // runs over EVERY entry, so a plain repack of an encrypted
+                // archive would be unreadable by the game that owns it. The
+                // original is still on disk and is the oracle the scheme is
+                // resolved from.
                 "xp3" -> Xp3Core.xp3CreateArchive(
                     "", editDir.path, outF.path, prefs.getInt("generic_level", 6).toString(),
-                    if (ownerTab.previewEncNote.startsWith("cxdec:")) "cxdec" else ""
+                    xp3RepackEnc(ownerTab.previewEncNote)
                 ) != null
                 "nsa" -> NsaCore.nsaCreateArchive("", editDir.path, outF.path, "2") != null
                 "iso" -> IsoCore.isoCreateArchive("", editDir.path, outF.path) != null

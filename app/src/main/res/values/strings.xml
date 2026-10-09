@@ -352,21 +352,26 @@
     <string name="extract_result_stats">Total: %1$d\n✅ Success: %2$d\n❌ Errors: %3$d\n📦 Other: %4$d</string>
     <string name="extract_new_folder">📁 %1$s: %2$s</string>
     <string name="preview_stats">%1$d files, %2$s  |  selected %3$d, %4$s</string>
-    <!-- XP3 cxdec encryption. The four state labels come from ONE probe
-         (xp3SchemeToken) and are shown in the preview title, scan rows and
-         `uu l`, so they must read the same everywhere. -->
+    <!-- XP3 encryption. The state labels come from ONE probe (xp3SchemeToken)
+         and are shown in the preview title, scan rows and `uu l`, so they must
+         read the same everywhere. The two scheme-bearing families carry the
+         scheme NAME through — "which one" is the whole question. -->
     <string name="xp3_enc_plain">plain</string>
-    <string name="xp3_enc_cxdec">cxdec encrypted</string>
+    <string name="xp3_enc_named">encrypted: %1$s</string>
     <string name="xp3_enc_unknown">cxdec encrypted, scheme unknown</string>
-    <string name="xp3_enc_suspect">possibly cxdec encrypted, xp3filter.tjs / .tpm missing from the folder</string>
+    <string name="xp3_enc_suspect">possibly encrypted — no known scheme matched (cxdec needs xp3filter.tjs / .tpm in the folder)</string>
     <string name="enc_suffix_paren"> (%1$s)</string>
     <string name="title_encryption">Encryption</string>
     <string name="enc_none">None</string>
-    <string name="enc_cxdec">cxdec encrypted</string>
-    <string name="enc_cxdec_hint">cxdec encryption needs xp3filter.tjs / .tpm in the folder, or an already-encrypted .xp3 to take the scheme from. Encrypted entries are stored uncompressed.</string>
+    <string name="enc_cxdec">cxdec</string>
+    <string name="enc_hashcrypt">HashCrypt</string>
+    <string name="enc_fatecrypt">FateCrypt</string>
+    <string name="enc_appliquecrypt">AppliqueCrypt</string>
+    <string name="enc_cxdec_hint">cxdec needs xp3filter.tjs / .tpm in the folder, or an already-encrypted .xp3 to take the scheme from. HashCrypt / FateCrypt / AppliqueCrypt need nothing extra. Encrypted entries are stored uncompressed.</string>
     <string name="enc_note_verified">scheme from %1$s</string>
     <string name="enc_note_unverified">scheme derived from %1$s, not checked against real ciphertext</string>
-    <string name="cli_pack_enc_unknown">Unknown -e value: %1$s (only cxdec)</string>
+    <string name="enc_note_scheme">encrypted with %1$s</string>
+    <string name="cli_pack_enc_unknown">Unknown -e value: %1$s (only cxdec / hashcrypt / fatecrypt (alias fsn) / appliquecrypt)</string>
     <string name="cli_enc_only_xp3">-e cxdec applies to xp3 only</string>
     <string name="preview_title">Preview %1$s</string>
     <string name="bg_set">✅ Custom background set</string>

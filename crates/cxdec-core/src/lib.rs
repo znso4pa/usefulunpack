@@ -13,7 +13,7 @@
 //! entry's segments decrypt transparently — no HX bootstrap / name-recovery
 //! pipeline (that is Cxdec_Tools' separate `recover` flow).
 
-use archive_common::{extract_progress, derive_dirs, json_escape, safe_join, DestAllocator};
+use archive_common::{extract_progress, derive_dirs, json_escape, looks_decrypted, safe_join, DestAllocator};
 use cxdec_tools::crypto::hxv4_shellcode::{read_control_block_from_tpm, CxScheme};
 /// Re-exported so `xp3-core` (the encrypted writer) can name the cipher type
 /// without depending on the vendored tool crate directly.
@@ -24,7 +24,7 @@ pub use cxdec_tools::crypto::hxv4_shellcode::CONTROL_BLOCK_SIGNATURE;
 use cxdec_tools::r#struct::xp3::{Xp3Archive, Xp3Cipher, Xp3Entry};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Buffered whole-entry decode cap (`read_entry` materializes the entry in
 /// RAM). Legit cxdec archives top out far below this; a hostile index can't
@@ -34,6 +34,11 @@ const MAX_ENTRY_BYTES: u64 = 1024 * 1024 * 1024;
 /// Files at most this large are scanned for the control-block signature —
 /// real TPM blocks sit in KB-sized side files, never in the multi-GB archives.
 const CONTROL_BLOCK_SCAN_MAX: u64 = 64 * 1024 * 1024;
+
+/// How deep the control-block search descends below the game folder. Real
+/// games keep the table at the root, in `plugin/`, or in `savedata/`; a
+/// deeper walk would only add cost to a folder that has no block anyway.
+const CONTROL_BLOCK_MAX_DEPTH: usize = 3;
 
 /// One game's cxdec scheme: where the two-phase decrypt splits (`mask` +
 /// `offset`) and how the key-derivation VM permutes its opcode cases.
@@ -158,51 +163,105 @@ impl Xp3Cipher for AllEncrypted<'_> {
     }
 }
 
-/// Recognizable plaintext starts. Used to score scheme candidates on the
-/// archive's first entries — a wrong scheme leaves uniformly-random-looking
-/// bytes that essentially never begin with one of these.
-fn looks_decrypted(data: &[u8]) -> bool {
-    const MAGICS: &[&[u8]] = &[
-        b"TLG0", b"TLG5", b"TLG6", b"\x89PNG", b"\xff\xd8\xff", b"BM", b"OggS",
-        b"RIFF", b"ID3", b"PK\x03\x04", b"MThd", b"MZ", b"\xfe\xfe",
-    ];
-    MAGICS.iter().any(|m| data.starts_with(m))
-        // raw MP3 frame sync
-        || (data.len() >= 2 && data[0] == 0xff && (data[1] & 0xe0) == 0xe0)
-}
-
-/// Finds the 4096-byte cxdec control block next to the archive: a binary
-/// signature scan over `.tpm`/`.dat` side files, or the hex byte array
-/// embedded in the game's `xp3filter.tjs` (feng's template).
+/// Finds the 4096-byte cxdec control block anywhere in the game folder.
+///
+/// The block is a fixed 4096-byte table whose first 24 bytes are the ASCII
+/// marker `" Encryption control block"` — long enough that a false positive is
+/// not a practical concern, so the search is a signature scan rather than a
+/// guess. Three carriers exist in the wild, and they are NOT equally good:
+///
+/// 1. `xp3filter.tjs` in the folder root — the script that builds the table at
+///    load time. Preferred because it is the game's own source of truth AND it
+///    also carries the scheme constants (`bondary = (hash & 0x275) + 0x380`).
+/// 2. `*.tpm` / `*.dat` side files — the SDK's serialized form. The block
+///    usually lives in `plugin/<name>.tpm`, i.e. one level DOWN, which is why
+///    the walk recurses.
+/// 3. Anything else — some builds embed the table in the game EXE or a plugin
+///    DLL instead. Tried last, and only up to `CONTROL_BLOCK_SCAN_MAX`.
+///
+/// Recursing matters for the resource dumps this tool is aimed at: a stripped
+/// folder often ships `plugin/` (and therefore the TPM) while the script, the
+/// EXE, or both are gone.
 fn find_control_block(game_dir: &Path) -> Result<ControlBlock, String> {
-    let mut files: Vec<std::path::PathBuf> = fs::read_dir(game_dir)
-        .map_err(|e| format!("cxdec: game folder unreadable: {e}"))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            let name = p.file_name().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
-            name == "xp3filter.tjs" || name.ends_with(".tpm") || name.ends_with(".dat")
-        })
-        .collect();
-    // .tjs first (carries the block AND the scheme constants), then side files.
-    files.sort_by_key(|p| {
-        let name = p.file_name().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
-        (if name == "xp3filter.tjs" { 0 } else { 1 }, name)
-    });
-    for path in files {
-        let name = path.file_name().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let mut files: Vec<(u8, usize, std::path::PathBuf)> = Vec::new();
+    collect_control_block_candidates(game_dir, 0, &mut files);
+    files.sort_by(|a, b| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2)));
+
+    for (_, _, path) in files {
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
         if name == "xp3filter.tjs" {
-            let text = fs::read_to_string(&path)
-                .map_err(|e| format!("cxdec: xp3filter.tjs unreadable: {e}"))?;
-            if let Some(words) = tjs_control_block(&text) {
-                return Ok(ControlBlock { words, from_tjs: true });
+            // A tjs that exists but carries no parsable array must not abort the
+            // search — fall through to the side files instead.
+            if let Ok(text) = fs::read_to_string(&path) {
+                if let Some(words) = tjs_control_block(&text) {
+                    return Ok(ControlBlock { words, from_tjs: true });
+                }
             }
-        } else if fs::metadata(&path).map(|m| m.len()).unwrap_or(0) <= CONTROL_BLOCK_SCAN_MAX {
-            if let Ok(words) = read_control_block_from_tpm(&path) {
-                return Ok(ControlBlock { words, from_tjs: false });
-            }
+            continue;
+        }
+        if fs::metadata(&path).map(|m| m.len()).unwrap_or(u64::MAX) > CONTROL_BLOCK_SCAN_MAX {
+            continue;
+        }
+        if let Ok(words) = read_control_block_from_tpm(&path) {
+            return Ok(ControlBlock { words, from_tjs: false });
         }
     }
     Err("cxdec: no xp3filter.tjs / .tpm control block found in the game folder".to_string())
+}
+
+/// Rank of a file as a control-block carrier — lower is tried first. `None`
+/// excludes it outright. Ordering, not filtering, is what keeps the archives
+/// themselves out of the scan: they are the payload, never the key material,
+/// and a multi-GB one would otherwise dominate the walk.
+fn control_block_rank(path: &Path, depth: usize) -> Option<u8> {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if name == "xp3filter.tjs" {
+        return Some(if depth == 0 { 0 } else { 1 });
+    }
+    if ext == "xp3" {
+        return None;
+    }
+    if ext == "tpm" || ext == "dat" {
+        return Some(2);
+    }
+    Some(3)
+}
+
+/// Collects `(rank, depth, path)` for every file under `dir` that could carry
+/// the control block. A directory that cannot be read is skipped rather than
+/// failing the whole search — one unreadable subfolder must not hide a block
+/// sitting in a sibling.
+fn collect_control_block_candidates(dir: &Path, depth: usize, out: &mut Vec<(u8, usize, PathBuf)>) {
+    let rd = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(ft) if ft.is_dir() => {
+                if depth < CONTROL_BLOCK_MAX_DEPTH {
+                    collect_control_block_candidates(&path, depth + 1, out);
+                }
+            }
+            Ok(ft) if ft.is_file() => {
+                if let Some(rank) = control_block_rank(&path, depth) {
+                    out.push((rank, depth, path));
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Parses the 4096-entry byte array from an xp3filter.tjs template
@@ -933,6 +992,48 @@ mod tests {
         let (_cx, scheme_name) =
             detect_cipher(&dir, xp3.to_str().unwrap()).expect("scheme must be found");
         assert_eq!(scheme_name, "cxdec karakara");
+        let out = dir.join("out");
+        fs::create_dir_all(&out).unwrap();
+        let (done, fail) = extract(
+            dir.to_str().unwrap(), xp3.to_str().unwrap(), out.to_str().unwrap(), None,
+        ).unwrap();
+        assert_eq!((done, fail), (1, 0));
+        assert_eq!(fs::read(out.join("bg/logo.png")).unwrap(), plain);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A resource dump often ships `plugin/` (and therefore the SDK's `.tpm`)
+    /// while `xp3filter.tjs` and the EXE are gone. The block search must walk
+    /// down into subfolders: measured on a real feng dump, a `plugin/otome.tpm`
+    /// one level down was invisible to the old flat scan, and the archive then
+    /// misreported as `plain` and extracted as garbage.
+    #[test]
+    fn control_block_is_found_in_a_subdirectory() {
+        let dir = tmp("nested_cb");
+        fs::create_dir_all(dir.join("plugin")).unwrap();
+        let mut raw = CONTROL_BLOCK_SIGNATURE.to_vec();
+        raw.resize(4096, 0);
+        for (i, b) in raw.iter_mut().enumerate().skip(CONTROL_BLOCK_SIGNATURE.len()) {
+            *b = (i % 251) as u8;
+        }
+        let raw_words: Vec<u32> = raw.chunks_exact(4)
+            .map(|q| u32::from_le_bytes([q[0], q[1], q[2], q[3]]))
+            .collect();
+        let mut tpm_bytes = raw.clone();
+        tpm_bytes.extend_from_slice(&[0u8; 64]); // reader needs len > block size
+        // One level down, and deliberately no xp3filter.tjs anywhere.
+        fs::write(dir.join("plugin/otome.tpm"), &tpm_bytes).unwrap();
+
+        let plain = png_plaintext(3000);
+        let (hash, enc) = encrypt_entry(&FENG_TEMPLATE, &raw_words, &plain);
+        let xp3 = dir.join("data.xp3");
+        fs::write(&xp3, build_xp3(&[("bg/logo.png", hash, enc)])).unwrap();
+
+        // With no script the scheme has to come from the table, not from tjs.
+        let (_cx, name) = detect_cipher(&dir, xp3.to_str().unwrap())
+            .expect("a nested control block must be found");
+        assert_eq!(name, FENG_TEMPLATE.name);
+
         let out = dir.join("out");
         fs::create_dir_all(&out).unwrap();
         let (done, fail) = extract(

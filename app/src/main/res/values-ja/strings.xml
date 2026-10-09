@@ -331,21 +331,26 @@
     <string name="extract_result_stats">合計：%1$d\n✅ 成功：%2$d\n❌ エラー：%3$d\n📦 その他：%4$d</string>
     <string name="extract_new_folder">📁 %1$s: %2$s</string>
     <string name="preview_stats">%1$d ファイル、%2$s  |  選択 %3$d、%4$s</string>
-    <!-- XP3 cxdec 暗号化：4 つの状態ラベルは単一の探測（xp3SchemeToken）由来で、
-         プレビュータイトル / スキャン結果 / uu l で共有される。 -->
+    <!-- XP3 暗号化：状態ラベルは単一の探測（xp3SchemeToken）由来で、
+         プレビュータイトル / スキャン結果 / uu l で共有される。方式を持つ
+         2 系統は方式名をそのまま出す ——「どれか」が知りたいことそのもの。 -->
     <string name="xp3_enc_plain">通常形式</string>
-    <string name="xp3_enc_cxdec">cxdec 暗号化</string>
+    <string name="xp3_enc_named">暗号化：%1$s</string>
     <string name="xp3_enc_unknown">cxdec 暗号化、方式不明</string>
-    <string name="xp3_enc_suspect">cxdec 暗号化の疑い、フォルダ内に xp3filter.tjs / .tpm がありません</string>
+    <string name="xp3_enc_suspect">暗号化の疑い —— 既知の方式が一致しません（cxdec はフォルダ内に xp3filter.tjs / .tpm が必要）</string>
     <string name="enc_suffix_paren">（%1$s）</string>
     <string name="title_encryption">暗号化方式</string>
     <string name="enc_none">なし</string>
-    <string name="enc_cxdec">cxdec 暗号化</string>
-    <string name="enc_cxdec_hint">cxdec 暗号化にはフォルダ内の xp3filter.tjs / .tpm、または方式判定用の暗号化済み .xp3 が必要です。暗号化エントリは無圧縮で保存されます。</string>
+    <string name="enc_cxdec">cxdec</string>
+    <string name="enc_hashcrypt">HashCrypt</string>
+    <string name="enc_fatecrypt">FateCrypt</string>
+    <string name="enc_appliquecrypt">AppliqueCrypt</string>
+    <string name="enc_cxdec_hint">cxdec にはフォルダ内の xp3filter.tjs / .tpm、または方式判定用の暗号化済み .xp3 が必要です。HashCrypt / FateCrypt / AppliqueCrypt は追加ファイル不要。暗号化エントリは無圧縮で保存されます。</string>
     <string name="enc_note_verified">方式は %1$s から</string>
     <string name="enc_note_unverified">方式は %1$s から推定、暗号文での検証なし</string>
-    <string name="cli_pack_enc_unknown">不明な -e の値：%1$s（cxdec のみ）</string>
-    <string name="cli_enc_only_xp3">-e cxdec は xp3 のみ</string>
+    <string name="enc_note_scheme">%1$s で暗号化</string>
+    <string name="cli_pack_enc_unknown">不明な -e の値：%1$s（cxdec / hashcrypt / fatecrypt（別名 fsn）/ appliquecrypt のみ）</string>
+    <string name="cli_enc_only_xp3">-e による暗号化は xp3 のみ</string>
     <string name="preview_title">プレビュー %1$s</string>
     <string name="bg_set">✅ カスタム背景設定済み</string>
     <string name="bg_change">変更</string>

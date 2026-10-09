@@ -187,17 +187,26 @@ fn probe_scheme_token(archive: &str) -> String {
         archive_cxdec_core::SchemeProbe::Detected(name) => format!("cxdec:{name}"),
         archive_cxdec_core::SchemeProbe::NoSchemeMatch => "cxdec:?".to_string(),
         archive_cxdec_core::SchemeProbe::NoControlBlock => {
-            // No cxdec sidecar. Two very different things live here, and they
+            // No cxdec sidecar. Three very different things live here, and they
             // are checked in order of how much they can prove:
             //
             // 1. A keyless scheme needs no sidecar at all — its key is the
             //    entry's own ADLR — so the content alone can name it. This is
-            //    the ONLY way such an archive is ever identified.
-            // 2. Otherwise the flag alone is not evidence (a real filter-less
+            //    the ONLY way such an archive is ever identified, and it is a
+            //    specific, verified scheme, so it outranks the generic recovery
+            //    below.
+            // 2. A lone cxdec archive whose control block is gone can still be
+            //    recovered entry-by-entry from its own ADLRs. Weaker evidence
+            //    than a named keyless scheme, but far better than the `suspect`
+            //    it used to fall through to.
+            // 3. Otherwise the flag alone is not evidence (a real filter-less
             //    archive sets it on every entry and still reads as plain), so
             //    this asks whether the CONTENT is unrecognizable too.
             if let Some(scheme) = archive_xp3crypt_core::probe_scheme(archive) {
                 return format!("crypt:{}", scheme.name());
+            }
+            if let Some(name) = archive_cxdec_core::probe_recovery(archive) {
+                return format!("cxdec:{name}");
             }
             if archive_cxdec_core::content_looks_encrypted(archive) {
                 "suspect".to_string()
@@ -980,11 +989,12 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The same archive reports its scheme inside the game folder and `suspect`
-    /// once copied out of it — that is exactly the third state the user asked
-    /// for, and it is the only signal left when the sidecar is gone.
+    /// The same archive reports its scheme inside the game folder, and once the
+    /// sidecar is gone it is still named — recovered from the entries' own
+    /// ADLRs — instead of degrading to the "encrypted but no key material"
+    /// warning. That warning is exactly what a lone `data.xp3` used to show.
     #[test]
-    fn probe_token_reports_cxdec_then_suspect_when_copied_out() {
+    fn probe_token_reports_cxdec_inside_and_after_copying_out() {
         let _g = progress_lock();
         let dir = tmp("probe_cxdec_token");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1000,7 +1010,13 @@ mod tests {
         std::fs::create_dir_all(&lonely).unwrap();
         let copy = lonely.join("data.xp3");
         std::fs::copy(&xp3, &copy).unwrap();
-        assert_eq!(probe_scheme_token(copy.to_str().unwrap()), "suspect");
+        // `png_bytes` and the fake tjs make this fixture deterministic, so the
+        // recovered scheme is not a coin flip.
+        let lonely_token = probe_scheme_token(copy.to_str().unwrap());
+        assert!(
+            lonely_token.starts_with("cxdec:") && lonely_token != "cxdec:?",
+            "a lone cxdec archive must still be named, got {lonely_token}"
+        );
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&lonely).ok();
     }

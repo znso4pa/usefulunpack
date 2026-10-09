@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 archive_common = { path = "../common" }
 archive_ksd-core = { path = "../ksd-core" }
 archive_cxdec-core = { path = "../cxdec-core" }
+archive_xp3crypt-core = { path = "../xp3crypt-core" }
 jni = "0.21"
 adler32 = "1"
 xp3 = "0.4"

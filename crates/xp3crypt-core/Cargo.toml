@@ -1,0 +1,11 @@
+[package]
+name = "archive_xp3crypt-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+archive_common = { path = "../common" }
+cxdec-tools = { path = "../vendor/cxdec-tools" }

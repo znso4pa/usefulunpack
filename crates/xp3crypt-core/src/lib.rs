@@ -1,0 +1,701 @@
+//! Keyless Kirikiri XP3 content ciphers — the "simple" family GARbro carries in
+//! `ArcFormats/KiriKiri/CryptAlgorithms.cs`.
+//!
+//! Three schemes, chosen as the first step beyond plain + cxdec precisely
+//! because they are structurally different from each other and from cxdec:
+//!
+//! * [`Scheme::HashCrypt`]     — every byte XORed with one key byte,
+//!   `(byte)entry.Hash`. The classic "keyed by the ADLR" shape.
+//! * [`Scheme::FateCrypt`]     — every byte XORed with the constant `0x36`, plus
+//!   two single-byte fixups at fixed absolute offsets. The only one of the three
+//!   whose stored ADLR is computed over the CIPHERTEXT (`HashAfterCrypt`).
+//! * [`Scheme::AppliqueCrypt`] — the first 5 bytes are stored verbatim, the rest
+//!   XORed with `(byte)(entry.Hash >> 12)`.
+//!
+//! What makes these "keyless" (and worth a separate crate from cxdec) is that
+//! they need **no sidecar**: the key material is the entry's own ADLR, which the
+//! reader already has, and the choice of scheme is decided from the CONTENT.
+//! cxdec cannot do this — its key table only exists in the game's
+//! `xp3filter.tjs` / `.tpm`, and without it there is nothing to try.
+//!
+//! ## How a scheme is identified
+//!
+//! GARbro resolves these from a game-name database. This crate instead scores
+//! the archive's own first entries, which needs no database and cannot go stale:
+//! an entry counts as a **hit** for a candidate scheme when
+//!
+//! ```text
+//! looks_decrypted(decrypt(raw)) && !looks_decrypted(raw)
+//! ```
+//!
+//! i.e. decrypting produced a recognizable file signature that the raw bytes did
+//! NOT already have. Both halves matter:
+//!
+//! * the first half rejects a plain archive (decrypting plaintext with a wrong
+//!   key yields noise, which matches no signature);
+//! * the second half is what makes `AppliqueCrypt` detectable at all — it leaves
+//!   the first 5 bytes alone, so on a plain archive its "decryption" reproduces
+//!   the very signature the raw bytes already had. Requiring the signature to be
+//!   *new* cancels that out. This is also why `archive_common::looks_decrypted`
+//!   uses full-length signatures (`TLG5.0\0`, the 8-byte PNG signature) rather
+//!   than the usual 2–4 byte abbreviations.
+//!
+//! The protected flag is respected exactly as GARbro does (`ArcXP3.cs`): the
+//! cipher applies to an entry only when the index marks it protected, so a
+//! mixed archive whose unencrypted members carry no flag is left intact.
+//!
+//! ## Provenance and independent confirmation
+//!
+//! The three `decrypt` bodies were transcribed from GARbro's
+//! `ArcFormats/KiriKiri/CryptAlgorithms.cs`, then cross-checked byte-for-byte
+//! against two further independent implementations:
+//!
+//! | here            | GARbro           | arc_unpacker plugin | yuzu_xp3          |
+//! |-----------------|------------------|---------------------|-------------------|
+//! | `HashCrypt`     | `HashCrypt`      | `xor`               | `SimpleKind::Xor` |
+//! | `FateCrypt`     | `FateCrypt`      | `fsn`               | `SimpleKind::Fsn` |
+//! | `AppliqueCrypt` | `AppliqueCrypt`  | `rebirth`           | `SimpleKind::Rebirth` |
+//!
+//! (`arc_unpacker` is `vn-tools/arc_unpacker`
+//! `src/dec/kirikiri/xp3_archive_decoder_plugins.cc`; `yuzu_xp3` is a Rust port
+//! of those very plugins. Both key the cipher on the entry's `adlr` chunk value
+//! — `Xp3ArchiveDecoder::read_file_impl` calls `decrypt_func(data,
+//! entry->adlr_chunk->key)` — matching GARbro's `entry.Hash`.)
+//!
+//! Note the arc_unpacker names are how the games are usually catalogued
+//! (`fsn` = Fate/Stay Night, `rebirth` = Re:birth colony ~Lost azurite~), so
+//! they are handy when hunting for real samples. `fsn` is additionally accepted
+//! as an input alias for [`Scheme::FateCrypt`] — see [`Scheme::alias`].
+//!
+//! Two caveats this comparison surfaced, both deliberate:
+//!
+//! * **No reference auto-detects the scheme from content.** GARbro picks it
+//!   from a filename→title database and arc_unpacker from a user-selected
+//!   plugin. The probe below is therefore original work, and its reliability
+//!   rests on the signatures in `archive_common::looks_decrypted` rather than
+//!   on any upstream guarantee — hence the appetite for real test archives.
+//! * **arc_unpacker applies the cipher to every entry unconditionally**, while
+//!   GARbro (and this crate) gate on the per-entry protected flag. The flag is
+//!   the game's own statement about which members the filter runs over, so
+//!   honouring it is the safer of the two.
+
+use archive_common::{extract_progress, looks_decrypted, safe_join, DestAllocator};
+use cxdec_tools::r#struct::xp3::{Xp3Archive, Xp3Cipher};
+use std::fs;
+use std::io::{self, Write as _};
+use std::path::Path;
+
+/// Buffered whole-entry decode cap, matching the cxdec path: `read_entry`
+/// materializes an entry in RAM, so a hostile index must not be able to use this
+/// path to pin gigabytes.
+const MAX_ENTRY_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// How many entries the probe reads. Eight is what cxdec's scorer uses too, and
+/// a real archive's first entries are images/scripts with strong signatures.
+const PROBE_SAMPLES: usize = 8;
+
+/// How far the probe will walk the index looking for small entries to sample.
+/// Bounded so a pathological archive of huge members cannot make the probe read
+/// the whole file.
+const PROBE_SCAN_MAX: usize = 32;
+
+/// Bytes read per sampled entry. Enough for the longest signature we test
+/// (`RIFF….WEBP`) plus the two FateCrypt fixup offsets' neighbourhood is NOT
+/// needed — those only matter for whole-entry decryption.
+const PROBE_PREFIX: usize = 64;
+
+/// Entries above this packed size are skipped by the probe: `read_entry_prefix`
+/// in the vendored reader inflates the WHOLE segment before truncating, so a
+/// multi-GB member would be a full allocation just to look at 64 bytes.
+const PROBE_MAX_PACKED: u64 = 64 * 1024 * 1024;
+
+/// The keyless schemes, in probe order. Order is irrelevant to correctness
+/// (exactly one scheme scores on a real archive) but keeps the report stable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Scheme {
+    HashCrypt,
+    FateCrypt,
+    AppliqueCrypt,
+}
+
+impl Scheme {
+    pub const ALL: [Scheme; 3] = [Scheme::HashCrypt, Scheme::FateCrypt, Scheme::AppliqueCrypt];
+
+    /// Stable machine name — this is what rides in the UI token (`crypt:<name>`)
+    /// and comes back on the pack path, so it must never change casually.
+    pub fn name(self) -> &'static str {
+        match self {
+            Scheme::HashCrypt => "HashCrypt",
+            Scheme::FateCrypt => "FateCrypt",
+            Scheme::AppliqueCrypt => "AppliqueCrypt",
+        }
+    }
+
+    /// The name this scheme goes by in arc_unpacker's plugin list, where one is
+    /// worth accepting. Only [`Scheme::FateCrypt`] has one: `fsn` (Fate/Stay
+    /// Night) is how the scheme is usually catalogued, so it is the name a user
+    /// is most likely to reach for.
+    ///
+    /// The other two are deliberately left out. `xor` and `rebirth` are
+    /// arc_unpacker's internal plugin ids, not names anyone knows a game by, and
+    /// `xor` in particular is vague enough to be misleading.
+    pub fn alias(self) -> Option<&'static str> {
+        match self {
+            Scheme::FateCrypt => Some("fsn"),
+            Scheme::HashCrypt | Scheme::AppliqueCrypt => None,
+        }
+    }
+
+    /// Inverse of [`Scheme::name`] and [`Scheme::alias`], case-insensitive so a
+    /// token round-trip and a hand-typed pack argument both work. The canonical
+    /// name always wins when both would match.
+    pub fn from_name(name: &str) -> Option<Scheme> {
+        Scheme::ALL.into_iter().find(|s| {
+            if s.name().eq_ignore_ascii_case(name) {
+                return true;
+            }
+            match s.alias() {
+                Some(alias) => alias.eq_ignore_ascii_case(name),
+                None => false,
+            }
+        })
+    }
+
+    /// Whether the archive's stored ADLR covers the CIPHERTEXT rather than the
+    /// plaintext (GARbro's `ICrypt.HashAfterCrypt`). Only FateCrypt does.
+    ///
+    /// This decides the pack layout: the vendored writer checksums whatever the
+    /// caller writes, so a `true` scheme must be fed already-encrypted bytes
+    /// (the checksum then lands on the ciphertext) while a `false` scheme goes
+    /// through the transform path, which checksums the plaintext.
+    pub fn hash_after_crypt(self) -> bool {
+        matches!(self, Scheme::FateCrypt)
+    }
+
+    /// Decrypts `data`, whose first byte sits at absolute `offset` within the
+    /// entry. Byte-for-byte the GARbro `ICrypt.Decrypt(entry, offset, values,
+    /// pos, count)` bodies with `pos = 0` and `count = data.len()`.
+    pub fn decrypt(self, hash: u32, offset: u64, data: &mut [u8]) {
+        match self {
+            // Constant key: `entry.Hash` truncated to its low byte.
+            Scheme::HashCrypt => {
+                let key = hash as u8;
+                for b in data.iter_mut() {
+                    *b ^= key;
+                }
+            }
+            // Constant 0x36 over the whole range, with two single-byte fixups at
+            // fixed absolute offsets. Order and the early returns are GARbro's.
+            Scheme::FateCrypt => {
+                for b in data.iter_mut() {
+                    *b ^= 0x36;
+                }
+                let count = data.len() as u64;
+                if offset > 0x2ea29 {
+                    return;
+                }
+                if offset + count > 0x2ea29 {
+                    data[(0x2ea29 - offset) as usize] ^= 3;
+                }
+                if offset > 0x13 {
+                    return;
+                }
+                if offset + count > 0x13 {
+                    data[(0x13 - offset) as usize] ^= 1;
+                }
+            }
+            // The first 5 bytes are stored verbatim; the rest uses a key taken
+            // from bits 12..19 of the hash. A window that starts mid-entry only
+            // skips the prefix when the window itself begins before offset 5.
+            Scheme::AppliqueCrypt => {
+                let skip = if offset < 5 {
+                    ((5 - offset) as usize).min(data.len())
+                } else {
+                    0
+                };
+                let key = (hash >> 12) as u8;
+                for b in data[skip..].iter_mut() {
+                    *b ^= key;
+                }
+            }
+        }
+    }
+
+    /// All three ciphers are involutions over XOR/byte-adjust with a fixed key,
+    /// so encryption is the same transform — matching GARbro, whose `Encrypt`
+    /// either forwards to `Decrypt` or repeats its body verbatim.
+    pub fn encrypt(self, hash: u32, offset: u64, data: &mut [u8]) {
+        self.decrypt(hash, offset, data);
+    }
+}
+
+/// [`Xp3Cipher`] adapter so the vendored reader can drive a [`Scheme`].
+///
+/// `is_encrypted` is left at its default (`entry.is_encrypted`) on purpose: the
+/// protected flag is the game's own statement about which members the filter
+/// runs over, and GARbro honours it the same way.
+pub struct SchemeCipher {
+    scheme: Scheme,
+}
+
+impl SchemeCipher {
+    pub fn new(scheme: Scheme) -> Self {
+        Self { scheme }
+    }
+
+    pub fn scheme(&self) -> Scheme {
+        self.scheme
+    }
+}
+
+impl Xp3Cipher for SchemeCipher {
+    fn decrypt(&mut self, hash: u32, offset: u64, data: &mut [u8]) -> io::Result<()> {
+        self.scheme.decrypt(hash, offset, data);
+        Ok(())
+    }
+}
+
+/// Identifies the keyless scheme protecting `archive`, if any.
+///
+/// Read-only and side-effect-free — it opens the archive, reads up to
+/// [`PROBE_SAMPLES`] small protected entries' prefixes and scores each scheme.
+/// `None` covers every "cannot say" outcome: not an XP3, no protected entries,
+/// or content no candidate scheme explains.
+pub fn probe_scheme(archive: &str) -> Option<Scheme> {
+    let mut arch = Xp3Archive::open(Path::new(archive)).ok()?;
+
+    // Collect (hash, raw prefix) for small protected entries. The raw prefix is
+    // read with a no-op cipher: `read_entry_prefix` gates on `is_encrypted`, and
+    // a no-op leaves the bytes exactly as stored, which is what both halves of
+    // the hit test need.
+    let mut samples: Vec<(u32, Vec<u8>)> = Vec::with_capacity(PROBE_SAMPLES);
+    let mut noop = |_h: u32, _o: u64, _d: &mut [u8]| Ok(());
+    for i in 0..arch.entries.len().min(PROBE_SCAN_MAX) {
+        if samples.len() >= PROBE_SAMPLES {
+            break;
+        }
+        let (protected, hash, packed) = {
+            let e = &arch.entries[i];
+            (
+                e.is_encrypted,
+                e.hash,
+                e.segments.iter().map(|s| s.packed_size).sum::<u64>(),
+            )
+        };
+        if !protected || packed > PROBE_MAX_PACKED {
+            continue;
+        }
+        if let Ok(raw) = arch.read_entry_prefix(i, PROBE_PREFIX, &mut noop) {
+            if !raw.is_empty() {
+                samples.push((hash, raw));
+            }
+        }
+    }
+    if samples.is_empty() {
+        return None;
+    }
+
+    let mut best: Option<(usize, Scheme)> = None;
+    for scheme in Scheme::ALL {
+        let hits = samples
+            .iter()
+            .filter(|(hash, raw)| {
+                let mut dec = raw.clone();
+                scheme.decrypt(*hash, 0, &mut dec);
+                looks_decrypted(&dec) && !looks_decrypted(raw)
+            })
+            .count();
+        if hits > 0 && best.map_or(true, |(score, _)| hits > score) {
+            best = Some((hits, scheme));
+        }
+    }
+    best.map(|(_, scheme)| scheme)
+}
+
+/// Extracts one keyless-encrypted XP3. `selected` is the newline-separated path
+/// list used by selective extraction (exact + directory-prefix match, identical
+/// semantics to the plain and cxdec paths). Progress and cancel feed the xp3
+/// extract store, which the app already polls through the "xp3" accessors.
+pub fn extract(
+    archive: &str,
+    output: &str,
+    scheme: Scheme,
+    selected: Option<&str>,
+) -> Result<(u32, u32), String> {
+    let mut arch = Xp3Archive::open(Path::new(archive)).map_err(|e| format!("XP3: {e}"))?;
+    let sel_set: Option<std::collections::HashSet<&str>> =
+        selected.map(|s| s.lines().filter(|l| !l.is_empty()).collect());
+    let matches = |raw_name: &str| -> bool {
+        match &sel_set {
+            None => true,
+            Some(sel) => {
+                let norm = raw_name.replace('\\', "/");
+                sel.contains(norm.as_str())
+                    || sel.iter().any(|d| {
+                        let dd = if d.ends_with('/') { &d[..d.len() - 1] } else { d };
+                        norm.starts_with(&format!("{dd}/"))
+                    })
+            }
+        }
+    };
+
+    let total: u32 = arch.entries.iter().filter(|e| matches(&e.name)).count() as u32;
+    extract_progress::reset(
+        arch.entries.iter().filter(|e| matches(&e.name)).map(|e| e.unpacked_size).sum(),
+    );
+
+    let mut cipher = SchemeCipher::new(scheme);
+    let mut dests = DestAllocator::new();
+    let mut fail = 0u32;
+    for i in 0..arch.entries.len() {
+        if extract_progress::cancelled() {
+            return Err("cancelled".to_string());
+        }
+        let (name, unpacked, packed) = {
+            let e = &arch.entries[i];
+            if !matches(&e.name) {
+                continue;
+            }
+            (
+                e.name.clone(),
+                e.unpacked_size,
+                e.segments.iter().map(|s| s.packed_size).sum::<u64>(),
+            )
+        };
+        extract_progress::set_name(&name);
+        extract_progress::set_file(unpacked);
+        if unpacked > MAX_ENTRY_BYTES || packed > MAX_ENTRY_BYTES {
+            fail += 1;
+            continue;
+        }
+        let dest = match safe_join(output, &name) {
+            Ok(d) => dests.allocate(d),
+            Err(_) => {
+                fail += 1;
+                continue;
+            }
+        };
+        if let Some(p) = dest.parent() {
+            let _ = fs::create_dir_all(p);
+        }
+        // Decoded fully in RAM before any file is created, so a decode failure
+        // leaves nothing behind; only write failures can leave a partial file,
+        // and those are removed below.
+        let data = match arch.read_entry(i, &mut cipher) {
+            Ok(d) => d,
+            Err(_) => {
+                fail += 1;
+                continue;
+            }
+        };
+        let written = (|| -> io::Result<()> {
+            let mut f = fs::File::create(&dest)?;
+            f.write_all(&data)?;
+            f.flush()
+        })();
+        if written.is_err() {
+            let _ = fs::remove_file(&dest);
+            fail += 1;
+            continue;
+        }
+        extract_progress::add_bytes(data.len() as u64);
+        if data.len() as u64 != unpacked {
+            extract_progress::calibrate_file(data.len() as u64);
+            let delta = (data.len() as i128 - unpacked as i128)
+                .clamp(i64::MIN as i128, i64::MAX as i128);
+            extract_progress::adjust_total(delta as i64);
+        }
+    }
+    Ok((total, fail))
+}
+
+/// Reads one named entry with an explicit scheme — the encrypted writer's
+/// self-check, mirroring cxdec-core's `read_named_with`. `max_len` truncates to
+/// a prefix so an oversized member is not buffered whole during verification.
+pub fn read_named_with(
+    archive: &str,
+    name: &str,
+    scheme: Scheme,
+    max_len: Option<usize>,
+) -> Result<Vec<u8>, String> {
+    let mut arch = Xp3Archive::open(Path::new(archive)).map_err(|e| format!("XP3: {e}"))?;
+    let idx = arch
+        .entries
+        .iter()
+        .position(|e| e.name == name)
+        .ok_or_else(|| format!("XP3: 归档内没有条目 {name}"))?;
+    let mut cipher = SchemeCipher::new(scheme);
+    match max_len {
+        Some(n) => arch.read_entry_prefix(idx, n, &mut cipher),
+        None => arch.read_entry(idx, &mut cipher),
+    }
+    .map_err(|e| format!("XP3: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cxdec_tools::r#struct::xp3::MAGIC;
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("uu_xp3crypt_{}_{}", std::process::id(), tag))
+    }
+
+    fn adler32(data: &[u8]) -> u32 {
+        let (mut a, mut b) = (1u32, 0u32);
+        for &byte in data {
+            a = (a + byte as u32) % 65521;
+            b = (b + a) % 65521;
+        }
+        (b << 16) | a
+    }
+
+    fn chunk(sig: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut v = sig.to_vec();
+        v.extend_from_slice(&(payload.len() as i64).to_le_bytes());
+        v.extend_from_slice(payload);
+        v
+    }
+
+    /// A minimal uncompressed-index XP3 whose stored segment payloads are the
+    /// given bytes, with an explicit ADLR per entry (the caller decides whether
+    /// that is the plaintext's or the ciphertext's checksum — the whole point of
+    /// the `HashAfterCrypt` split).
+    fn build_xp3(entries: &[(&str, u32, Vec<u8>)]) -> Vec<u8> {
+        build_xp3_flagged(entries, 1)
+    }
+
+    fn build_xp3_flagged(entries: &[(&str, u32, Vec<u8>)], protected: u32) -> Vec<u8> {
+        let mut data = Vec::new();
+        let mut index = Vec::new();
+        let data_base: i64 = (MAGIC.len() + 8) as i64;
+        for (name, hash, content) in entries {
+            let mut file_chunk = Vec::new();
+            let mut info = Vec::new();
+            info.extend_from_slice(&protected.to_le_bytes()); // protected flag
+            info.extend_from_slice(&(content.len() as i64).to_le_bytes());
+            info.extend_from_slice(&(content.len() as i64).to_le_bytes());
+            let units: Vec<u16> = name.encode_utf16().collect();
+            info.extend_from_slice(&(units.len() as i16).to_le_bytes());
+            for u in units {
+                info.extend_from_slice(&u.to_le_bytes());
+            }
+            file_chunk.extend(chunk(b"info", &info));
+            let mut segm = Vec::new();
+            segm.extend_from_slice(&0i32.to_le_bytes()); // stored, not compressed
+            segm.extend_from_slice(&(data_base + data.len() as i64).to_le_bytes());
+            segm.extend_from_slice(&(content.len() as i64).to_le_bytes());
+            segm.extend_from_slice(&(content.len() as i64).to_le_bytes());
+            file_chunk.extend(chunk(b"segm", &segm));
+            file_chunk.extend(chunk(b"adlr", &hash.to_le_bytes()));
+            index.extend(chunk(b"File", &file_chunk));
+            data.extend_from_slice(content);
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(MAGIC);
+        let offset_pos = out.len();
+        out.extend_from_slice(&0i64.to_le_bytes());
+        out.extend_from_slice(&data);
+        let index_offset = out.len() as i64;
+        out.extend_from_slice(&0u8.to_le_bytes()); // uncompressed index
+        out.extend_from_slice(&(index.len() as i64).to_le_bytes());
+        out.extend_from_slice(&index);
+        out[offset_pos..offset_pos + 8].copy_from_slice(&index_offset.to_le_bytes());
+        out
+    }
+
+    /// Encrypts `plaintext` under `scheme` and returns the (hash, ciphertext)
+    /// pair to store — the hash is the plaintext's for a `HashAfterCrypt=false`
+    /// scheme and the ciphertext's for FateCrypt, exactly as a real packer does.
+    fn encrypt_entry(scheme: Scheme, plaintext: &[u8]) -> (u32, Vec<u8>) {
+        let plain_hash = adler32(plaintext);
+        let mut payload = plaintext.to_vec();
+        scheme.encrypt(plain_hash, 0, &mut payload);
+        let stored = if scheme.hash_after_crypt() { adler32(&payload) } else { plain_hash };
+        (stored, payload)
+    }
+
+    /// A PNG-headed payload: the 8-byte signature is what every scheme's probe
+    /// keys on, and it is longer than AppliqueCrypt's untouched 5-byte prefix.
+    fn png_plaintext(n: usize) -> Vec<u8> {
+        let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+        v.extend((v.len()..n).map(|i| ((i * 31 + 7) % 251) as u8));
+        v
+    }
+
+    fn write_archive(dir: &std::path::Path, scheme: Scheme, names_and_sizes: &[(&str, usize)]) -> std::path::PathBuf {
+        let entries: Vec<(&str, u32, Vec<u8>)> = names_and_sizes
+            .iter()
+            .map(|(name, size)| {
+                let plain = png_plaintext(*size);
+                let (hash, enc) = encrypt_entry(scheme, &plain);
+                (*name, hash, enc)
+            })
+            .collect();
+        let xp3 = dir.join("data.xp3");
+        fs::write(&xp3, build_xp3(&entries)).unwrap();
+        xp3
+    }
+
+    #[test]
+    fn each_scheme_is_detected_and_extracts() {
+        for scheme in Scheme::ALL {
+            let dir = tmp(&format!("detect_{}", scheme.name()));
+            fs::create_dir_all(&dir).unwrap();
+            let xp3 = write_archive(&dir, scheme, &[("bg/a.png", 4096), ("bg/b.png", 3000)]);
+
+            assert_eq!(probe_scheme(xp3.to_str().unwrap()), Some(scheme), "{}", scheme.name());
+
+            let out = dir.join("out");
+            fs::create_dir_all(&out).unwrap();
+            let (done, fail) =
+                extract(xp3.to_str().unwrap(), out.to_str().unwrap(), scheme, None).unwrap();
+            assert_eq!((done, fail), (2, 0), "{}", scheme.name());
+            assert_eq!(fs::read(out.join("bg/a.png")).unwrap(), png_plaintext(4096));
+            assert_eq!(fs::read(out.join("bg/b.png")).unwrap(), png_plaintext(3000));
+
+            fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// The single most important negative: a plain archive must never be
+    /// mistaken for an encrypted one. It is the exact shape `AppliqueCrypt`
+    /// would otherwise false-positive on, because that scheme leaves the first
+    /// 5 bytes — and therefore the raw signature — untouched.
+    #[test]
+    fn plain_archive_is_not_detected() {
+        let dir = tmp("plain");
+        fs::create_dir_all(&dir).unwrap();
+        let entries: Vec<(&str, u32, Vec<u8>)> = vec![
+            ("bg/a.png", adler32(&png_plaintext(4096)), png_plaintext(4096)),
+            ("bg/b.png", adler32(&png_plaintext(3000)), png_plaintext(3000)),
+        ];
+        let xp3 = dir.join("data.xp3");
+        fs::write(&xp3, build_xp3(&entries)).unwrap();
+        assert_eq!(probe_scheme(xp3.to_str().unwrap()), None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An archive whose protected flag is NOT set carries no filter, so nothing
+    /// may be decrypted — and the probe must not guess from content alone.
+    #[test]
+    fn unflagged_entries_are_not_probed() {
+        let dir = tmp("unflagged");
+        fs::create_dir_all(&dir).unwrap();
+        // Real HashCrypt ciphertext, but with the flag cleared: the game itself
+        // would read these bytes raw, so the probe must not claim a scheme.
+        let plain = png_plaintext(4096);
+        let (hash, enc) = encrypt_entry(Scheme::HashCrypt, &plain);
+        let xp3 = dir.join("data.xp3");
+        fs::write(&xp3, build_xp3_flagged(&[("bg/a.png", hash, enc)], 0)).unwrap();
+        assert_eq!(probe_scheme(xp3.to_str().unwrap()), None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `AppliqueCrypt` stores its first five bytes verbatim and keys the rest
+    /// off bits 12..19 of the hash — the property that makes it distinguishable
+    /// from plaintext at all.
+    #[test]
+    fn applique_preserves_the_prefix_and_keys_from_the_high_bits() {
+        let hash = 0x00AB_CDEF;
+        let key = (hash >> 12) as u8;
+        let plain: Vec<u8> = (0..16u8).collect();
+        let mut buf = plain.clone();
+        Scheme::AppliqueCrypt.encrypt(hash, 0, &mut buf);
+        assert_eq!(&buf[..5], &plain[..5], "first five bytes must be untouched");
+        for i in 5..16 {
+            assert_eq!(buf[i], plain[i] ^ key, "byte {i}");
+        }
+        // A window that starts at offset 5 is entirely past the prefix, so the
+        // whole span — including its first byte — is a plain XOR. (The prefix
+        // exemption is keyed on the LOGICAL offset, not on the window's own
+        // first byte.)
+        let mut mid = plain.clone();
+        Scheme::AppliqueCrypt.encrypt(hash, 5, &mut mid);
+        for i in 0..16 {
+            assert_eq!(mid[i], plain[i] ^ key, "byte {i} at window offset 5");
+        }
+    }
+
+    /// FateCrypt's two fixups sit at absolute offsets and must fire only when the
+    /// window actually covers them — a chunked decrypt has to agree with a
+    /// whole-entry decrypt.
+    #[test]
+    fn fate_fixups_are_offset_addressed() {
+        let plain: Vec<u8> = (0..64u8).collect();
+        let whole = {
+            let mut v = plain.clone();
+            Scheme::FateCrypt.encrypt(0, 0, &mut v);
+            v
+        };
+        // Chunked, one byte at a time — every window is a different offset.
+        let mut chunked = plain.clone();
+        for (i, b) in chunked.iter_mut().enumerate() {
+            let mut one = [*b];
+            Scheme::FateCrypt.encrypt(0, i as u64, &mut one);
+            *b = one[0];
+        }
+        assert_eq!(whole, chunked, "per-chunk decryption must match whole-entry");
+        assert_eq!(whole[0x13], plain[0x13] ^ 0x36 ^ 1, "offset 0x13 carries the extra ^1");
+        assert_eq!(whole[0x14], plain[0x14] ^ 0x36, "offset 0x14 is plain 0x36");
+    }
+
+    /// The scheme name is the UI token and the pack argument, so the round-trip
+    /// has to be exact and case-insensitive.
+    #[test]
+    fn scheme_names_round_trip() {
+        for scheme in Scheme::ALL {
+            assert_eq!(Scheme::from_name(scheme.name()), Some(scheme));
+            assert_eq!(Scheme::from_name(&scheme.name().to_lowercase()), Some(scheme));
+        }
+        // FateCrypt also answers to arc_unpacker's plugin name; the other two
+        // deliberately do not (see `Scheme::alias`).
+        assert_eq!(Scheme::FateCrypt.alias(), Some("fsn"));
+        assert_eq!(Scheme::HashCrypt.alias(), None);
+        assert_eq!(Scheme::AppliqueCrypt.alias(), None);
+        assert_eq!(Scheme::from_name("fsn"), Some(Scheme::FateCrypt));
+        assert_eq!(Scheme::from_name("FSN"), Some(Scheme::FateCrypt));
+        assert_eq!(Scheme::from_name("rebirth"), None);
+        assert_eq!(Scheme::from_name("xor"), None);
+        assert_eq!(Scheme::from_name("nope"), None);
+    }
+
+    /// Selective extraction uses the same exact + directory-prefix rules as the
+    /// plain and cxdec paths.
+    #[test]
+    fn selective_extraction_matches_directories() {
+        let dir = tmp("selective");
+        fs::create_dir_all(&dir).unwrap();
+        let xp3 = write_archive(&dir, Scheme::FateCrypt, &[("bg/a.png", 4096), ("script/x.tjs", 2048)]);
+        let out = dir.join("out");
+        fs::create_dir_all(&out).unwrap();
+        let (done, fail) = extract(
+            xp3.to_str().unwrap(),
+            out.to_str().unwrap(),
+            Scheme::FateCrypt,
+            Some("script/\n"),
+        )
+        .unwrap();
+        assert_eq!((done, fail), (1, 0));
+        assert!(!out.join("bg").exists());
+        assert_eq!(fs::read(out.join("script/x.tjs")).unwrap(), png_plaintext(2048));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `read_named_with` is what the writer's self-check uses; it must return the
+    /// decrypted bytes and honour the prefix cap.
+    #[test]
+    fn read_named_with_decrypts_and_caps() {
+        let dir = tmp("read_named");
+        fs::create_dir_all(&dir).unwrap();
+        let xp3 = write_archive(&dir, Scheme::HashCrypt, &[("bg/a.png", 4096)]);
+        let full =
+            read_named_with(xp3.to_str().unwrap(), "bg/a.png", Scheme::HashCrypt, None).unwrap();
+        assert_eq!(full, png_plaintext(4096));
+        let head =
+            read_named_with(xp3.to_str().unwrap(), "bg/a.png", Scheme::HashCrypt, Some(100)).unwrap();
+        assert_eq!(head, png_plaintext(4096)[..100]);
+        assert!(read_named_with(xp3.to_str().unwrap(), "missing", Scheme::HashCrypt, None).is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+}

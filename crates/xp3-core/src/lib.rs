@@ -1350,4 +1350,85 @@ mod tests {
             std::fs::remove_dir_all(&dir).ok();
         }
     }
+
+    /// Unpack a real archive, pack it back under the same keyless scheme and read
+    /// it again — every member must return byte-for-byte. Byte-identity with the
+    /// *original* is not asserted: the writer stores the plaintext ADLR and sorts
+    /// the index, so contents are the contract, not hashes (see
+    /// `archive_xp3crypt-core`). Opt-in via `UU_REPACK_IN` (+ optional
+    /// `UU_REPACK_SCHEME`/`_DIR`/`_OUT`); unset it prints `SKIP …` and passes.
+    #[test]
+    fn repack_real_archive_round_trips() {
+        let _g = progress_lock();
+        let Ok(inp) = std::env::var("UU_REPACK_IN") else {
+            eprintln!(
+                "SKIP repack_real_archive_round_trips: UU_REPACK_IN unset — \
+                 the real fixture is not distributed in git"
+            );
+            return;
+        };
+        let scheme = std::env::var("UU_REPACK_SCHEME").unwrap_or_else(|_| "FateCrypt".into());
+        let base = tmp("repack_real");
+        let out_dir = std::env::var("UU_REPACK_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| base.join("unpacked"));
+        let out = std::env::var("UU_REPACK_OUT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| base.join("repacked.xp3"));
+
+        // Pass 1 — unpack the real archive.
+        std::fs::remove_dir_all(&out_dir).ok();
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let (done, fail) = crypt_extract(&inp, out_dir.to_str().unwrap(), &scheme, None).unwrap();
+        assert_eq!(fail, 0, "nothing in the real archive may fail to unpack");
+        assert!(done > 0, "the real archive unpacked to nothing");
+
+        // Pack it back under the same scheme.
+        let packed = create_xp3(
+            out_dir.to_str().unwrap(),
+            out.to_str().unwrap(),
+            6,
+            &format!("crypt:{scheme}"),
+        )
+        .unwrap();
+        assert_eq!(packed, done, "every unpacked member must be packed back");
+
+        // The pack must still name the scheme we asked for.
+        assert_eq!(
+            probe_scheme_token(out.to_str().unwrap()),
+            format!("crypt:{scheme}")
+        );
+
+        // Pass 2 — read it back and require the contents to match.
+        let again = base.join("unpacked_again");
+        std::fs::remove_dir_all(&again).ok();
+        std::fs::create_dir_all(&again).unwrap();
+        let (done2, fail2) =
+            crypt_extract(out.to_str().unwrap(), again.to_str().unwrap(), &scheme, None).unwrap();
+        assert_eq!((done2, fail2), (done, 0), "the repack must read back clean");
+
+        let mut before = collect_files_xp3(&out_dir).unwrap();
+        let mut after = collect_files_xp3(&again).unwrap();
+        before.sort_by(|a, b| a.1.cmp(&b.1));
+        after.sort_by(|a, b| a.1.cmp(&b.1));
+        assert_eq!(
+            before.iter().map(|(_, n)| n).collect::<Vec<_>>(),
+            after.iter().map(|(_, n)| n).collect::<Vec<_>>(),
+            "the repack changed the member list"
+        );
+        for ((pa, name), (pb, _)) in before.iter().zip(after.iter()) {
+            assert_eq!(
+                std::fs::read(pa).unwrap(),
+                std::fs::read(pb).unwrap(),
+                "{name} did not survive the repack"
+            );
+        }
+
+        println!(
+            "REPACK OK  scheme={scheme} entries={done} \
+             repacked={} bytes",
+            std::fs::metadata(&out).unwrap().len()
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
 }

@@ -482,7 +482,8 @@ fn parse_info_section(
     entry.is_packed = file_size != packed_size;
     entry.size = packed_size as u64;
     entry.unpacked_size = file_size as u64;
-    let name = read_utf16_name(cur)?;
+    // 4 (flag) + 8 (file size) + 8 (packed size) + 2 (name length) = 22.
+    let name = read_utf16_name(cur, (section_size - 22) as usize / 2)?;
     entry.name = Some(filename_map.get(entry.hash, name));
     Ok(())
 }
@@ -597,9 +598,16 @@ fn find_xp3_base(file: &mut File, file_len: u64) -> std::io::Result<Option<u64>>
 }
 
 // Reads UTF-16 name.
-fn read_utf16_name<R: Read>(reader: &mut R) -> std::io::Result<String> {
+//
+// `max_chars` must come from the ENCLOSING SECTION's size, not a constant. Real
+// archives ship decoy entries whose name is a long anti-piracy notice — the name
+// IS the warning — and a fixed `<= 0x100` cap rejected those archives outright,
+// while GARbro only turns the name into `null` and keeps reading. Bounding by the
+// section keeps the original intent (a garbage length must not run past the
+// chunk) without rejecting legitimate names.
+fn read_utf16_name<R: Read>(reader: &mut R, max_chars: usize) -> std::io::Result<String> {
     let name_size = BinaryIo::read_i16_le(reader)?;
-    if name_size <= 0 || name_size > 0x100 {
+    if name_size <= 0 || name_size as usize > max_chars {
         return Err(invalid("invalid XP3 filename length"));
     }
     read_utf16_chars(reader, name_size as usize)
@@ -762,4 +770,132 @@ fn md5(msg: &[u8]) -> [u8; 16] {
     out[8..12].copy_from_slice(&c0.to_le_bytes());
     out[12..16].copy_from_slice(&d0.to_le_bytes());
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chunk(sig: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut v = sig.to_vec();
+        v.extend_from_slice(&(payload.len() as i64).to_le_bytes());
+        v.extend_from_slice(payload);
+        v
+    }
+
+    /// Minimal uncompressed-index XP3: one stored segment per entry, the given
+    /// UTF-16 name, `protected` as the INFO flag.
+    fn build_xp3(entries: &[(&str, &[u8])], protected: u32) -> Vec<u8> {
+        let mut data = Vec::new();
+        let mut index = Vec::new();
+        let data_base = (MAGIC.len() + 8) as i64;
+        for (name, content) in entries {
+            let mut info = Vec::new();
+            info.extend_from_slice(&protected.to_le_bytes());
+            info.extend_from_slice(&(content.len() as i64).to_le_bytes());
+            info.extend_from_slice(&(content.len() as i64).to_le_bytes());
+            let units: Vec<u16> = name.encode_utf16().collect();
+            info.extend_from_slice(&(units.len() as i16).to_le_bytes());
+            for u in units {
+                info.extend_from_slice(&u.to_le_bytes());
+            }
+            let mut segm = Vec::new();
+            segm.extend_from_slice(&0i32.to_le_bytes()); // stored
+            segm.extend_from_slice(&(data_base + data.len() as i64).to_le_bytes());
+            segm.extend_from_slice(&(content.len() as i64).to_le_bytes());
+            segm.extend_from_slice(&(content.len() as i64).to_le_bytes());
+            let mut file_chunk = chunk(b"info", &info);
+            file_chunk.extend(chunk(b"segm", &segm));
+            file_chunk.extend(chunk(b"adlr", &0u32.to_le_bytes()));
+            index.extend(chunk(b"File", &file_chunk));
+            data.extend_from_slice(content);
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(MAGIC);
+        let offset_pos = out.len();
+        out.extend_from_slice(&0i64.to_le_bytes());
+        out.extend_from_slice(&data);
+        let index_offset = out.len() as i64;
+        out.extend_from_slice(&INDEX_UNCOMPRESSED.to_le_bytes());
+        out.extend_from_slice(&(index.len() as i64).to_le_bytes());
+        out.extend_from_slice(&index);
+        out[offset_pos..offset_pos + 8].copy_from_slice(&index_offset.to_le_bytes());
+        out
+    }
+
+    fn open_bytes(bytes: &[u8], tag: &str) -> std::io::Result<Xp3Archive> {
+        let path = std::env::temp_dir().join(format!("uu_xp3_{}_{}.xp3", std::process::id(), tag));
+        std::fs::write(&path, bytes).unwrap();
+        let r = Xp3Archive::open(&path);
+        std::fs::remove_file(&path).ok();
+        r
+    }
+
+    /// The regression that motivated relaxing the name cap: a real archive can
+    /// carry an entry whose NAME is a long notice — the name *is* the warning.
+    /// The old `<= 0x100` check rejected such archives outright, while GARbro only
+    /// turns the name into `null` and keeps reading. The name must come back
+    /// intact, and the archive must still open.
+    #[test]
+    fn entry_name_longer_than_256_chars_is_read_not_rejected() {
+        let long: String = std::iter::repeat("padding for an unusually long entry name ")
+            .take(10)
+            .collect::<String>()
+            .chars()
+            .take(300)
+            .collect();
+        assert_eq!(long.encode_utf16().count(), 300);
+        assert!(long.encode_utf16().count() > 0x100, "must exceed the old cap");
+
+        let xp3 = build_xp3(&[(long.as_str(), b"warning"), ("bg/a.png", b"png")], 0);
+        let arch = open_bytes(&xp3, "longname").expect("a 300-char name must not reject the archive");
+        assert_eq!(arch.entries.len(), 2);
+        assert_eq!(arch.entries[0].name, long);
+        assert_eq!(arch.entries[1].name, "bg/a.png");
+    }
+
+    /// The cap is now the section's own size, so a name length that overruns its
+    /// INFO chunk is still refused rather than read past the section.
+    #[test]
+    fn name_length_beyond_the_section_is_rejected() {
+        let mut info = Vec::new();
+        info.extend_from_slice(&0u32.to_le_bytes());
+        info.extend_from_slice(&0i64.to_le_bytes());
+        info.extend_from_slice(&0i64.to_le_bytes());
+        info.extend_from_slice(&300i16.to_le_bytes()); // claims 300 chars…
+        info.extend_from_slice(&[0u8; 8]); // …but only 4 units follow
+        let mut file_chunk = chunk(b"info", &info);
+        file_chunk.extend(chunk(b"adlr", &0u32.to_le_bytes()));
+        let index = chunk(b"File", &file_chunk);
+
+        let mut out = Vec::new();
+        out.extend_from_slice(MAGIC);
+        let offset_pos = out.len();
+        out.extend_from_slice(&0i64.to_le_bytes());
+        let index_offset = out.len() as i64;
+        out.extend_from_slice(&INDEX_UNCOMPRESSED.to_le_bytes());
+        out.extend_from_slice(&(index.len() as i64).to_le_bytes());
+        out.extend_from_slice(&index);
+        out[offset_pos..offset_pos + 8].copy_from_slice(&index_offset.to_le_bytes());
+
+        let err = match open_bytes(&out, "overrun") {
+            Ok(_) => panic!("a name length past the info section must be refused"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("invalid XP3 filename length"), "{err}");
+    }
+
+    /// Ordinary names are unaffected, and the entry round-trips with its flag.
+    #[test]
+    fn normal_entries_round_trip() {
+        let xp3 = build_xp3(
+            &[("etc/anotherギャラリー.txt", b"body"), ("scenario/first.ks", b"cfg")],
+            0x8000_0000,
+        );
+        let arch = open_bytes(&xp3, "normal").unwrap();
+        assert_eq!(arch.entries.len(), 2);
+        assert_eq!(arch.entries[0].name, "etc/anotherギャラリー.txt");
+        assert_eq!(arch.entries[1].name, "scenario/first.ks");
+        assert!(arch.entries.iter().all(|e| e.is_encrypted), "0x80000000 is non-zero");
+    }
 }

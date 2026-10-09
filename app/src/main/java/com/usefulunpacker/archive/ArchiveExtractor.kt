@@ -241,7 +241,8 @@ private fun xp3ExtractDispatch(src: String, out: String, selected: String): Stri
  * `plain`          — not protected (or no evidence either way)
  * `cxdec:<scheme>` — cxdec-protected, scheme scored against real entries
  * `cxdec:?`        — a cxdec folder, but no known scheme decrypts it
- * `crypt:<scheme>` — a keyless scheme (HashCrypt / FateCrypt / AppliqueCrypt),
+ * `crypt:<scheme>` — a keyless scheme (HashCrypt / FateCrypt / AppliqueCrypt /
+ *                    FlyingShineCrypt / AlteredPinkCrypt / DameganeCrypt),
  *                    scored against real entries; needs no sidecar
  * `suspect`        — no sidecar and no scheme matched, yet the index marks
  *                    entries protected

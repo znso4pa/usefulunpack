@@ -6,9 +6,10 @@ object Xp3Core {
     // cxdec-protected XP3 (same .so, shares the xp3 progress/cancel store)
     external fun xp3CxdecExtract(tool: String, gameDir: String, input: String, output: String): String?
     external fun xp3CxdecExtractSelected(tool: String, gameDir: String, input: String, output: String, selected: String): String?
-    // Keyless XP3 schemes (HashCrypt / FateCrypt / AppliqueCrypt). No game
-    // folder is involved: the scheme is named by the content probe
-    // (`xp3SchemeToken`) and [scheme] is that name passed straight back.
+    // Keyless XP3 schemes (HashCrypt / FateCrypt / AppliqueCrypt /
+    // FlyingShineCrypt / AlteredPinkCrypt / DameganeCrypt). No game folder is
+    // involved: the scheme is named by the content probe (`xp3SchemeToken`) and
+    // [scheme] is that name passed straight back.
     external fun xp3CryptExtract(tool: String, input: String, output: String, scheme: String): String?
     external fun xp3CryptExtractSelected(tool: String, input: String, output: String, scheme: String, selected: String): String?
     external fun xp3ListEntries(input: String): String?

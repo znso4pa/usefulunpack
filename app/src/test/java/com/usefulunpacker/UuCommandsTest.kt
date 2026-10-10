@@ -1393,4 +1393,47 @@ class UuCommandsTest {
         assertEquals(1, UuCommands.dispatch(listOf("guess", "nope.bin"), c).exitCode)
         assertEquals(2, UuCommands.dispatch(listOf("guess"), c).exitCode)
     }
+
+    // ─── 6.3：uu c --post（写方向的自定义「压缩」） ───────────────────────
+
+    /** 打包路径要 native 侧，单测里跑不动 —— 所以这里只钉校验分支。 */
+    @Test
+    fun postRejectsUninvertibleBatchAndBadPipelines() {
+        val dir = tmp.root.resolve("post1").apply { mkdirs() }
+        File(dir, "a.txt").writeText("x")
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        // skip 丢数据 → 不可逆 → 拒（写方向不能产出没人解得开的包）
+        assertEquals(1, UuCommands.dispatch(
+            listOf("c", "a.txt", "out.zip", "--post", "skip 4"), c).exitCode)
+        // 批量模式会产出多个文件，整体变换没有意义
+        assertEquals(1, UuCommands.dispatch(
+            listOf("c", "a.txt", "-c", "-f", "zip", "--post", "xor 0xAA"), c).exitCode)
+        // 管道本身不合法 → 参数错
+        assertEquals(2, UuCommands.dispatch(
+            listOf("c", "a.txt", "out.zip", "--post", "xor ZZ"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(
+            listOf("c", "a.txt", "out.zip", "--post", "nope"), c).exitCode)
+        assertFalse(File(dir, "out.zip").exists())
+    }
+
+    /**
+     * `--post` 唯一的防线：变换完必须能用逆管道读回、逐字节对上。
+     * 打包跑不动，但这条校验本身能单独验。
+     */
+    @Test
+    fun postVerificationCatchesAMismatch() {
+        val dir = tmp.root.resolve("post2").apply { mkdirs() }
+        val raw = ByteArray(3000) { (it * 37 + 11).toByte() }
+        val original = File(dir, "orig.bin").apply { writeBytes(raw) }
+        // 变换件：原文件异或 0xA5
+        val transformed = File(dir, "x.bin").apply { writeBytes(ByteArray(raw.size) { (raw[it].toInt() xor 0xA5).toByte() }) }
+        val inv = (TrParser.parse("xor 0xA5") as TrParser.Out.Ok).pipeline.inverse()!!
+        assertTrue(UuCommands.inverseRoundTrips(original, transformed, inv))
+        // 差一个字节就该判否
+        transformed.writeBytes(ByteArray(raw.size) { (raw[it].toInt() xor 0xA5).toByte() }.also { it[1500] = 0x00 })
+        assertFalse(UuCommands.inverseRoundTrips(original, transformed, inv))
+        // 长度不等直接否
+        transformed.writeBytes(ByteArray(raw.size - 1))
+        assertFalse(UuCommands.inverseRoundTrips(original, transformed, inv))
+    }
 }

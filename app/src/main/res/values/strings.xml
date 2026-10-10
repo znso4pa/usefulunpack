@@ -735,4 +735,9 @@
     <string name="cli_guess_ev_struct">structure: %1$s</string>
     <string name="cli_guess_ev_constraints">magic constraints ×%1$s</string>
     <string name="cli_guess_try">try: uu tr %1$s "%2$s" -o %3$s</string>
+    <string name="cli_post_single_only">--post works on a single output only (not with -c / -s)</string>
+    <string name="cli_post_not_invertible">--post needs an invertible pipeline: every step must be undoable (skip is not)</string>
+    <string name="cli_post_failed_kept">post-transform failed — %1$s was left UNTRANSFORMED</string>
+    <string name="cli_post_verify_failed">post-transform did not verify (round-trip mismatch) — %1$s was left UNTRANSFORMED</string>
+    <string name="cli_post_done">post: %1$s</string>
 </resources>

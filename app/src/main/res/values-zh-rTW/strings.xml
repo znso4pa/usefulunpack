@@ -728,4 +728,9 @@
     <string name="cli_guess_ev_struct">格式結構：%1$s</string>
     <string name="cli_guess_ev_constraints">魔數約束 ×%1$s</string>
     <string name="cli_guess_try">試試：uu tr %1$s "%2$s" -o %3$s</string>
+    <string name="cli_post_single_only">--post 只對單個產物有意義（不能配 -c / -s）</string>
+    <string name="cli_post_not_invertible">--post 需要可逆管道：每一步都必須能撤銷（skip 不行）</string>
+    <string name="cli_post_failed_kept">後置變換失敗 —— %1$s 保持**未變換**狀態</string>
+    <string name="cli_post_verify_failed">後置變換回讀校驗不通過（往返不一致）—— %1$s 保持**未變換**狀態</string>
+    <string name="cli_post_done">後置：%1$s</string>
 </resources>

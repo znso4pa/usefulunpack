@@ -684,7 +684,7 @@
     <string name="cli_dd_dup_arg">dd：%1$s が二回指定されています</string>
     <string name="cli_dd_need_if">dd には if=&lt;コピー元&gt; が必要です</string>
     <string name="cli_dd_need_of">dd には of=&lt;コピー先&gt; が必要です</string>
-    <string name="cli_dd_bad_num">数値ではありません：%1$s</string>
+    <string name="cli_bad_num">数値ではありません：%1$s</string>
     <string name="cli_dd_negative">skip / count / seek に負の値は使えません</string>
     <string name="cli_dd_skip_past_end">skip %1$s がコピー元の末尾を超えています（利用可能 %2$s）</string>
     <string name="cli_dd_same_file">if= と of= が同じファイルです：%1$s</string>
@@ -698,4 +698,10 @@
     <string name="cli_cmp_count">%2$s バイト中 %1$s バイトが相違</string>
     <string name="cli_cmp_more">…ほかに %1$s 件の相違</string>
     <string name="cli_cmp_line">%1$s  %2$s  %3$s</string>
+    <string name="cli_strings_header">%1$s · %2$s 件の文字列</string>
+    <string name="cli_strings_none">%1$s：%2$s 文字以上の表示可能な文字列はありません</string>
+    <string name="cli_strings_bad_enc">不明なエンコーディング：%1$s（ascii / utf16le）</string>
+    <string name="cli_strings_bad_min">最小長は 1–1024 の範囲で指定してください：%1$s</string>
+    <string name="cli_strings_truncated">先頭 %1$s のみ走査しました — -a で範囲を広げられます</string>
+    <string name="cli_strings_more">…ほか %1$s 件は非表示</string>
 </resources>

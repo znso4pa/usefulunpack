@@ -684,7 +684,7 @@
     <string name="cli_dd_dup_arg">dd：%1$s 給了兩次</string>
     <string name="cli_dd_need_if">dd 需要 if=&lt;來源&gt;</string>
     <string name="cli_dd_need_of">dd 需要 of=&lt;目標&gt;</string>
-    <string name="cli_dd_bad_num">不是數字：%1$s</string>
+    <string name="cli_bad_num">不是數字：%1$s</string>
     <string name="cli_dd_negative">skip / count / seek 不能為負</string>
     <string name="cli_dd_skip_past_end">skip %1$s 超出來源結尾（可用 %2$s）</string>
     <string name="cli_dd_same_file">if= 與 of= 是同一個檔案：%1$s</string>
@@ -698,4 +698,10 @@
     <string name="cli_cmp_count">%2$s 位元組中有 %1$s 處不同</string>
     <string name="cli_cmp_more">……另有 %1$s 處差異</string>
     <string name="cli_cmp_line">%1$s  %2$s  %3$s</string>
+    <string name="cli_strings_header">%1$s · %2$s 條可列印字串</string>
+    <string name="cli_strings_none">%1$s：沒有 %2$s 字元以上的可列印字串</string>
+    <string name="cli_strings_bad_enc">未知編碼：%1$s（ascii / utf16le）</string>
+    <string name="cli_strings_bad_min">最短長度需在 1–1024 之間：%1$s</string>
+    <string name="cli_strings_truncated">只掃了前 %1$s —— 用 -a 擴大範圍</string>
+    <string name="cli_strings_more">……另有 %1$s 條未顯示</string>
 </resources>

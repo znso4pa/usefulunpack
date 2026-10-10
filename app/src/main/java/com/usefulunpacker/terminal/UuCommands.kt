@@ -82,7 +82,7 @@ internal object UuCommands {
     internal enum class Kind {
         LIST_FORMATS, HELP, DOCS, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
         TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO,
-        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, DD, CMP, IMG, FD, B64
+        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, DD, CMP, STRINGS, IMG, FD, B64
     }
 
     internal class Cmd(val name: String, val kind: Kind, val summary: String, val usage: String)
@@ -123,6 +123,7 @@ internal object UuCommands {
         Cmd("hex",    Kind.HEX,          "Hex dump a byte range",                         "uu hex <file> [offset] [len]"),
         Cmd("dd",     Kind.DD,           "Copy a byte range, or splice one into a file",  "uu dd if=<src> of=<dst> [skip=N] [count=N] [seek=N] [-f]"),
         Cmd("cmp",    Kind.CMP,          "Compare two files byte by byte",                "uu cmp <a> <b> [-l] [-s] [-n N]"),
+        Cmd("strings", Kind.STRINGS,     "Extract printable strings (recon)",             "uu strings <file> [min] [-e ascii|utf16le] [-n max] [-a]"),
         Cmd("img",    Kind.IMG,          "Convert images (jpg / png / webp)",             "uu img <src...> <jpg|png|webp> [-o dir] [-q 1-100]"),
         Cmd("fd",     Kind.FD,           "List the registered fN descriptors",            "uu fd [fN...]"),
         Cmd("b64",    Kind.B64,          "Base64 encode (default) or decode a file",      "uu b64 <file> [-d] [out]"),
@@ -169,6 +170,7 @@ internal object UuCommands {
                 Kind.HEX -> hex(args, ctx)
                 Kind.DD -> dd(args, ctx)
                 Kind.CMP -> cmp(args, ctx)
+                Kind.STRINGS -> strings(args, ctx)
                 Kind.IMG -> img(args, ctx)
                 Kind.FD -> fd(args, ctx)
                 Kind.B64 -> b64(args, ctx)
@@ -2135,7 +2137,7 @@ internal object UuCommands {
         val skip = num("skip") ?: 0L
         val count = num("count")
         val seek = num("seek") ?: 0L
-        badNum?.let { return Result(ctx.text(R.string.cli_dd_bad_num, it), 2) }
+        badNum?.let { return Result(ctx.text(R.string.cli_bad_num, it), 2) }
         if (skip < 0 || seek < 0 || (count != null && count < 0)) {
             return Result(ctx.text(R.string.cli_dd_negative), 2)
         }
@@ -2216,7 +2218,7 @@ internal object UuCommands {
         val limitRaw = pa.values["-n"]
         val limit = if (limitRaw == null) Long.MAX_VALUE
                     else parseNum(limitRaw)?.takeIf { it >= 0 }
-                        ?: return Result(ctx.text(R.string.cli_dd_bad_num, limitRaw), 2)
+                        ?: return Result(ctx.text(R.string.cli_bad_num, limitRaw), 2)
 
         var tempA: File? = null
         var tempB: File? = null
@@ -2292,6 +2294,117 @@ internal object UuCommands {
 
     /** 差异行里的一个字节；一侧已到末尾（`-1`）用 `--`，那是符号不是文案。 */
     private fun byteHex(v: Int) = if (v < 0) "--" else "%02X".format(v)
+
+    /**
+     * `uu strings <file|fN> [min] [-e ascii|utf16le] [-n max] [-a]` — 提取可打印串。
+     *
+     * 用来回答「这是个什么文件」：比 [hex] 高效得多，脚本名、路径、URL、版权行
+     * 一眼就能看出来。**默认只扫前 8 MiB**（`-a` 提到 64 MiB）—— 手机上一个
+     * 1.7 GB 的归档全扫要很久，而侦察要的几乎总在开头。扫描上限会写在输出里，
+     * 不让人误以为「就这么多」。
+     *
+     * `-e utf16le` 扫 2 字节对齐的宽字符串 —— galgame 脚本常见这种编码，
+     * 按 ASCII 扫会一个字都看不到。
+     */
+    private fun strings(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args, listOf("-a", "-e", "-n"))?.let { return it }
+        val pa = splitFlags(args, listOf("-e", "-n"), listOf("-a"))
+        missingValueError(ctx, pa)?.let { return it }
+        if (pa.pos.isEmpty()) return needFile()
+        val spec = pa.pos[0]
+        val minRaw = pa.pos.getOrNull(1)
+        val min = if (minRaw == null) STRINGS_MIN_DEFAULT
+                  else parseNum(minRaw)?.takeIf { it in 1..1024 }?.toInt()
+                      ?: return Result(ctx.text(R.string.cli_strings_bad_min, minRaw), 2)
+        val enc = pa.values["-e"]?.lowercase() ?: "ascii"
+        if (enc !in setOf("ascii", "utf16le")) {
+            return Result(ctx.text(R.string.cli_strings_bad_enc, enc), 2)
+        }
+        val maxRaw = pa.values["-n"]
+        val max = if (maxRaw == null) STRINGS_MAX_PRINT
+                  else parseNum(maxRaw)?.takeIf { it >= 0 }?.toInt()
+                      ?: return Result(ctx.text(R.string.cli_bad_num, maxRaw), 2)
+
+        var temp: File? = null
+        try {
+            val src = when (val r = resolveSource(spec, ctx)) {
+                is SrcSpec.Fail -> return r.result
+                is SrcSpec.Path -> r.f.takeIf { it.isFile }
+                    ?: return Result(UuText.notFound(ctx.str, spec), 1)
+                is SrcSpec.Fd -> { temp = r.temp; r.f }
+            }
+            val cap = if ("-a" in pa.bools) STRINGS_SCAN_MAX_ALL else STRINGS_SCAN_MAX
+            val size = src.length()
+            val take = minOf(size, cap)
+            if (take <= 0L) return Result(ctx.text(R.string.cli_strings_none, spec, min.toString()))
+            val buf = ByteArray(take.toInt())
+            val n = java.io.FileInputStream(src).use { readFully(it, buf) }
+
+            val out = StringBuilder()
+            var hits = 0
+            var hidden = 0L
+            scanRuns(buf, n, min, enc == "utf16le") { at, s ->
+                if (hits < max) {
+                    out.append("  ").append("0x%08X".format(at)).append("  ").append(s).append('\n')
+                    hits++
+                } else hidden++
+            }
+            if (hits == 0) return Result(ctx.text(R.string.cli_strings_none, spec, min.toString()))
+            val head = StringBuilder()
+            head.append(ctx.text(R.string.cli_strings_header, src.name, hits.toString())).append('\n')
+            head.append(out.toString().trimEnd('\n'))
+            if (hidden > 0) head.append('\n').append(ctx.text(R.string.cli_strings_more, hidden.toString()))
+            if (size > cap) head.append('\n').append(ctx.text(R.string.cli_strings_truncated, fmt(cap)))
+            return Result(head.toString())
+        } finally {
+            temp?.deleteRecursively()
+        }
+    }
+
+    /**
+     * 扫 [buf] 前 [n] 字节里长度 ≥ [min] 的可打印串（绝对偏移见 [base]）。
+     * [utf16] 时按 2 字节对齐、低字节可打印且高字节为 0 才算一个字符。
+     */
+    private fun scanRuns(buf: ByteArray, n: Int, min: Int, utf16: Boolean, base: Long = 0L,
+                         emit: (Long, String) -> Unit) {
+        val step = if (utf16) 2 else 1
+        var i = 0
+        var runStart = -1
+        while (i + step <= n) {
+            val lo = buf[i].toInt() and 0xFF
+            val printable = lo in 0x20..0x7E && (!utf16 || buf[i + 1].toInt() == 0)
+            if (printable) {
+                if (runStart < 0) runStart = i
+            } else {
+                if (runStart >= 0 && (i - runStart) / step >= min) {
+                    val sb = StringBuilder((i - runStart) / step)
+                    var j = runStart
+                    while (j < i) { sb.append((buf[j].toInt() and 0xFF).toChar()); j += step }
+                    emit(base + runStart, sb.toString())
+                }
+                runStart = -1
+            }
+            i += step
+        }
+        // 末尾那段没被非可打印字节终止的串也要算（文件就在串中间结束）
+        if (runStart >= 0 && (n - runStart) / step >= min) {
+            val sb = StringBuilder((n - runStart) / step)
+            var j = runStart
+            while (j + step <= n) { sb.append((buf[j].toInt() and 0xFF).toChar()); j += step }
+            emit(base + runStart, sb.toString())
+        }
+    }
+
+    /** 读满 [buf]（`read` 允许短读）；返回实际读到的字节数。 */
+    private fun readFully(input: java.io.InputStream, buf: ByteArray): Int {
+        var off = 0
+        while (off < buf.size) {
+            val k = input.read(buf, off, buf.size - off)
+            if (k <= 0) break
+            off += k
+        }
+        return off
+    }
 
     /** 条目表差异（纯函数,可单测）：(仅A, 仅B, 变化, ma, mb)。 */
     internal fun diffOf(
@@ -2513,6 +2626,16 @@ internal object UuCommands {
     /** `uu cmp`：比对块大小 / `-l` 最多列多少行（列不完只报条数）。 */
     private const val CMP_CHUNK = 1 shl 20
     private const val CMP_MAX_LIST = 200
+
+    /**
+     * `uu strings`：默认只扫前 8 MiB（`-a` 提到 64 MiB），最多打印 200 条，最短 4 字符。
+     * 上限存在的理由见 [strings] 的注释：手机上一个 GB 级归档全扫要很久，而侦察要的
+     * 几乎总在开头。上限会写进输出，不让人误以为「就这么多」。
+     */
+    private const val STRINGS_SCAN_MAX = 8L * 1024 * 1024
+    private const val STRINGS_SCAN_MAX_ALL = 64L * 1024 * 1024
+    private const val STRINGS_MAX_PRINT = 200
+    private const val STRINGS_MIN_DEFAULT = 4
 
     /**
      * scan-core 的 label → 归档格式 key；非归档命中返回 null（只能 dd，不能 x/l）。

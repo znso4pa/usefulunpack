@@ -1027,4 +1027,72 @@ class UuCommandsTest {
         assertEquals(2, UuCommands.dispatch(listOf("cmp", "a.bin", "b.bin", "c.bin"), c).exitCode)
         assertEquals(2, UuCommands.dispatch(listOf("cmp", "a.bin", "nope.bin"), c).exitCode)
     }
+
+    // ─── 6.3：uu strings（可打印串提取） ──────────────────────────────────
+
+    /** 往定长零填充缓冲区里放一段 ASCII。 */
+    private fun putAscii(buf: ByteArray, at: Int, s: String) {
+        s.forEachIndexed { i, c -> buf[at + i] = c.code.toByte() }
+    }
+
+    @Test
+    fun stringsExtractsRunsWithOffsets() {
+        val dir = tmp.root.resolve("str1").apply { mkdirs() }
+        val data = ByteArray(48)
+        putAscii(data, 4, "HELLO123")     // 8 字符 @ 0x04
+        putAscii(data, 20, "abc")         // 3 字符 @ 0x14，默认最短 4 → 不算
+        putAscii(data, 32, "world!")      // 6 字符 @ 0x20
+        File(dir, "a.bin").writeBytes(data)
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("strings", "a.bin"), c)
+        assertEquals(r.text, 0, r.exitCode)
+        assertTrue(r.text, r.text.contains("0x00000004"))
+        assertTrue(r.text, r.text.contains("HELLO123"))
+        assertTrue(r.text, r.text.contains("0x00000020"))
+        assertTrue(r.text, r.text.contains("world!"))
+        assertFalse("短于 min 的不该出现: " + r.text, r.text.contains("abc"))
+    }
+
+    /** UTF-16LE 下每个字符后跟一个 0，按 ASCII 扫每段只有 1 字符 → 什么都看不到。 */
+    @Test
+    fun stringsUtf16leModeSeesWideStrings() {
+        val dir = tmp.root.resolve("str2").apply { mkdirs() }
+        val data = ByteArray(24)
+        "TEST".forEachIndexed { i, c -> data[2 + i * 2] = c.code.toByte() }
+        File(dir, "w.bin").writeBytes(data)
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val ascii = UuCommands.dispatch(listOf("strings", "w.bin"), c)
+        assertEquals(0, ascii.exitCode)
+        assertFalse(ascii.text, ascii.text.contains("TEST"))
+        val wide = UuCommands.dispatch(listOf("strings", "w.bin", "-e", "utf16le"), c)
+        assertEquals(wide.text, 0, wide.exitCode)
+        assertTrue(wide.text, wide.text.contains("TEST"))
+        assertTrue(wide.text, wide.text.contains("0x00000002"))
+    }
+
+    @Test
+    fun stringsHonorsMinAndMaxAndRejectsBadArgs() {
+        val dir = tmp.root.resolve("str3").apply { mkdirs() }
+        val data = ByteArray(64)
+        putAscii(data, 0, "AAAA"); putAscii(data, 8, "BBBB"); putAscii(data, 16, "CCCC")
+        File(dir, "m.bin").writeBytes(data)
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        // -n 2：只打印前 2 条，其余只报条数
+        val r = UuCommands.dispatch(listOf("strings", "m.bin", "-n", "2"), c)
+        assertEquals(r.text, 0, r.exitCode)
+        assertTrue(r.text, r.text.contains("AAAA"))
+        assertTrue(r.text, r.text.contains("BBBB"))
+        assertFalse(r.text, r.text.contains("CCCC"))
+        // min 5：4 字符的都不算 → 一条都没有（与 uu scan 一致，不算错误）
+        val none = UuCommands.dispatch(listOf("strings", "m.bin", "5"), c)
+        assertEquals(none.text, 0, none.exitCode)
+        assertFalse(none.text, none.text.contains("AAAA"))
+        // 参数错：min 越界 / 未知编码 / 非数字
+        assertEquals(2, UuCommands.dispatch(listOf("strings", "m.bin", "0"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("strings", "m.bin", "9999"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("strings", "m.bin", "-e", "utf8"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("strings", "m.bin", "-n", "xx"), c).exitCode)
+        // 文件不存在 → 1（notFound 的既有约定，同 uu hex / uu cat；不是 cmp 那种 0/1/2 三态）
+        assertEquals(1, UuCommands.dispatch(listOf("strings", "nope.bin"), c).exitCode)
+    }
 }

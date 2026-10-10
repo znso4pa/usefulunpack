@@ -691,7 +691,7 @@
     <string name="cli_dd_dup_arg">dd: %1$s given twice</string>
     <string name="cli_dd_need_if">dd needs if=&lt;source&gt;</string>
     <string name="cli_dd_need_of">dd needs of=&lt;destination&gt;</string>
-    <string name="cli_dd_bad_num">not a number: %1$s</string>
+    <string name="cli_bad_num">not a number: %1$s</string>
     <string name="cli_dd_negative">skip / count / seek must not be negative</string>
     <string name="cli_dd_skip_past_end">skip %1$s is past the end of the source (%2$s available)</string>
     <string name="cli_dd_same_file">if= and of= are the same file: %1$s</string>
@@ -705,4 +705,10 @@
     <string name="cli_cmp_count">%1$s of %2$s bytes differ</string>
     <string name="cli_cmp_more">… and %1$s more differences</string>
     <string name="cli_cmp_line">%1$s  %2$s  %3$s</string>
+    <string name="cli_strings_header">%1$s · %2$s strings</string>
+    <string name="cli_strings_none">%1$s: no printable strings of %2$s+ characters</string>
+    <string name="cli_strings_bad_enc">unknown encoding: %1$s (ascii / utf16le)</string>
+    <string name="cli_strings_bad_min">min length must be 1–1024: %1$s</string>
+    <string name="cli_strings_truncated">scanned the first %1$s only — use -a to widen</string>
+    <string name="cli_strings_more">… %1$s more not shown</string>
 </resources>

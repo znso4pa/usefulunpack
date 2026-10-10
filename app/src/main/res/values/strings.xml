@@ -720,4 +720,5 @@
     <string name="cli_sed_none">%1$s: no match</string>
     <string name="cli_sed_summary">%1$s changed, %2$s failed</string>
     <string name="cli_sed_empty_from">the search text must not be empty</string>
+    <string name="cli_sed_lossy">%1$s does not survive a %2$s round-trip — refusing to edit it in place</string>
 </resources>

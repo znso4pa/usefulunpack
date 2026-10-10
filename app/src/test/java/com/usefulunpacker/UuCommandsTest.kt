@@ -1154,4 +1154,122 @@ class UuCommandsTest {
         assertEquals(1, UuCommands.dispatch(listOf("sed", "-i", "a", "b", "t.txt", "nope.txt"), c).exitCode)
         assertEquals("bbc", File(dir, "t.txt").readText())
     }
+
+    // ─── 6.3 debug 回归 ───────────────────────────────────────────────────
+
+    /**
+     * `uu docs` 的 PARAMETERS 段是**手写的第二份清单**，天然会漂 —— `-e` 的方案列表就曾
+     * 停在 7 个（6.2 加了三个无侧车方案后没跟上），`-t / -S / -d / -q` 也一直没解释过。
+     * 这条机械地盯着「usage 行里出现的每个旗标，参数表里都得解释」。
+     */
+    @Test
+    fun docsExplainsEveryFlagFromUsageLines() {
+        val text = UuCommands.renderDocs()
+        val at = text.indexOf("PARAMETERS")
+        assertTrue("docs 里没有 PARAMETERS 段", at > 0)
+        val flagRe = Regex("""(?<![\w-])(--?[a-zA-Z][\w-]*)""")
+        val inUsage = flagRe.findAll(text.substring(0, at)).map { it.value }.toSet()
+        val documented = flagRe.findAll(text.substring(at)).map { it.value }.toSet()
+        assertTrue(
+            "usage 里有、参数表没解释的旗标: ${inUsage - documented}",
+            documented.containsAll(inUsage)
+        )
+    }
+
+    /**
+     * `uu docs` 的 `-e <scheme>` 列表是**手写枚举**，6.2 加了三个无侧车方案时它没跟上
+     * （一直停在 7 个）。这份清单与 Rust 的 `Scheme::ALL` 跨语言，没法从那边派生，
+     * 所以在这里钉死：加方案时忘了改 docs 就会红。
+     */
+    @Test
+    fun docsListsEverySchemeInTheEncryptFlag() {
+        val line = UuCommands.renderDocs().lineSequence().firstOrNull { it.contains("-e <scheme>") }
+        assertTrue("docs 里没有 -e <scheme> 行", line != null)
+        val schemes = listOf(
+            "cxdec", "hashcrypt", "fatecrypt", "appliquecrypt", "flyingshinecrypt",
+            "alteredpinkcrypt", "dameganecrypt", "natsupochicrypt", "okibacrypt", "dieselminecrypt",
+        )
+        for (s in schemes) assertTrue("docs 的 -e 列表缺 $s", line!!.contains(s))
+    }
+
+    /** `cmp` 里退出码 1 只能表示「有差异」；读不了必须是 2，否则脚本会把失败当差异。 */
+    @Test
+    fun cmpOnAStaleFdIsAnErrorNotADifference() {
+        val dir = tmp.root.resolve("cmpstale").apply { mkdirs() }
+        val host = File(dir, "h.bin").apply { writeBytes(ByteArray(32) { it.toByte() }) }
+        File(dir, "o.bin").writeBytes(ByteArray(32) { it.toByte() })
+        val t = FdTable()
+        val fd = t.register(
+            host, listOf(ScanHit(0, "ZIP archive", 32, null)), host.length(), host.lastModified()
+        ) { null }[0]
+        host.writeBytes(ByteArray(64))   // 宿主被改过 → fd 失效
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, fds = t)
+        val r = UuCommands.dispatch(listOf("cmp", "f$fd", "o.bin"), c)
+        assertEquals(r.text, 2, r.exitCode)
+    }
+
+    /** fN 区间显示的是 `uu scan` 报出的类型名，不是临时 carve 出来的哈希文件名。 */
+    @Test
+    fun cmpShowsTheScanLabelForAnFdRange() {
+        val dir = tmp.root.resolve("cmplabel").apply { mkdirs() }
+        val host = File(dir, "h.bin").apply { writeBytes(ByteArray(32) { it.toByte() }) }
+        File(dir, "same.bin").writeBytes(ByteArray(32) { it.toByte() })
+        val t = FdTable()
+        val fd = t.register(
+            host, listOf(ScanHit(0, "ZIP archive", 32, null)), host.length(), host.lastModified()
+        ) { null }[0]
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, fds = t, cacheDir = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("cmp", "f$fd", "same.bin"), c)
+        assertEquals(r.text, 0, r.exitCode)
+        assertTrue(r.text, r.text.contains("[ZIP archive]"))
+        assertFalse("不该出现临时文件名: " + r.text, r.text.contains("[f$fd-"))
+    }
+
+    /** `-n 0` = 不限量；当成 0 上限的话会误报「没有可打印串」。 */
+    @Test
+    fun stringsZeroMaxMeansUnlimited() {
+        val dir = tmp.root.resolve("str0").apply { mkdirs() }
+        val data = ByteArray(32)
+        putAscii(data, 0, "AAAA"); putAscii(data, 8, "BBBB")
+        File(dir, "z.bin").writeBytes(data)
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("strings", "z.bin", "-n", "0"), c)
+        assertEquals(r.text, 0, r.exitCode)
+        assertTrue(r.text, r.text.contains("AAAA"))
+        assertTrue(r.text, r.text.contains("BBBB"))
+    }
+
+    /**
+     * `-i` 的前提是「解码再编码逐字节等于原文件」。
+     *
+     * 载荷要挑得准：35 字节 ASCII + 一个 SJIS/GBK 都不认的 0xFF。坏字符占比低
+     * （1×20 < 36）所以 `detectBestEncoding` 不会整体否决、`looksLikeText` 也就为真，
+     * 编码被定成 SHIFT-JIS —— 但解码出的 U+FFFD 编回去只能是 '?'，不是 0xFF。
+     * 此时必须拒绝，不能悄悄改掉没人要求改的那个字节。
+     */
+    @Test
+    fun sedRefusesInPlaceWhenTheEncodingDoesNotRoundTrip() {
+        val dir = tmp.root.resolve("sedlossy").apply { mkdirs() }
+        val raw = "hello world hello world hello world".toByteArray() + byteArrayOf(0xFF.toByte())
+        assertEquals("载荷长度变了就换一个坏字符占比", 36, raw.size)
+        val f = File(dir, "lossy.bin").apply { writeBytes(raw) }
+        val c = ctx(dir)
+        assertEquals(1, UuCommands.dispatch(listOf("sed", "-i", "hello", "goodbye", "lossy.bin"), c).exitCode)
+        // 原文件一个字节都不能变
+        assertArrayEquals(raw, f.readBytes())
+        // 不给 -i（写 stdout）时原文件同样不动，结果照常打出来
+        assertEquals(0, UuCommands.dispatch(listOf("sed", "hello", "goodbye", "lossy.bin"), c).exitCode)
+        assertArrayEquals(raw, f.readBytes())
+    }
+
+    /** `if=` / `of=` 给了空值要当缺参报，不能退化成「找不到: 」（空名字）。 */
+    @Test
+    fun ddRejectsEmptyIfAndOfValues() {
+        val dir = tmp.root.resolve("ddempty").apply { mkdirs() }
+        rampFile(dir, "src.bin", 8)
+        val c = ctx(dir)
+        assertEquals(2, UuCommands.dispatch(listOf("dd", "if=", "of=x.bin"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("dd", "if=src.bin", "of="), c).exitCode)
+        assertFalse(File(dir, "x.bin").exists())
+    }
 }

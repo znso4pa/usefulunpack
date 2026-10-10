@@ -713,4 +713,5 @@
     <string name="cli_sed_none">%1$s：沒有符合</string>
     <string name="cli_sed_summary">成功 %1$s 個，失敗 %2$s 個</string>
     <string name="cli_sed_empty_from">尋找內容不能為空</string>
+    <string name="cli_sed_lossy">%1$s 經 %2$s 解碼再編碼後與原檔案不一致 —— 拒絕原地改</string>
 </resources>

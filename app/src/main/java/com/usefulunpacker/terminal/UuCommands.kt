@@ -230,24 +230,37 @@ internal object UuCommands {
         sb.append('\n')
         sb.append("PARAMETERS\n")
         sb.append("-".repeat(10)).append('\n')
+        // 这张表是**手写的第二份清单**，所以它会漂：`-e` 的方案列表曾停在 7 个
+        // （6.2 加了三个无侧车方案后没跟上），`-t / -S / -d / -q` 也一直没解释过。
+        // 加旗标时这里必须一起改 —— `docsExplainsEveryFlagFromUsageLines` 会盯着。
         val params = listOf(
-            "-a            " to "list all entries (uu l; default caps at 500)",
+            "-a            " to "list all entries (uu l; default caps at 500) · scan the whole file (uu strings)",
             "-p <password> " to "archive password (uu l / cat / grep / x / c / set); empty -> prompt",
             "-f <key>      " to "explicit format key (uu c / set; see uu fmt)",
+            "-f            " to "force overwrite (uu cp / dd) · permanent delete instead of recycle bin (uu rm)",
             "-c / -s       " to "merge into one archive / separate per source (uu c, multi-source)",
+            "-s            " to "silent: exit code only, no output (uu cmp)",
             "-l <level>    " to "compression level (uu c)",
+            "-l            " to "list every differing byte, not just the first (uu cmp)",
             "-b <splitMB>  " to "split size in MB (uu c, zip/7z only)",
-            "-e <scheme>   " to "encrypt the pack (uu c, xp3 only): cxdec | hashcrypt | fatecrypt (alias fsn) | appliquecrypt | flyingshinecrypt | alteredpinkcrypt | dameganecrypt — cxdec needs xp3filter.tjs/.tpm or an encrypted .xp3 in the folder, the keyless ones need nothing",
-            "-o <outdir>   " to "output directory (uu x; entries then follow unambiguously)",
-            "-f            " to "permanent delete instead of recycle bin (uu rm)",
-            "-i            " to "case-insensitive search (uu grep)",
+            "-e <scheme>   " to "encrypt the pack (uu c, xp3 only): cxdec | hashcrypt | fatecrypt (alias fsn) | appliquecrypt | flyingshinecrypt | alteredpinkcrypt | dameganecrypt | natsupochicrypt | okibacrypt | dieselminecrypt — cxdec needs xp3filter.tjs/.tpm or an encrypted .xp3 in the folder, the keyless ones need nothing",
+            "-e <enc>      " to "source text encoding (uu cat) · ascii | utf16le (uu strings)",
+            "-o <dir>      " to "output directory (uu x / mvdec / img; for uu x the entries then follow unambiguously)",
+            "-i            " to "case-insensitive search (uu grep) · edit the file in place (uu sed)",
             "-j            " to "raw entry JSON for scripts (uu l): n/s/d/e keys",
+            "-t            " to "tree view (uu l)",
+            "-S            " to "sort by size (uu l)",
+            "-n <N>        " to "compare only the first N bytes (uu cmp) · print at most N strings (uu strings)",
+            "-q <1-100>    " to "image quality (uu img, jpg/webp)",
+            "-d            " to "decode instead of encode (uu b64)",
+            "--bytes       " to "treat <from> / <to> as hex bytes; needs -i (uu sed)",
+            "if= of=       " to "source / destination (uu dd); plus skip= count= seek= and -f",
         )
         for ((k, v) in params) sb.append("  ").append(k).append(v).append('\n')
         sb.append('\n')
         sb.append("SPECIALS\n")
         sb.append("-".repeat(8)).append('\n')
-        sb.append("  fN            ").append("descriptor from \"ls\" / \"uu scan\" — uu l f0 / uu x f0 / uu cp f0 out.zip\n")
+        sb.append("  fN            ").append("descriptor from \"ls\" / \"uu scan\" — uu l f0 / uu x f0 / uu dd if=f0 of=part.bin\n")
         sb.append("  * ?           ").append("wildcards expand in the current dir — uu x *.zip / uu hash *.png\n")
         sb.append("  |             ").append("pipe into a filter: grep / head / tail / wc / sort(+-r) — uu l a.zip | sort\n")
         sb.append("  > >>          ").append("redirect output to a file (>> appends) — uu l a.zip > list.txt\n")
@@ -503,7 +516,12 @@ internal object UuCommands {
      */
     private sealed class SrcSpec {
         class Path(val f: File) : SrcSpec()
-        class Fd(val f: File, val temp: File?) : SrcSpec()
+        /**
+         * [label] 是**展示名**：区间条目用 `uu scan` 报出的类型名，整文件条目用宿主文件名。
+         * 临时 carve 出来的文件名是一串哈希（`f0-642336419-25916572799104`），直接拿去
+         * 打日志没人看得懂 —— 真机上 `uu cmp f0 x` 就是这么显示的。
+         */
+        class Fd(val f: File, val temp: File?, val label: String) : SrcSpec()
         class Fail(val result: Result) : SrcSpec()
     }
 
@@ -511,11 +529,11 @@ internal object UuCommands {
         when (val r = fdRef(spec, ctx)) {
             is FdRef.Stale -> SrcSpec.Fail(r.result)
             is FdRef.Hit -> if (r.e.wholeFile) {
-                SrcSpec.Fd(r.e.host, null)
+                SrcSpec.Fd(r.e.host, null, r.e.host.name)
             } else {
                 val carved = carveFd(r.e, ctx)
                 if (carved == null) SrcSpec.Fail(Result(UuText.needsActivity(ctx.str), 2))
-                else SrcSpec.Fd(carved, carved)
+                else SrcSpec.Fd(carved, carved, r.e.label)
             }
             FdRef.NotFd -> SrcSpec.Path(UuText.resolve(ctx.cwd, spec))
         }
@@ -2124,8 +2142,12 @@ internal object UuCommands {
             if (kv.containsKey(k)) return Result(ctx.text(R.string.cli_dd_dup_arg, k), 2)
             kv[k] = a.substring(eq + 1)
         }
-        val ifSpec = kv["if"] ?: return Result(ctx.text(R.string.cli_dd_need_if), 2)
-        val ofSpec = kv["of"] ?: return Result(ctx.text(R.string.cli_dd_need_of), 2)
+        // `if=`（空值）也要当缺参：否则会被当路径解析，最后报「找不到: 」（空名字）——
+        // 那条消息完全指不出问题在哪。
+        val ifSpec = kv["if"]?.takeIf { it.isNotEmpty() }
+            ?: return Result(ctx.text(R.string.cli_dd_need_if), 2)
+        val ofSpec = kv["of"]?.takeIf { it.isNotEmpty() }
+            ?: return Result(ctx.text(R.string.cli_dd_need_of), 2)
 
         // 给了值但不是数字必须报错 —— 静默当「没给」而取默认 0，会切到错误的位置
         // 且从输出上看不出原因。
@@ -2225,17 +2247,27 @@ internal object UuCommands {
         var tempA: File? = null
         var tempB: File? = null
         try {
-            val fa = when (val r = resolveSource(pa.pos[0], ctx)) {
-                is SrcSpec.Fail -> return r.result
-                is SrcSpec.Path -> r.f.takeIf { it.isFile }
-                    ?: return Result(UuText.notFound(ctx.str, pa.pos[0]), 2)
-                is SrcSpec.Fd -> { tempA = r.temp; r.f }
+            // 任何失败都必须落成退出码 2：`resolveSource` 的 Fail 可能带 1（fN 宿主被改过），
+            // 而 cmp 里 1 是「有差异」—— 直接透传会让脚本把「读不了」当成「内容不同」。
+            val fa: File
+            val nameA: String
+            when (val r = resolveSource(pa.pos[0], ctx)) {
+                is SrcSpec.Fail -> return Result(r.result.text, 2)
+                is SrcSpec.Path -> {
+                    if (!r.f.isFile) return Result(UuText.notFound(ctx.str, pa.pos[0]), 2)
+                    fa = r.f; nameA = r.f.name
+                }
+                is SrcSpec.Fd -> { tempA = r.temp; fa = r.f; nameA = r.label }
             }
-            val fb = when (val r = resolveSource(pa.pos[1], ctx)) {
-                is SrcSpec.Fail -> return r.result
-                is SrcSpec.Path -> r.f.takeIf { it.isFile }
-                    ?: return Result(UuText.notFound(ctx.str, pa.pos[1]), 2)
-                is SrcSpec.Fd -> { tempB = r.temp; r.f }
+            val fb: File
+            val nameB: String
+            when (val r = resolveSource(pa.pos[1], ctx)) {
+                is SrcSpec.Fail -> return Result(r.result.text, 2)
+                is SrcSpec.Path -> {
+                    if (!r.f.isFile) return Result(UuText.notFound(ctx.str, pa.pos[1]), 2)
+                    fb = r.f; nameB = r.f.name
+                }
+                is SrcSpec.Fd -> { tempB = r.temp; fb = r.f; nameB = r.label }
             }
 
             val bufA = ByteArray(CMP_CHUNK)
@@ -2278,7 +2310,7 @@ internal object UuCommands {
 
             if (diffs == 0L) {
                 return if (silent) Result("", 0)
-                else Result(ctx.text(R.string.cli_cmp_same, fa.name, fb.name, fmt(off)))
+                else Result(ctx.text(R.string.cli_cmp_same, nameA, nameB, fmt(off)))
             }
             if (silent) return Result("", 1)
             val sb = StringBuilder()
@@ -2323,9 +2355,12 @@ internal object UuCommands {
             return Result(ctx.text(R.string.cli_strings_bad_enc, enc), 2)
         }
         val maxRaw = pa.values["-n"]
-        val max = if (maxRaw == null) STRINGS_MAX_PRINT
-                  else parseNum(maxRaw)?.takeIf { it >= 0 }?.toInt()
-                      ?: return Result(ctx.text(R.string.cli_bad_num, maxRaw), 2)
+        val maxParsed = if (maxRaw == null) STRINGS_MAX_PRINT
+                        else parseNum(maxRaw)?.takeIf { it >= 0 }?.toInt()
+                            ?: return Result(ctx.text(R.string.cli_bad_num, maxRaw), 2)
+        // `-n 0` 按常见约定当「不限量」。真当成 0 上限的话每条都走"超出上限"分支，
+        // 最后 hits 仍是 0，于是报「没有可打印串」—— 而文件里明明有一堆。
+        val max = if (maxParsed == 0) Int.MAX_VALUE else maxParsed
 
         var temp: File? = null
         try {
@@ -2488,9 +2523,24 @@ internal object UuCommands {
                     }
                     val text = decodeTextStrict(raw, enc)
                     hits = countOccurrences(text, fromArg)
-                    val newText = if (hits == 0) text else text.replace(fromArg, toArg)
-                    textOut = newText
-                    replaced = if (hits == 0) raw else encodeText(newText, enc, hasBom(raw))
+                    if (hits == 0) {
+                        textOut = text
+                        replaced = raw
+                    } else {
+                        val newText = text.replace(fromArg, toArg)
+                        // 原地改的前提是「这次编解码本身是保真的」：解码再编码必须逐字节
+                        // 等于原文件。猜错编码时（UTF-16BE 的 CJK 被认成 SJIS 之类）解码会
+                        // 引入 U+FFFD，编回去就不是原字节 —— 那等于悄悄改了一堆没人要求改的
+                        // 字节。宁可拒绝（`--bytes` 是逃生口），也不产出这种文件。
+                        // 只查 `-i`：写 stdout 时原文件没被碰，用户能先看再决定用不用。
+                        if (inPlace && !encodeText(text, enc, hasBom(raw)).contentEquals(raw)) {
+                            fail++
+                            out.append(ctx.text(R.string.cli_sed_lossy, src.name, enc)).append('\n')
+                            continue
+                        }
+                        textOut = newText
+                        replaced = encodeText(newText, enc, hasBom(raw))
+                    }
                 }
 
                 if (inPlace) {
@@ -2499,7 +2549,11 @@ internal object UuCommands {
                     }
                 } else {
                     if (multi) out.append("── ").append(spec).append('\n')
-                    out.append(textOut ?: "")
+                    val body = textOut ?: ""
+                    out.append(body)
+                    // 多文件时下一个 `── name` 必须另起一行：文件不以换行收尾时
+                    // 两段输出会粘成一行（脚本文件很常见，这不是边角情况）
+                    if (multi && !body.endsWith("\n")) out.append('\n')
                 }
                 ok++
                 if (inPlace) {

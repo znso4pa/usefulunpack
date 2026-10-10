@@ -1363,4 +1363,34 @@ class UuCommandsTest {
         // 区间 [16,48)，丢前 4 → 从 20 起；坐标从区间起点 0 开始
         assertArrayEquals(ByteArray(28) { ((it + 4 + 16) xor 0xFF).toByte() }, File(dir, "part.bin").readBytes())
     }
+
+    // ─── 6.3：uu guess（从内容反推变换） ──────────────────────────────────
+
+    @Test
+    fun guessReportsCandidatesWithEvidenceAndACopyableCommand() {
+        val dir = tmp.root.resolve("gs1").apply { mkdirs() }
+        scrambledZip(dir, "weird.dat", 0xA5)
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("guess", "weird.dat"), c)
+        assertEquals(r.text, 0, r.exitCode)
+        // 候选 + 它变成了什么 + 一条能直接粘的命令
+        // （候选行是原样文本、不经 ctx.text，所以没有 argStr 的方括号）
+        assertTrue(r.text, r.text.contains("xor A5"))
+        assertTrue(r.text, r.text.contains("→ zip"))
+        assertTrue(r.text, r.text.contains("weird-fixed.dat"))
+    }
+
+    @Test
+    fun guessOnNoiseSaysNothingFoundAndRejectsBadArgs() {
+        val dir = tmp.root.resolve("gs2").apply { mkdirs() }
+        File(dir, "ramp.bin").writeBytes(ByteArray(512) { it.toByte() })
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("guess", "ramp.bin"), c)
+        assertEquals(r.text, 0, r.exitCode)
+        assertTrue(r.text, r.text.contains("!str:${R.string.cli_guess_none}"))
+        // 多个参数 / 文件不存在 / 缺参数
+        assertEquals(2, UuCommands.dispatch(listOf("guess", "a", "b"), c).exitCode)
+        assertEquals(1, UuCommands.dispatch(listOf("guess", "nope.bin"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("guess"), c).exitCode)
+    }
 }

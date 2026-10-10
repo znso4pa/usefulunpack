@@ -108,6 +108,28 @@ internal class TrPipeline(val steps: List<TrOp>, val skip: Long) {
         for (s in steps.asReversed()) inv.add(s.inverse() ?: return null)
         return TrPipeline(inv, 0L)
     }
+
+    /**
+     * 反向渲染成管道文本 —— `uu guess` 要把候选写成用户能**直接复制粘贴**的命令。
+     * `skip` 由 [skip] 单独承载，所以 [TrOp.Skip] 不再重复渲染。
+     */
+    fun text(): String {
+        val parts = ArrayList<String>(steps.size + 1)
+        if (skip > 0) parts.add("skip $skip")
+        for (s in steps) if (s !is TrOp.Skip) parts.add(s.text())
+        return parts.joinToString(" | ")
+    }
+}
+
+/** 一步的管道文本。与 [TrParser] 认的写法一一对应（能解析回来）。 */
+internal fun TrOp.text(): String = when (this) {
+    is TrOp.Xor -> "xor " + key.joinToString("") { "%02X".format(it) }
+    is TrOp.Add -> "add 0x%02X".format(k)
+    is TrOp.Sub -> "sub 0x%02X".format(k)
+    is TrOp.RotRight -> "rot r $n"
+    is TrOp.RotLeft -> "rot l $n"
+    TrOp.Not -> "not"
+    is TrOp.Skip -> "skip $n"
 }
 
 /** 管道解析器。纯函数，便于单测。 */

@@ -730,4 +730,9 @@
     <string name="cli_tr_recognised">after transform: %1$s</string>
     <string name="cli_tr_unrecognised">after transform: not a known format (first bytes: %1$s)</string>
     <string name="cli_tr_progress">tr %1$s / %2$s</string>
+    <string name="cli_guess_header">%1$s · %2$s candidate(s)</string>
+    <string name="cli_guess_none">%1$s: no single-step transform turns it into a known format</string>
+    <string name="cli_guess_ev_struct">structure: %1$s</string>
+    <string name="cli_guess_ev_constraints">magic constraints ×%1$s</string>
+    <string name="cli_guess_try">try: uu tr %1$s "%2$s" -o %3$s</string>
 </resources>

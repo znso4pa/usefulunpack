@@ -82,7 +82,7 @@ internal object UuCommands {
     internal enum class Kind {
         LIST_FORMATS, HELP, DOCS, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
         TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO,
-        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, DD, CMP, STRINGS, SED, TR, IMG, FD, B64
+        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, DD, CMP, STRINGS, SED, TR, GUESS, IMG, FD, B64
     }
 
     internal class Cmd(val name: String, val kind: Kind, val summary: String, val usage: String)
@@ -126,6 +126,7 @@ internal object UuCommands {
         Cmd("strings", Kind.STRINGS,     "Extract printable strings (recon)",             "uu strings <file> [min] [-e ascii|utf16le] [-n max] [-a]"),
         Cmd("sed",    Kind.SED,          "Replace content (text, or hex bytes with --bytes)", "uu sed <from> <to> <file...> [-i] [--bytes]"),
         Cmd("tr",     Kind.TR,           "Transform bytes through a pipeline (xor/add/rot/skip)", "uu tr <file> \"skip 16 | xor 0xAA\" [-o out] [-f]"),
+        Cmd("guess",  Kind.GUESS,        "Guess which transform turns a file back into a known format", "uu guess <file>"),
         Cmd("img",    Kind.IMG,          "Convert images (jpg / png / webp)",             "uu img <src...> <jpg|png|webp> [-o dir] [-q 1-100]"),
         Cmd("fd",     Kind.FD,           "List the registered fN descriptors",            "uu fd [fN...]"),
         Cmd("b64",    Kind.B64,          "Base64 encode (default) or decode a file",      "uu b64 <file> [-d] [out]"),
@@ -175,6 +176,7 @@ internal object UuCommands {
                 Kind.STRINGS -> strings(args, ctx)
                 Kind.SED -> sed(args, ctx)
                 Kind.TR -> tr(args, ctx)
+                Kind.GUESS -> guess(args, ctx)
                 Kind.IMG -> img(args, ctx)
                 Kind.FD -> fd(args, ctx)
                 Kind.B64 -> b64(args, ctx)
@@ -2702,7 +2704,7 @@ internal object UuCommands {
         }
 
         // 变换完必报「变成了什么」；识别不出也要说，并给前几字节便于排查
-        val head = ByteArray(9)
+        val head = ByteArray(MAGIC_PROBE)
         val hn = runCatching { java.io.FileInputStream(dst).use { readFully(it, head) } }.getOrDefault(0)
         val sig = head.copyOf(hn)
         val what = detectFormatByMagic(sig)
@@ -2717,6 +2719,72 @@ internal object UuCommands {
         is TrParser.Bad.BadArg -> ctx.text(R.string.cli_tr_bad_arg, bad.step, bad.arg)
         TrParser.Bad.SkipNotFirst -> ctx.text(R.string.cli_tr_skip_first)
         is TrParser.Bad.TooManySteps -> ctx.text(R.string.cli_tr_too_many, bad.max.toString())
+    }
+
+    /**
+     * `uu guess <file|fN>` — 从内容反推「这个怪文件被做了什么变换」。
+     *
+     * 只读头部 [TrGuesser.HEAD_PROBE] 字节，不整文件进内存。**报告永远是
+     * 「候选 + 判据」**，不写「就是它」—— 证据不足的候选在 [TrGuesser] 里就被丢掉了。
+     *
+     * 用法顺序上它排在 `uu scan` 之后：`zip -F/-FF` 的教训是**先信任索引、再扫签名、
+     * 最后才猜**。猜出来的东西永远比读出来的弱。
+     */
+    private fun guess(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args)?.let { return it }
+        if (args.isEmpty()) return needFile()
+        if (args.size > 1) return Result(usageOf("guess"), 2)
+        val spec = args[0]
+
+        val host: File
+        val base: Long
+        val avail: Long
+        when (val r = fdRef(spec, ctx)) {
+            is FdRef.Stale -> return r.result
+            is FdRef.Hit -> { host = r.e.host; base = r.e.offset; avail = r.e.byteSize() }
+            FdRef.NotFd -> {
+                val f = UuText.resolve(ctx.cwd, spec)
+                if (!f.isFile) return Result(UuText.notFound(ctx.str, spec), 1)
+                host = f; base = 0L; avail = f.length()
+            }
+        }
+        val want = minOf(avail, TrGuesser.HEAD_PROBE.toLong()).toInt()
+        if (want <= 0) return Result(ctx.text(R.string.cli_guess_none, spec))
+        val head = ByteArray(want)
+        val n = runCatching {
+            java.io.RandomAccessFile(host, "r").use { raf ->
+                raf.seek(base)
+                var off = 0
+                while (off < head.size) {
+                    val k = raf.read(head, off, head.size - off)
+                    if (k <= 0) break
+                    off += k
+                }
+                off
+            }
+        }.getOrDefault(-1)
+        if (n < 0) return Result(UuText.failed(ctx.str, spec), 1)
+
+        val hits = TrGuesser.guess(TrProbe(head.copyOf(n), avail))
+        if (hits.isEmpty()) return Result(ctx.text(R.string.cli_guess_none, spec))
+
+        val sb = StringBuilder()
+        sb.append(ctx.text(R.string.cli_guess_header, spec, hits.size.toString())).append('\n')
+        for (h in hits) {
+            val ev = when (val e = h.evidence) {
+                is TrEvidence.Structure -> ctx.text(R.string.cli_guess_ev_struct, e.tag)
+                is TrEvidence.Constraints -> ctx.text(R.string.cli_guess_ev_constraints, e.n.toString())
+            }
+            sb.append("  ").append(h.pipeline.padEnd(GUESS_COL))
+                .append("→ ").append(h.format).append("  ").append(ev).append('\n')
+        }
+        // 把第一条写成能直接复制粘贴的命令 —— 用户不必自己拼管道
+        val top = hits.first()
+        sb.append(ctx.text(
+            R.string.cli_guess_try, spec, top.pipeline,
+            "${host.nameWithoutExtension}-fixed.${host.extension.ifEmpty { "bin" }}"
+        ))
+        return Result(sb.toString().trimEnd('\n'))
     }
 
     /** 条目表差异（纯函数,可单测）：(仅A, 仅B, 变化, ma, mb)。 */
@@ -2952,6 +3020,9 @@ internal object UuCommands {
 
     /** `uu sed`：整文件读入，所以有上限（与 `uu enc` / `uu b64` 同一个 64 MiB）。 */
     private const val SED_MAX_BYTES = 64L * 1024 * 1024
+
+    /** `uu guess` 候选列表的管道列宽（管道都是 ASCII，`padEnd` 按字符数即可）。 */
+    private const val GUESS_COL = 24
 
     /**
      * scan-core 的 label → 归档格式 key；非归档命中返回 null（只能 dd，不能 x/l）。

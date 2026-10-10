@@ -82,7 +82,7 @@ internal object UuCommands {
     internal enum class Kind {
         LIST_FORMATS, HELP, DOCS, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
         TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO,
-        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, DD, CMP, STRINGS, SED, IMG, FD, B64
+        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, DD, CMP, STRINGS, SED, TR, IMG, FD, B64
     }
 
     internal class Cmd(val name: String, val kind: Kind, val summary: String, val usage: String)
@@ -125,6 +125,7 @@ internal object UuCommands {
         Cmd("cmp",    Kind.CMP,          "Compare two files byte by byte",                "uu cmp <a> <b> [-l] [-s] [-n N]"),
         Cmd("strings", Kind.STRINGS,     "Extract printable strings (recon)",             "uu strings <file> [min] [-e ascii|utf16le] [-n max] [-a]"),
         Cmd("sed",    Kind.SED,          "Replace content (text, or hex bytes with --bytes)", "uu sed <from> <to> <file...> [-i] [--bytes]"),
+        Cmd("tr",     Kind.TR,           "Transform bytes through a pipeline (xor/add/rot/skip)", "uu tr <file> \"skip 16 | xor 0xAA\" [-o out] [-f]"),
         Cmd("img",    Kind.IMG,          "Convert images (jpg / png / webp)",             "uu img <src...> <jpg|png|webp> [-o dir] [-q 1-100]"),
         Cmd("fd",     Kind.FD,           "List the registered fN descriptors",            "uu fd [fN...]"),
         Cmd("b64",    Kind.B64,          "Base64 encode (default) or decode a file",      "uu b64 <file> [-d] [out]"),
@@ -173,6 +174,7 @@ internal object UuCommands {
                 Kind.CMP -> cmp(args, ctx)
                 Kind.STRINGS -> strings(args, ctx)
                 Kind.SED -> sed(args, ctx)
+                Kind.TR -> tr(args, ctx)
                 Kind.IMG -> img(args, ctx)
                 Kind.FD -> fd(args, ctx)
                 Kind.B64 -> b64(args, ctx)
@@ -2589,9 +2591,10 @@ internal object UuCommands {
 
     private fun ctxParent(f: File): File = f.absoluteFile.parentFile ?: File(".")
 
-    /** `DEADBEEF` / `de ad be ef` → 字节数组；非法（空 / 奇数长 / 非十六进制）返回 null。 */
+    /** `DEADBEEF` / `de ad be ef` / `0xDEADBEEF` → 字节数组；非法（空 / 奇数长 / 非十六进制）返回 null。 */
     private fun hexToBytes(s: String): ByteArray? {
-        val hex = s.filter { !it.isWhitespace() }
+        var hex = s.filter { !it.isWhitespace() }
+        if (hex.startsWith("0x", true)) hex = hex.drop(2)
         if (hex.isEmpty() || hex.length % 2 != 0) return null
         if (!hex.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }) return null
         return ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
@@ -2623,6 +2626,97 @@ internal object UuCommands {
         var i = text.indexOf(from)
         while (i >= 0) { n++; i = text.indexOf(from, i + from.length) }
         return n
+    }
+
+    /**
+     * `uu tr <file|fN> <pipeline> [-o out] [-f]` — 按管道变换字节。
+     *
+     * `uu tr game.dat "skip 16 | xor 0xAA" -o game.zip` —— 「整个文件被裹了一层」
+     * 这类归档的出路：内置的 27 种格式都解不了它，但它既不是加密也不是新压缩算法，
+     * 只是一个按偏移的字节函数。
+     *
+     * **源文件只读**，输出永远换路径（同 `uu dd` 的 same-file 拒绝）。变换完**必报
+     * 识别结果** —— `uu tr` 是显式字节操作（同 `dd`），不会因为"结果不像归档"就拒绝，
+     * 但一句不说就成了静默产出垃圾；真正要拦的是将来 `--pre` 那种隐式形式。
+     *
+     * 管道词表见 [TrParser] / [TrOp]。`skip` 只允许作第一步（放中间时"丢的是变换前
+     * 还是变换后的字节"有歧义，而那个歧义会静默改变结果）。
+     */
+    private fun tr(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args, listOf("-o", "-f"))?.let { return it }
+        val pa = splitFlags(args, listOf("-o"), listOf("-f"))
+        missingValueError(ctx, pa)?.let { return it }
+        if (pa.pos.size != 2) return Result(usageOf("tr"), 2)
+        val spec = pa.pos[0]
+        val pipeline = when (val p = TrParser.parse(pa.pos[1])) {
+            is TrParser.Out.Err -> return Result(trBadMessage(ctx, p.bad), 2)
+            is TrParser.Out.Ok -> p.pipeline
+        }
+
+        // 源：fN（区间或整文件）或普通路径 → (宿主文件, 基准偏移, 可用字节数)
+        val host: File
+        val base: Long
+        val avail: Long
+        when (val r = fdRef(spec, ctx)) {
+            is FdRef.Stale -> return r.result
+            is FdRef.Hit -> { host = r.e.host; base = r.e.offset; avail = r.e.byteSize() }
+            FdRef.NotFd -> {
+                val f = UuText.resolve(ctx.cwd, spec)
+                if (!f.isFile) return Result(UuText.notFound(ctx.str, spec), 1)
+                host = f; base = 0L; avail = f.length()
+            }
+        }
+        if (pipeline.skip > avail) {
+            return Result(ctx.text(R.string.cli_tr_skip_past_end, fmt(pipeline.skip), fmt(avail)), 1)
+        }
+        val outLen = avail - pipeline.skip
+
+        val dst = pa.values["-o"]?.let { UuText.resolve(ctx.cwd, it) }
+            ?: uniqueFile(
+                ctxParent(host),
+                "${host.nameWithoutExtension}-tr.${host.extension.ifEmpty { "bin" }}"
+            )
+        // 自己变换自己：先读后写会把还没读的源覆盖掉，产物必然是垃圾
+        if (dst.canonicalPath == host.canonicalPath) {
+            return Result(ctx.text(R.string.cli_dd_same_file, host.name), 1)
+        }
+        if (dst.isDirectory) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
+        if (dst.exists()) {
+            if ("-f" !in pa.bools) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
+            if (!dst.deleteRecursively()) return Result(UuText.failed(ctx.str, dst.path), 1)
+        }
+        dst.parentFile?.mkdirs()
+
+        val report: (Long) -> Unit = { done ->
+            ctx.progress?.invoke(ctx.text(R.string.cli_tr_progress, fmt(done), fmt(outLen)))
+        }
+        val res = runTransform(host, base, avail, pipeline, dst, report)
+        if (res is TrResult.Failed) {
+            dst.delete()   // 半成品不留：失败后留个截断文件比报错更坏
+            return Result(UuText.failed(ctx.str, dst.name), 1)
+        }
+        val ok = res as TrResult.Ok
+        if (ok.interrupted) {
+            dst.delete()
+            return Result(UuText.extractCancelled(ctx.str), 1)
+        }
+
+        // 变换完必报「变成了什么」；识别不出也要说，并给前几字节便于排查
+        val head = ByteArray(9)
+        val hn = runCatching { java.io.FileInputStream(dst).use { readFully(it, head) } }.getOrDefault(0)
+        val sig = head.copyOf(hn)
+        val what = detectFormatByMagic(sig)
+        val line = if (what != null) ctx.text(R.string.cli_tr_recognised, what)
+                   else ctx.text(R.string.cli_tr_unrecognised, sig.joinToString(" ") { "%02X".format(it) })
+        return Result(ctx.text(R.string.cli_tr_done, fmt(ok.written), dst.absolutePath) + "\n" + line)
+    }
+
+    /** 管道解析失败 → 指到具体哪一步。 */
+    private fun trBadMessage(ctx: Ctx, bad: TrParser.Bad): String = when (bad) {
+        is TrParser.Bad.UnknownStep -> ctx.text(R.string.cli_tr_unknown_step, bad.token)
+        is TrParser.Bad.BadArg -> ctx.text(R.string.cli_tr_bad_arg, bad.step, bad.arg)
+        TrParser.Bad.SkipNotFirst -> ctx.text(R.string.cli_tr_skip_first)
+        is TrParser.Bad.TooManySteps -> ctx.text(R.string.cli_tr_too_many, bad.max.toString())
     }
 
     /** 条目表差异（纯函数,可单测）：(仅A, 仅B, 变化, ma, mb)。 */

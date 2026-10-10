@@ -714,4 +714,13 @@
     <string name="cli_sed_summary">成功 %1$s 件、失敗 %2$s 件</string>
     <string name="cli_sed_empty_from">検索文字列を空にはできません</string>
     <string name="cli_sed_lossy">%1$s は %2$s でデコード→再エンコードしても元に戻りません — その場での編集を拒否します</string>
+    <string name="cli_tr_unknown_step">不明な変換ステップ：%1$s</string>
+    <string name="cli_tr_bad_arg">%1$s の引数が不正です：%2$s</string>
+    <string name="cli_tr_skip_first">skip は最初のステップに一度だけ指定できます</string>
+    <string name="cli_tr_too_many">ステップが多すぎます（上限 %1$s）</string>
+    <string name="cli_tr_skip_past_end">skip %1$s がコピー元の末尾を超えています（利用可能 %2$s）</string>
+    <string name="cli_tr_done">%1$s → %2$s</string>
+    <string name="cli_tr_recognised">変換後：%1$s</string>
+    <string name="cli_tr_unrecognised">変換後：既知の形式ではありません（先頭バイト：%1$s）</string>
+    <string name="cli_tr_progress">tr %1$s / %2$s</string>
 </resources>

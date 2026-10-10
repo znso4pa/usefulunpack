@@ -648,6 +648,16 @@ fun detectFormatByMagic(f: File): String? {
         val n = FileInputStream(f).use { it.read(buf) }
         if (n <= 0) return null else buf.copyOf(n)
     } catch (_: Exception) { return null }
+    return detectFormatByMagic(sig)
+}
+
+/**
+ * 魔数判定的**字节版核心** —— 磁盘版只是它的读盘包装。
+ *
+ * 单独拆出来的原因：`uu tr` 变换完要先看看「变成了什么」（不必落盘就能判），
+ * `uu guess` 更是要拿它当判据跑几百次候选。两处都只需要这十几条前缀。
+ */
+fun detectFormatByMagic(sig: ByteArray): String? {
     fun has(prefix: ByteArray): Boolean =
         sig.size >= prefix.size && sig.copyOf(prefix.size).contentEquals(prefix)
     return when {

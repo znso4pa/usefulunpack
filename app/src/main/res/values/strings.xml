@@ -721,4 +721,13 @@
     <string name="cli_sed_summary">%1$s changed, %2$s failed</string>
     <string name="cli_sed_empty_from">the search text must not be empty</string>
     <string name="cli_sed_lossy">%1$s does not survive a %2$s round-trip — refusing to edit it in place</string>
+    <string name="cli_tr_unknown_step">unknown transform step: %1$s</string>
+    <string name="cli_tr_bad_arg">bad argument for %1$s: %2$s</string>
+    <string name="cli_tr_skip_first">skip must be the first step, and only once</string>
+    <string name="cli_tr_too_many">too many steps (max %1$s)</string>
+    <string name="cli_tr_skip_past_end">skip %1$s is past the end (%2$s available)</string>
+    <string name="cli_tr_done">%1$s → %2$s</string>
+    <string name="cli_tr_recognised">after transform: %1$s</string>
+    <string name="cli_tr_unrecognised">after transform: not a known format (first bytes: %1$s)</string>
+    <string name="cli_tr_progress">tr %1$s / %2$s</string>
 </resources>

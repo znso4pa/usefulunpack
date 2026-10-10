@@ -1095,4 +1095,63 @@ class UuCommandsTest {
         // 文件不存在 → 1（notFound 的既有约定，同 uu hex / uu cat；不是 cmp 那种 0/1/2 三态）
         assertEquals(1, UuCommands.dispatch(listOf("strings", "nope.bin"), c).exitCode)
     }
+
+    // ─── 6.3：uu sed（内容替换） ──────────────────────────────────────────
+
+    @Test
+    fun sedPrintsToStdoutByDefaultAndLeavesTheFileAlone() {
+        val dir = tmp.root.resolve("sed1").apply { mkdirs() }
+        val f = File(dir, "a.txt").apply { writeText("hello world") }
+        val r = UuCommands.dispatch(listOf("sed", "hello", "goodbye", "a.txt"), ctx(dir))
+        assertEquals(r.text, 0, r.exitCode)
+        assertTrue(r.text, r.text.contains("goodbye world"))
+        // 不给 -i → 源文件必须原封不动
+        assertEquals("hello world", f.readText())
+    }
+
+    @Test
+    fun sedInPlaceRewritesAndKeepsTheBom() {
+        val dir = tmp.root.resolve("sed2").apply { mkdirs() }
+        val bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
+        val f = File(dir, "b.txt").apply { writeBytes(bom + "hello world".toByteArray()) }
+        val c = ctx(dir)
+        assertEquals(0, UuCommands.dispatch(listOf("sed", "-i", "hello", "goodbye", "b.txt"), c).exitCode)
+        // BOM 保住、内容换掉 —— 原地改不该顺手把编码/头改了
+        assertArrayEquals(bom + "goodbye world".toByteArray(), f.readBytes())
+        // 没命中 → 文件一个字节都不动
+        val before = f.readBytes()
+        assertEquals(0, UuCommands.dispatch(listOf("sed", "-i", "zzz", "yyy", "b.txt"), c).exitCode)
+        assertArrayEquals(before, f.readBytes())
+    }
+
+    @Test
+    fun sedBytesModeReplacesHexAndRequiresInPlace() {
+        val dir = tmp.root.resolve("sed3").apply { mkdirs() }
+        val f = File(dir, "p.bin").apply {
+            writeBytes(byteArrayOf(1, 2, 0xDE.toByte(), 0xAD.toByte(), 3))
+        }
+        val c = ctx(dir)
+        // --bytes 不配 -i → 参数错（二进制结果不能穿过终端）
+        assertEquals(2, UuCommands.dispatch(listOf("sed", "--bytes", "DEAD", "BEEF", "p.bin"), c).exitCode)
+        assertEquals(0, UuCommands.dispatch(listOf("sed", "--bytes", "-i", "DEAD", "BEEF", "p.bin"), c).exitCode)
+        assertArrayEquals(byteArrayOf(1, 2, 0xBE.toByte(), 0xEF.toByte(), 3), f.readBytes())
+    }
+
+    @Test
+    fun sedRejectsBinaryInTextModeAndBadArgs() {
+        val dir = tmp.root.resolve("sed4").apply { mkdirs() }
+        File(dir, "bin.dat").writeBytes(ByteArray(64))   // 全 NUL → 不是文本
+        File(dir, "t.txt").writeText("abc")
+        val c = ctx(dir)
+        // 文本模式撞上二进制 → 提示改用 --bytes，退出码 1
+        assertEquals(1, UuCommands.dispatch(listOf("sed", "a", "b", "bin.dat"), c).exitCode)
+        // 参数错：缺文件 / 空查找串 / 非法十六进制
+        assertEquals(2, UuCommands.dispatch(listOf("sed", "a", "b"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("sed", "", "b", "t.txt"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("sed", "--bytes", "-i", "XYZ", "AB", "t.txt"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("sed", "--bytes", "-i", "AB", "XY", "t.txt"), c).exitCode)
+        // 多文件：改一个、缺一个 → 退出码 1，但成功那个确实改了
+        assertEquals(1, UuCommands.dispatch(listOf("sed", "-i", "a", "b", "t.txt", "nope.txt"), c).exitCode)
+        assertEquals("bbc", File(dir, "t.txt").readText())
+    }
 }

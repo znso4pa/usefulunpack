@@ -704,4 +704,13 @@
     <string name="cli_strings_bad_min">最小長は 1–1024 の範囲で指定してください：%1$s</string>
     <string name="cli_strings_truncated">先頭 %1$s のみ走査しました — -a で範囲を広げられます</string>
     <string name="cli_strings_more">…ほか %1$s 件は非表示</string>
+    <string name="cli_sed_bad_hex">%1$s は 16 進バイト列ではありません</string>
+    <string name="cli_sed_binary">%1$s はテキストではありません — バイトモードを使ってください</string>
+    <string name="cli_sed_too_big">%1$s は大きすぎます（上限 %2$s）</string>
+    <string name="cli_sed_inplace_needs_file">-i には実ファイルが必要です：%1$s はスキャン結果です</string>
+    <string name="cli_sed_bytes_needs_i">--bytes には -i が必要です（バイナリ出力は端末を通せません）</string>
+    <string name="cli_sed_done">%1$s：%2$s 箇所を置換</string>
+    <string name="cli_sed_none">%1$s：一致なし</string>
+    <string name="cli_sed_summary">成功 %1$s 件、失敗 %2$s 件</string>
+    <string name="cli_sed_empty_from">検索文字列を空にはできません</string>
 </resources>

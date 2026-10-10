@@ -711,4 +711,13 @@
     <string name="cli_strings_bad_min">min length must be 1–1024: %1$s</string>
     <string name="cli_strings_truncated">scanned the first %1$s only — use -a to widen</string>
     <string name="cli_strings_more">… %1$s more not shown</string>
+    <string name="cli_sed_bad_hex">%1$s is not a hex byte string</string>
+    <string name="cli_sed_binary">%1$s is not text — switch to bytes mode</string>
+    <string name="cli_sed_too_big">%1$s is too large (limit %2$s)</string>
+    <string name="cli_sed_inplace_needs_file">-i needs a real file: %1$s is a scan hit</string>
+    <string name="cli_sed_bytes_needs_i">--bytes needs -i (binary output cannot go through the terminal)</string>
+    <string name="cli_sed_done">%1$s: %2$s replaced</string>
+    <string name="cli_sed_none">%1$s: no match</string>
+    <string name="cli_sed_summary">%1$s changed, %2$s failed</string>
+    <string name="cli_sed_empty_from">the search text must not be empty</string>
 </resources>

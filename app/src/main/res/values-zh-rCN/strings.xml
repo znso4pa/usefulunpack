@@ -738,4 +738,8 @@
     <string name="cli_post_failed_kept">后置变换失败 —— %1$s 保持**未变换**状态</string>
     <string name="cli_post_verify_failed">后置变换回读校验不通过（往返不一致）—— %1$s 保持**未变换**状态</string>
     <string name="cli_post_done">后置：%1$s</string>
+    <string name="cli_pre_warn">⚠ 已用前置变换（%1$s）：列出/解出的都是**变换后**的文件</string>
+    <string name="cli_pre_unrecognised">前置变换后未能识别为已知格式（管道：%1$s）—— 该变换并没有还原出归档</string>
+    <string name="cli_pre_empty">前置变换后已无可读内容（管道：%1$s）—— skip 把字节全丢光了</string>
+    <string name="cli_pre_too_big">前置变换后 %1$s 超出便捷变换的大小上限（管道：%2$s）—— 请先用 \"uu tr\" 落成一个永久文件</string>
 </resources>

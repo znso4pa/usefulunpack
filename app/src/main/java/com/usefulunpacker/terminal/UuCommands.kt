@@ -97,7 +97,7 @@ internal object UuCommands {
         Cmd("help",   Kind.HELP,         "Show this help",                                 "uu help"),
         Cmd("docs",   Kind.DOCS,         "Full command & parameter reference (table)",      "uu docs"),
         Cmd("info",   Kind.INFO,         "Print detected format key(s), one per line",            "uu info <file>"),
-        Cmd("l",      Kind.LIST,         "List entries (-j JSON / -t tree / -S by size)",  "uu l <archive> [-a] [-j] [-t] [-S] [-p pw]"),
+        Cmd("l",      Kind.LIST,         "List entries (-j JSON / -t tree / -S by size)",  "uu l <archive> [-a] [-j] [-t] [-S] [-p pw] [--pre pipe]"),
         Cmd("cat",    Kind.CAT,          "Print a text file or an archive's entry",        "uu cat <file|archive> [entry] [-e enc] [-p pw]"),
         Cmd("hash",   Kind.HASH,         "Print the MD5 and SHA-256 of files",            "uu hash <file>"),
         Cmd("grep",   Kind.GREP,         "Search text inside a folder or archive",         "uu grep [-i] <pattern> <path>"),
@@ -109,7 +109,7 @@ internal object UuCommands {
         Cmd("tree",   Kind.TREE,         "Recursive directory listing",                    "uu tree [dir] [depth]"),
         Cmd("du",     Kind.DU,           "Show total sizes (sums when given several paths)",        "uu du <path>"),
         Cmd("stat",   Kind.STAT,         "Show type / size / modified time",               "uu stat <path...>"),
-        Cmd("x",      Kind.EXTRACT,      "Extract an archive, optionally selected entries", "uu x <archive> [-o outdir] [entry...] [-p pw]"),
+        Cmd("x",      Kind.EXTRACT,      "Extract an archive, optionally selected entries", "uu x <archive> [-o outdir] [entry...] [-p pw] [--pre pipe]"),
         Cmd("c",      Kind.PACK,         "Pack files or folders (merge / separate)",                          "uu c <src...> [out] [-c|-s] [-f key] [-l level] [-b splitMB] [-e cxdec] [--post pipe] [-p pw]"),
         Cmd("set",    Kind.SET,          "Replace one entry inside an archive",            "uu set <archive> <entry> <localfile> [-p pw]"),
         Cmd("scan",   Kind.SCAN,         "Scan a file for embedded archive signatures",    "uu scan <file>"),
@@ -249,6 +249,7 @@ internal object UuCommands {
             "-b <splitMB>  " to "split size in MB (uu c, zip/7z only)",
             "-e <scheme>   " to "encrypt the pack (uu c, xp3 only): cxdec | hashcrypt | fatecrypt (alias fsn) | appliquecrypt | flyingshinecrypt | alteredpinkcrypt | dameganecrypt | natsupochicrypt | okibacrypt | dieselminecrypt — cxdec needs xp3filter.tjs/.tpm or an encrypted .xp3 in the folder, the keyless ones need nothing",
             "--post <pipe> " to "apply a reversible transform pipeline to the finished archive (uu c, single output only) — read it back with uu tr",
+            "--pre <pipe>   " to "transform the archive before listing/extracting (uu l / uu x): feeds the transformed bytes to list/extract, refuses if the result is not a recognised format, and prints a warning — a convenience over uu tr | uu x",
             "-e <enc>      " to "source text encoding (uu cat) · ascii | utf16le (uu strings)",
             "-o <dir>      " to "output directory (uu x / mvdec / img; for uu x the entries then follow unambiguously)",
             "-i            " to "case-insensitive search (uu grep) · edit the file in place (uu sed)",
@@ -320,7 +321,7 @@ internal object UuCommands {
     }
 
     private fun list(args: List<String>, ctx: Ctx): Result {
-        val pa = splitFlags(args, listOf("-p"), listOf("-a", "-j", "-t", "-S"))
+        val pa = splitFlags(args, listOf("-p", "--pre"), listOf("-a", "-j", "-t", "-S"))
         missingValueError(ctx, pa)?.let { return it }
         // -a = 打印全部条目；默认截断（有些归档几十万条，刷屏且吃光 scrollback）
         val showAll = "-a" in pa.bools
@@ -330,6 +331,13 @@ internal object UuCommands {
         val asTree = "-t" in pa.bools
         if (asJson && asTree) return Result(usageOf("l"), 2)
         if (asJson && "-S" in pa.bools) return Result(usageOf("l"), 2)   // JSON 交给脚本自己排
+        // --pre：读方向的便捷变换（见 [listOne] / [preTransform]）。不要求可逆：
+        // 读方向不需要把产物再变换回去，可逆性只在写方向（--post）才有意义。
+        val preText = pa.values["--pre"]
+        val prePipeline = if (preText == null) null else when (val r = TrParser.parse(preText)) {
+            is TrParser.Out.Err -> return Result(trBadMessage(ctx, r.bad), 2)
+            is TrParser.Out.Ok -> r.pipeline
+        }
         val pw = pa.values["-p"]?.takeIf { it.isNotEmpty() } ?: ctx.password ?: ""
         if (pa.pos.isEmpty()) return needFile()
         if (asJson && pa.pos.size > 1) return Result(ctx.text(R.string.cli_json_one_file, pa.pos.size.toString()), 2)
@@ -338,14 +346,14 @@ internal object UuCommands {
             val out = StringBuilder()
             for (spec in pa.pos) {
                 out.append("── ").append(spec).append('\n')
-                out.append(listOne(spec, showAll, pw, ctx).text).append('\n')
+                out.append(listOne(spec, showAll, pw, ctx, asJson, asTree, "-S" in pa.bools, prePipeline).text).append('\n')
             }
             return Result(out.toString().trimEnd('\n'))
         }
-        return listOne(pa.pos[0], showAll, pw, ctx, asJson, asTree, "-S" in pa.bools)
+        return listOne(pa.pos[0], showAll, pw, ctx, asJson, asTree, "-S" in pa.bools, prePipeline)
     }
 
-    private fun listOne(spec: String, showAll: Boolean, pwd: String, ctx: Ctx, asJson: Boolean = false, asTree: Boolean = false, bySize: Boolean = false): Result {
+    private fun listOne(spec: String, showAll: Boolean, pwd: String, ctx: Ctx, asJson: Boolean = false, asTree: Boolean = false, bySize: Boolean = false, prePipeline: TrPipeline? = null): Result {
         // fN → 整文件条目（ls 注册的）直接读 host；区间条目（scan 注册的）先
         // 临时 carve 出来再列
         when (val r = fdRef(spec, ctx)) {
@@ -353,7 +361,7 @@ internal object UuCommands {
             is FdRef.Hit -> {
                 val e = r.e
                 if (e.wholeFile) {
-                    return listEntries(e.host, e.host.name, showAll, pwd, ctx, asJson, asTree, bySize)
+                    return listResolved(e.host, e.host.name, showAll, pwd, ctx, asJson, asTree, bySize, prePipeline)
                 }
                 // 非归档命中（png/jpeg/pdf…）没有容器可列 —— 只能 `uu dd` 切出来。
                 if (!e.isArchive()) return Result(UuText.fdNotArchive(ctx.str, spec, e.label), 2)
@@ -361,7 +369,7 @@ internal object UuCommands {
                     ?: return Result(UuText.needsActivity(ctx.str), 2)
                 try {
                     // 展示名用 scan 的 label；临时文件名是一串哈希没有信息量。
-                    return listEntries(carved, e.label, showAll, pwd, ctx, asJson, asTree, bySize)
+                    return listResolved(carved, e.label, showAll, pwd, ctx, asJson, asTree, bySize, prePipeline)
                 } finally {
                     carved.deleteRecursively()
                 }
@@ -371,7 +379,44 @@ internal object UuCommands {
 
         val f = UuText.resolve(ctx.cwd, spec)
         if (!f.isFile) return Result(UuText.notFound(ctx.str, spec), 1)
-        return listEntries(f, f.name, showAll, pwd, ctx, asJson, asTree, bySize)
+        return listResolved(f, f.name, showAll, pwd, ctx, asJson, asTree, bySize, prePipeline)
+    }
+
+    /**
+     * `listOne` 的「已解析成具体文件」收口点：`[prePipeline]` 非空时先把文件变换到
+     * 临时文件，再交给 [listEntries]。
+     *
+     * 读方向**不要求可逆**（逆只在写方向 `--post` 才有意义），但变换结果必须能被
+     * [detectFormatByMagic] 认出是归档 —— 否则就是「变换后还是垃圾」，静默喂给
+     * 列目录器只会刷出一堆废条目，不如直接拒（[preTransform] 里处理）。
+     *
+     * 临时文件在 `finally` 删掉；变换了就**必须**在前头加一行醒目提示（见
+     * [R.string.cli_pre_warn]），因为 `--pre` 是隐式的、用户可能没意识到列的是变换后的。
+     * `-j` JSON 路径不加文字提示（那会破坏可解析性，且脚本作者本就显式传了 `--pre`）。
+     */
+    private fun listResolved(
+        f: File, displayName: String, showAll: Boolean, pwd: String, ctx: Ctx,
+        asJson: Boolean, asTree: Boolean, bySize: Boolean, prePipeline: TrPipeline?,
+    ): Result {
+        val target: File
+        var temp: File? = null
+        if (prePipeline != null) {
+            when (val t = preTransform(f, prePipeline, ctx)) {
+                is PreResult.Err -> return t.result
+                is PreResult.Ok -> { temp = t.file; target = t.file }
+            }
+        } else {
+            target = f
+        }
+        return try {
+            val inner = listEntries(target, displayName, showAll, pwd, ctx, asJson, asTree, bySize)
+            val warn = if (temp != null && !asJson && prePipeline != null) {
+                ctx.text(R.string.cli_pre_warn, prePipeline.text()) + "\n"
+            } else ""
+            Result(warn + inner.text, inner.exitCode)
+        } finally {
+            temp?.deleteRecursively()
+        }
     }
 
     private fun listEntries(
@@ -690,9 +735,16 @@ internal object UuCommands {
      * 加密包在**拿调度槽之前**解决（-p 或模态询问）。
      */
     private fun extract(args: List<String>, ctx: Ctx): Result {
-        val pa = splitFlags(args, listOf("-p", "-o"))
+        val pa = splitFlags(args, listOf("-p", "-o", "--pre"))
         missingValueError(ctx, pa)?.let { return it }
         val (flags, _, pos) = Triple(pa.values, pa.bools, pa.pos)
+        // --pre：读方向的便捷变换（见 [preTransform]）。不要求可逆（逆只在写方向
+        // --post 有意义），但变换结果必须能被 detectFormatByMagic 认出，否则拒绝。
+        val preText = flags["--pre"]
+        val prePipeline = if (preText == null) null else when (val r = TrParser.parse(preText)) {
+            is TrParser.Out.Err -> return Result(trBadMessage(ctx, r.bad), 2)
+            is TrParser.Out.Ok -> r.pipeline
+        }
         val pw = flags["-p"]?.takeIf { it.isNotEmpty() } ?: ctx.password
         if (pos.isEmpty()) return needFile()
         val spec = pos[0]
@@ -701,8 +753,9 @@ internal object UuCommands {
 
         // fN 引用：整文件条目直接用 host；区间条目临时 carve 出来再解
         var carvedTemp: File? = null
+        var preTemp: File? = null
         // `run` 是 inline，所以分支里的 `return` 直接返回本函数（非局部返回）。
-        val (src0, displayName) = run {
+        val (src0Raw, displayName) = run {
             when (val r = fdRef(spec, ctx)) {
                 is FdRef.Stale -> return r.result
                 is FdRef.Hit -> {
@@ -723,6 +776,17 @@ internal object UuCommands {
                     f to f.name
                 }
             }
+        }
+
+        // --pre：把解析好的源先变换到临时文件，再交给解压器。变换结果必须能被
+        // 认出是归档，否则拒绝（preTransform 里处理）；变换后会在成功消息里加提示。
+        val src0: File = if (prePipeline != null) {
+            when (val t = preTransform(src0Raw, prePipeline, ctx)) {
+                is PreResult.Err -> return t.result
+                is PreResult.Ok -> { preTemp = t.file; t.file }
+            }
+        } else {
+            src0Raw
         }
 
         try {
@@ -824,18 +888,22 @@ internal object UuCommands {
                 }
                 val missNote = if (selMisses.isEmpty()) "" else
                     "\n" + ctx.text(R.string.cli_x_glob_miss, selMisses.joinToString(" "))
+                val preNote = if (prePipeline != null) {
+                    "\n" + ctx.text(R.string.cli_pre_warn, prePipeline.text())
+                } else ""
                 return Result(
                     ctx.text(R.string.cli_extract_ok, displayName,
                         o.counts.total.toString(), o.counts.success.toString(),
                         o.counts.error.toString()) + "\n" +
                     ctx.text(R.string.cli_all_set) + "\n" +
-                    ctx.text(R.string.cli_x_outdir, outDir.absolutePath) + missNote
+                    ctx.text(R.string.cli_x_outdir, outDir.absolutePath) + missNote + preNote
                 )
             } finally {
                 opH?.release()
             }
         } finally {
             carvedTemp?.deleteRecursively()
+            preTemp?.deleteRecursively()
         }
     }
 
@@ -1139,6 +1207,58 @@ internal object UuCommands {
             opH?.release()
         }
     }
+
+    /**
+     * `uu l/x --pre` 的变换结果。
+     *
+     * 读方向便捷形式：把源按管道变换到临时文件，再交给 list/extract。
+     * [Err] 携带一条已成形、可直接返回的 Result（变换失败 / 变换后认不出格式）。
+     */
+    private sealed class PreResult {
+        class Ok(val file: File) : PreResult()
+        class Err(val result: Result) : PreResult()
+    }
+
+    /**
+     * `uu l/x --pre` —— 把 [host] 整体按 [pipeline] 变换到临时文件。
+     *
+     * 读方向**不要求可逆**（逆只在写方向 `--post` 有意义），但变换结果**必须能被
+     * [detectFormatByMagic] 认出是归档** —— 否则就是「变换后还是垃圾」，静默喂给
+     * 列目录 / 解压器只会产出一堆废条目 / 废文件，不如直接拒。
+     *
+     * 临时文件落在 [Ctx.cacheDir]（没有 → 报 `needsActivity`）；调用方负责删除
+     * （`uu l` 在 [listResolved] 的 finally，`uu x` 在自己的 finally）。
+     *
+     * 设了一个宽松的大小上限 [PRE_MAX_BYTES]：超出就拒，提示改用 `uu tr` 先落成
+     * 永久文件再解 —— 避免在大包上静默复制出一份同样大的临时文件。
+     */
+    private fun preTransform(host: File, pipeline: TrPipeline, ctx: Ctx): PreResult {
+        val cache = ctx.cacheDir ?: return PreResult.Err(Result(UuText.needsActivity(ctx.str), 2))
+        val avail = runCatching { host.length() }.getOrDefault(0L)
+        val outLen = avail - pipeline.skip
+        if (outLen <= 0) {
+            return PreResult.Err(Result(ctx.text(R.string.cli_pre_empty, pipeline.text()), 1))
+        }
+        if (outLen > PRE_MAX_BYTES) {
+            return PreResult.Err(Result(ctx.text(R.string.cli_pre_too_big, fmt(outLen), pipeline.text()), 1))
+        }
+        val tmp = File(cache, "uu_pre/${host.nameWithoutExtension}-${System.nanoTime()}.bin")
+        tmp.parentFile?.mkdirs()
+        val res = runTransform(host, 0, null, pipeline, tmp)
+        if (res !is TrResult.Ok || res.interrupted) {
+            tmp.delete()
+            return PreResult.Err(Result(UuText.failed(ctx.str, host.name), 1))
+        }
+        // 防呆：变换后必须能认出是归档，否则拒（见上）。
+        if (detectFormatByMagic(tmp) == null) {
+            tmp.delete()
+            return PreResult.Err(Result(ctx.text(R.string.cli_pre_unrecognised, pipeline.text()), 1))
+        }
+        return PreResult.Ok(tmp)
+    }
+
+    /** `--pre` 便捷变换允许的最大临时文件大小（8 GiB）。超出见 [preTransform]。 */
+    private const val PRE_MAX_BYTES = 1L shl 33
 
     /**
      * `uu c --post` —— 对刚打好的归档整体施加一条**可逆**管道。

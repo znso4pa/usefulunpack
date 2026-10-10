@@ -733,4 +733,8 @@
     <string name="cli_post_failed_kept">後置変換に失敗しました — %1$s は**未変換**のままです</string>
     <string name="cli_post_verify_failed">後置変換の読み戻し検証に失敗（往復不一致）— %1$s は**未変換**のままです</string>
     <string name="cli_post_done">後置：%1$s</string>
+    <string name="cli_pre_warn">⚠ 前置変換を適用（%1$s）：この一覧・展開は**変換後**のファイルに対するものです</string>
+    <string name="cli_pre_unrecognised">前置変換後、既知の形式として認識されませんでした（パイプライン：%1$s）—— アーカイブには復元されていません</string>
+    <string name="cli_pre_empty">前置変換後、読める内容がありません（パイプライン：%1$s）—— skip がすべてを捨てました</string>
+    <string name="cli_pre_too_big">前置変換後、%1$s が便利変換のサイズ上限を超えました（パイプライン：%2$s）—— まず \"uu tr\" で永続ファイルに書き出してください</string>
 </resources>

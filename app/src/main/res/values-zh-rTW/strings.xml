@@ -733,4 +733,8 @@
     <string name="cli_post_failed_kept">後置變換失敗 —— %1$s 保持**未變換**狀態</string>
     <string name="cli_post_verify_failed">後置變換回讀校驗不通過（往返不一致）—— %1$s 保持**未變換**狀態</string>
     <string name="cli_post_done">後置：%1$s</string>
+    <string name="cli_pre_warn">⚠ 已用前置變換（%1$s）：列出/解出的都是**變換後**的檔案</string>
+    <string name="cli_pre_unrecognised">前置變換後未能識別為已知格式（管道：%1$s）—— 該變換並沒有還原出封存</string>
+    <string name="cli_pre_empty">前置變換後已無可讀內容（管道：%1$s）—— skip 把位元組全丟光了</string>
+    <string name="cli_pre_too_big">前置變換後 %1$s 超出便捷變換的大小上限（管道：%2$s）—— 請先用 \"uu tr\" 落成永久檔案</string>
 </resources>

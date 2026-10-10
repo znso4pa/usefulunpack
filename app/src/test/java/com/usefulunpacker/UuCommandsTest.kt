@@ -1436,4 +1436,80 @@ class UuCommandsTest {
         transformed.writeBytes(ByteArray(raw.size - 1))
         assertFalse(UuCommands.inverseRoundTrips(original, transformed, inv))
     }
+
+    // ─── 6.3：uu l / uu x --pre（读方向的便捷变换） ───────────────────────
+
+    /**
+     * `--pre` 的核心安全闸：变换结果必须能被认出是归档，否则拒绝。
+     * 这里用「错误的 key」让一个已加扰的 zip 变换后仍是乱码 → 必须拒。
+     * 这条路径在 native 列目录之前就返回，所以不依赖 native 侧。
+     */
+    @Test
+    fun preListRefusesWhenTransformDoesNotRecoverAnArchive() {
+        val dir = tmp.root.resolve("pre1").apply { mkdirs() }
+        scrambledZip(dir, "weird.dat", 0xAA)   // 一个被 0xAA 异或的 zip
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr(), cacheDir = dir)
+        // 再用一个不同的 key 变换 → 结果不是任何已知格式 → 拒绝（不会走到 native）
+        val r = UuCommands.dispatch(listOf("l", "weird.dat", "--pre", "xor 0x55"), c)
+        assertEquals(r.text, 1, r.exitCode)
+        assertTrue(r.text, r.text.contains("!str:${R.string.cli_pre_unrecognised}"))
+    }
+
+    /** 同上的 extract 分支：拒绝发生在解压之前。 */
+    @Test
+    fun preExtractRefusesWhenTransformDoesNotRecoverAnArchive() {
+        val dir = tmp.root.resolve("pre2").apply { mkdirs() }
+        scrambledZip(dir, "weird.dat", 0xAA)
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr(), cacheDir = dir)
+        val r = UuCommands.dispatch(listOf("x", "weird.dat", "--pre", "xor 0x55"), c)
+        assertEquals(r.text, 1, r.exitCode)
+        assertTrue(r.text, r.text.contains("!str:${R.string.cli_pre_unrecognised}"))
+    }
+
+    /**
+     * `--pre` 真把文件变换回来了 → 必须走到「变换后」那一端（警告行出现、且不拒）。
+     * 列出/解压本身要 native 侧、单测跑不动，所以这里只断言「变换已发生、且没被当垃圾拒」。
+     */
+    @Test
+    fun preWarnsWhenTheTransformRecoversAnArchive() {
+        val dir = tmp.root.resolve("pre3").apply { mkdirs() }
+        val (weird, _) = scrambledZip(dir, "weird.dat", 0xAA)   // zip XOR 0xAA
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr(), cacheDir = dir)
+        // 再用 0xAA 变回去 → 还原成真 zip → 可识别，不会拒
+        val r = UuCommands.dispatch(listOf("l", "weird.dat", "--pre", "xor 0xAA"), c)
+        assertTrue(r.text, r.text.contains("!str:${R.string.cli_pre_warn}"))
+        assertFalse(r.text, r.text.contains("!str:${R.string.cli_pre_unrecognised}"))
+        // 临时文件必须被清理（listResolved 的 finally）
+        assertTrue("uu_pre 临时文件应被清理", dir.resolve("uu_pre").listFiles().isNullOrEmpty())
+    }
+
+    /** 管道本身不合法 → 参数错（与 --post 同样的解析入口 trBadMessage）。 */
+    @Test
+    fun preRejectsBadPipeline() {
+        val dir = tmp.root.resolve("pre4").apply { mkdirs() }
+        rampFile(dir, "x.bin", 32)
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr(), cacheDir = dir)
+        assertEquals(2, UuCommands.dispatch(listOf("l", "x.bin", "--pre", "nope"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("l", "x.bin", "--pre", "xor ZZ"), c).exitCode)
+    }
+
+    /** `--pre` 缺后续值 → 报缺值错误（与 -p 同一条 missingValueError 通道）。 */
+    @Test
+    fun preRejectsMissingValue() {
+        val dir = tmp.root.resolve("pre5").apply { mkdirs() }
+        rampFile(dir, "x.bin", 32)
+        val c = ctx(dir)
+        assertEquals(1, UuCommands.dispatch(listOf("l", "x.bin", "--pre"), c).exitCode)
+    }
+
+    /** `skip` 把字节全丢光 → 报「无可读内容」，而不是静默产出空文件。 */
+    @Test
+    fun preRejectsWhenSkipDropsEverything() {
+        val dir = tmp.root.resolve("pre6").apply { mkdirs() }
+        rampFile(dir, "x.bin", 32)
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr(), cacheDir = dir)
+        val r = UuCommands.dispatch(listOf("l", "x.bin", "--pre", "skip 999"), c)
+        assertEquals(r.text, 1, r.exitCode)
+        assertTrue(r.text, r.text.contains("!str:${R.string.cli_pre_empty}"))
+    }
 }

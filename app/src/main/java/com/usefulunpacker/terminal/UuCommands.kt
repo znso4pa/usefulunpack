@@ -110,7 +110,7 @@ internal object UuCommands {
         Cmd("du",     Kind.DU,           "Show total sizes (sums when given several paths)",        "uu du <path>"),
         Cmd("stat",   Kind.STAT,         "Show type / size / modified time",               "uu stat <path...>"),
         Cmd("x",      Kind.EXTRACT,      "Extract an archive, optionally selected entries", "uu x <archive> [-o outdir] [entry...] [-p pw]"),
-        Cmd("c",      Kind.PACK,         "Pack files or folders (merge / separate)",                          "uu c <src...> [out] [-c|-s] [-f key] [-l level] [-b splitMB] [-e cxdec] [-p pw]"),
+        Cmd("c",      Kind.PACK,         "Pack files or folders (merge / separate)",                          "uu c <src...> [out] [-c|-s] [-f key] [-l level] [-b splitMB] [-e cxdec] [--post pipe] [-p pw]"),
         Cmd("set",    Kind.SET,          "Replace one entry inside an archive",            "uu set <archive> <entry> <localfile> [-p pw]"),
         Cmd("scan",   Kind.SCAN,         "Scan a file for embedded archive signatures",    "uu scan <file>"),
         Cmd("cso",    Kind.CSO,          "Convert ISO ↔ CSO",                              "uu cso <file> [out]"),
@@ -248,6 +248,7 @@ internal object UuCommands {
             "-l            " to "list every differing byte, not just the first (uu cmp)",
             "-b <splitMB>  " to "split size in MB (uu c, zip/7z only)",
             "-e <scheme>   " to "encrypt the pack (uu c, xp3 only): cxdec | hashcrypt | fatecrypt (alias fsn) | appliquecrypt | flyingshinecrypt | alteredpinkcrypt | dameganecrypt | natsupochicrypt | okibacrypt | dieselminecrypt — cxdec needs xp3filter.tjs/.tpm or an encrypted .xp3 in the folder, the keyless ones need nothing",
+            "--post <pipe> " to "apply a reversible transform pipeline to the finished archive (uu c, single output only) — read it back with uu tr",
             "-e <enc>      " to "source text encoding (uu cat) · ascii | utf16le (uu strings)",
             "-o <dir>      " to "output directory (uu x / mvdec / img; for uu x the entries then follow unambiguously)",
             "-i            " to "case-insensitive search (uu grep) · edit the file in place (uu sed)",
@@ -880,12 +881,26 @@ internal object UuCommands {
      *  产物名**拿到调度槽之后**解析（排队互不撞名）；已存在拒绝；`.pfs` 二义必须 -f。
      */
     private fun pack(args: List<String>, ctx: Ctx): Result {
-        val pa = splitFlags(args, listOf("-p", "-f", "-l", "-b", "-e"), listOf("-c", "-s"))
+        val pa = splitFlags(args, listOf("-p", "-f", "-l", "-b", "-e", "--post"), listOf("-c", "-s"))
         missingValueError(ctx, pa)?.let { return it }
         val (flags, bools, pos) = Triple(pa.values, pa.bools, pa.pos)
         val merge = "-c" in bools
         val separate = "-s" in bools
         if (merge && separate) return Result(UuText.failed(ctx.str, "-c / -s"), 1)
+        // `--post`：写方向的自定义「压缩」——把打好的归档整体再过一条**可逆**管道。
+        // 只在单源模式有意义：批量会产出多个文件、分卷更是没法整体变换。
+        val postPipeline = flags["--post"]?.let { text ->
+            when (val r = TrParser.parse(text)) {
+                is TrParser.Out.Err -> return Result(trBadMessage(ctx, r.bad), 2)
+                is TrParser.Out.Ok -> r.pipeline
+            }
+        }
+        if (postPipeline != null) {
+            if (merge || separate) return Result(ctx.text(R.string.cli_post_single_only), 1)
+            if (postPipeline.inverse() == null) {
+                return Result(ctx.text(R.string.cli_post_not_invertible), 1)
+            }
+        }
         val pw = flags["-p"] ?: ""
         val forceKey = flags["-f"]
         // `-e <scheme>`: only xp3 knows how to encrypt. The value is normalized
@@ -1112,11 +1127,87 @@ internal object UuCommands {
                 return Result(UuText.packFailed(ctx.str, outFile.name) +
                     if (why.isEmpty()) "" else "\n$why", 1)
             }
+            var postNote = ""
+            if (postPipeline != null) {
+                applyPost(ctx, outFile, postPipeline)?.let { return it }
+                postNote = "\n" + ctx.text(R.string.cli_post_done, postPipeline.text())
+            }
             return Result(ctx.text(R.string.cli_pack_ok, outFile.name) +
-                (if (encNote.isEmpty()) "" else "\n$encNote") + "\n" +
+                (if (encNote.isEmpty()) "" else "\n$encNote") + postNote + "\n" +
                 ctx.text(R.string.cli_all_set))
         } finally {
             opH?.release()
+        }
+    }
+
+    /**
+     * `uu c --post` —— 对刚打好的归档整体施加一条**可逆**管道。
+     *
+     * 写方向比读方向危险得多：产出的是一个**只有知道这条管道的人才解得开**的文件。
+     * 两道闸：
+     *  ① **静态**：管道必须整体可逆（`skip` 直接拒）—— 逆不存在就无从验证；
+     *  ② **动态**：变换完用**逆管道读回**，与变换前的中间产物**逐字节比对**，不等就
+     *     判定失败。这是唯一能挡住「写出来看着成功、其实已经坏了」的防线。
+     *
+     * 失败时把**未变换**的归档还原回原路径，并在消息里写明 —— 既不毁掉打包的成果，
+     * 也不让人误以为拿到的是变换过的包。
+     *
+     * @return 出错时的 Result；成功返回 null（调用方继续正常收尾）。
+     */
+    private fun applyPost(ctx: Ctx, out: File, pipeline: TrPipeline): Result? {
+        val inverse = pipeline.inverse()
+            ?: return Result(ctx.text(R.string.cli_post_not_invertible), 1)
+        val pre = File(ctxParent(out), ".${out.name}.${System.nanoTime()}.pre")
+        // 产物先挪到一边：变换的输入必须是它、输出必须是原路径
+        if (!out.renameTo(pre)) return Result(UuText.failed(ctx.str, out.name), 1)
+        val r = runTransform(pre, 0, pre.length(), pipeline, out)
+        val wrote = (r as? TrResult.Ok)?.takeIf { !it.interrupted }
+        if (r is TrResult.Failed || wrote == null) {
+            out.delete()
+            pre.renameTo(out)
+            return Result(ctx.text(R.string.cli_post_failed_kept, out.name), 1)
+        }
+        if (!inverseRoundTrips(pre, out, inverse)) {
+            out.delete()
+            pre.renameTo(out)
+            return Result(ctx.text(R.string.cli_post_verify_failed, out.name), 1)
+        }
+        pre.delete()
+        return null
+    }
+
+    /**
+     * 用 [inverse] 解 [transformed]，与 [original] 逐字节比对。分块，不整读。
+     * 长度也必须相等 —— 管道既然可逆，长度就不可能变。
+     *
+     * `internal` 是为了能单测：打包路径要 native 侧，单测里跑不动，但这条校验
+     * 是 `--post` 唯一的防线，必须能单独验。
+     */
+    internal fun inverseRoundTrips(original: File, transformed: File, inverse: TrPipeline): Boolean {
+        if (original.length() != transformed.length()) return false
+        return try {
+            java.io.FileInputStream(original).use { a ->
+                java.io.FileInputStream(transformed).use { b ->
+                    val ba = ByteArray(1 shl 20)
+                    val bb = ByteArray(1 shl 20)
+                    var off = 0L
+                    while (true) {
+                        val na = readFully(a, ba)
+                        val nb = readFully(b, bb)
+                        if (na != nb) return false
+                        if (na <= 0) break
+                        for (i in 0 until nb) {
+                            var v = bb[i]
+                            for (s in inverse.steps) v = s.apply(off + i, v)
+                            if (v != ba[i]) return false
+                        }
+                        off += na
+                    }
+                    true
+                }
+            }
+        } catch (_: Exception) {
+            false
         }
     }
 

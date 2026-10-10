@@ -728,4 +728,9 @@
     <string name="cli_guess_ev_struct">構造：%1$s</string>
     <string name="cli_guess_ev_constraints">マジック制約 ×%1$s</string>
     <string name="cli_guess_try">試す：uu tr %1$s "%2$s" -o %3$s</string>
+    <string name="cli_post_single_only">--post は単一の出力にのみ使えます（-c / -s とは併用不可）</string>
+    <string name="cli_post_not_invertible">--post には可逆なパイプラインが必要です（各ステップが取り消せること。skip は不可）</string>
+    <string name="cli_post_failed_kept">後置変換に失敗しました — %1$s は**未変換**のままです</string>
+    <string name="cli_post_verify_failed">後置変換の読み戻し検証に失敗（往復不一致）— %1$s は**未変換**のままです</string>
+    <string name="cli_post_done">後置：%1$s</string>
 </resources>

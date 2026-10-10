@@ -740,4 +740,8 @@
     <string name="cli_post_failed_kept">post-transform failed — %1$s was left UNTRANSFORMED</string>
     <string name="cli_post_verify_failed">post-transform did not verify (round-trip mismatch) — %1$s was left UNTRANSFORMED</string>
     <string name="cli_post_done">post: %1$s</string>
+    <string name="cli_pre_warn">⚠ pre-transform applied (%1$s): this listing/extraction is of the TRANSFORMED file</string>
+    <string name="cli_pre_unrecognised">after pre-transform: not a known format (pipeline: %1$s) — the transform did not recover an archive</string>
+    <string name="cli_pre_empty">after pre-transform: nothing left to read (pipeline: %1$s) — skip dropped everything</string>
+    <string name="cli_pre_too_big">after pre-transform: %1$s exceeds the convenience size limit (pipeline: %2$s) — use \"uu tr\" to write a permanent file first</string>
 </resources>

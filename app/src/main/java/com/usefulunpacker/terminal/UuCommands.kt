@@ -322,27 +322,25 @@ internal object UuCommands {
     private fun listOne(spec: String, showAll: Boolean, pwd: String, ctx: Ctx, asJson: Boolean = false, asTree: Boolean = false, bySize: Boolean = false): Result {
         // fN → 整文件条目（ls 注册的）直接读 host；区间条目（scan 注册的）先
         // 临时 carve 出来再列
-        val fd = ctx.fds?.get(spec.removePrefix("f").toIntOrNull() ?: -1)
-        if (fd != null) {
-            if (fd.wholeFile) {
-                ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
-                return listEntries(fd.host, fd.host.name, showAll, pwd, ctx, asJson, asTree, bySize)
+        when (val r = fdRef(spec, ctx)) {
+            is FdRef.Stale -> return r.result
+            is FdRef.Hit -> {
+                val e = r.e
+                if (e.wholeFile) {
+                    return listEntries(e.host, e.host.name, showAll, pwd, ctx, asJson, asTree, bySize)
+                }
+                // 非归档命中（png/jpeg/pdf…）没有容器可列 —— 只能 `uu dd` 切出来。
+                if (!e.isArchive()) return Result(UuText.fdNotArchive(ctx.str, spec, e.label), 2)
+                val carved = carveFd(e, ctx)
+                    ?: return Result(UuText.needsActivity(ctx.str), 2)
+                try {
+                    // 展示名用 scan 的 label；临时文件名是一串哈希没有信息量。
+                    return listEntries(carved, e.label, showAll, pwd, ctx, asJson, asTree, bySize)
+                } finally {
+                    carved.deleteRecursively()
+                }
             }
-            if (!fd.isArchive()) {
-                return Result(UuText.fdNotArchive(ctx.str, spec, fd.label), 2)
-            }
-            ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
-            val carved = ctx.cacheDir?.let {
-                File(it, "uufd/f${fd.fd}-${fd.label.hashCode()}-${System.nanoTime()}")
-            } ?: return Result(UuText.needsActivity(ctx.str), 2)
-            try {
-                carved.parentFile?.mkdirs()
-                carveToFile(fd.host, fd.offset, fd.length, carved) {}
-                // 展示名用 scan 的 label；临时文件名是一串哈希没有信息量。
-                return listEntries(carved, fd.label, showAll, pwd, ctx, asJson, asTree, bySize)
-            } finally {
-                carved.deleteRecursively()
-            }
+            FdRef.NotFd -> Unit
         }
 
         val f = UuText.resolve(ctx.cwd, spec)
@@ -449,6 +447,49 @@ internal object UuCommands {
         Result("MD5      " + hashFile(f, "MD5") + "\nSHA-256  " + hashFile(f, "SHA-256"))
 
     /**
+     * `fN` 的解析结果。
+     *
+     * 三态不能压成 `Entry?`：[Stale] 必须报错而不是当路径走（宿主已被改写/删除，
+     * 偏移已无意义），而 [NotFd] **同时覆盖「不是 fN 形状」与「是 fN 形状但表里
+     * 没有」** —— 两者都得退回普通路径解析，因为用户完全可能有名字就叫 `f99` 的
+     * 文件。早先三处调用点各自写 `get(-1)` 再判空，行为相同但这层意思看不出来。
+     */
+    private sealed class FdRef {
+        object NotFd : FdRef()
+        class Stale(val result: Result) : FdRef()
+        class Hit(val e: FdTable.Entry) : FdRef()
+    }
+
+    /**
+     * `fN` → 条目，含新鲜度校验。**全项目唯一的 fN 解析入口** ——
+     * 此前 `listOne` / `resolveSource` / `extract` 各抄了一份同样的三行。
+     */
+    private fun fdRef(spec: String, ctx: Ctx): FdRef {
+        val fds = ctx.fds ?: return FdRef.NotFd
+        if (!fds.looksLikeFd(spec)) return FdRef.NotFd
+        val e = fds.get(spec.removePrefix("f").toIntOrNull() ?: return FdRef.NotFd)
+            ?: return FdRef.NotFd
+        fds.checkFresh(e)?.let { return FdRef.Stale(Result(staleMsg(ctx.str, it), 1)) }
+        return FdRef.Hit(e)
+    }
+
+    /**
+     * 区间条目临时 carve 到 [Ctx.cacheDir]；返回临时文件（**调用方负责删除**）。
+     * 没有 cacheDir（单测/无 Activity）→ null，调用方报 `needsActivity`。
+     *
+     * 文件名每次调用唯一化：hash/cp 不占调度槽，两条命令并发引用同一 fN 时
+     * 确定性文件名会互踩（truncate 中的文件被读 → 哈希错 / 被先完成方删除）。
+     */
+    private fun carveFd(e: FdTable.Entry, ctx: Ctx): File? {
+        val carved = ctx.cacheDir?.let {
+            File(it, "uufd/f${e.fd}-${e.label.hashCode()}-${System.nanoTime()}")
+        } ?: return null
+        carved.parentFile?.mkdirs()
+        carveToFile(e.host, e.offset, e.length, carved) {}
+        return carved
+    }
+
+    /**
      * 把参数解析成实际文件：`fN` 优先（整文件条目直接用 host；区间条目先临时
      * carve，[SrcSpec.temp] 交调用方清理），非 fN 走普通路径。
      */
@@ -458,20 +499,18 @@ internal object UuCommands {
         class Fail(val result: Result) : SrcSpec()
     }
 
-    private fun resolveSource(spec: String, ctx: Ctx): SrcSpec {
-        val fd = ctx.fds?.get(spec.removePrefix("f").toIntOrNull() ?: -1)
-            ?: return SrcSpec.Path(UuText.resolve(ctx.cwd, spec))
-        ctx.fds.checkFresh(fd)?.let { return SrcSpec.Fail(Result(staleMsg(ctx.str, it), 1)) }
-        if (fd.wholeFile) return SrcSpec.Fd(fd.host, null)
-        // 每次调用唯一化：hash/cp 不占调度槽，两条命令并发引用同一 fN 时
-        // 确定性文件名会互踩（truncate 中的文件被读 → 哈希错 / 被先完成方删除）。
-        val carved = ctx.cacheDir?.let {
-            File(it, "uufd/f${fd.fd}-${fd.label.hashCode()}-${System.nanoTime()}")
-        } ?: return SrcSpec.Fail(Result(UuText.needsActivity(ctx.str), 2))
-        carved.parentFile?.mkdirs()
-        carveToFile(fd.host, fd.offset, fd.length, carved) {}
-        return SrcSpec.Fd(carved, carved)
-    }
+    private fun resolveSource(spec: String, ctx: Ctx): SrcSpec =
+        when (val r = fdRef(spec, ctx)) {
+            is FdRef.Stale -> SrcSpec.Fail(r.result)
+            is FdRef.Hit -> if (r.e.wholeFile) {
+                SrcSpec.Fd(r.e.host, null)
+            } else {
+                val carved = carveFd(r.e, ctx)
+                if (carved == null) SrcSpec.Fail(Result(UuText.needsActivity(ctx.str), 2))
+                else SrcSpec.Fd(carved, carved)
+            }
+            FdRef.NotFd -> SrcSpec.Path(UuText.resolve(ctx.cwd, spec))
+        }
 
     /** `uu cp <src> <dst>` — 文件/目录/fN；dst 已存在（含作为目标本身）拒绝覆盖。 */
     private fun copy(raw: List<String>, ctx: Ctx): Result {
@@ -631,31 +670,28 @@ internal object UuCommands {
 
         // fN 引用：整文件条目直接用 host；区间条目临时 carve 出来再解
         var carvedTemp: File? = null
-        val src0: File
-        val displayName: String
-        val fd = ctx.fds?.get(spec.removePrefix("f").toIntOrNull() ?: -1)
-        if (fd != null) {
-            if (fd.wholeFile) {
-                ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
-                src0 = fd.host
-                displayName = fd.host.name
-            } else {
-                if (!fd.isArchive()) return Result(UuText.fdNotArchive(ctx.str, spec, fd.label), 2)
-                ctx.fds.checkFresh(fd)?.let { return Result(staleMsg(ctx.str, it), 1) }
-                val carved = ctx.cacheDir?.let {
-                    File(it, "uufd/f${fd.fd}-${fd.label.hashCode()}-${System.nanoTime()}")
-                } ?: return Result(UuText.needsActivity(ctx.str), 2)
-                carved.parentFile?.mkdirs()
-                carveToFile(fd.host, fd.offset, fd.length, carved) {}
-                carvedTemp = carved
-                src0 = carved
-                displayName = fd.label
+        // `run` 是 inline，所以分支里的 `return` 直接返回本函数（非局部返回）。
+        val (src0, displayName) = run {
+            when (val r = fdRef(spec, ctx)) {
+                is FdRef.Stale -> return r.result
+                is FdRef.Hit -> {
+                    val e = r.e
+                    if (e.wholeFile) {
+                        e.host to e.host.name
+                    } else {
+                        if (!e.isArchive()) return Result(UuText.fdNotArchive(ctx.str, spec, e.label), 2)
+                        val carved = carveFd(e, ctx)
+                            ?: return Result(UuText.needsActivity(ctx.str), 2)
+                        carvedTemp = carved
+                        carved to e.label
+                    }
+                }
+                FdRef.NotFd -> {
+                    val f = UuText.resolve(ctx.cwd, spec)
+                    if (!f.isFile) return Result(UuText.notFound(ctx.str, spec), 1)
+                    f to f.name
+                }
             }
-        } else {
-            val f = UuText.resolve(ctx.cwd, spec)
-            if (!f.isFile) return Result(UuText.notFound(ctx.str, spec), 1)
-            src0 = f
-            displayName = f.name
         }
 
         try {

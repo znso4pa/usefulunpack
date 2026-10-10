@@ -942,4 +942,89 @@ class UuCommandsTest {
         assertEquals(1, UuCommands.dispatch(listOf("dd", "if=src.bin", "of=x.bin", "skip=9"), ctx(dir)).exitCode)
         assertFalse(File(dir, "x.bin").exists())
     }
+
+    // ─── 6.3：uu cmp（逐字节比对） ────────────────────────────────────────
+
+    @Test
+    fun cmpIdenticalFilesExitZero() {
+        val dir = tmp.root.resolve("cmp1").apply { mkdirs() }
+        rampFile(dir, "a.bin", 32)
+        rampFile(dir, "b.bin", 32)
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("cmp", "a.bin", "b.bin"), c)
+        assertEquals(r.text, 0, r.exitCode)
+        assertTrue(r.text, r.text.contains("[a.bin]"))
+        assertTrue(r.text, r.text.contains("[b.bin]"))
+    }
+
+    @Test
+    fun cmpReportsFirstDifferenceAndTotalCount() {
+        val dir = tmp.root.resolve("cmp2").apply { mkdirs() }
+        rampFile(dir, "a.bin", 32)
+        val b = File(dir, "b.bin").apply { writeBytes(ByteArray(32) { it.toByte() }) }
+        b.writeBytes(rampBytes(0, 32).also { it[4] = 0xEE.toByte(); it[9] = 0xFF.toByte() })
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("cmp", "a.bin", "b.bin"), c)
+        // 有差异 → 退出码 1（脚本能直接 if $?）
+        assertEquals(r.text, 1, r.exitCode)
+        assertTrue(r.text, r.text.contains("[0x4]"))    // 首个差异偏移
+        assertTrue(r.text, r.text.contains("[EE]"))
+        assertTrue(r.text, r.text.contains("[2]"))      // 共 2 处
+    }
+
+    @Test
+    fun cmpDetectsLengthDifference() {
+        val dir = tmp.root.resolve("cmp3").apply { mkdirs() }
+        rampFile(dir, "a.bin", 8)
+        rampFile(dir, "b.bin", 12)
+        // 前 8 字节相同、b 多 4 字节 → 有差异
+        assertEquals(1, UuCommands.dispatch(listOf("cmp", "a.bin", "b.bin"), ctx(dir)).exitCode)
+        // 反过来同样
+        assertEquals(1, UuCommands.dispatch(listOf("cmp", "b.bin", "a.bin"), ctx(dir)).exitCode)
+    }
+
+    @Test
+    fun cmpSilentModeOnlySetsExitCode() {
+        val dir = tmp.root.resolve("cmp4").apply { mkdirs() }
+        rampFile(dir, "a.bin", 16)
+        rampFile(dir, "b.bin", 16)
+        val c = ctx(dir)
+        val same = UuCommands.dispatch(listOf("cmp", "-s", "a.bin", "b.bin"), c)
+        assertEquals(0, same.exitCode)
+        assertEquals("", same.text)
+        File(dir, "b.bin").writeBytes(rampBytes(0, 16).also { it[0] = 9 })
+        val diff = UuCommands.dispatch(listOf("cmp", "-s", "a.bin", "b.bin"), c)
+        assertEquals(1, diff.exitCode)
+        assertEquals("", diff.text)
+    }
+
+    @Test
+    fun cmpLimitComparesOnlyTheFirstNBytes() {
+        val dir = tmp.root.resolve("cmp5").apply { mkdirs() }
+        rampFile(dir, "a.bin", 16)
+        File(dir, "b.bin").writeBytes(rampBytes(0, 16).also { it[8] = 0x77.toByte() })
+        val c = ctx(dir)
+        // 差异在第 8 字节 → -n 8 看不到它
+        assertEquals(0, UuCommands.dispatch(listOf("cmp", "-n", "8", "a.bin", "b.bin"), c).exitCode)
+        assertEquals(1, UuCommands.dispatch(listOf("cmp", "-n", "9", "a.bin", "b.bin"), c).exitCode)
+        // 负数 / 非数字 → 参数错
+        assertEquals(2, UuCommands.dispatch(listOf("cmp", "-n", "-1", "a.bin", "b.bin"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("cmp", "-n", "xx", "a.bin", "b.bin"), c).exitCode)
+    }
+
+    @Test
+    fun cmpListAllAndArgumentChecks() {
+        val dir = tmp.root.resolve("cmp6").apply { mkdirs() }
+        rampFile(dir, "a.bin", 16)
+        File(dir, "b.bin").writeBytes(rampBytes(0, 16).also { it[2] = 0xAA.toByte(); it[5] = 0xBB.toByte() })
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("cmp", "-l", "a.bin", "b.bin"), c)
+        assertEquals(1, r.exitCode)
+        assertTrue(r.text, r.text.contains("[AA]"))     // 每个差异都列出来
+        assertTrue(r.text, r.text.contains("[BB]"))
+        // 参数个数不对 / 文件不存在 → 退出码 2（出错，区别于「有差异」）
+        assertEquals(2, UuCommands.dispatch(listOf("cmp", "a.bin"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("cmp", "a.bin", "b.bin", "c.bin"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("cmp", "a.bin", "nope.bin"), c).exitCode)
+    }
 }

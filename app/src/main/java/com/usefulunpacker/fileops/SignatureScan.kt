@@ -227,6 +227,22 @@ private val ARCHIVE_EXT_FOR_LABEL = mapOf(
  *  archive size is known from the scan hit (zip EOCD / rar EOF marker / 7z
  *  header / zstd / lz4 / iso). */
 fun carveToFile(src: File, offset: Long, length: Long?, dest: File, onProgress: (Long) -> Unit) {
+    FileOutputStream(dest).use { out ->
+        carveTo(src, offset, length, onProgress) { b, n -> out.write(b, 0, n) }
+    }
+}
+
+/**
+ * [carveToFile] 的通用形态：切出来的字节交给 [sink]，而不是写死一个新建文件。
+ *
+ * `uu dd seek=` 要**就地改写**已有文件的中间一段（`RandomAccessFile`），那不是一个
+ * 新建的 `FileOutputStream` 能表达的，所以读取侧（skip 循环 / 分块 / 中断检查）抽到
+ * 这里，两个方向共用同一份 —— 否则「skip 短读要循环」这条理由会漂成两份。
+ */
+fun carveTo(
+    src: File, offset: Long, length: Long?,
+    onProgress: (Long) -> Unit, sink: (ByteArray, Int) -> Unit,
+) {
     FileInputStream(src).use { input ->
         // skip() is not guaranteed to advance the full distance — loop it.
         var toSkip = offset
@@ -235,18 +251,16 @@ fun carveToFile(src: File, offset: Long, length: Long?, dest: File, onProgress: 
             if (n <= 0) break
             toSkip -= n
         }
-        FileOutputStream(dest).use { out ->
-            val buf = ByteArray(1 shl 20)
-            var remaining = length
-            while (!Thread.currentThread().isInterrupted) {
-                val want = (remaining?.coerceAtMost(buf.size.toLong()) ?: buf.size.toLong()).toInt()
-                if (want <= 0) break
-                val n = input.read(buf, 0, want)
-                if (n <= 0) break
-                out.write(buf, 0, n)
-                onProgress(n.toLong())
-                remaining = remaining?.let { it - n }
-            }
+        val buf = ByteArray(1 shl 20)
+        var remaining = length
+        while (!Thread.currentThread().isInterrupted) {
+            val want = (remaining?.coerceAtMost(buf.size.toLong()) ?: buf.size.toLong()).toInt()
+            if (want <= 0) break
+            val n = input.read(buf, 0, want)
+            if (n <= 0) break
+            sink(buf, n)
+            onProgress(n.toLong())
+            remaining = remaining?.let { it - n }
         }
     }
 }

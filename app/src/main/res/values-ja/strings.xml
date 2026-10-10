@@ -680,4 +680,16 @@
     <string name="cli_uut_cmd_not_allowed">UUT：許可されないコマンド：%1$s</string>
     <string name="cli_run_summary">スクリプト：%1$s 行実行、終了コード %2$s</string>
     <string name="cli_run_stopped">スクリプトは %3$s 行目で停止（%1$s 行実行、終了コード %2$s）</string>
+    <string name="cli_dd_bad_arg">dd：if= / of= / skip= / count= / seek= が必要です — 受け取ったのは %1$s</string>
+    <string name="cli_dd_dup_arg">dd：%1$s が二回指定されています</string>
+    <string name="cli_dd_need_if">dd には if=&lt;コピー元&gt; が必要です</string>
+    <string name="cli_dd_need_of">dd には of=&lt;コピー先&gt; が必要です</string>
+    <string name="cli_dd_bad_num">数値ではありません：%1$s</string>
+    <string name="cli_dd_negative">skip / count / seek に負の値は使えません</string>
+    <string name="cli_dd_skip_past_end">skip %1$s がコピー元の末尾を超えています（利用可能 %2$s）</string>
+    <string name="cli_dd_same_file">if= と of= が同じファイルです：%1$s</string>
+    <string name="cli_dd_seek_needs_file">seek= には書き込み先の既存ファイルが必要です：%1$s</string>
+    <string name="cli_dd_done">%1$s → %2$s</string>
+    <string name="cli_dd_spliced">%1$s を %3$s の %2$s に書き込みました</string>
+    <string name="cli_dd_progress">dd %1$s / %2$s</string>
 </resources>

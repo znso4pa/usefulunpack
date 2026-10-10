@@ -685,4 +685,16 @@
     <string name="cli_uut_cmd_not_allowed">UUT 不允许的命令：%1$s</string>
     <string name="cli_run_summary">脚本：执行 %1$s 行，退出码 %2$s</string>
     <string name="cli_run_stopped">脚本在第 %3$s 行停止（执行 %1$s 行，退出码 %2$s）</string>
+    <string name="cli_dd_bad_arg">dd：需要 if= / of= / skip= / count= / seek=，收到 %1$s</string>
+    <string name="cli_dd_dup_arg">dd：%1$s 给了两次</string>
+    <string name="cli_dd_need_if">dd 需要 if=&lt;源&gt;</string>
+    <string name="cli_dd_need_of">dd 需要 of=&lt;目标&gt;</string>
+    <string name="cli_dd_bad_num">不是数字：%1$s</string>
+    <string name="cli_dd_negative">skip / count / seek 不能为负</string>
+    <string name="cli_dd_skip_past_end">skip %1$s 超出源末尾（可用 %2$s）</string>
+    <string name="cli_dd_same_file">if= 与 of= 是同一个文件：%1$s</string>
+    <string name="cli_dd_seek_needs_file">seek= 需要一个已存在的文件来写入：%1$s</string>
+    <string name="cli_dd_done">%1$s → %2$s</string>
+    <string name="cli_dd_spliced">已把 %1$s 写入 %3$s 的 %2$s 处</string>
+    <string name="cli_dd_progress">dd %1$s / %2$s</string>
 </resources>

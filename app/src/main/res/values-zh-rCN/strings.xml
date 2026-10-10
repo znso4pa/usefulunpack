@@ -719,4 +719,13 @@
     <string name="cli_sed_summary">成功 %1$s 个，失败 %2$s 个</string>
     <string name="cli_sed_empty_from">查找内容不能为空</string>
     <string name="cli_sed_lossy">%1$s 经 %2$s 解码再编码后与原文件不一致 —— 拒绝原地改</string>
+    <string name="cli_tr_unknown_step">未知的变换步骤：%1$s</string>
+    <string name="cli_tr_bad_arg">%1$s 的参数不合法：%2$s</string>
+    <string name="cli_tr_skip_first">skip 只能是第一步，且只能出现一次</string>
+    <string name="cli_tr_too_many">步骤太多（上限 %1$s）</string>
+    <string name="cli_tr_skip_past_end">skip %1$s 超出源末尾（可用 %2$s）</string>
+    <string name="cli_tr_done">%1$s → %2$s</string>
+    <string name="cli_tr_recognised">变换后识别为：%1$s</string>
+    <string name="cli_tr_unrecognised">变换后未识别为已知格式（前几字节：%1$s）</string>
+    <string name="cli_tr_progress">tr %1$s / %2$s</string>
 </resources>

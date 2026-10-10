@@ -1272,4 +1272,95 @@ class UuCommandsTest {
         assertEquals(2, UuCommands.dispatch(listOf("dd", "if=src.bin", "of="), c).exitCode)
         assertFalse(File(dir, "x.bin").exists())
     }
+
+    // ─── 6.3：uu tr（字节变换管道） ────────────────────────────────────────
+
+    /** 造一个「zip 异或了 0xAA」的文件 —— 内置格式全都解不了的那种。 */
+    private fun scrambledZip(dir: File, name: String, key: Int = 0xAA): Pair<File, ByteArray> {
+        val raw = java.io.ByteArrayOutputStream().also { bos ->
+            java.util.zip.ZipOutputStream(bos).use { z ->
+                z.putNextEntry(java.util.zip.ZipEntry("a.txt"))
+                z.write("hi".toByteArray())
+                z.closeEntry()
+            }
+        }.toByteArray()
+        val scrambled = ByteArray(raw.size) { (raw[it].toInt() xor key).toByte() }
+        return File(dir, name).apply { writeBytes(scrambled) } to raw
+    }
+
+    @Test
+    fun trUnscramblesAFileAndReportsWhatItBecame() {
+        val dir = tmp.root.resolve("tr1").apply { mkdirs() }
+        val (weird, raw) = scrambledZip(dir, "weird.dat")
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("tr", "weird.dat", "xor 0xAA", "-o", "fixed.zip"), c)
+        assertEquals(r.text, 0, r.exitCode)
+        // 还原出来的必须与原 zip 逐字节相同
+        assertArrayEquals(raw, File(dir, "fixed.zip").readBytes())
+        // 并且必须报出「变换后识别为 zip」—— 静默成功是不允许的
+        assertTrue(r.text, r.text.contains("[zip]"))
+        // 源文件只读：一个字节都不能动
+        assertArrayEquals(weird.readBytes(), weird.readBytes())
+    }
+
+    @Test
+    fun trSaysSoWhenTheResultIsNotRecognisable() {
+        val dir = tmp.root.resolve("tr2").apply { mkdirs() }
+        rampFile(dir, "x.bin", 32)
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        // 瞎猜一个 key → 结果不认识，但命令仍然成功（显式字节操作，同 uu dd）
+        val r = UuCommands.dispatch(listOf("tr", "x.bin", "xor 0x5A", "-o", "y.bin"), c)
+        assertEquals(r.text, 0, r.exitCode)
+        assertTrue(r.text, r.text.contains("!str:${R.string.cli_tr_unrecognised}"))
+    }
+
+    @Test
+    fun trDefaultsToADerivedNameAndRefusesToClobber() {
+        val dir = tmp.root.resolve("tr3").apply { mkdirs() }
+        scrambledZip(dir, "game.dat")
+        val c = ctx(dir)
+        // 不给 -o → 派生名 game-tr.dat
+        assertEquals(0, UuCommands.dispatch(listOf("tr", "game.dat", "xor 0xAA"), c).exitCode)
+        assertTrue(File(dir, "game-tr.dat").exists())
+        // 显式 -o 撞已有文件 → 拒绝；-f 才覆盖
+        assertEquals(1, UuCommands.dispatch(listOf("tr", "game.dat", "xor 0xAA", "-o", "game-tr.dat"), c).exitCode)
+        assertEquals(0, UuCommands.dispatch(listOf("tr", "game.dat", "xor 0xAA", "-o", "game-tr.dat", "-f"), c).exitCode)
+    }
+
+    @Test
+    fun trRejectsSameFileBadPipelinesAndBadArgs() {
+        val dir = tmp.root.resolve("tr4").apply { mkdirs() }
+        rampFile(dir, "s.bin", 32)
+        val c = ctx(dir)
+        // 自己变换自己：先读后写会把源覆盖掉
+        assertEquals(1, UuCommands.dispatch(listOf("tr", "s.bin", "xor 0xAA", "-o", "s.bin"), c).exitCode)
+        assertArrayEquals(rampBytes(0, 32), File(dir, "s.bin").readBytes())
+        // 管道错 → 参数错（退出码 2），且不产出文件
+        assertEquals(2, UuCommands.dispatch(listOf("tr", "s.bin", "nope", "-o", "o.bin"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("tr", "s.bin", "xor ZZ", "-o", "o.bin"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("tr", "s.bin", "xor 0xAA | skip 4", "-o", "o.bin"), c).exitCode)
+        // 参数个数 / 文件不存在
+        assertEquals(2, UuCommands.dispatch(listOf("tr", "s.bin"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("tr", "s.bin", "not", "extra", "-o", "o.bin"), c).exitCode)
+        assertEquals(1, UuCommands.dispatch(listOf("tr", "nope.bin", "not"), c).exitCode)
+        assertFalse(File(dir, "o.bin").exists())
+        // skip 超出源长度
+        assertEquals(1, UuCommands.dispatch(listOf("tr", "s.bin", "skip 999", "-o", "o.bin"), c).exitCode)
+        assertFalse(File(dir, "o.bin").exists())
+    }
+
+    /** `skip` 与多步管道组合，且 `if=` 支持 fN（直接对扫描命中变换，不必先落盘）。 */
+    @Test
+    fun trWorksOnAnFdRangeWithSkip() {
+        val dir = tmp.root.resolve("tr5").apply { mkdirs() }
+        val host = File(dir, "h.bin").apply { writeBytes(ByteArray(64) { it.toByte() }) }
+        val t = FdTable()
+        val fd = t.register(
+            host, listOf(ScanHit(16, "ZIP archive", 32, null)), host.length(), host.lastModified()
+        ) { null }[0]
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, fds = t)
+        assertEquals(0, UuCommands.dispatch(listOf("tr", "f$fd", "skip 4 | xor 0xFF", "-o", "part.bin"), c).exitCode)
+        // 区间 [16,48)，丢前 4 → 从 20 起；坐标从区间起点 0 开始
+        assertArrayEquals(ByteArray(28) { ((it + 4 + 16) xor 0xFF).toByte() }, File(dir, "part.bin").readBytes())
+    }
 }

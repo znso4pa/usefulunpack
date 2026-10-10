@@ -728,4 +728,9 @@
     <string name="cli_tr_recognised">变换后识别为：%1$s</string>
     <string name="cli_tr_unrecognised">变换后未识别为已知格式（前几字节：%1$s）</string>
     <string name="cli_tr_progress">tr %1$s / %2$s</string>
+    <string name="cli_guess_header">%1$s · %2$s 个候选</string>
+    <string name="cli_guess_none">%1$s：没有单步变换能让它变成已知格式</string>
+    <string name="cli_guess_ev_struct">格式结构：%1$s</string>
+    <string name="cli_guess_ev_constraints">魔数约束 ×%1$s</string>
+    <string name="cli_guess_try">试试：uu tr %1$s "%2$s" -o %3$s</string>
 </resources>

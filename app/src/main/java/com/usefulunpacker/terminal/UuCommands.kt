@@ -82,7 +82,7 @@ internal object UuCommands {
     internal enum class Kind {
         LIST_FORMATS, HELP, DOCS, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
         TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO,
-        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, DD, IMG, FD, B64
+        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, DD, CMP, IMG, FD, B64
     }
 
     internal class Cmd(val name: String, val kind: Kind, val summary: String, val usage: String)
@@ -122,6 +122,7 @@ internal object UuCommands {
         Cmd("diff",   Kind.DIFF,         "Compare entry lists of two archives (size-based)", "uu diff <a> <b> [-p pw]"),
         Cmd("hex",    Kind.HEX,          "Hex dump a byte range",                         "uu hex <file> [offset] [len]"),
         Cmd("dd",     Kind.DD,           "Copy a byte range, or splice one into a file",  "uu dd if=<src> of=<dst> [skip=N] [count=N] [seek=N] [-f]"),
+        Cmd("cmp",    Kind.CMP,          "Compare two files byte by byte",                "uu cmp <a> <b> [-l] [-s] [-n N]"),
         Cmd("img",    Kind.IMG,          "Convert images (jpg / png / webp)",             "uu img <src...> <jpg|png|webp> [-o dir] [-q 1-100]"),
         Cmd("fd",     Kind.FD,           "List the registered fN descriptors",            "uu fd [fN...]"),
         Cmd("b64",    Kind.B64,          "Base64 encode (default) or decode a file",      "uu b64 <file> [-d] [out]"),
@@ -167,6 +168,7 @@ internal object UuCommands {
                 Kind.DIFF -> diff(args, ctx)
                 Kind.HEX -> hex(args, ctx)
                 Kind.DD -> dd(args, ctx)
+                Kind.CMP -> cmp(args, ctx)
                 Kind.IMG -> img(args, ctx)
                 Kind.FD -> fd(args, ctx)
                 Kind.B64 -> b64(args, ctx)
@@ -2195,6 +2197,102 @@ internal object UuCommands {
         return Result(ctx.text(R.string.cli_dd_spliced, fmt(n), "0x%X".format(seek), dst.absolutePath))
     }
 
+    /**
+     * `uu cmp <a> <b> [-l] [-s] [-n N]` — **逐字节**比对（两侧都支持 `fN`）。
+     *
+     * 与 [diff] 的分工：[diff] 比的是**条目表**且只看大小，所以「重打包前后条目大小
+     * 完全一样、字节却不同」这种情况它永远报"无差异" —— 而校验重打包恰恰要后者。
+     *
+     * 退出码按 `cmp(1)` 的约定：**0 相同 / 1 有差异 / 2 出错**，脚本才能直接 `if $?`。
+     * 整块流式读取，不把两个文件读进内存（对比两个 GB 级归档是常规用法）。
+     */
+    private fun cmp(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args, listOf("-l", "-s", "-n"))?.let { return it }
+        val pa = splitFlags(args, listOf("-n"), listOf("-l", "-s"))
+        missingValueError(ctx, pa)?.let { return it }
+        if (pa.pos.size != 2) return Result(ctx.text(R.string.cli_cmp_needs_two), 2)
+        val listAll = "-l" in pa.bools
+        val silent = "-s" in pa.bools
+        val limitRaw = pa.values["-n"]
+        val limit = if (limitRaw == null) Long.MAX_VALUE
+                    else parseNum(limitRaw)?.takeIf { it >= 0 }
+                        ?: return Result(ctx.text(R.string.cli_dd_bad_num, limitRaw), 2)
+
+        var tempA: File? = null
+        var tempB: File? = null
+        try {
+            val fa = when (val r = resolveSource(pa.pos[0], ctx)) {
+                is SrcSpec.Fail -> return r.result
+                is SrcSpec.Path -> r.f.takeIf { it.isFile }
+                    ?: return Result(UuText.notFound(ctx.str, pa.pos[0]), 2)
+                is SrcSpec.Fd -> { tempA = r.temp; r.f }
+            }
+            val fb = when (val r = resolveSource(pa.pos[1], ctx)) {
+                is SrcSpec.Fail -> return r.result
+                is SrcSpec.Path -> r.f.takeIf { it.isFile }
+                    ?: return Result(UuText.notFound(ctx.str, pa.pos[1]), 2)
+                is SrcSpec.Fd -> { tempB = r.temp; r.f }
+            }
+
+            val bufA = ByteArray(CMP_CHUNK)
+            val bufB = ByteArray(CMP_CHUNK)
+            var off = 0L            // 已比对的字节数
+            var diffs = 0L
+            var firstAt = -1L
+            var firstA = -1
+            var firstB = -1
+            val listed = ArrayList<String>()
+            var truncated = 0L
+            var shortRead = false
+            java.io.FileInputStream(fa).use { ia ->
+                java.io.FileInputStream(fb).use { ib ->
+                    while (!shortRead && off < limit && !Thread.currentThread().isInterrupted) {
+                        val want = minOf(CMP_CHUNK.toLong(), limit - off).toInt()
+                        val na = ia.read(bufA, 0, want)
+                        val nb = ib.read(bufB, 0, want)
+                        if (na <= 0 && nb <= 0) break      // 两侧同时到末尾
+                        // 短的一侧到此为止：它后面的每个字节都算差异（长度差）
+                        val n = maxOf(na, nb)
+                        for (i in 0 until n) {
+                            val va = if (i < na) bufA[i].toInt() and 0xFF else -1
+                            val vb = if (i < nb) bufB[i].toInt() and 0xFF else -1
+                            if (va == vb) continue
+                            if (firstAt < 0) { firstAt = off + i; firstA = va; firstB = vb }
+                            diffs++
+                            if (listAll) {
+                                if (listed.size < CMP_MAX_LIST) {
+                                    listed.add(ctx.text(R.string.cli_cmp_line,
+                                        "0x%08X".format(off + i), byteHex(va), byteHex(vb)))
+                                } else truncated++
+                            }
+                        }
+                        off += n
+                        if (na < want || nb < want) shortRead = true
+                    }
+                }
+            }
+
+            if (diffs == 0L) {
+                return if (silent) Result("", 0)
+                else Result(ctx.text(R.string.cli_cmp_same, fa.name, fb.name, fmt(off)))
+            }
+            if (silent) return Result("", 1)
+            val sb = StringBuilder()
+            listed.forEach { sb.append(it).append('\n') }
+            if (truncated > 0) sb.append(ctx.text(R.string.cli_cmp_more, truncated.toString())).append('\n')
+            sb.append(ctx.text(R.string.cli_cmp_first,
+                "0x%X".format(firstAt), byteHex(firstA), byteHex(firstB)))
+            sb.append('\n').append(ctx.text(R.string.cli_cmp_count, diffs.toString(), fmt(off)))
+            return Result(sb.toString(), 1)
+        } finally {
+            tempA?.deleteRecursively()
+            tempB?.deleteRecursively()
+        }
+    }
+
+    /** 差异行里的一个字节；一侧已到末尾（`-1`）用 `--`，那是符号不是文案。 */
+    private fun byteHex(v: Int) = if (v < 0) "--" else "%02X".format(v)
+
     /** 条目表差异（纯函数,可单测）：(仅A, 仅B, 变化, ma, mb)。 */
     internal fun diffOf(
         ea: List<ArchiveEntry>, eb: List<ArchiveEntry>
@@ -2411,6 +2509,10 @@ internal object UuCommands {
 
     /** `uu dd` 认的 `k=v` 键（它不用 `-flag value` 语法，所以没有对应的旗标表）。 */
     private val DD_KEYS = setOf("if", "of", "skip", "count", "seek")
+
+    /** `uu cmp`：比对块大小 / `-l` 最多列多少行（列不完只报条数）。 */
+    private const val CMP_CHUNK = 1 shl 20
+    private const val CMP_MAX_LIST = 200
 
     /**
      * scan-core 的 label → 归档格式 key；非归档命中返回 null（只能 dd，不能 x/l）。

@@ -699,4 +699,10 @@
     <string name="cli_dd_done">%1$s → %2$s</string>
     <string name="cli_dd_spliced">%1$s at %2$s in %3$s</string>
     <string name="cli_dd_progress">dd %1$s / %2$s</string>
+    <string name="cli_cmp_needs_two">cmp needs exactly two files</string>
+    <string name="cli_cmp_same">%1$s and %2$s are identical (%3$s compared)</string>
+    <string name="cli_cmp_first">first difference at %1$s: %2$s vs %3$s</string>
+    <string name="cli_cmp_count">%1$s of %2$s bytes differ</string>
+    <string name="cli_cmp_more">… and %1$s more differences</string>
+    <string name="cli_cmp_line">%1$s  %2$s  %3$s</string>
 </resources>

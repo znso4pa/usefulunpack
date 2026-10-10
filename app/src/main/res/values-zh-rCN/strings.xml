@@ -697,4 +697,10 @@
     <string name="cli_dd_done">%1$s → %2$s</string>
     <string name="cli_dd_spliced">已把 %1$s 写入 %3$s 的 %2$s 处</string>
     <string name="cli_dd_progress">dd %1$s / %2$s</string>
+    <string name="cli_cmp_needs_two">cmp 需要恰好两个文件</string>
+    <string name="cli_cmp_same">%1$s 与 %2$s 完全相同（已比 %3$s）</string>
+    <string name="cli_cmp_first">首个差异在 %1$s：%2$s 对 %3$s</string>
+    <string name="cli_cmp_count">%2$s 字节中有 %1$s 处不同</string>
+    <string name="cli_cmp_more">……另有 %1$s 处差异</string>
+    <string name="cli_cmp_line">%1$s  %2$s  %3$s</string>
 </resources>

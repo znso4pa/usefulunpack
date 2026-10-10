@@ -704,4 +704,13 @@
     <string name="cli_strings_bad_min">最短長度需在 1–1024 之間：%1$s</string>
     <string name="cli_strings_truncated">只掃了前 %1$s —— 用 -a 擴大範圍</string>
     <string name="cli_strings_more">……另有 %1$s 條未顯示</string>
+    <string name="cli_sed_bad_hex">%1$s 不是十六進位位元組字串</string>
+    <string name="cli_sed_binary">%1$s 不是文字 —— 改用位元組模式</string>
+    <string name="cli_sed_too_big">%1$s 太大（上限 %2$s）</string>
+    <string name="cli_sed_inplace_needs_file">-i 需要真實檔案：%1$s 是掃描命中</string>
+    <string name="cli_sed_bytes_needs_i">--bytes 必須配 -i（二進位結果無法穿過終端）</string>
+    <string name="cli_sed_done">%1$s：替換了 %2$s 處</string>
+    <string name="cli_sed_none">%1$s：沒有符合</string>
+    <string name="cli_sed_summary">成功 %1$s 個，失敗 %2$s 個</string>
+    <string name="cli_sed_empty_from">尋找內容不能為空</string>
 </resources>

@@ -687,4 +687,16 @@
     <string name="cli_uut_cmd_not_allowed">UUT: command not allowed: %1$s</string>
     <string name="cli_run_summary">script: %1$s lines run, exit %2$s</string>
     <string name="cli_run_stopped">script stopped at line %3$s (%1$s lines run, exit %2$s)</string>
+    <string name="cli_dd_bad_arg">dd: expected if= / of= / skip= / count= / seek= — got %1$s</string>
+    <string name="cli_dd_dup_arg">dd: %1$s given twice</string>
+    <string name="cli_dd_need_if">dd needs if=&lt;source&gt;</string>
+    <string name="cli_dd_need_of">dd needs of=&lt;destination&gt;</string>
+    <string name="cli_dd_bad_num">not a number: %1$s</string>
+    <string name="cli_dd_negative">skip / count / seek must not be negative</string>
+    <string name="cli_dd_skip_past_end">skip %1$s is past the end of the source (%2$s available)</string>
+    <string name="cli_dd_same_file">if= and of= are the same file: %1$s</string>
+    <string name="cli_dd_seek_needs_file">seek= needs an existing file to write into: %1$s</string>
+    <string name="cli_dd_done">%1$s → %2$s</string>
+    <string name="cli_dd_spliced">%1$s at %2$s in %3$s</string>
+    <string name="cli_dd_progress">dd %1$s / %2$s</string>
 </resources>

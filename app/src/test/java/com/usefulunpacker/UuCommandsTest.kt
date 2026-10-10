@@ -1,5 +1,6 @@
 package com.usefulunpacker
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -824,5 +825,121 @@ class UuCommandsTest {
         File(dir, "bin.dat").writeBytes(byteArrayOf(0, 1, 2, 3, -1, -2))
         val r2 = UuCommands.dispatch(listOf("cat", "bin.dat"), c)
         assertEquals(1, r2.exitCode)
+    }
+
+    // ─── 6.3：uu dd（精准切字节） ─────────────────────────────────────────
+
+    /** 内容可辨识的源文件：第 i 字节 = i。 */
+    private fun rampFile(dir: File, name: String, n: Int): File =
+        File(dir, name).apply { writeBytes(ByteArray(n) { it.toByte() }) }
+
+    private fun rampBytes(from: Int, until: Int) = ByteArray(until - from) { (from + it).toByte() }
+
+    @Test
+    fun ddCarvesARangeAndAcceptsHexOffsets() {
+        val dir = tmp.root.resolve("dd1").apply { mkdirs() }
+        rampFile(dir, "src.bin", 64)
+        val r = UuCommands.dispatch(
+            listOf("dd", "if=src.bin", "of=out.bin", "skip=0x10", "count=8"), ctx(dir)
+        )
+        assertEquals(r.text, 0, r.exitCode)
+        assertArrayEquals(rampBytes(0x10, 0x18), File(dir, "out.bin").readBytes())
+    }
+
+    @Test
+    fun ddCountOmittedGoesToEndAndIsClamped() {
+        val dir = tmp.root.resolve("dd2").apply { mkdirs() }
+        rampFile(dir, "src.bin", 20)
+        val c = ctx(dir)
+        // 不给 count → 切到源末尾
+        assertEquals(0, UuCommands.dispatch(listOf("dd", "if=src.bin", "of=a.bin", "skip=15"), c).exitCode)
+        assertArrayEquals(rampBytes(15, 20), File(dir, "a.bin").readBytes())
+        // count 超出剩余 → 夹到剩余，不报错也不多读
+        assertEquals(0, UuCommands.dispatch(listOf("dd", "if=src.bin", "of=b.bin", "skip=15", "count=999"), c).exitCode)
+        assertArrayEquals(rampBytes(15, 20), File(dir, "b.bin").readBytes())
+    }
+
+    /** `skip` 相对 **fN 区间起点**，不是宿主文件 —— 否则扫描报出的偏移还得手工加回去。 */
+    @Test
+    fun ddSkipIsRelativeToAnFdRangeStart() {
+        val dir = tmp.root.resolve("dd3").apply { mkdirs() }
+        val host = rampFile(dir, "host.bin", 64)
+        val t = FdTable()
+        val fd = t.register(
+            host, listOf(ScanHit(32, "ZIP archive", 16, null)),
+            host.length(), host.lastModified()
+        ) { null }[0]
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, fds = t)
+        // 区间起点是宿主偏移 32，所以 skip=4 → 宿主 36
+        val r = UuCommands.dispatch(listOf("dd", "if=f$fd", "of=part.bin", "skip=4", "count=4"), c)
+        assertEquals(r.text, 0, r.exitCode)
+        assertArrayEquals(rampBytes(36, 40), File(dir, "part.bin").readBytes())
+        // 整个区间（不给 skip / count）
+        assertEquals(0, UuCommands.dispatch(listOf("dd", "if=f$fd", "of=whole.bin"), c).exitCode)
+        assertArrayEquals(rampBytes(32, 48), File(dir, "whole.bin").readBytes())
+    }
+
+    @Test
+    fun ddRefusesToOverwriteUnlessForced() {
+        val dir = tmp.root.resolve("dd4").apply { mkdirs() }
+        rampFile(dir, "src.bin", 8)
+        File(dir, "out.bin").writeBytes(ByteArray(4) { 9 })
+        val c = ctx(dir)
+        assertEquals(1, UuCommands.dispatch(listOf("dd", "if=src.bin", "of=out.bin"), c).exitCode)
+        // 拒绝时目标必须原封不动
+        assertArrayEquals(ByteArray(4) { 9 }, File(dir, "out.bin").readBytes())
+        assertEquals(0, UuCommands.dispatch(listOf("dd", "if=src.bin", "of=out.bin", "-f"), c).exitCode)
+        assertArrayEquals(rampBytes(0, 8), File(dir, "out.bin").readBytes())
+    }
+
+    @Test
+    fun ddSeekSplicesInPlaceAndLeavesTheRestAlone() {
+        val dir = tmp.root.resolve("dd5").apply { mkdirs() }
+        File(dir, "patch.bin").writeBytes(byteArrayOf(0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte(), 0xDD.toByte()))
+        val target = File(dir, "game.bin").apply { writeBytes(ByteArray(16) { it.toByte() }) }
+        val r = UuCommands.dispatch(listOf("dd", "if=patch.bin", "of=game.bin", "seek=4"), ctx(dir))
+        assertEquals(r.text, 0, r.exitCode)
+        val want = ByteArray(16) { it.toByte() }
+        want[4] = 0xAA.toByte(); want[5] = 0xBB.toByte()
+        want[6] = 0xCC.toByte(); want[7] = 0xDD.toByte()
+        assertArrayEquals(want, target.readBytes())
+        // 就地改写，不是插入 —— 长度不变
+        assertEquals(16L, target.length())
+    }
+
+    @Test
+    fun ddSeekNeedsAnExistingFile() {
+        val dir = tmp.root.resolve("dd6").apply { mkdirs() }
+        rampFile(dir, "src.bin", 8)
+        assertEquals(1, UuCommands.dispatch(listOf("dd", "if=src.bin", "of=nope.bin", "seek=4"), ctx(dir)).exitCode)
+        assertFalse(File(dir, "nope.bin").exists())
+    }
+
+    @Test
+    fun ddRejectsSameFileAndBadArguments() {
+        val dir = tmp.root.resolve("dd7").apply { mkdirs() }
+        rampFile(dir, "src.bin", 16)
+        val c = ctx(dir)
+        // 自己切自己：会边读边覆盖源，产物必然是垃圾 → 拒
+        assertEquals(1, UuCommands.dispatch(listOf("dd", "if=src.bin", "of=src.bin"), c).exitCode)
+        assertArrayEquals(rampBytes(0, 16), File(dir, "src.bin").readBytes())
+        // 缺 if= / of=
+        assertEquals(2, UuCommands.dispatch(listOf("dd", "of=x.bin"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("dd", "if=src.bin"), c).exitCode)
+        // 不是数字 / 负数 / 未知键 / 同一个键给两次
+        assertEquals(2, UuCommands.dispatch(listOf("dd", "if=src.bin", "of=x.bin", "skip=abc"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("dd", "if=src.bin", "of=x.bin", "skip=-1"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("dd", "if=src.bin", "of=x.bin", "bs=4"), c).exitCode)
+        assertEquals(2, UuCommands.dispatch(listOf("dd", "if=src.bin", "if=src.bin", "of=x.bin"), c).exitCode)
+        // 参数错时不该留下半成品
+        assertFalse(File(dir, "x.bin").exists())
+    }
+
+    @Test
+    fun ddSkipPastEndIsAnError() {
+        val dir = tmp.root.resolve("dd8").apply { mkdirs() }
+        rampFile(dir, "src.bin", 8)
+        assertEquals(1, UuCommands.dispatch(listOf("dd", "if=src.bin", "of=x.bin", "skip=9"), ctx(dir)).exitCode)
+        assertFalse(File(dir, "x.bin").exists())
     }
 }

@@ -82,7 +82,7 @@ internal object UuCommands {
     internal enum class Kind {
         LIST_FORMATS, HELP, DOCS, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
         TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO,
-        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, IMG, FD, B64
+        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, DD, IMG, FD, B64
     }
 
     internal class Cmd(val name: String, val kind: Kind, val summary: String, val usage: String)
@@ -121,6 +121,7 @@ internal object UuCommands {
         Cmd("find",   Kind.FIND,         "Find files by name under a folder",              "uu find [dir] <glob> [depth]"),
         Cmd("diff",   Kind.DIFF,         "Compare entry lists of two archives (size-based)", "uu diff <a> <b> [-p pw]"),
         Cmd("hex",    Kind.HEX,          "Hex dump a byte range",                         "uu hex <file> [offset] [len]"),
+        Cmd("dd",     Kind.DD,           "Copy a byte range, or splice one into a file",  "uu dd if=<src> of=<dst> [skip=N] [count=N] [seek=N] [-f]"),
         Cmd("img",    Kind.IMG,          "Convert images (jpg / png / webp)",             "uu img <src...> <jpg|png|webp> [-o dir] [-q 1-100]"),
         Cmd("fd",     Kind.FD,           "List the registered fN descriptors",            "uu fd [fN...]"),
         Cmd("b64",    Kind.B64,          "Base64 encode (default) or decode a file",      "uu b64 <file> [-d] [out]"),
@@ -165,6 +166,7 @@ internal object UuCommands {
                 Kind.FIND -> find(args, ctx)
                 Kind.DIFF -> diff(args, ctx)
                 Kind.HEX -> hex(args, ctx)
+                Kind.DD -> dd(args, ctx)
                 Kind.IMG -> img(args, ctx)
                 Kind.FD -> fd(args, ctx)
                 Kind.B64 -> b64(args, ctx)
@@ -2090,6 +2092,109 @@ internal object UuCommands {
         return Result(sb.toString().trimEnd('\n'))
     }
 
+    /**
+     * `uu dd if=<src> of=<dst> [skip=N] [count=N] [seek=N] [-f]` — 精准切字节。
+     *
+     * 不给 `seek=` 是「切一段出来」；给了 `seek=` 是「把一段写进已有文件的中间」。
+     *
+     * `if=` 支持 `fN`（`uu scan` 的命中），此时 `skip` / `count` 相对**区间起点**
+     * 而不是宿主文件 —— 否则 `uu dd if=f3 of=x.rpa` 还得手工把扫描报出的偏移加
+     * 回去，而那正是这条命令要消灭的步骤。
+     *
+     * 覆盖策略刻意不对称，因为两个方向的风险不同：`seek=0` 是「造一个新文件」，
+     * `of=` 已存在就拒绝、`-f` 才覆盖（与 `uu cp` 一致）；`seek>0` 是「改一个已有
+     * 文件」，`of=` 必须存在且**不需要** `-f` —— 就地改写本就是它的意图。
+     */
+    private fun dd(args: List<String>, ctx: Ctx): Result {
+        rejectUnknownFlags(ctx, args, listOf("-f"))?.let { return it }
+        // dd 是 k=v 语法（if= / of= / skip= …），不是 `-flag value`，走不了 splitFlags。
+        var force = false
+        val kv = HashMap<String, String>()
+        for (a in args) {
+            if (a == "-f") { force = true; continue }
+            val eq = a.indexOf('=')
+            val k = if (eq > 0) a.substring(0, eq).lowercase() else ""
+            if (k !in DD_KEYS) return Result(ctx.text(R.string.cli_dd_bad_arg, a), 2)
+            if (kv.containsKey(k)) return Result(ctx.text(R.string.cli_dd_dup_arg, k), 2)
+            kv[k] = a.substring(eq + 1)
+        }
+        val ifSpec = kv["if"] ?: return Result(ctx.text(R.string.cli_dd_need_if), 2)
+        val ofSpec = kv["of"] ?: return Result(ctx.text(R.string.cli_dd_need_of), 2)
+
+        // 给了值但不是数字必须报错 —— 静默当「没给」而取默认 0，会切到错误的位置
+        // 且从输出上看不出原因。
+        var badNum: String? = null
+        fun num(key: String): Long? {
+            val raw = kv[key] ?: return null
+            val v = parseNum(raw)
+            if (v == null) badNum = raw
+            return v
+        }
+        val skip = num("skip") ?: 0L
+        val count = num("count")
+        val seek = num("seek") ?: 0L
+        badNum?.let { return Result(ctx.text(R.string.cli_dd_bad_num, it), 2) }
+        if (skip < 0 || seek < 0 || (count != null && count < 0)) {
+            return Result(ctx.text(R.string.cli_dd_negative), 2)
+        }
+
+        // 源：fN（区间或整文件）或普通路径 → (宿主文件, 基准偏移, 可用字节数)
+        val host: File
+        val base: Long
+        val avail: Long
+        when (val r = fdRef(ifSpec, ctx)) {
+            is FdRef.Stale -> return r.result
+            is FdRef.Hit -> { host = r.e.host; base = r.e.offset; avail = r.e.byteSize() }
+            FdRef.NotFd -> {
+                val f = UuText.resolve(ctx.cwd, ifSpec)
+                if (!f.isFile) return Result(UuText.notFound(ctx.str, ifSpec), 1)
+                host = f; base = 0L; avail = f.length()
+            }
+        }
+        if (skip > avail) {
+            return Result(ctx.text(R.string.cli_dd_skip_past_end, fmt(skip), fmt(avail)), 1)
+        }
+        // count 不给 = 切到源末尾；给了也不越过剩下的
+        val n = minOf(count ?: (avail - skip), avail - skip)
+
+        val dst = UuText.resolve(ctx.cwd, ofSpec)
+        // 自己切自己：先读后写会把还没读的源覆盖掉，产物必然是垃圾
+        if (dst.canonicalPath == host.canonicalPath) {
+            return Result(ctx.text(R.string.cli_dd_same_file, host.name), 1)
+        }
+        val report: (Long) -> Unit = { done ->
+            ctx.progress?.invoke(ctx.text(R.string.cli_dd_progress, fmt(done), fmt(n)))
+        }
+
+        if (seek == 0L) {
+            if (dst.isDirectory) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
+            if (dst.exists()) {
+                if (!force) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
+                if (!dst.deleteRecursively()) return Result(UuText.failed(ctx.str, dst.path), 1)
+            }
+            dst.parentFile?.mkdirs()
+            val ok = runCatching { carveToFile(host, base + skip, n, dst, report); true }
+                .getOrDefault(false)
+            if (!ok) {
+                dst.delete()   // 半成品不留：失败后留个截断文件比直接报错更坏
+                return Result(UuText.failed(ctx.str, dst.name), 1)
+            }
+            return Result(ctx.text(R.string.cli_dd_done, fmt(n), dst.absolutePath))
+        }
+
+        // seek>0：就地改写已有文件的 [seek, seek+n)
+        if (!dst.isFile) return Result(ctx.text(R.string.cli_dd_seek_needs_file, dst.path), 1)
+        val ok = runCatching {
+            java.io.RandomAccessFile(dst, "rw").use { raf ->
+                raf.seek(seek)
+                carveTo(host, base + skip, n, report) { b, len -> raf.write(b, 0, len) }
+            }
+            true
+        }.getOrDefault(false)
+        if (!ok) return Result(UuText.failed(ctx.str, dst.name), 1)
+        return Result(ctx.text(R.string.cli_dd_spliced, fmt(n), "0x%X".format(seek), dst.absolutePath))
+    }
+
     /** 条目表差异（纯函数,可单测）：(仅A, 仅B, 变化, ma, mb)。 */
     internal fun diffOf(
         ea: List<ArchiveEntry>, eb: List<ArchiveEntry>
@@ -2303,6 +2408,9 @@ internal object UuCommands {
 
     /** `uu hex`：单次最多 8KB。 */
     private const val HEX_MAX_BYTES = 8L * 1024
+
+    /** `uu dd` 认的 `k=v` 键（它不用 `-flag value` 语法，所以没有对应的旗标表）。 */
+    private val DD_KEYS = setOf("if", "of", "skip", "count", "seek")
 
     /**
      * scan-core 的 label → 归档格式 key；非归档命中返回 null（只能 dd，不能 x/l）。

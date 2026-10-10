@@ -718,4 +718,5 @@
     <string name="cli_sed_none">%1$s：没有匹配</string>
     <string name="cli_sed_summary">成功 %1$s 个，失败 %2$s 个</string>
     <string name="cli_sed_empty_from">查找内容不能为空</string>
+    <string name="cli_sed_lossy">%1$s 经 %2$s 解码再编码后与原文件不一致 —— 拒绝原地改</string>
 </resources>

@@ -37,9 +37,11 @@ import java.util.Locale
  * 新 tab 默认落在主界面（`addTab` 置 true）；恢复会话的 tab 不落（恢复的是「你上次
  * 在哪儿」）—— 所以 `homeVisible` 不进 session，默认 false 即可。
  *
- * ⚠️ **壁纸让路**（AGENTS.md Known trap）：`homeRoot` 已登记进 `BACKDROP_TRANSPARENT`，
- * 卡片/面板的配色在 [buildHomeCards] 里按 [MainActivity.hasWallpaper] 现算 —— 有壁纸时
- * 整体降不透明度，让画在 `R.id.root` 上的壁纸透出来。这里**不能再**引入不透明背景。
+ * ⚠️ **主界面刻意不透明**（真机实测后定稿）：hub 是封面页，页面与卡片都按 C2 设计稿
+ * **实底**呈现 —— 第一版让壁纸从卡片（70% 透明）和缝隙里透出来，用户反馈「全部透了
+ * 过来」，文字没法读。壁纸仍然从文件浏览器那几层透出（AGENTS.md 的既有设计，见
+ * Known trap 的壁纸段）；`homeRoot` 仍登记在 `BACKDROP_TRANSPARENT`，但它的上面
+ * 有 [buildHomeCards] 铺的一层实底，所以壁纸不会出现在主界面上。别把这层改透明。
  *
  * ⚠️ **派生，不存储**（不变式 8）：最近归档 / 书签 / 回收站条数都是 [showHome] 时
  * 现查现画的 —— 不缓存，用户解包完回到主界面看到的就是新的。
@@ -80,14 +82,15 @@ internal fun MainActivity.enterBrowserAt(tab: TabState, dir: File) {
 internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: TabState) {
     val dm = act.resources.displayMetrics
     fun d(v: Int) = (v * dm.density).toInt()
-    val wp = act.hasWallpaper()
-    // 有壁纸时整体降不透明度（见类注释），让画在 R.id.root 上的壁纸透出来。
-    val cardBg = if (wp) 0xB3252525.toInt() else C["surface"]!!
-    val dimBg = if (wp) 0xA31F1F1F.toInt() else C["surface_dim"]!!
+    // ⚠️ 实底（见类注释）：页面 #303030、卡片 #252525，按 C2 设计稿来 —— 有壁纸时
+    // 也不从主界面透。listBox / mini / 面板同用 surface_dim，和页面拉开一层。
+    val cardBg = C["surface_dim"]!!
+    val dimBg = C["surface_dim"]!!
     val wide = act.resources.getBoolean(R.bool.is_wide)
 
     container.removeAllViews()
     container.orientation = LinearLayout.VERTICAL
+    container.background = GradientDrawable().apply { setColor(C["surface"]!!) }
     container.setPadding(d(22), d(18), d(22), d(24))
 
     // ── 命令面板：点击整条 → 全局搜索 ─────────────────────────────
@@ -357,14 +360,12 @@ private fun homeHero(
     onClick: () -> Unit,
 ): View {
     fun d(v: Int) = (v * act.resources.displayMetrics.density).toInt()
-    val wp = act.hasWallpaper()
     val bg = GradientDrawable(
         GradientDrawable.Orientation.TL_BR,
         if (teal) intArrayOf(0xFF1F3A41.toInt(), fallbackBg)
         else intArrayOf(0xFF2E3D42.toInt(), fallbackBg),
     ).apply {
         cornerRadius = d(17).toFloat()
-        if (wp) alpha = 216 // 壁纸模式下整卡再让一点
     }
     val content = LinearLayout(act).apply {
         orientation = LinearLayout.VERTICAL

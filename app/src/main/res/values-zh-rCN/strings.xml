@@ -574,6 +574,7 @@
     <string name="media_unsupported_source">%1$s 不是本应用能解码的音频格式（支持 MP3、OGG、WAV、FLAC、M4A、AAC、AIFF、AU）。</string>
     <string name="media_unsupported_video_source">%1$s 不是本应用能解码的视频格式（支持 WMV、ASF、AVI、FLV、MPEG、VOB、TS）。</string>
     <string name="media_video_note">目标可选 MP4（H.264 + AAC）或 WMV（WMV8 + WMA2）。VC-1、WMV3、MSMPEG4、MPEG-2、H.263、MJPEG、VP6 等编码都会重新编码。</string>
+    <string name="media_no_preview_ext">Android 无法预览 %1$s 视频 —— 请用外部播放器打开。</string>
     <string name="img_edit_crop_hint">拖动框选区域后，再次点击「裁剪」确认</string>
     <string name="img_edit_stretch">拉伸</string>
     <string name="settings_other">⚙️ 其余设置</string>

@@ -590,6 +590,7 @@
     <string name="media_unsupported_source">%1$s is not an audio format this app can decode (MP3, OGG, WAV, FLAC, M4A, AAC, AIFF and AU are supported).</string>
     <string name="media_unsupported_video_source">%1$s is not a video format this app can decode (WMV, ASF, AVI, FLV, MPEG, VOB and TS are supported).</string>
     <string name="media_video_note">Pick MP4 (H.264 + AAC) or WMV (WMV8 + WMA2). VC-1, WMV3, MSMPEG4, MPEG-2, H.263, MJPEG and VP6 are all re-encoded.</string>
+    <string name="media_no_preview_ext">Android can\u2019t preview %1$s video — open it with an external player.</string>
 
     <!-- Preview workspace (在窗口中打开) -->
     <string name="ws_open">Open in Window</string>

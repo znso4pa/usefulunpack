@@ -241,6 +241,20 @@ internal fun MainActivity.select(tab: TabState, f: File) {
             return
         }
 
+        // Android 的 `MediaPlayer` **没有** WMV/ASF 解码器 —— 我们自己能转出 `.wmv`，
+        // 却放不了它（`.mp4` 能预览是因为 Android 自带 H.264）。点它时给一句明确的话，
+        // 别让用户以为文件坏了。凡是「能当转换源、但 Android 放不了」的视频扩展名都走这里。
+        if (ext in VIDEO_SOURCE_EXTS && ext !in PREVIEW_EXTS) {
+            tab.selectedFile = null
+            tab.fabExtract.visibility = View.GONE
+            AlertDialog.Builder(this)
+                .setTitle(f.name)
+                .setMessage(getString(R.string.media_no_preview_ext, ext.uppercase()))
+                .setPositiveButton(android.R.string.ok, null)
+                .show().also { it.keepTabsTappable() }
+            return
+        }
+
         // Neither archive nor previewable — just show info
         tab.selectedFile = null
         tab.fabExtract.visibility = View.GONE

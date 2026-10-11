@@ -67,6 +67,7 @@
     <string name="action_file_info">ℹ️ 檔案資訊</string>
     <string name="action_convert_cso">🔄 轉換為 CSO (.cso)</string>
     <string name="action_convert_iso">轉換為 ISO (.iso)</string>
+    <string name="action_convert_media">🔄 檔案轉換（僅音訊視訊）</string>
     <string name="zip_manage">🗂️ 條目</string>
     <string name="zip_manage_delete">🗑️ 刪除選中條目</string>
     <string name="zip_manage_add">➕ 從本機檔案新增條目</string>
@@ -77,6 +78,7 @@
     <string name="zip_multi_disk_no_edit">多碟 ZIP 分割（.z01/.zip）不支援編輯</string>
     <string name="msg_converting">正在轉換</string>
     <string name="title_convert_failed">轉換失敗</string>
+    <string name="msg_convert_failed_why">轉換失敗：%1$s</string>
     <string name="msg_convert_done">已轉換: %1$s</string>
     <string name="action_new_folder">新資料夾</string>
     <string name="title_new_folder">新增資料夾</string>
@@ -539,6 +541,34 @@
     <string name="img_convert_title">轉換格式</string>
     <string name="img_convert_menu">轉換為其他格式</string>
     <string name="img_convert_choose">選擇目標格式</string>
+
+    <!-- 音視訊轉換（長按 → 檔案轉換） -->
+    <string name="media_convert_title">選擇目標格式</string>
+    <string name="media_col_audio">音訊</string>
+    <string name="media_col_video">視訊</string>
+    <string name="media_soon">即將支援</string>
+    <string name="media_engine_pending">轉換引擎尚未接入</string>
+    <string name="media_opt_title">轉換選項 — %1$s</string>
+    <string name="media_opt_rate">取樣率</string>
+    <string name="media_opt_channels">聲道</string>
+    <string name="media_opt_depth">位元深度</string>
+    <string name="media_opt_bitrate">位元率</string>
+    <string name="media_opt_mode">編碼模式</string>
+    <string name="media_opt_keep">保持原樣</string>
+    <string name="media_opt_default">預設</string>
+    <string name="media_opt_mono">單聲道</string>
+    <string name="media_opt_stereo">立體聲</string>
+    <string name="media_opt_cbr">固定位元率</string>
+    <string name="media_opt_vbr">可變位元率</string>
+    <string name="media_opt_bits">%1$d 位元</string>
+    <string name="media_opt_start">開始轉換</string>
+    <string name="media_opt_ogg_note">OGG 的位元率只能近似 —— 編碼器只內嵌了一組 setup，所選的位元率僅是品質檔的提示。</string>
+    <string name="media_opt_ogg_mono">OGG 輸出恆為立體聲 —— 編碼器只內嵌了立體聲 setup，單聲道來源會自動升混。</string>
+    <string name="media_opt_aac_note">AAC 輸出是裸 ADTS 基本流（.aac），不是 .m4a 容器 —— 任何播放器都能讀，但不帶標籤資訊。</string>
+    <string name="media_opt_lossless_note">32 位元 AIFF / AU 存的是整數 PCM。（WAV 的 32 位元寫的是浮點。）</string>
+    <string name="media_unsupported_source">%1$s 不是本應用程式能解碼的音訊格式（支援 MP3、OGG、WAV、FLAC、M4A、AAC、AIFF、AU）。</string>
+    <string name="media_unsupported_video_source">%1$s 不是本應用程式能解碼的視訊格式（支援 WMV、ASF、AVI、FLV、MPEG、VOB、TS）。</string>
+    <string name="media_video_note">輸出為 MP4（H.264 + AAC）。VC-1、WMV3、MSMPEG4、MPEG-2、H.263、MJPEG、VP6 等編碼都會重新編成 H.264。</string>
     <string name="img_edit_crop_hint">拖曳框選區域後，再次點擊「裁剪」確認</string>
     <string name="img_edit_stretch">拉伸</string>
     <string name="settings_other">⚙️ 其餘設定</string>
@@ -657,9 +687,13 @@
     <string name="cli_saved_to">→ 已儲存到 %1$s</string>
     <string name="cli_one_src_only">%1$s 一次只接受一個來源與一個目標；批次請用 UUT 的 for 迴圈</string>
     <string name="cli_img_bad_fmt">不認識的圖片格式：%1$s（jpg / png / webp）</string>
-    <string name="cli_img_ok">%1$s → %2$s</string>
+    <string name="cli_conv_ok">%1$s → %2$s</string>
     <string name="cli_img_fail">無法轉換：%1$s</string>
-    <string name="cli_img_summary">轉換成功 %1$s，失敗 %2$s</string>
+    <string name="cli_conv_summary">轉換成功 %1$s，失敗 %2$s</string>
+    <string name="cli_audio_bad_fmt">不認識的音訊格式：%1$s（mp3 / ogg / wav）</string>
+    <string name="cli_audio_bad_src">不是本應用程式能解碼的音訊：%1$s</string>
+    <string name="cli_conv_fail">轉換失敗：%1$s — %2$s</string>
+    <string name="cli_video_bad_src">不是本應用程式能解碼的視訊：%1$s（支援 WMV、ASF、AVI、FLV、MPEG、VOB、TS）</string>
     <string name="cli_json_one_file">uu l -j 一次只能處理一個封包（收到 %1$s 個）——請逐個呼叫</string>
     <string name="cli_x_glob_none">沒有條目匹配：%1$s</string>
     <string name="cli_x_glob_miss">未匹配（已略過）：%1$s</string>

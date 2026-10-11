@@ -64,6 +64,7 @@
     <string name="action_file_info">ℹ️ ファイル情報</string>
     <string name="action_convert_cso">🔄 CSO (.cso) に変換</string>
     <string name="action_convert_iso">ISO (.iso) に変換</string>
+    <string name="action_convert_media">🔄 ファイル変換（音声・動画のみ）</string>
     <string name="zip_manage">🗂️ エントリ</string>
     <string name="zip_manage_delete">🗑️ 選択したエントリを削除</string>
     <string name="zip_manage_add">➕ ローカルファイルからエントリを追加</string>
@@ -74,6 +75,7 @@
     <string name="zip_multi_disk_no_edit">マルチディスク ZIP（.z01/.zip）は編集できません</string>
     <string name="msg_converting">変換中</string>
     <string name="title_convert_failed">変換失敗</string>
+    <string name="msg_convert_failed_why">変換失敗：%1$s</string>
     <string name="msg_convert_done">変換完了: %1$s</string>
     <string name="action_new_folder">新規フォルダ</string>
     <string name="nav_home">ルートに戻る</string>
@@ -532,6 +534,34 @@
     <string name="img_convert_title">形式変換</string>
     <string name="img_convert_menu">形式を変換</string>
     <string name="img_convert_choose">変換先の形式を選択</string>
+
+    <!-- 音声・映像の変換（長押し → ファイル変換） -->
+    <string name="media_convert_title">変換先の形式を選択</string>
+    <string name="media_col_audio">音声</string>
+    <string name="media_col_video">映像</string>
+    <string name="media_soon">近日対応</string>
+    <string name="media_engine_pending">変換エンジンは未接続です</string>
+    <string name="media_opt_title">変換オプション — %1$s</string>
+    <string name="media_opt_rate">サンプルレート</string>
+    <string name="media_opt_channels">チャンネル</string>
+    <string name="media_opt_depth">ビット深度</string>
+    <string name="media_opt_bitrate">ビットレート</string>
+    <string name="media_opt_mode">エンコードモード</string>
+    <string name="media_opt_keep">元のまま</string>
+    <string name="media_opt_default">既定</string>
+    <string name="media_opt_mono">モノラル</string>
+    <string name="media_opt_stereo">ステレオ</string>
+    <string name="media_opt_cbr">固定ビットレート</string>
+    <string name="media_opt_vbr">可変ビットレート</string>
+    <string name="media_opt_bits">%1$d ビット</string>
+    <string name="media_opt_start">変換開始</string>
+    <string name="media_opt_ogg_note">OGG のビットレートは概算です —— エンコーダーは 1 種類の setup しか内蔵しておらず、指定値は品質ヒントとして扱われます。</string>
+    <string name="media_opt_ogg_mono">OGG の出力は常にステレオです —— エンコーダーはステレオ setup のみ内蔵のため、モノラル入力はアップミックスされます。</string>
+    <string name="media_opt_aac_note">AAC の出力は生の ADTS エレメンタリストリーム（.aac）で、.m4a コンテナではありません —— どのプレイヤーでも再生できますが、タグ情報は含まれません。</string>
+    <string name="media_opt_lossless_note">32 ビットの AIFF / AU は整数 PCM を格納します。（WAV の 32 ビットは浮動小数点です。）</string>
+    <string name="media_unsupported_source">%1$s は本アプリがデコードできる音声形式ではありません（MP3・OGG・WAV・FLAC・M4A・AAC・AIFF・AU に対応）。</string>
+    <string name="media_unsupported_video_source">%1$s は本アプリがデコードできる動画形式ではありません（WMV・ASF・AVI・FLV・MPEG・VOB・TS に対応）。</string>
+    <string name="media_video_note">出力は MP4（H.264 + AAC）です。VC-1・WMV3・MSMPEG4・MPEG-2・H.263・MJPEG・VP6 などは H.264 に再エンコードされます。</string>
     <string name="img_edit_crop_hint">ドラッグで範囲を選択後、もう一度「切り取り」をタップして確定</string>
     <string name="img_edit_stretch">引き伸ばし</string>
     <string name="settings_other">⚙️ その他の設定</string>
@@ -657,9 +687,13 @@
     <string name="cli_saved_to">→ %1$s に保存しました</string>
     <string name="cli_one_src_only">%1$s は 1 つのソースと 1 つの宛先のみ受け付けます。一括処理は UUT の for ループで</string>
     <string name="cli_img_bad_fmt">不明な画像形式：%1$s（jpg / png / webp）</string>
-    <string name="cli_img_ok">%1$s → %2$s</string>
+    <string name="cli_conv_ok">%1$s → %2$s</string>
     <string name="cli_img_fail">変換できません：%1$s</string>
-    <string name="cli_img_summary">変換 %1$s 件、失敗 %2$s 件</string>
+    <string name="cli_conv_summary">変換 %1$s 件、失敗 %2$s 件</string>
+    <string name="cli_audio_bad_fmt">音声形式ではありません：%1$s（mp3 / ogg / wav）</string>
+    <string name="cli_audio_bad_src">本アプリがデコードできる音声ではありません：%1$s</string>
+    <string name="cli_conv_fail">変換失敗：%1$s — %2$s</string>
+    <string name="cli_video_bad_src">本アプリがデコードできる動画ではありません：%1$s（WMV・ASF・AVI・FLV・MPEG・VOB・TS に対応）</string>
     <string name="cli_json_one_file">uu l -j は 1 つのアーカイブのみ（%1$s 件）——1 件ずつ実行してください</string>
     <string name="cli_x_glob_none">一致するエントリがありません：%1$s</string>
     <string name="cli_x_glob_miss">一致せず（スキップ）：%1$s</string>

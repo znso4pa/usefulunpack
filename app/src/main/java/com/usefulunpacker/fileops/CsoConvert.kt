@@ -54,10 +54,11 @@ internal fun MainActivity.convertIso(src: File, toCso: Boolean, ownerTab: TabSta
             }
         } catch (e: Exception) {
             outFile.delete()
+            val why = e.message ?: e.javaClass.simpleName
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 prog.dismiss()
-                toast(getString(R.string.title_convert_failed))
+                toast(getString(R.string.msg_convert_failed_why, why))
             }
         } finally {
             opH.release()

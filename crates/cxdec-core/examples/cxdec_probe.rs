@@ -1,6 +1,11 @@
 //! Dev probe: run the cxdec detection + extraction against a real archive.
-//! Usage: cargo run -p archive_cxdec-core --release --example probe -- \
+//! Usage: cargo run -p archive_cxdec-core --release --example cxdec_probe -- \
 //!          <game_dir> <archive.xp3> [extract_dir] [--adler]
+//!
+//! The `cxdec_` prefix is not decoration: `crates/rgss-core` also ships an
+//! `examples/probe.rs`, and two examples with the same name collide on
+//! `target/<profile>/examples/probe` (cargo warns today, errors later).
+//! Same reason `int-core`'s manifest example is `int_manifest.rs`.
 //!
 //! `--adler` additionally checks the rule the encrypted WRITER depends on:
 //! every entry's stored ADLR (the cipher key seed) must equal
@@ -31,7 +36,7 @@ fn main() {
     let check_adler = args.iter().any(|a| a == "--adler");
     let positional: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
     if positional.len() < 2 {
-        eprintln!("usage: probe <game_dir> <archive.xp3> [extract_dir] [--adler]");
+        eprintln!("usage: cxdec_probe <game_dir> <archive.xp3> [extract_dir] [--adler]");
         std::process::exit(2);
     }
     let game_dir = positional[0];

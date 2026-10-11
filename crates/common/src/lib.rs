@@ -3,8 +3,6 @@ use jni::objects::JString;
 use std::collections::{BTreeSet, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
 
 /// Hard cap for formats with no declared uncompressed size (bzip2/xz/zstd).
 /// 16 GiB is far above any legitimate single-file output while bounding a
@@ -13,10 +11,19 @@ pub const DEFAULT_EXTRACT_CAP: u64 = 16 * 1024 * 1024 * 1024;
 
 /// Byte-based progress stores. Each cdylib statically links this crate, so the
 /// statics below are independent per format library.
+///
+/// `#[macro_export]` so a format library can declare its OWN store instead of
+/// this crate having to know every format by name (`crates/video-core` does
+/// exactly that).
+#[macro_export]
 macro_rules! progress_store {
     ($name:ident) => {
         pub mod $name {
-            use super::*;
+            // Self-contained on purpose: `#[macro_export]` lets other crates
+            // (e.g. `crates/video-core`) declare their own store, and they have
+            // no reason to also import these four names at their root.
+            use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+            use std::sync::Mutex;
 
             static BYTES: AtomicU64 = AtomicU64::new(0);
             static TOTAL: AtomicU64 = AtomicU64::new(0);

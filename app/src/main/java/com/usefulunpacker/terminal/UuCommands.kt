@@ -81,7 +81,7 @@ internal object UuCommands {
 
     internal enum class Kind {
         LIST_FORMATS, HELP, DOCS, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
-        TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO,
+        TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO, AUDIO, VIDEO,
         ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, DD, CMP, STRINGS, SED, TR, GUESS, IMG, FD, B64
     }
 
@@ -114,6 +114,13 @@ internal object UuCommands {
         Cmd("set",    Kind.SET,          "Replace one entry inside an archive",            "uu set <archive> <entry> <localfile> [-p pw]"),
         Cmd("scan",   Kind.SCAN,         "Scan a file for embedded archive signatures",    "uu scan <file>"),
         Cmd("cso",    Kind.CSO,          "Convert ISO ↔ CSO",                              "uu cso <file> [out]"),
+        // `uu audio` 的旗标是整个 CLI 里最多的一组（6 个）。**故意不把它们全列进
+        // usage 列**：usage 列宽取的是全表最长的一行，为这一个命令把每一行的说明
+        // 再往右推十几个字符不划算（`uu docs` 的表本来就已经接近手机终端的宽度
+        // 极限）。格式清单放进 summary（那一列不补空格，长短无所谓），旗标解释
+        // 放进 PARAMETERS —— 那里本来就是讲旗标的地方。
+        Cmd("audio",  Kind.AUDIO,        "Convert audio — in: mp3/ogg/wav/flac/m4a/aac/aiff/au · out: mp3/ogg/wav/aiff/au/aac", "uu audio <src...> <fmt> [-o dir] [--rate N] [--ch N] [--depth N] [--br N]"),
+        Cmd("video",  Kind.VIDEO,        "Convert video (wmv/asf/avi/flv/mpeg/ts → mp4)", "uu video <src...> [mp4] [-o dir]"),
         Cmd("enc",    Kind.ENC,          "Convert text encoding (BOM kept)",               "uu enc <file> <from|auto> <to> [out]"),
         Cmd("mvdec",  Kind.MVDEC,        "Decode RPG Maker MV/MZ assets (no key needed)",  "uu mvdec <file...> [-o dir]"),
         Cmd("rmd",    Kind.RMD,          "Delete entries from a ZIP (name-cn copy)",       "uu rmd <zip> <entry...> [-p pw] (globs ok)"),
@@ -164,6 +171,8 @@ internal object UuCommands {
                 Kind.SET -> setEntry(args, ctx)
                 Kind.SCAN -> scan(args, ctx)
                 Kind.CSO -> cso(args, ctx)
+                Kind.AUDIO -> audio(args, ctx)
+                Kind.VIDEO -> video(args, ctx)
                 Kind.ENC -> enc(args, ctx)
                 Kind.MVDEC -> mvdec(args, ctx)
                 Kind.RMD -> rmd(args, ctx)
@@ -261,6 +270,14 @@ internal object UuCommands {
             "-d            " to "decode instead of encode (uu b64)",
             "--bytes       " to "treat <from> / <to> as hex bytes; needs -i (uu sed)",
             "if= of=       " to "source / destination (uu dd); plus skip= count= seek= and -f",
+            // 音频转换的旗标（uu audio）。`--vbr` / `--q` **不在 usage 行里**（原因见
+            // 命令表里 `uu audio` 上方的注释），但仍然是能用的旗标，必须在这里解释。
+            "--rate <N>    " to "target sample rate in Hz (uu audio); omitted or 0 keeps the source rate",
+            "--ch <N>      " to "target channel count, 1 or 2 (uu audio); omitted or 0 keeps the source",
+            "--depth <N>   " to "bit depth for the lossless targets wav / aiff / au (uu audio): 8 | 16 | 24 | 32",
+            "--br <N>      " to "bitrate in kbps for the lossy targets mp3 / ogg / aac (uu audio); omitted -> format default",
+            "--vbr         " to "VBR instead of CBR (uu audio, mp3 only)",
+            "--q <0-9>     " to "VBR quality, 0 best … 9 smallest (uu audio, mp3 only; needs --vbr)",
         )
         for ((k, v) in params) sb.append("  ").append(k).append(v).append('\n')
         sb.append('\n')
@@ -1943,6 +1960,209 @@ internal object UuCommands {
         }
     }
 
+    /**
+     * `uu audio <src...> <fmt> [-o dir] [--rate N] [--ch N] [--depth N] [--br N]`
+     * （另有 `--vbr` / `--q N`，只对 mp3 有意义）—— 音频格式转换。
+     *
+     * 走的是与「长按 → 文件转换」**同一个引擎**（`AudioCore` +
+     * [AudioConvertOptions]），不是第二份实现；选项也共用那个字符串协议。
+     *
+     * 逐条转换、逐条打印，与 `uu img` 同形：一条失败不影响其余，末行给汇总。
+     * 失败时**把引擎给的原因原样带出来** —— `audioConvert` 失败会从 JNI 抛
+     * `IOException("audio: …")`，吞掉它只报「失败」等于把唯一的诊断信息扔掉。
+     */
+    private fun audio(args: List<String>, ctx: Ctx): Result {
+        val pa = splitFlags(
+            args,
+            listOf("-o", "--rate", "--ch", "--depth", "--br", "--q"),
+            listOf("--vbr"),
+        )
+        missingValueError(ctx, pa)?.let { return it }
+        // 格式是固定关键字：取**最后一个**匹配的位置参数（其余位置参数都是源），
+        // 与 `uu img` 同一个约定 —— 源文件名里出现 "wav" 也不会被当成格式。
+        val fmtIdx = pa.pos.indexOfLast { it.lowercase() in AUDIO_TARGETS }
+        if (fmtIdx < 0) {
+            val only = pa.pos.singleOrNull()
+            return if (only != null) Result(ctx.text(R.string.cli_audio_bad_fmt, only), 2)
+            else Result(usageOf("audio"), 2)
+        }
+        val fmt = pa.pos[fmtIdx].lowercase()
+        val srcs = pa.pos.filterIndexed { i, _ -> i != fmtIdx }
+        if (srcs.isEmpty()) return needFile()
+
+        // 越界的值不在这里夹：`AudioOptions::sanitize` 是唯一真源（UI 走的是同一条）。
+        val opts = AudioConvertOptions(
+            rate = pa.values["--rate"]?.toIntOrNull() ?: 0,
+            channels = pa.values["--ch"]?.toIntOrNull() ?: 0,
+            depth = pa.values["--depth"]?.toIntOrNull() ?: 16,
+            bitrate = pa.values["--br"]?.toIntOrNull() ?: 0,
+            vbr = "--vbr" in pa.bools,
+            vbrQuality = pa.values["--q"]?.toIntOrNull() ?: 2,
+        )
+        val outDir = pa.values["-o"]?.let { UuText.resolve(ctx.cwd, it) } ?: defaultOut(ctx)
+        outDir.mkdirs()
+
+        val opH = ctx.activity?.let { tryStartOperation(it, "audio") }
+        val cancelled = AtomicBoolean(false)
+        val sb = StringBuilder()
+        var ok = 0
+        var fail = 0
+        try {
+            if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+            val acc = ProgressAccessors(
+                { AudioCore.audioProgressCount() }, { AudioCore.audioProgressTotal() },
+                { AudioCore.audioProgressFileCount() }, { AudioCore.audioProgressFileTotal() },
+                { AudioCore.audioProgressName() }, { AudioCore.audioCancel() }
+            )
+            ctx.registerCancel?.invoke {
+                val running = opH?.isRunning == true
+                opH?.requestCancel()
+                if (running) { cancelled.set(true); acc.cancel() }
+            }
+
+            for (arg in srcs) {
+                if (cancelled.get()) return Result(UuText.extractCancelled(ctx.str), 1)
+                val src = UuText.resolve(ctx.cwd, arg)
+                if (!src.isFile) {
+                    sb.append(UuText.notFound(ctx.str, arg)).append('\n'); fail++; continue
+                }
+                if (src.extension.lowercase() !in AUDIO_SOURCE_EXTS) {
+                    sb.append(ctx.text(R.string.cli_audio_bad_src, src.name)).append('\n')
+                    fail++; continue
+                }
+                val outF = uniqueFile(outDir, "${src.nameWithoutExtension}.$fmt")
+                val done = AtomicBoolean(false)
+                val poller = if (ctx.progress != null) thread {
+                    while (!done.get()) {
+                        ctx.progress?.invoke(progressLine(acc))
+                        Thread.sleep(200)
+                    }
+                } else null
+                // 单条失败不能中断整批：把原因记下来接着转下一个。
+                val okOne = try {
+                    AudioCore.audioConvert("", src.path, outF.path, fmt, opts.toJni())
+                } catch (e: Exception) {
+                    outF.delete()
+                    sb.append(
+                        ctx.text(R.string.cli_conv_fail, src.name, e.message ?: e.javaClass.simpleName)
+                    ).append('\n')
+                    fail++
+                    continue
+                } finally {
+                    done.set(true)
+                    poller?.join(600)
+                }
+                if (!okOne) {
+                    // 返回 false 而没抛异常：引擎侧的失败路径已经删过输出，这里再删一次是幂等的。
+                    outF.delete()
+                    sb.append(ctx.text(R.string.cli_conv_fail, src.name, fmt)).append('\n')
+                    fail++
+                    continue
+                }
+                ok++
+                sb.append(ctx.text(R.string.cli_conv_ok, src.name, outF.name)).append('\n')
+            }
+
+            if (cancelled.get()) return Result(UuText.extractCancelled(ctx.str), 1)
+            if (srcs.size > 1) {
+                sb.append(ctx.text(R.string.cli_conv_summary, ok.toString(), fail.toString()))
+            }
+            return Result(sb.toString().trimEnd('\n'), if (ok == 0 && fail > 0) 1 else 0)
+        } finally {
+            opH?.release()
+        }
+    }
+
+    /**
+     * `uu video` —— 视频格式转换（WMV/ASF → MP4）。
+     *
+     * 走的是与「长按 → 文件转换 → MP4」**同一个引擎**（[VideoCore]），不是第二份实现。
+     * 形状与 `uu audio` 完全一致：逐条转换、逐条打印，一条失败不影响其余，末行给汇总；
+     * 失败时把引擎给的原因原样带出来（JNI 抛的是 `IOException("video: …")`）。
+     *
+     * 目标目前只有 mp4（WMV 没有编码器），所以格式关键字可省 —— 位置参数里**最后一个**
+     * 恰好是 `mp4` 时当格式，其余都当源。
+     */
+    private fun video(args: List<String>, ctx: Ctx): Result {
+        val pa = splitFlags(args, listOf("-o"))
+        missingValueError(ctx, pa)?.let { return it }
+        val fmtIdx = pa.pos.indexOfLast { it.lowercase() in VIDEO_TARGETS }
+        val srcs = if (fmtIdx >= 0) pa.pos.filterIndexed { i, _ -> i != fmtIdx } else pa.pos
+        if (srcs.isEmpty()) return needFile()
+        val outDir = pa.values["-o"]?.let { UuText.resolve(ctx.cwd, it) } ?: defaultOut(ctx)
+        outDir.mkdirs()
+
+        val opH = ctx.activity?.let { tryStartOperation(it, "video") }
+        val cancelled = AtomicBoolean(false)
+        val sb = StringBuilder()
+        var ok = 0
+        var fail = 0
+        try {
+            if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+            val acc = ProgressAccessors(
+                { VideoCore.videoProgressCount() }, { VideoCore.videoProgressTotal() },
+                { VideoCore.videoProgressFileCount() }, { VideoCore.videoProgressFileTotal() },
+                { VideoCore.videoProgressName() }, { VideoCore.videoCancel() }
+            )
+            ctx.registerCancel?.invoke {
+                val running = opH?.isRunning == true
+                opH?.requestCancel()
+                if (running) { cancelled.set(true); acc.cancel() }
+            }
+
+            for (arg in srcs) {
+                if (cancelled.get()) return Result(UuText.extractCancelled(ctx.str), 1)
+                val src = UuText.resolve(ctx.cwd, arg)
+                if (!src.isFile) {
+                    sb.append(UuText.notFound(ctx.str, arg)).append('\n'); fail++; continue
+                }
+                if (src.extension.lowercase() !in VIDEO_SOURCE_EXTS) {
+                    sb.append(ctx.text(R.string.cli_video_bad_src, src.name)).append('\n')
+                    fail++; continue
+                }
+                val outF = uniqueFile(outDir, "${src.nameWithoutExtension}.mp4")
+                val done = AtomicBoolean(false)
+                val poller = if (ctx.progress != null) thread {
+                    while (!done.get()) {
+                        ctx.progress?.invoke(progressLine(acc))
+                        Thread.sleep(200)
+                    }
+                } else null
+                // 单条失败不能中断整批：把原因记下来接着转下一个。
+                val okOne = try {
+                    VideoCore.videoConvert("", src.path, outF.path, "mp4", "")
+                } catch (e: Exception) {
+                    outF.delete()
+                    sb.append(
+                        ctx.text(R.string.cli_conv_fail, src.name, e.message ?: e.javaClass.simpleName)
+                    ).append('\n')
+                    fail++
+                    continue
+                } finally {
+                    done.set(true)
+                    poller?.join(600)
+                }
+                if (!okOne) {
+                    // 返回 false 而没抛异常：引擎侧的失败路径已经删过输出，这里再删一次是幂等的。
+                    outF.delete()
+                    sb.append(ctx.text(R.string.cli_conv_fail, src.name, "mp4")).append('\n')
+                    fail++
+                    continue
+                }
+                ok++
+                sb.append(ctx.text(R.string.cli_conv_ok, src.name, outF.name)).append('\n')
+            }
+
+            if (cancelled.get()) return Result(UuText.extractCancelled(ctx.str), 1)
+            if (srcs.size > 1) {
+                sb.append(ctx.text(R.string.cli_conv_summary, ok.toString(), fail.toString()))
+            }
+            return Result(sb.toString().trimEnd('\n'), if (ok == 0 && fail > 0) 1 else 0)
+        } finally {
+            opH?.release()
+        }
+    }
+
     // ─── enc / mvdec / rmd / add / find / diff / hex ─────────────────────
 
     /** 编码别名归一（与 TEXT_ENCODINGS 的四档对齐）。 */
@@ -2182,7 +2402,7 @@ internal object UuCommands {
             try {
                 val dest = uniqueFile(outDir, "${src.nameWithoutExtension}.$fmt")
                 if (encodeImageTo(src, fmt, dest, q)) {
-                    sb.append(ctx.text(R.string.cli_img_ok, srcArg, dest.absolutePath)).append('\n')
+                    sb.append(ctx.text(R.string.cli_conv_ok, srcArg, dest.absolutePath)).append('\n')
                     ok++
                 } else {
                     sb.append(ctx.text(R.string.cli_img_fail, srcArg)).append('\n')
@@ -2192,7 +2412,7 @@ internal object UuCommands {
                 temp?.delete()
             }
         }
-        if (srcs.size > 1) sb.append(ctx.text(R.string.cli_img_summary, ok.toString(), fail.toString()))
+        if (srcs.size > 1) sb.append(ctx.text(R.string.cli_conv_summary, ok.toString(), fail.toString()))
         return Result(sb.toString().trimEnd('\n'), if (fail > 0) 1 else 0)
     }
 
@@ -3148,6 +3368,17 @@ internal object UuCommands {
             "find" -> (2 until tokens.size).toSet()
             "grep" -> setOf(if (tokens.getOrNull(2) == "-i") 3 else 2)
             "x" -> xSkipFrom(tokens, from = 2)
+            // 格式关键字（`uu img … jpg` / `uu audio … ogg`）是固定词不是路径：
+            // cwd 里恰好有个叫 `jpg` 的文件时，展开会把它换成那个文件的绝对路径，
+            // 格式就丢了。`uu img` 一直有这个问题，加 `uu audio` 时一并补上。
+            "img", "audio", "video" -> {
+                val formats = when (tokens[1]) {
+                    "img" -> IMG_TARGET_FORMATS
+                    "audio" -> AUDIO_TARGETS
+                    else -> VIDEO_TARGETS
+                }
+                (2 until tokens.size).filter { tokens[it].lowercase() in formats }.toSet()
+            }
             else -> emptySet()
         }
         "find" -> (1 until tokens.size).toSet()

@@ -25,6 +25,8 @@ members = [
     "crates/rgss-core",
     "crates/rpa-core",
     "crates/int-core",
+    "crates/audio-core",
+    "crates/video-core",
 
 ]
 resolver = "2"

@@ -69,6 +69,7 @@
     <string name="action_file_info">ℹ️ Info</string>
     <string name="action_convert_cso">🔄 Convert to CSO (.cso)</string>
     <string name="action_convert_iso">Convert to ISO (.iso)</string>
+    <string name="action_convert_media">🔄 Convert media (audio/video only)</string>
     <string name="zip_manage">🗂️ Entries</string>
     <string name="zip_manage_delete">🗑️ Delete selected entries</string>
     <string name="zip_manage_add">➕ Add entry from a local file</string>
@@ -79,6 +80,7 @@
     <string name="zip_multi_disk_no_edit">Multi-disk ZIP archives (.z01/.zip) can\'t be edited</string>
     <string name="msg_converting">Converting</string>
     <string name="title_convert_failed">Convert failed</string>
+    <string name="msg_convert_failed_why">Convert failed: %1$s</string>
     <string name="msg_convert_done">Converted: %1$s</string>
     <string name="action_new_folder">New folder</string>
     <string name="nav_home">Home</string>
@@ -561,6 +563,34 @@
     <string name="img_convert_menu">Convert format</string>
     <string name="img_convert_choose">Choose target format</string>
 
+    <!-- Audio/video conversion (long press → Convert media) -->
+    <string name="media_convert_title">Choose target format</string>
+    <string name="media_col_audio">Audio</string>
+    <string name="media_col_video">Video</string>
+    <string name="media_soon">Coming soon</string>
+    <string name="media_engine_pending">Conversion engine is not wired up yet</string>
+    <string name="media_opt_title">Convert options — %1$s</string>
+    <string name="media_opt_rate">Sample rate</string>
+    <string name="media_opt_channels">Channels</string>
+    <string name="media_opt_depth">Bit depth</string>
+    <string name="media_opt_bitrate">Bitrate</string>
+    <string name="media_opt_mode">Mode</string>
+    <string name="media_opt_keep">Keep source</string>
+    <string name="media_opt_default">Default</string>
+    <string name="media_opt_mono">Mono</string>
+    <string name="media_opt_stereo">Stereo</string>
+    <string name="media_opt_cbr">CBR</string>
+    <string name="media_opt_vbr">VBR</string>
+    <string name="media_opt_bits">%1$d-bit</string>
+    <string name="media_opt_start">Start</string>
+    <string name="media_opt_ogg_note">OGG bitrate is approximate — the encoder ships one built-in setup, so the chosen rate only acts as a quality hint.</string>
+    <string name="media_opt_ogg_mono">OGG output is always stereo — the bundled encoder only ships a stereo setup, so a mono source is upmixed.</string>
+    <string name="media_opt_aac_note">AAC output is a raw ADTS stream (.aac), not an .m4a container — every player reads it, but it carries no tags.</string>
+    <string name="media_opt_lossless_note">32-bit AIFF and AU store integer PCM. (WAV writes 32-bit as float instead.)</string>
+    <string name="media_unsupported_source">%1$s is not an audio format this app can decode (MP3, OGG, WAV, FLAC, M4A, AAC, AIFF and AU are supported).</string>
+    <string name="media_unsupported_video_source">%1$s is not a video format this app can decode (WMV, ASF, AVI, FLV, MPEG, VOB and TS are supported).</string>
+    <string name="media_video_note">Output is MP4 (H.264 + AAC). VC-1, WMV3, MSMPEG4, MPEG-2, H.263, MJPEG and VP6 are all re-encoded to H.264.</string>
+
     <!-- Preview workspace (在窗口中打开) -->
     <string name="ws_open">Open in Window</string>
     <string name="ws_open_selected">Open Selected as Workspace</string>
@@ -664,9 +694,13 @@
     <string name="cli_saved_to">→ saved to %1$s</string>
     <string name="cli_one_src_only">%1$s takes exactly one source and one destination; for batches use a UUT for loop</string>
     <string name="cli_img_bad_fmt">unknown image format: %1$s (jpg / png / webp)</string>
-    <string name="cli_img_ok">%1$s → %2$s</string>
+    <string name="cli_conv_ok">%1$s → %2$s</string>
     <string name="cli_img_fail">cannot convert: %1$s</string>
-    <string name="cli_img_summary">%1$s converted, %2$s failed</string>
+    <string name="cli_conv_summary">%1$s converted, %2$s failed</string>
+    <string name="cli_audio_bad_fmt">not an audio format: %1$s (mp3 / ogg / wav)</string>
+    <string name="cli_audio_bad_src">not an audio file this app can decode: %1$s</string>
+    <string name="cli_conv_fail">failed: %1$s — %2$s</string>
+    <string name="cli_video_bad_src">not a video file this app can decode: %1$s (WMV, ASF, AVI, FLV, MPEG, VOB and TS supported)</string>
     <string name="cli_json_one_file">uu l -j takes one archive at a time (got %1$s) — run it per archive</string>
     <string name="cli_x_glob_none">no entries match: %1$s</string>
     <string name="cli_x_glob_miss">no match (skipped): %1$s</string>

@@ -17,7 +17,13 @@ if [ -z "${ANDROID_NDK_HOME:-}" ]; then
 fi
 
 echo ""
-echo "[1/3] Building Rust native libraries..."
+# 视频核心的 ffmpeg 静态库必须**先于 cargo** 编好：crates/video-core/build.rs 要
+# 读 .ffmpeg-cache/ 才能链接和生成绑定。这一步不产出 .so，只把 ffmpeg 编出来缓存。
+echo "[1/4] Building ffmpeg static libs (for crates/video-core)..."
+bash "$PROJECT_DIR/scripts/build_ffmpeg.sh"
+
+echo ""
+echo "[2/4] Building Rust native libraries..."
 cd "$PROJECT_DIR"
 
 # package name:library artifact suffix
@@ -44,6 +50,8 @@ CRATES=(
     "archive_rgss-core:rgss_core"
     "archive_rpa-core:rpa_core"
     "archive_int-core:int_core"
+    "archive_audio-core:audio_core"
+    "archive_video-core:video_core"
 )
 # Two ABIs only: arm64 for every current device and armeabi-v7a for old ones.
 # x86_64 (emulator / x86 tablets) was dropped — it tripled the .so payload for
@@ -81,12 +89,12 @@ done
 echo "  ✅ Rust build done"
 
 echo ""
-echo "[2/3] Building APK with Gradle..."
+echo "[3/4] Building APK with Gradle..."
 cd "$PROJECT_DIR"
 ./gradlew assembleRelease
 
 echo ""
-echo "[3/3] Done!"
+echo "[4/4] Done!"
 APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
 if [ -f "$APK" ]; then
     cp "$APK" "$PROJECT_DIR/UsefulUnpack.apk"

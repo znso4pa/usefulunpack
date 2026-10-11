@@ -8,7 +8,7 @@ Human-facing docs: [README](README.md) · [CONTRIBUTING](CONTRIBUTING.md) (中�
 ## Commands
 
 ```bash
-bash build.sh                      # full build: Rust cross-compile (arm64-v8a + armeabi-v7a) -> jniLibs -> assembleRelease -> ./UsefulUnpack.apk (needs NDK)
+bash build.sh                      # full build: ffmpeg static libs -> Rust cross-compile (arm64-v8a + armeabi-v7a) -> jniLibs -> assembleRelease -> ./UsefulUnpack.apk (needs NDK)
 ./gradlew :app:assembleRelease     # Kotlin-only changes (output lands in app/build/outputs/apk/release/ — NOT the root APK)
 cargo test --workspace             # Rust suite — must stay green
 ./gradlew lintDebug                # baseline: 0 errors / 287 warnings — NEVER introduce new errors
@@ -50,6 +50,7 @@ cargo test --workspace             # Rust suite — must stay green
 - ⚠️ **An opaque background kills the user's wallpaper**: the wallpaper is drawn on `R.id.root`, so any opaque view sitting on top of it hides the wallpaper completely. 4.x was single-window, where clearing `panel` was enough; the multi-window layout then added `viewPager` / `folderRoot` / `previewRoot` / `tabBar`, and `applyBackgroundImage` was never updated — **the wallpaper stopped showing anywhere**, and every opaque layer added later silently re-broke it again. Rules: (1) the yield tables `BACKDROP_TRANSLUCENT` / `BACKDROP_TRANSPARENT` / `BACKDROP_ORIGINAL` live in `ui/AppSettings.kt`; any view that introduces an opaque background must be registered in them; (2) `panel` / `pathBar` / `bottomBar` / `folderRoot` / `previewRoot` exist once PER TAB, so they must be handled by walking the tree (`refreshBackdrop()`) — `findViewById` only ever reaches the first one; (3) `FolderFragment` must call `applyBackdropInTree()` on **its own root** at bind time, NOT `refreshBackdrop()` — in `onCreateView` the fragment's view is not yet attached to the ViewPager, so a walk from `R.id.root` cannot reach it (shipped that way once; only the tab strip showed through). Also, `applyBackgroundImage` must not bail silently when `root.width == 0` on the first frame — retry one frame later instead. After touching any of this, set a real wallpaper on-device and confirm all four areas show through: tab strip / toolbar / file list / preview.
 - New strings go to ALL FOUR locales: `values/`, `-zh-rCN/`, `-zh-rTW/`, `-ja/`. Check with a set comparison, not eyeballing — `values-zh-rTW` had drifted 7 `<string>` and 1 `help_tutorials` item behind for a long time. In XML, `'` must be `\'` (AAPT2 fails obscurely otherwise) and a help entry MUST carry `Title\nBody` or `parseItem` renders the whole thing as a bold title with no body.
 - Android string resources also carry a `\\n` (literal backslash-n) style in older entries; both appear in `strings.xml`. Match the style of the array you are editing instead of normalizing the file.
+- **`crates/video-core` is the one crate with a C dependency** (ffmpeg, LGPL-2.1-or-later, decode-only). Its `build.rs` needs `.ffmpeg-cache/`, which only `scripts/build_ffmpeg.sh` produces — so in `build.sh` that script MUST run before the `cargo ndk` loop. On an Android target a missing cache is a **hard error** (a silently feature-less APK is far worse to diagnose); on any other target the crate compiles to an empty stub so `cargo test --workspace` never has to cross-compile ffmpeg. The link must keep `-Wl,--gc-sections` (ffmpeg is built `-ffunction-sections`, and without it several hundred KB of unreferenced decoders ride along).
 
 ## The lesson that keeps costing the most
 
@@ -117,6 +118,7 @@ Download the RPG Maker files with `curl` from `raw.githubusercontent.com/uuksu/R
 | Recycle bin | `fileops/RecycleBin.kt` (rename-first fast path; copy fallback reports per-file progress; copy failure must abort BEFORE deleting originals) |
 | Wallpaper / backdrop yielding | `applyBackgroundImage` + `refreshBackdrop()` + `applyBackdropInTree()` in `ui/AppSettings.kt` (yield tables and the registration rule for new opaque layers: see Known traps) |
 | Signature scan engine | `crates/scan-core` (binwalk-style; validated against binwalk 3.1 corpus) |
+| Video conversion (WMV/ASF → MP4) | `crates/video-core` — ffmpeg decodes, MediaCodec/MediaMuxer encode; `build.rs` links the static libs built by `scripts/build_ffmpeg.sh` |
 | RPG Maker RGSS / MV-MZ codec | `crates/rgss-core` (+ `examples/probe.rs` for on-device diagnosis) |
 | Vendored forks | `crates/vendor/` (rars, sevenz-rust, isomage, zip, xp3) |
 

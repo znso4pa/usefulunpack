@@ -187,55 +187,60 @@ class FolderFragment : Fragment() {
             if (tab.pickerCallback != null) return@OnItemLongClickListener false
             val f = tab.listFiles.adapter.getItem(pos) as File
             val act = activity as MainActivity
+            // 菜单是「标签 → 动作」的列表，不是下标 switch：条目会随文件类型增减
+            // （目录没有「转换」），下标分派时每加一项都要重排后面所有 case。
+            val items = mutableListOf<Pair<String, () -> Unit>>()
+            items += act.getString(R.string.action_copy) to { act.copySingleFile(tab, f) }
+            items += act.getString(R.string.action_copy_path) to {
+                (requireContext().getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("p", f.path))
+                act.toast(act.getString(R.string.msg_copied))
+            }
+            items += act.getString(R.string.action_move) to {
+                tab.fileToMove = f; act.updatePasteButton(); act.toast(act.getString(R.string.msg_selected_nav, f.name))
+            }
+            items += act.getString(R.string.action_rename) to {
+                showRenameDialog(act, f, tab.currentDir, act.bookmarks) { act.saveBookmarks(); act.navTab(tab, tab.currentDir) }
+            }
+            items += act.getString(R.string.action_delete) to { act.confirmDeleteSingle(tab, f) }
+            items += act.getString(R.string.action_select) to { act.enterMultiSelect(tab, f) }
+            items += act.getString(R.string.action_file_info) to {
+                if (f.isDirectory) {
+                    // Count on a worker thread — a huge folder's top
+                    // level can still jank the UI thread on tap.
+                    // Capture the context up front: requireContext()
+                    // after the async gap can throw on a detached
+                    // fragment, and the guard needs isDestroyed too.
+                    val ctx = requireContext()
+                    val act2 = act
+                    thread {
+                        val fileCount = f.listFiles()?.size ?: 0
+                        val eta = fileCount / 200
+                        act2.runOnUiThread {
+                            if (act2.isFinishing || act2.isDestroyed) return@runOnUiThread
+                            AlertDialog.Builder(ctx)
+                                .setTitle(act.getString(R.string.action_file_info))
+                                .setMessage(act.getString(R.string.msg_calc_dir_size_prompt, f.name, fileCount, eta, eta + 3))
+                                .setPositiveButton(act.getString(R.string.calc_size)) { _, _ -> calcDirSize(act, f) }
+                                .setNegativeButton(act.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+                        }
+                    }
+                } else {
+                    act.showFileInfoDialog(f)
+                }
+            }
+            items += act.getString(R.string.action_scan) to { act.showSignatureScan(f) }
+            // 转换入口：目录没有可转的东西，文件一律给 —— 能不能转由选择器自己说
+            // （不可用的目标灰掉并附一句原因），比在这里猜扩展名更诚实。
+            if (f.isFile) {
+                items += act.getString(R.string.action_convert_media) to { showMediaConvertDialog(act, f) }
+            }
+            items += act.getString(R.string.action_share) to { act.shareFile(f) }
+
             AlertDialog.Builder(requireContext())
                 .setTitle(f.name)
-                .setItems(arrayOf(
-                    act.getString(R.string.action_copy),
-                    act.getString(R.string.action_copy_path),
-                    act.getString(R.string.action_move),
-                    act.getString(R.string.action_rename),
-                    act.getString(R.string.action_delete),
-                    act.getString(R.string.action_select),
-                    act.getString(R.string.action_file_info),
-                    act.getString(R.string.action_scan),
-                    act.getString(R.string.action_share))) { _, w ->
-                    when (w) {
-                        0 -> act.copySingleFile(tab, f)
-                        1 -> { (requireContext().getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
-                            .setPrimaryClip(android.content.ClipData.newPlainText("p", f.path)); act.toast(act.getString(R.string.msg_copied)) }
-                        2 -> { tab.fileToMove = f; act.updatePasteButton(); act.toast(act.getString(R.string.msg_selected_nav, f.name)) }
-                        3 -> showRenameDialog(act, f, tab.currentDir, act.bookmarks) { act.saveBookmarks(); act.navTab(tab, tab.currentDir) }
-                        4 -> act.confirmDeleteSingle(tab, f)
-                        5 -> act.enterMultiSelect(tab, f)
-                        8 -> act.shareFile(f)
-                        6 -> {
-                            if (f.isDirectory) {
-                                // Count on a worker thread — a huge folder's top
-                                // level can still jank the UI thread on tap.
-                                // Capture the context up front: requireContext()
-                                // after the async gap can throw on a detached
-                                // fragment, and the guard needs isDestroyed too.
-                                val ctx = requireContext()
-                                val act2 = act
-                                thread {
-                                    val fileCount = f.listFiles()?.size ?: 0
-                                    val eta = fileCount / 200
-                                    act2.runOnUiThread {
-                                        if (act2.isFinishing || act2.isDestroyed) return@runOnUiThread
-                                        AlertDialog.Builder(ctx)
-                                            .setTitle(act.getString(R.string.action_file_info))
-                                            .setMessage(act.getString(R.string.msg_calc_dir_size_prompt, f.name, fileCount, eta, eta + 3))
-                                            .setPositiveButton(act.getString(R.string.calc_size)) { _, _ -> calcDirSize(act, f) }
-                                            .setNegativeButton(act.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
-                                    }
-                                }
-                            } else {
-                                act.showFileInfoDialog(f)
-                            }
-                        }
-                        7 -> act.showSignatureScan(f)
-                    }
-                }.setNegativeButton(act.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+                .setItems(items.map { it.first }.toTypedArray()) { _, w -> items[w].second() }
+                .setNegativeButton(act.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
             true
         }
 

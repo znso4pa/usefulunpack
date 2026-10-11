@@ -1,0 +1,29 @@
+[package]
+name = "archive_audio-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+archive_common = { path = "../common" }
+jni = "0.21"
+
+# 解码。全部纯 Rust、无 C/FFI —— 本仓不发 C 依赖，也不引 ffmpeg。
+# 注意 `symphonia` 虽然能一次覆盖 MP3+Vorbis+WAV，但它是 MPL-2.0；本仓是 MIT，
+# 每个格式换成一个宽松许可的实现，整条链路就没有一处 copyleft。
+lewton = "0.10"          # Ogg Vorbis 解码 (MIT OR Apache-2.0)
+hound = "3.5"            # WAV 读写 (Apache-2.0)
+
+# 编码。全是 Apache-2.0，且都不含 C。
+rusty_mp3 = "1"          # MP3 编 + 解 (Apache-2.0)
+rusty_vorbis = "0.1"     # Vorbis 编 (Apache-2.0，零依赖)
+ogg = "0.9"              # Ogg 分页封装 (BSD-3-Clause)
+
+# 采样率转换 (MIT)。关掉默认的 fft_resampler：SincFixedIn 走的是非 FFT 分支，
+# 不需要 realfft/num-complex，APK 里少两个 crate。
+rubato = { version = "0.16", default-features = false }
+claxon = "0.4"
+rusty_aac = "1.1"
+mp4 = "0.14"

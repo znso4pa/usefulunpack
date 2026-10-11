@@ -52,6 +52,8 @@ internal fun MainActivity.showFileInfoDialog(f: File) {
         val dlg = AlertDialog.Builder(this)
             .setTitle(getString(R.string.action_file_info))
             .setView(layout)
+            // 转换入口不在这儿 —— 它在长按菜单里自己占一行（长按 → 文件转换）。
+            // 塞进这个对话框的 neutral 位时，用户得先点开「文件信息」才知道能转。
             .setPositiveButton(getString(R.string.action_confirm), null)
             .create()
         dlg.show()

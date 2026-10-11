@@ -62,3 +62,8 @@ TODO.md
 
 # AGP's CMake/NDK scratch tree — the sibling of `.externalNativeBuild/` above.
 .cxx/
+
+# ffmpeg source + per-ABI static libs for the video core (scripts/build_ffmpeg.sh).
+# ~200 MB extracted; it is a *download cache*, never a source of truth — the pinned
+# version and the configure flags live in the script.
+.ffmpeg-cache/

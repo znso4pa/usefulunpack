@@ -267,11 +267,17 @@ unsafe fn run(input: &str, output: &str) -> R<()> {
     }
 
     // ---- 音频编码器（wmav2）+ 重采样器 ----
+    //
+    // ⚠️ `setup_audio` 返回的**输出流指针必须留着**：音频帧写包时要拿它的
+    // `time_base` 做时间轴换算。早先这里写的是 `let _ = st;`，指针被丢掉，
+    // 而 `AudioAcc::st` 的初值是 NULL → `write_packets` 里 `(*st).time_base`
+    // 直接空指针解引用（实测 SIGSEGV，fault addr `0x20` 正是 `AVStream.time_base`
+    // 的偏移）。修好 `wmav2` 的 `sample_fmt` 之后音频路径第一次真正跑起来，
+    // 这个一直潜伏的空指针就露出来了。
+    let mut ast_out: *mut ffi::AVStream = std::ptr::null_mut();
     if has_audio {
         match setup_audio(&mut c) {
-            Ok(st) => {
-                let _ = st;
-            }
+            Ok(st) => ast_out = st,
             Err(e) => {
                 ffi::log_err(&format!("{e}，只转视频"));
                 has_audio = false;
@@ -301,7 +307,7 @@ unsafe fn run(input: &str, output: &str) -> R<()> {
         return Err(msg("分配包/帧失败"));
     }
     let mut v_pts: i64 = 0;
-    let mut a = AudioAcc::new();
+    let mut a = AudioAcc::new(ast_out);
 
     let mut eof = false;
     while !eof {
@@ -504,8 +510,10 @@ struct AudioAcc {
 }
 
 impl AudioAcc {
-    fn new() -> Self {
-        Self { planes: Vec::new(), pts: 0, st: std::ptr::null_mut() }
+    /// `st` = 音频**输出流**（[`setup_audio`] 建的）。写包时要用它的 `time_base`，
+    /// 传 NULL 会在 [`write_packets`] 里空指针解引用。
+    fn new(st: *mut ffi::AVStream) -> Self {
+        Self { planes: Vec::new(), pts: 0, st }
     }
 
     /// 收尾：不足一帧的尾巴补静音发掉。

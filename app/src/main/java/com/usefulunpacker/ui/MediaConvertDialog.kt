@@ -65,10 +65,12 @@ internal val VIDEO_SOURCE_EXTS = setOf(
 )
 
 /**
- * 视频目标只有 MP4。WMV **没有**编码器 —— ffmpeg 里没开，Android 也没有，
- * 所以那一格恒灰（它只是个「看得见但还不能用」的占位）。
+ * 视频目标：MP4（H.264 + AAC，Android 编/封）与 **WMV**（WMV8 + WMA2，全程 ffmpeg）。
+ *
+ * WMV 只能出 **WMV7/WMV8**（`wmv2`）—— ffmpeg 里没有 VC-1/wmv3 编码器，产不出 WMV9。
+ * 真 `.wmv` 本来就以 wmv2/wmv1 居多，够用。
  */
-internal val VIDEO_TARGETS = setOf("mp4")
+internal val VIDEO_TARGETS = setOf("mp4", "wmv")
 
 /**
  * 目标格式的**形状**（唯一真源）：`(栏标题, [(扩展名, 标签)])`。
@@ -206,7 +208,7 @@ internal fun convertMedia(activity: MainActivity, file: File, targetFmt: String)
         return
     }
     if (targetFmt in VIDEO_TARGETS) {
-        activity.convertVideo(file)
+        activity.convertVideo(file, targetFmt)
         return
     }
     Toast.makeText(activity, activity.getString(R.string.media_engine_pending), Toast.LENGTH_SHORT).show()

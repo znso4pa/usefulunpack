@@ -568,7 +568,7 @@
     <string name="media_opt_lossless_note">32 位元 AIFF / AU 存的是整數 PCM。（WAV 的 32 位元寫的是浮點。）</string>
     <string name="media_unsupported_source">%1$s 不是本應用程式能解碼的音訊格式（支援 MP3、OGG、WAV、FLAC、M4A、AAC、AIFF、AU）。</string>
     <string name="media_unsupported_video_source">%1$s 不是本應用程式能解碼的視訊格式（支援 WMV、ASF、AVI、FLV、MPEG、VOB、TS）。</string>
-    <string name="media_video_note">輸出為 MP4（H.264 + AAC）。VC-1、WMV3、MSMPEG4、MPEG-2、H.263、MJPEG、VP6 等編碼都會重新編成 H.264。</string>
+    <string name="media_video_note">目標可選 MP4（H.264 + AAC）或 WMV（WMV8 + WMA2）。VC-1、WMV3、MSMPEG4、MPEG-2、H.263、MJPEG、VP6 等編碼都會重新編碼。</string>
     <string name="img_edit_crop_hint">拖曳框選區域後，再次點擊「裁剪」確認</string>
     <string name="img_edit_stretch">拉伸</string>
     <string name="settings_other">⚙️ 其餘設定</string>

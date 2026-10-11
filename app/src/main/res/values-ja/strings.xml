@@ -561,7 +561,7 @@
     <string name="media_opt_lossless_note">32 ビットの AIFF / AU は整数 PCM を格納します。（WAV の 32 ビットは浮動小数点です。）</string>
     <string name="media_unsupported_source">%1$s は本アプリがデコードできる音声形式ではありません（MP3・OGG・WAV・FLAC・M4A・AAC・AIFF・AU に対応）。</string>
     <string name="media_unsupported_video_source">%1$s は本アプリがデコードできる動画形式ではありません（WMV・ASF・AVI・FLV・MPEG・VOB・TS に対応）。</string>
-    <string name="media_video_note">出力は MP4（H.264 + AAC）です。VC-1・WMV3・MSMPEG4・MPEG-2・H.263・MJPEG・VP6 などは H.264 に再エンコードされます。</string>
+    <string name="media_video_note">出力は MP4（H.264 + AAC）または WMV（WMV8 + WMA2）から選べます。VC-1・WMV3・MSMPEG4・MPEG-2・H.263・MJPEG・VP6 などは再エンコードされます。</string>
     <string name="img_edit_crop_hint">ドラッグで範囲を選択後、もう一度「切り取り」をタップして確定</string>
     <string name="img_edit_stretch">引き伸ばし</string>
     <string name="settings_other">⚙️ その他の設定</string>

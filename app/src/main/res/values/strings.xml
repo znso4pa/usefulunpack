@@ -589,7 +589,7 @@
     <string name="media_opt_lossless_note">32-bit AIFF and AU store integer PCM. (WAV writes 32-bit as float instead.)</string>
     <string name="media_unsupported_source">%1$s is not an audio format this app can decode (MP3, OGG, WAV, FLAC, M4A, AAC, AIFF and AU are supported).</string>
     <string name="media_unsupported_video_source">%1$s is not a video format this app can decode (WMV, ASF, AVI, FLV, MPEG, VOB and TS are supported).</string>
-    <string name="media_video_note">Output is MP4 (H.264 + AAC). VC-1, WMV3, MSMPEG4, MPEG-2, H.263, MJPEG and VP6 are all re-encoded to H.264.</string>
+    <string name="media_video_note">Pick MP4 (H.264 + AAC) or WMV (WMV8 + WMA2). VC-1, WMV3, MSMPEG4, MPEG-2, H.263, MJPEG and VP6 are all re-encoded.</string>
 
     <!-- Preview workspace (在窗口中打开) -->
     <string name="ws_open">Open in Window</string>

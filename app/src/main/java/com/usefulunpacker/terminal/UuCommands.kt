@@ -120,7 +120,7 @@ internal object UuCommands {
         // 极限）。格式清单放进 summary（那一列不补空格，长短无所谓），旗标解释
         // 放进 PARAMETERS —— 那里本来就是讲旗标的地方。
         Cmd("audio",  Kind.AUDIO,        "Convert audio — in: mp3/ogg/wav/flac/m4a/aac/aiff/au · out: mp3/ogg/wav/aiff/au/aac", "uu audio <src...> <fmt> [-o dir] [--rate N] [--ch N] [--depth N] [--br N]"),
-        Cmd("video",  Kind.VIDEO,        "Convert video (wmv/asf/avi/flv/mpeg/ts → mp4)", "uu video <src...> [mp4] [-o dir]"),
+        Cmd("video",  Kind.VIDEO,        "Convert video (wmv/asf/avi/flv/mpeg/ts → mp4|wmv)", "uu video <src...> [mp4|wmv] [-o dir]"),
         Cmd("enc",    Kind.ENC,          "Convert text encoding (BOM kept)",               "uu enc <file> <from|auto> <to> [out]"),
         Cmd("mvdec",  Kind.MVDEC,        "Decode RPG Maker MV/MZ assets (no key needed)",  "uu mvdec <file...> [-o dir]"),
         Cmd("rmd",    Kind.RMD,          "Delete entries from a ZIP (name-cn copy)",       "uu rmd <zip> <entry...> [-p pw] (globs ok)"),
@@ -2088,6 +2088,9 @@ internal object UuCommands {
         missingValueError(ctx, pa)?.let { return it }
         val fmtIdx = pa.pos.indexOfLast { it.lowercase() in VIDEO_TARGETS }
         val srcs = if (fmtIdx >= 0) pa.pos.filterIndexed { i, _ -> i != fmtIdx } else pa.pos
+        // 目标：位置参数里的 `mp4` / `wmv`；不给则默认 mp4。
+        val target = if (fmtIdx >= 0) pa.pos[fmtIdx].lowercase() else "mp4"
+        val outExt = if (target == "wmv") "wmv" else "mp4"
         if (srcs.isEmpty()) return needFile()
         val outDir = pa.values["-o"]?.let { UuText.resolve(ctx.cwd, it) } ?: defaultOut(ctx)
         outDir.mkdirs()
@@ -2120,7 +2123,7 @@ internal object UuCommands {
                     sb.append(ctx.text(R.string.cli_video_bad_src, src.name)).append('\n')
                     fail++; continue
                 }
-                val outF = uniqueFile(outDir, "${src.nameWithoutExtension}.mp4")
+                val outF = uniqueFile(outDir, "${src.nameWithoutExtension}.$outExt")
                 val done = AtomicBoolean(false)
                 val poller = if (ctx.progress != null) thread {
                     while (!done.get()) {
@@ -2130,7 +2133,7 @@ internal object UuCommands {
                 } else null
                 // 单条失败不能中断整批：把原因记下来接着转下一个。
                 val okOne = try {
-                    VideoCore.videoConvert("", src.path, outF.path, "mp4", "")
+                    VideoCore.videoConvert("", src.path, outF.path, target, "")
                 } catch (e: Exception) {
                     outF.delete()
                     sb.append(
@@ -2145,7 +2148,7 @@ internal object UuCommands {
                 if (!okOne) {
                     // 返回 false 而没抛异常：引擎侧的失败路径已经删过输出，这里再删一次是幂等的。
                     outF.delete()
-                    sb.append(ctx.text(R.string.cli_conv_fail, src.name, "mp4")).append('\n')
+                    sb.append(ctx.text(R.string.cli_conv_fail, src.name, target)).append('\n')
                     fail++
                     continue
                 }

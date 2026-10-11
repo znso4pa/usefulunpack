@@ -4,7 +4,8 @@ import java.io.File
 import kotlin.concurrent.thread
 
 /**
- * 把一个 WMV/ASF 转成 MP4（H.264 + AAC）。
+ * 把一个视频源转成 [target]：`mp4`（H.264 + AAC，走 Android 编/封）或
+ * `wmv`（WMV8 + WMA2，走 ffmpeg 编/封 —— 见 `crates/video-core/src/asf.rs`）。
  *
  * 产出写在源文件旁边、用 [uniqueFile] 去重，**绝不覆盖原文件** —— 转换是有损的，
  * 覆盖等于把用户的原始素材毁掉。
@@ -15,11 +16,13 @@ import kotlin.concurrent.thread
  */
 internal fun MainActivity.convertVideo(
     src: File,
+    target: String = "mp4",
     opts: String = "",
     ownerTab: TabState = activeTab,
 ) {
     val parent = src.parentFile ?: return
-    val outFile = uniqueFile(parent, "${src.nameWithoutExtension}.mp4")
+    val outExt = if (target == "wmv") "wmv" else "mp4"
+    val outFile = uniqueFile(parent, "${src.nameWithoutExtension}.$outExt")
     val opH = tryStartOperation(this, "video")
     var cancelled = false
     val accessors = ProgressAccessors(
@@ -41,7 +44,7 @@ internal fun MainActivity.convertVideo(
     thread {
         if (!opH.await()) return@thread
         try {
-            val ok = VideoCore.videoConvert("", src.path, outFile.path, "mp4", opts)
+            val ok = VideoCore.videoConvert("", src.path, outFile.path, target, opts)
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 prog.dismiss()

@@ -41,6 +41,8 @@
 //! 真实链路只能在真机上验，和 `crates/*/testdata` 一个道理。
 
 #[cfg(not(uu_no_ffmpeg))]
+mod asf;
+#[cfg(not(uu_no_ffmpeg))]
 mod convert;
 #[cfg(not(uu_no_ffmpeg))]
 mod ffi;
@@ -109,14 +111,19 @@ pub extern "system" fn Java_com_usefulunpacker_VideoCore_videoConvert(
     _tool: JString,
     input: JString,
     output: JString,
-    _target: JString,
+    target: JString,
     _options: JString,
 ) -> jboolean {
     // 每个新操作都先清取消位：上一次的取消不能毒死这一次。
     video_progress::clear_cancel();
     let input = archive_common::s(&mut e, &input);
     let output = archive_common::s(&mut e, &output);
-    match guarded(move || convert::convert(&input, &output)) {
+    let target = archive_common::s(&mut e, &target);
+    // `target` 分派：`mp4`（默认）= ffmpeg 解 + Android 编/封；`wmv`/`asf` = 全程 ffmpeg。
+    match guarded(move || match target.as_str() {
+        "wmv" | "asf" => asf::convert_to_wmv(&input, &output),
+        _ => convert::convert(&input, &output),
+    }) {
         Ok(()) => JNI_TRUE,
         Err(er) => {
             let _ = e.throw_new("java/io/IOException", format!("video: {er}"));

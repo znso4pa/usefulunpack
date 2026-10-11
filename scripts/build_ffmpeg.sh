@@ -94,6 +94,19 @@ PARSERS="vc1,mpeg4video,mpegvideo,h263,mjpeg,aac,ac3,mpegaudio"
 # 探测恒返回 0，所以它只在「流内 PES 载荷」上生效，不会顶掉 `mpegps`。
 DEMUXERS="asf,avi,flv,mpegps,mpegts,mpegvideo,m4v"
 
+# ---- 「往 wmv 走」的编码器 + 封装器 ----
+#
+# 读方向（wmv→mp4）由 ffmpeg 解码 + Android 编码完成；**写方向（→wmv）只能全程 ffmpeg**：
+# Android 的 `MediaCodec` 没有 WMV/VC-1 编码器、`MediaMuxer` 也不认 ASF。
+#
+# ⚠️ **只能出 WMV7/WMV8**（`wmv2` = MSMPEG4v2 系）。ffmpeg 里 **没有 VC-1/wmv3 编码器**
+# （`vc1`/`wmv3` 只有解码器），所以「WMV9」这条路是死的 —— 好在真 .wmv 本来就以
+# wmv2/wmv1 居多。`wmv2` 走 mpegvideo 编码框架，会一并拉进
+# `mpegvideo_enc` / `motion_est` / `ratecontrol` / `mpeg4videoenc` / `ituh263enc`，
+# 实测最终 .so 约 +0.3 MB/ABI（arm64 300 KB、armv7 295 KB）。
+ENCODERS="wmv2,wmav2"
+MUXERS="asf"
+
 # ---- 解复用器 → parser 的耦合（**另一条静默失败的坑**）----
 #
 # MPEG-PS / MPEG-TS 把流标成 `need_parsing = AVSTREAM_PARSE_FULL`：PES 载荷**不是
@@ -122,6 +135,15 @@ verify_components() {
         grep -q "ff_${name}_parser" "$build/libavcodec/parser_list.c" 2>/dev/null || {
             echo "[!] $abi: 解析器 '$name' 没进注册表 —— configure 名拼错了？"; return 1; }
     done
+    # 写方向（→wmv）的编码器与封装器。configure 对拼错的组件名同样**静默忽略**。
+    for name in ${ENCODERS//,/ }; do
+        grep -q "ff_${name}_encoder" "$build/libavcodec/codec_list.c" 2>/dev/null || {
+            echo "[!] $abi: 编码器 '$name' 没进注册表 —— configure 名拼错了？"; return 1; }
+    done
+    for name in ${MUXERS//,/ }; do
+        grep -q "ff_${name}_muxer" "$build/libavformat/muxer_list.c" 2>/dev/null || {
+            echo "[!] $abi: 封装器 '$name' 没进注册表 —— configure 名拼错了？"; return 1; }
+    done
     # 解复用器 → parser 的耦合（见 DECODER_NEEDS_PARSER 上方那段）：开了某个
     # 「可能出现在 MPEG-PS/TS 里」的音频解码器，就必须有对应的 parser，否则那条音轨
     # 会**静默**只剩几帧。这条闸管的是「忘了加」，上面那条管的是「名字拼错」。
@@ -142,8 +164,8 @@ COMMON_CONFIG="--disable-everything \
 --disable-avfilter --disable-avdevice --disable-swscale --disable-postproc \
 --disable-debug --disable-iconv --disable-sdl2 --disable-xlib --disable-zlib \
 --enable-static --disable-shared --enable-pic \
---enable-demuxer=$DEMUXERS --enable-protocol=file,pipe \
---enable-decoder=$VIDEO_DECODERS,$AUDIO_DECODERS --enable-parser=$PARSERS \
+--enable-demuxer=$DEMUXERS --enable-muxer=$MUXERS --enable-protocol=file,pipe \
+--enable-decoder=$VIDEO_DECODERS,$AUDIO_DECODERS --enable-encoder=$ENCODERS --enable-parser=$PARSERS \
 --extra-cflags='-ffunction-sections -fdata-sections -O2' \
 --extra-ldflags='-Wl,--gc-sections'"
 

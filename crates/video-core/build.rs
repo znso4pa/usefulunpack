@@ -36,13 +36,30 @@ const FUNCS: &[&str] = &[
     "av_guess_frame_rate",
     // libavcodec
     "avcodec_find_decoder",
+    "avcodec_find_encoder_by_name",
     "avcodec_alloc_context3",
     "avcodec_parameters_to_context",
+    "avcodec_parameters_from_context",
     "avcodec_open2",
     "avcodec_send_packet",
     "avcodec_receive_frame",
+    "avcodec_send_frame",
+    "avcodec_receive_packet",
     "avcodec_free_context",
     "avcodec_get_name",
+    // 写方向（→wmv）：输出容器、写帧、时间戳换算。
+    "avformat_alloc_output_context2",
+    "avformat_free_context",
+    "avformat_new_stream",
+    "avformat_write_header",
+    "av_interleaved_write_frame",
+    "av_write_trailer",
+    "avio_open",
+    "avio_closep",
+    "av_packet_rescale_ts",
+    "av_frame_get_buffer",
+    "av_get_pix_fmt_name",
+    "av_samples_alloc_array_and_samples",
     // libavutil
     "av_packet_alloc",
     "av_packet_free",
@@ -54,6 +71,7 @@ const FUNCS: &[&str] = &[
     "av_samples_alloc",
     "av_freep",
     "av_channel_layout_default",
+    "av_channel_layout_copy",
     "av_channel_layout_uninit",
     // libswresample
     "swr_alloc_set_opts2",
@@ -89,6 +107,8 @@ const FUNCS: &[&str] = &[
 
 const TYPES: &[&str] = &[
     "AVFormatContext",
+    "AVOutputFormat",
+    "AVIOContext",
     "AVStream",
     "AVCodecContext",
     "AVCodecParameters",
@@ -113,6 +133,7 @@ const TYPES: &[&str] = &[
 const VARS: &[&str] = &[
     "AV_NOPTS_VALUE",
     "AV_TIME_BASE",
+    "AVIO_FLAG_WRITE",
     "AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG",
     "AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM",
     "AMEDIACODEC_CONFIGURE_FLAG_ENCODE",
@@ -213,6 +234,7 @@ fn main() {
              #include <libavformat/avformat.h>\n\
              #include <libavutil/channel_layout.h>\n\
              #include <libavutil/mathematics.h>\n\
+             #include <libavutil/pixdesc.h>\n\
              #include <libavutil/samplefmt.h>\n\
              #include <libswresample/swresample.h>\n\
              #include <media/NdkMediaCodec.h>\n\

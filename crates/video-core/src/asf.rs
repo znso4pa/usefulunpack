@@ -250,6 +250,9 @@ unsafe fn run(input: &str, output: &str) -> R<()> {
         (*c.venc).gop_size = fps; // 每秒一个关键帧
         (*c.venc).max_b_frames = 0;
         (*c.venc).thread_count = 2;
+        // ASF 复用器声明了 `AVFMT_GLOBALHEADER`（`asfenc.c` 的 `ff_asf_muxer`），
+        // 按 ffmpeg 的惯例给编码器也打上。
+        (*c.venc).flags |= ffi::AV_CODEC_FLAG_GLOBAL_HEADER as c_int;
         if ffi::avcodec_open2(c.venc, codec, std::ptr::null_mut()) < 0 {
             return Err(msg("wmv2 编码器打不开"));
         }
@@ -409,9 +412,18 @@ unsafe fn setup_audio(c: &mut Ctx) -> R<*mut ffi::AVStream> {
     let ch = (*c.adec).ch_layout.nb_channels.clamp(1, 2);
     ffi::av_channel_layout_default(&mut (*c.aenc).ch_layout, ch);
     (*c.aenc).sample_rate = (*c.adec).sample_rate;
-    // 让编码器自己挑采样格式（wmav2 首选 FLTP）—— open 之后回读。
-    (*c.aenc).sample_fmt = ffi::AVSampleFormat::AV_SAMPLE_FMT_NONE;
+    // ⚠️ **必须显式给采样格式**。ffmpeg 的 `encode_preinit_audio` 对
+    // `AV_SAMPLE_FMT_NONE` 直接报 `Invalid audio sample format: -1` 并让
+    // `avcodec_open2` 失败 —— 它**不会**替你挑一个（`encode.c:660` 就是那句
+    // `if (!av_get_sample_fmt_name(avctx->sample_fmt)) return AVERROR(EINVAL);`）。
+    // 之前这里写 NONE，于是 wmav2 永远打不开 → `setup_audio` 返回 Err →
+    // `has_audio = false` → **每个 WMV 都是无声的**（实测复现）。
+    // wmav2 只吃 FLTP / S16P（`wmaenc.c` 的 `sample_fmts`），用它的首选 FLTP。
+    (*c.aenc).sample_fmt = ffi::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
     (*c.aenc).bit_rate = if ch == 1 { 96_000 } else { 128_000 };
+    // ASF 复用器声明了 `AVFMT_GLOBALHEADER`，按 ffmpeg 的惯例给编码器也打上，
+    // 让 extradata（WMA 的 codec private）进全局头而不是混在码流里。
+    (*c.aenc).flags |= ffi::AV_CODEC_FLAG_GLOBAL_HEADER as c_int;
     if ffi::avcodec_open2(c.aenc, codec, std::ptr::null_mut()) < 0 {
         return Err(msg("wmav2 编码器打不开"));
     }

@@ -80,6 +80,9 @@ struct Ctx {
     q: VecDeque<Sample>,
 
     last_v_us: i64,
+    /// 已经喂进 AAC 编码器的**总帧数**。音频 PTS 由它算出，**不要**逐块累加
+    /// 每块的微秒数 —— 那样每块整数截断一次，长文件会累积出十几 ms 的漂移。
+    a_frames: i64,
     /// 首帧的时间戳不能拿 `last_v_us` 的初值 0 去比 —— 见 `feed_video`。
     have_v_pts: bool,
     /// 源首帧的 PTS（µs），用来把整条视频轨归零。见 `feed_video` 里那段说明。
@@ -167,18 +170,24 @@ impl Ctx {
     }
 
     /// 两条轨都齐了就 start，并把排队中的样本倒出去。
-    fn maybe_start_muxer(&mut self) -> R<()> {
+    ///
+    /// `require_all` = 喂帧途中用：`has_audio`/`has_video` 声明的轨还没建起来就继续等
+    /// （样本先排进 [`Ctx::q`]）。收尾时传 `false`：源声明有音轨、却一个音频帧都没解出来
+    /// （空/坏音轨）时 `atrack` 永远是 -1，严格等下去 muxer 永不启动 → 视频明明是好的，
+    /// 却报「没有产出任何数据」。放宽成「有几条轨就起几条」。
+    fn maybe_start_muxer(&mut self, require_all: bool) -> R<()> {
         if self.mux_started {
             return Ok(());
         }
-        if self.has_video && self.vtrack < 0 {
+        if require_all {
+            if self.has_video && self.vtrack < 0 {
+                return Ok(());
+            }
+            if self.has_audio && self.atrack < 0 {
+                return Ok(());
+            }
+        } else if self.vtrack < 0 && self.atrack < 0 {
             return Ok(());
-        }
-        if self.has_audio && self.atrack < 0 {
-            return Ok(());
-        }
-        if !self.has_video && !self.has_audio {
-            return Err(msg("没有可用的轨"));
         }
         let st = unsafe { ffi::AMediaMuxer_start(self.mux) };
         if st != ffi::media_status_t::AMEDIA_OK {
@@ -213,7 +222,13 @@ impl Ctx {
             if idx >= 0 {
                 let mut osize: usize = 0;
                 let buf = unsafe { ffi::AMediaCodec_getOutputBuffer(codec, idx as usize, &mut osize) };
-                let res = if info.size > 0 && !buf.is_null() {
+                // **CODEC_CONFIG 缓冲不是样本**。编码器会把 csd（H.264 的 SPS/PPS、AAC 的
+                // ASC）单独发一个带 `AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG`（=2）的 buffer，
+                // 尺寸同样 > 0 —— 只判 `size > 0` 会把它当普通样本写进封装器：**多一个样本、
+                // PTS 错位**（实测症状是「75→76 帧」，正是 priming 补偿实验卡住的地方）。
+                // csd 已经通过 `OUTPUT_FORMAT_CHANGED → addTrack` 交给封装器了，这里只释放。
+                let is_cfg = info.flags & ffi::BufferFlags::AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG != 0;
+                let res = if info.size > 0 && !buf.is_null() && !is_cfg {
                     let slice = unsafe {
                         std::slice::from_raw_parts(buf.add(info.offset as usize), info.size as usize)
                     };
@@ -239,7 +254,7 @@ impl Ctx {
                 } else if self.atrack < 0 {
                     self.atrack = track;
                 }
-                self.maybe_start_muxer()?;
+                self.maybe_start_muxer(true)?;
             } else if idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED as isize {
                 // 老 API 的产物，忽略。
             } else {
@@ -382,18 +397,15 @@ impl Ctx {
                     };
                     return Err(msg(format!("AAC 编码器输入缓冲太小（{cap}）")));
                 }
+                // PTS = 「已喂进去的总帧数」的精确时间，**不是**逐块累加每块的微秒 ——
+                // 后者每块截断一次，长文件会累积出十几 ms 漂移（音轨慢慢落在视频后面）。
+                let pts = self.a_frames * 1_000_000 / self.out_rate as i64;
                 unsafe {
                     std::ptr::copy_nonoverlapping(pcm.as_ptr().add(off), buf, n);
-                    ffi::AMediaCodec_queueInputBuffer(
-                        aenc,
-                        idx as usize,
-                        0,
-                        n,
-                        self.last_a_us as u64,
-                        0,
-                    );
+                    ffi::AMediaCodec_queueInputBuffer(aenc, idx as usize, 0, n, pts as u64, 0);
                 }
-                self.last_a_us += (n / frame_bytes) as i64 * 1_000_000 / self.out_rate as i64;
+                self.a_frames += (n / frame_bytes) as i64;
+                self.last_a_us = self.a_frames * 1_000_000 / self.out_rate as i64;
                 off += n;
                 self.drain(aenc, false, 0)?;
             } else {
@@ -440,6 +452,7 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         has_audio: false,
         q: VecDeque::new(),
         last_v_us: 0,
+        a_frames: 0,
         have_v_pts: false,
         v_base_us: 0,
         last_a_us: 0,
@@ -726,6 +739,14 @@ pub fn convert(input: &str, output: &str) -> R<()> {
             r?;
         }
         if c.has_audio {
+            // **音频解码器也要 flush**：只对视频解码器发 NULL 包，音频解码器里缓冲的帧
+            // 就永远留在那儿了（丢掉几 ms 的尾巴）。必须在重采样器尾巴**之前**做，
+            // 否则那些帧根本进不了 swr。（`convert_audio_frame` 内部自己 unref。）
+            let adec = c.adec;
+            ffi::avcodec_send_packet(adec, std::ptr::null());
+            while ffi::avcodec_receive_frame(adec, frame) == 0 {
+                convert_audio_frame(&mut c, frame)?;
+            }
             // 重采样器的尾巴
             let out_n = ffi::swr_get_out_samples(c.swr, 0);
             if out_n > 0 {
@@ -765,6 +786,9 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         if c.has_audio {
             c.finish_encoder(aenc, false, c.last_a_us)?;
         }
+        // 收尾放宽：正常两条轨都齐才 start；但「源有音轨却一个音频帧都没解出来」时
+        // atrack 永远是 -1，严格等下去 muxer 永不启动。这里允许有几条轨就起几条。
+        c.maybe_start_muxer(false)?;
         // 两个编码器都收完了 muxer 还没起来 = 一帧都没产出。不拦的话会交出一个
         // 0 字节的 MP4 还报成功。
         if !c.mux_started {

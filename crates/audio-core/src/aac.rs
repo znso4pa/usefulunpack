@@ -256,10 +256,28 @@ fn decode_mp4(path: &str) -> Result<Pcm, String> {
     let mut pcm = Pcm::new(rate, ch, samples);
 
     // `elst` 修正：掐掉编码器 priming、截到真实时长。
-    if let Some(edit) = read_edit_list(path, track_id)? {
+    if let Some(mut edit) = read_edit_list(path, track_id)? {
+        // ⚠️ `segment_duration` 按规范是 **movie 时间轴**（`mvhd.timescale`）的单位，
+        // 而 `media_time` 是**媒体时间轴**（`mdhd`）—— 两个单位不一样。
+        // ffmpeg 的 mov 复用器恰好把 mvhd 设成音频采样率（实测 44100/48000 都如此），
+        // 于是两者相等、直接当帧数用「碰巧」正确；但这是实现细节、不是规范：
+        // 换个复用器（mvhd=1000 之类）会把 keep 算成 500 帧而不是 22050，
+        // **音频被截成 ~11 ms**。这里按 movie → 媒体（= 采样率，PCM 帧的单位）缩放。
+        edit.duration = movie_to_media_frames(edit.duration, rate as u64, rdr.timescale() as u64);
         pcm = trim_edit(pcm, &edit);
     }
     Ok(pcm)
+}
+
+/// `elst.segment_duration`（movie 时间轴）→ 媒体帧数（= 采样数，`mdhd` 时间轴）。
+///
+/// `movie_ts == media_ts`（ffmpeg 的常见情形）或任一为 0 时原样返回。
+fn movie_to_media_frames(duration: u64, media_ts: u64, movie_ts: u64) -> u64 {
+    if duration == 0 || movie_ts == 0 || media_ts == 0 || movie_ts == media_ts {
+        duration
+    } else {
+        (duration as u128 * media_ts as u128 / movie_ts as u128) as u64
+    }
 }
 
 /// 按 edit list 掐头去尾。
@@ -487,6 +505,21 @@ mod tests {
         assert_eq!(t.frames(), 0);
         let t = trim_edit(fresh(), &Edit { media_time: 200, duration: 0 });
         assert_eq!(t.frames(), 0);
+    }
+
+    /// `elst.segment_duration` 是 **movie 时间轴**的单位，不是媒体帧数 —— 两者不等
+    /// 时必须缩放。ffmpeg 恰好把 mvhd 设成采样率（相等、原样），别的复用器不等。
+    #[test]
+    fn edit_duration_is_rescaled_from_movie_timescale() {
+        // 相等：原样返回（ffmpeg 的常见情形）。
+        assert_eq!(movie_to_media_frames(22_050, 44_100, 44_100), 22_050);
+        // mvhd=1000、mdhd=44100：0.5 s 记成 500，必须还原成 22050 帧。
+        assert_eq!(movie_to_media_frames(500, 44_100, 1000), 22_050);
+        // duration=0 = 「不知道」：保持 0，别缩放出别的值。
+        assert_eq!(movie_to_media_frames(0, 44_100, 1000), 0);
+        // 防御：任一为 0 不缩放（避免除零）。
+        assert_eq!(movie_to_media_frames(123, 44_100, 0), 123);
+        assert_eq!(movie_to_media_frames(123, 0, 1000), 123);
     }
 
     /// 盒子头解析：8 字节常规、64 位 largesize、size==0 到文件尾。

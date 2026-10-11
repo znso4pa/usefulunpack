@@ -772,4 +772,25 @@
     <string name="cli_pre_unrecognised">前置變換後未能識別為已知格式（管道：%1$s）—— 該變換並沒有還原出封存</string>
     <string name="cli_pre_empty">前置變換後已無可讀內容（管道：%1$s）—— skip 把位元組全丟光了</string>
     <string name="cli_pre_too_big">前置變換後 %1$s 超出便捷變換的大小上限（管道：%2$s）—— 請先用 \"uu tr\" 落成永久檔案</string>
+
+    <!-- 主界面（hub）：每個 tab 的入口頁（browse/HomeHub.kt，設計稿 C2） -->
+    <string name="home_browse">檔案瀏覽</string>
+    <string name="home_terminal">終端</string>
+    <string name="home_browse_desc">瀏覽、預覽、解包、打包、編輯 —— 現在這個介面，從這裡進去</string>
+    <string name="home_terminal_desc">uu 命令行全在這裡：dd 切位元組、sed 改內容、tr 管道、guess 反推變換</string>
+    <string name="home_last_dir">上次：%1$s</string>
+    <string name="home_cmds_tag">uu · %1$d 條命令</string>
+    <string name="home_palette_hint">搜尋檔案、封存內容，或直接輸入 uu 命令…</string>
+    <string name="home_recents">最近開啟的封存</string>
+    <string name="home_recents_empty">還沒有開啟過封存</string>
+    <string name="home_bookmarks">書籤</string>
+    <string name="home_bookmarks_empty">長按清單裡的目錄可加書籤</string>
+    <string name="home_storage_root">儲存根目錄</string>
+    <string name="home_q_search_sub">檔名 · 內容</string>
+    <string name="home_recycle_sub">%1$d 項可還原</string>
+    <string name="home_recycle_empty">回收站是空的</string>
+    <string name="home_q_settings_sub">主題 · 桌布 · 排序</string>
+    <string name="home_foot_fmt">支援 %1$d 種封存格式</string>
+    <string name="home_foot_local">全部本機處理，不上傳</string>
+    <string name="action_home">回到主介面</string>
 </resources>

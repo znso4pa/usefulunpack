@@ -315,4 +315,27 @@
         android:orientation="vertical"
         app:layout_constraintGuide_percent="0.45" />
 
+    <!-- 主界面（hub）：本 tab 的入口页（C2「命令中心」）。声明在最后 = 绘制在
+         最上，盖住 pathBar + panel + previewRoot。内容由 FolderFragment 程序化
+         生成（browse/HomeHub.kt）—— 卡片/渐变/徽章用代码拼比 XML 灵活。 -->
+    <ScrollView
+        android:id="@+id/homeRoot"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@color/bg_file_list"
+        android:fillViewport="true"
+        android:scrollbars="none"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <LinearLayout
+            android:id="@+id/homeGrid"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </ScrollView>
+
 </androidx.constraintlayout.widget.ConstraintLayout>

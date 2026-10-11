@@ -652,7 +652,7 @@ private val BACKDROP_TRANSLUCENT = intArrayOf(
 
 /** 彻底清空背景的 view。 */
 private val BACKDROP_TRANSPARENT = intArrayOf(
-    R.id.viewPager, R.id.folderRoot, R.id.panel, R.id.previewRoot,
+    R.id.viewPager, R.id.folderRoot, R.id.panel, R.id.previewRoot, R.id.homeRoot,
 )
 
 /** id → 原始背景资源，「清除背景」时照此恢复。两张表必须和上面一一对应。 */
@@ -665,6 +665,9 @@ private val BACKDROP_ORIGINAL: List<Pair<Int, Int>> = listOf(
     R.id.folderRoot to R.color.bg_file_list,
     R.id.panel to R.color.bg_file_list,
     R.id.previewRoot to R.color.bg_file_list,
+    // 主界面（hub）：卡片配色本身按 hasWallpaper() 现算（HomeHub.kt），
+    // 这里只管 ScrollView 自己的那层底。
+    R.id.homeRoot to R.color.bg_file_list,
 )
 
 internal fun applyBackdropInTree(view: View) {

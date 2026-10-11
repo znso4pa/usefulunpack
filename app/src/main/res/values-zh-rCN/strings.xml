@@ -777,4 +777,25 @@
     <string name="cli_pre_unrecognised">前置变换后未能识别为已知格式（管道：%1$s）—— 该变换并没有还原出归档</string>
     <string name="cli_pre_empty">前置变换后已无可读内容（管道：%1$s）—— skip 把字节全丢光了</string>
     <string name="cli_pre_too_big">前置变换后 %1$s 超出便捷变换的大小上限（管道：%2$s）—— 请先用 \"uu tr\" 落成一个永久文件</string>
+
+    <!-- 主界面（hub）：每个 tab 的入口页（browse/HomeHub.kt，设计稿 C2） -->
+    <string name="home_browse">文件浏览</string>
+    <string name="home_terminal">终端</string>
+    <string name="home_browse_desc">浏览、预览、解包、打包、编辑 —— 现在这个界面，从这里进去</string>
+    <string name="home_terminal_desc">uu 命令行全在这里：dd 切字节、sed 改内容、tr 管道、guess 反推变换</string>
+    <string name="home_last_dir">上次：%1$s</string>
+    <string name="home_cmds_tag">uu · %1$d 条命令</string>
+    <string name="home_palette_hint">搜索文件、归档内容，或直接输入 uu 命令…</string>
+    <string name="home_recents">最近打开的归档</string>
+    <string name="home_recents_empty">还没有打开过归档</string>
+    <string name="home_bookmarks">书签</string>
+    <string name="home_bookmarks_empty">长按列表里的目录可加书签</string>
+    <string name="home_storage_root">存储根目录</string>
+    <string name="home_q_search_sub">文件名 · 内容</string>
+    <string name="home_recycle_sub">%1$d 项可还原</string>
+    <string name="home_recycle_empty">回收站是空的</string>
+    <string name="home_q_settings_sub">主题 · 壁纸 · 排序</string>
+    <string name="home_foot_fmt">支持 %1$d 种归档格式</string>
+    <string name="home_foot_local">全部本地处理，不上传</string>
+    <string name="action_home">回到主界面</string>
 </resources>

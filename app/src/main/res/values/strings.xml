@@ -779,4 +779,25 @@
     <string name="cli_pre_unrecognised">after pre-transform: not a known format (pipeline: %1$s) — the transform did not recover an archive</string>
     <string name="cli_pre_empty">after pre-transform: nothing left to read (pipeline: %1$s) — skip dropped everything</string>
     <string name="cli_pre_too_big">after pre-transform: %1$s exceeds the convenience size limit (pipeline: %2$s) — use \"uu tr\" to write a permanent file first</string>
+
+    <!-- 主界面（hub）：每个 tab 的入口页（browse/HomeHub.kt，设计稿 C2） -->
+    <string name="home_browse">Browse files</string>
+    <string name="home_terminal">Terminal</string>
+    <string name="home_browse_desc">Browse, preview, unpack, pack and edit — the screen you are using now.</string>
+    <string name="home_terminal_desc">The whole uu command line: dd, sed, tr, guess and friends.</string>
+    <string name="home_last_dir">Last: %1$s</string>
+    <string name="home_cmds_tag">uu · %1$d commands</string>
+    <string name="home_palette_hint">Search files, archive contents, or type a uu command…</string>
+    <string name="home_recents">Recently opened archives</string>
+    <string name="home_recents_empty">No archive opened yet</string>
+    <string name="home_bookmarks">Bookmarks</string>
+    <string name="home_bookmarks_empty">Long-press a folder in the list to bookmark it</string>
+    <string name="home_storage_root">Storage root</string>
+    <string name="home_q_search_sub">Name · content</string>
+    <string name="home_recycle_sub">%1$d items to restore</string>
+    <string name="home_recycle_empty">Recycle bin is empty</string>
+    <string name="home_q_settings_sub">Theme · wallpaper · sorting</string>
+    <string name="home_foot_fmt">%1$d archive formats supported</string>
+    <string name="home_foot_local">Everything stays on this device</string>
+    <string name="action_home">Back to home</string>
 </resources>

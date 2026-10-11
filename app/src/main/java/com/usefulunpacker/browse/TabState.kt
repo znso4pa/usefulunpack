@@ -87,6 +87,19 @@ class TabState(val tabId: Int) {
     val previewExpanded: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
     var previewSearchQuery: String = ""
 
+    // ── 主界面（hub）─────────────────────────────────────────────────
+    // 每个 tab 一个入口页（C2「命令中心」：命令面板 + 两张 hero 卡 + 快捷入口
+    // + 最近归档/书签）。hub 盖住 pathBar + panel，是这页的「顶层」—— 与
+    // previewRoot 同一套路。实现见 browse/HomeHub.kt。
+    //
+    // 新 tab 默认落在主界面（`addTab` 置 true）；恢复会话的 tab 直接回到文件
+    // 浏览器（默认 false）—— 恢复的是「你上次在哪儿」，所以不进 session。
+    var homeVisible: Boolean = false
+
+    // View refs（FolderFragment.onCreateView 绑定；nullable 因为可能还没绑）。
+    var homeRoot: ScrollView? = null
+    var pathBar: LinearLayout? = null
+
     /** Whether a background operation is in flight for this tab. */
     @Volatile var operationActive: Boolean = false
 

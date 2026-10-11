@@ -772,4 +772,25 @@
     <string name="cli_pre_unrecognised">前置変換後、既知の形式として認識されませんでした（パイプライン：%1$s）—— アーカイブには復元されていません</string>
     <string name="cli_pre_empty">前置変換後、読める内容がありません（パイプライン：%1$s）—— skip がすべてを捨てました</string>
     <string name="cli_pre_too_big">前置変換後、%1$s が便利変換のサイズ上限を超えました（パイプライン：%2$s）—— まず \"uu tr\" で永続ファイルに書き出してください</string>
+
+    <!-- 主界面（hub）：タブごとの入口ページ（browse/HomeHub.kt、設計 C2） -->
+    <string name="home_browse">ファイル</string>
+    <string name="home_terminal">ターミナル</string>
+    <string name="home_browse_desc">閲覧・プレビュー・解凍・圧縮・編集 —— 今この画面です</string>
+    <string name="home_terminal_desc">uu コマンドライン：dd・sed・tr・guess など</string>
+    <string name="home_last_dir">前回：%1$s</string>
+    <string name="home_cmds_tag">uu · %1$d コマンド</string>
+    <string name="home_palette_hint">ファイル・アーカイブ内容を検索、または uu コマンドを入力…</string>
+    <string name="home_recents">最近開いたアーカイブ</string>
+    <string name="home_recents_empty">まだアーカイブを開いていません</string>
+    <string name="home_bookmarks">ブックマーク</string>
+    <string name="home_bookmarks_empty">一覧のフォルダを長押しで追加できます</string>
+    <string name="home_storage_root">ストレージのルート</string>
+    <string name="home_q_search_sub">名前 · 内容</string>
+    <string name="home_recycle_sub">%1$d 件復元できます</string>
+    <string name="home_recycle_empty">ゴミ箱は空です</string>
+    <string name="home_q_settings_sub">テーマ · 壁紙 · 並び順</string>
+    <string name="home_foot_fmt">%1$d 種類のアーカイブ形式に対応</string>
+    <string name="home_foot_local">すべて端末内で処理、アップロードなし</string>
+    <string name="action_home">ホームに戻る</string>
 </resources>

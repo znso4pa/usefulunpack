@@ -48,6 +48,13 @@ class FolderFragment : Fragment() {
         tab.tvPreviewStats = root.findViewById(R.id.tvPreviewStats)
         tab.btnPreviewSearch = root.findViewById(R.id.btnPreviewSearch)
         tab.btnPreviewOverflow = root.findViewById(R.id.btnPreviewOverflow)
+
+        // ── 主界面（hub）────────────────────────────────────────────
+        // 视图引用在这里绑；内容（卡片）由 showHome 现查现画 —— 最近/书签/
+        // 回收站数都是「当下」的状态，不在绑定时缓存（不变式 8）。
+        tab.homeRoot = root.findViewById(R.id.homeRoot)
+        tab.pathBar = root.findViewById(R.id.pathBar)
+
         tab.previewList.enableFastScroll()
         root.findViewById<ImageButton>(R.id.btnPreviewBack).setOnClickListener { act.exitPreview(tab) }
         tab.btnPreviewExtractAll = root.findViewById(R.id.btnPreviewExtractAll)
@@ -259,7 +266,11 @@ class FolderFragment : Fragment() {
             // Restore an in-tab preview if the tab was previewing before the
             // fragment's view was recreated (swipe far / rebuildPager / rotate);
             // otherwise render the normal browser.
-            if (tab.previewActive && tab.previewEntries.isNotEmpty()) {
+            // 新 tab 的主界面优先（addTab 置 homeVisible）；恢复会话/既有 tab
+            // 走原来的预览 / 浏览器分支。
+            if (tab.homeVisible) {
+                act2.showHome(tab)
+            } else if (tab.previewActive && tab.previewEntries.isNotEmpty()) {
                 // 预览分支不经过 navTab：必须手动回填路径栏，否则重建出的
                 // 视图停留在 XML 默认文本「/」（预览盖住列表，路径条却暴露）。
                 tab.tvPath.text = tab.displayPath().absolutePath

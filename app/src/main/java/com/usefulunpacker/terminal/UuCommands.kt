@@ -87,6 +87,9 @@ internal object UuCommands {
 
     internal class Cmd(val name: String, val kind: Kind, val summary: String, val usage: String)
 
+    /** 主界面终端卡的角标用（「uu · N 条命令」）—— 和 `uu help` 的表同一份。 */
+    val cmdCount: Int get() = table.size
+
     /**
      * 命令表。新增命令只加这一行 —— `uu help` 会自动跟上。
      * 摘要/用法暂用英文，与 `COMPRESS_LABELS` 的既有做法一致（帮助文本不进资源数组，

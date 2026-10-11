@@ -289,7 +289,9 @@ class MainActivity : AppCompatActivity() {
         restoreSession()
 
         findViewById<ImageButton>(R.id.btnDrawer).setOnClickListener { drawer.open() }
-        findViewById<ImageButton>(R.id.btnRoot).setOnClickListener { nav(Environment.getExternalStorageDirectory()) }
+        // 工具栏 home 图标 = 回到本 tab 的主界面（hub）。「回到根目录」挪成了
+        // hub 的快捷入口，功能不丢 —— 见 browse/HomeHub.kt。
+        findViewById<ImageButton>(R.id.btnRoot).setOnClickListener { showHome(activeTab) }
         findViewById<ImageButton>(R.id.btnRecycle).setOnClickListener { showRecycleBinDialog(this) }
         // Initial btnCLI setup (dropdown arrow)
         updatePasteButton()
@@ -414,6 +416,13 @@ class MainActivity : AppCompatActivity() {
         // 终端层最顶：back 先关终端（必须排在 previewActive 之前 —— 预览态下
         // 开着终端时，back 的预期是收起终端而不是退出预览）。
         if (_terminalPanel?.onBackPressed() == true) return
+        // 主界面盖在最上：back 直接退出 —— hub 是每页的「封面」，不是导航栈的一层
+        //（置位/复位只发生在 showHome / enterBrowser）。必须排在 previewActive 之前：
+        // hub 盖着预览时，back 的预期是退出而不是收一个看不见的预览。
+        if (activeTab.homeVisible) {
+            super.onBackPressed()
+            return
+        }
         // An in-tab archive preview intercepts back to exit the preview first,
         // rather than closing the whole activity.
         if (activeTab.previewActive) {
@@ -634,6 +643,9 @@ class MainActivity : AppCompatActivity() {
         val tab = TabState((tabs.maxOfOrNull { it.tabId } ?: -1) + 1)
         // New windows start at the external storage root, like the original app.
         tab.currentDir = android.os.Environment.getExternalStorageDirectory()
+        // 新窗口落在主界面（hub）—— 它是每页的入口；恢复会话的 tab 不置位，
+        // 直接回到上次所在的目录（homeVisible 默认 false）。见 browse/HomeHub.kt。
+        tab.homeVisible = true
         tabs.add(tab)
         rebuildPager()
         viewPager.post { viewPager.currentItem = tabs.size - 1 }

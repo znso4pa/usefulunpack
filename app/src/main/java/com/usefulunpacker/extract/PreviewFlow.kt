@@ -1,5 +1,7 @@
 package com.usefulunpacker
 
+import com.usefulunpacker.fileops.RecentsStore
+
 import android.app.AlertDialog
 import android.app.ProgressDialog
 import android.graphics.drawable.ColorDrawable
@@ -84,6 +86,8 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
                 }
                 return@thread
             }
+            // 「最近打开的归档」在这里记（真正打开才算；密码错/解析失败走不到这）。
+            RecentsStore.record(this, src)
             // Encryption probe runs on this background thread with the listing
             // (it reads the game folder's sidecar and scores real entries).
             val encNote = xp3SchemeToken(format, src)
@@ -865,6 +869,7 @@ internal fun MainActivity.startEditArchive(src: File, format: String, pwd: Strin
     // is cleared INSIDE the lock so a queued re-edit can't destroy an active one.
     val opH = tryStartOperation(this, format)
     OpenArchiveRegistry.register(openKey, activeTab)
+    RecentsStore.record(this, src)
     var cancelled = false
     val accessors = extractAccessors(format)
     val prog = PollingProgressDialog(

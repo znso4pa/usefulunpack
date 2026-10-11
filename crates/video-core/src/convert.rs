@@ -51,6 +51,18 @@ macro_rules! cstr {
 /// 编码器收尾最多等多久。正常几百毫秒就吐完了，这是兜底。
 const FINISH_BUDGET_US: i64 = 5_000_000;
 
+/// AAC 编码器 priming（暖机样本数）。
+///
+/// AAC-LC 编码器会在码流开头插入两帧暖机，把**音频内容**整体推迟
+/// `AAC_PRIMING_SAMPLES / 采样率` 秒。`AMediaMuxer` 不写 `edts`/`elst`（dump 过盒子
+/// 确认），没法用编辑列表把这段标掉 —— 音频这一侧改不动，那就把**视频**整体后移
+/// 同样的时长，让两条轨的**内容**重新对齐。
+///
+/// 实测（HONOR CHG-W60 / Android 16）：恰好 2048 样本 = 46.44 ms @44.1 kHz。
+/// 它是这台设备 AAC 编码器的性质，换机器可能不同；`KEY_ENCODER_DELAY` 指望不上
+/// （API 29+ 才有，且实测这台设备根本不报）。
+const AAC_PRIMING_SAMPLES: i64 = 2048;
+
 /// 一个已经编好、等着写进 muxer 的样本。
 struct Sample {
     track: isize,
@@ -87,6 +99,10 @@ struct Ctx {
     have_v_pts: bool,
     /// 源首帧的 PTS（µs），用来把整条视频轨归零。见 `feed_video` 里那段说明。
     v_base_us: i64,
+    /// 视频轨整体后移量（µs）—— AAC priming 补偿，见 [`AAC_PRIMING_SAMPLES`]。
+    /// 没有音轨时是 0。`last_v_us` 保持**未后移**的值（单调性判据用它），只在喂给
+    /// 编码器、以及收尾给 EOS 时把 `v_shift_us` 加上去。
+    v_shift_us: i64,
     last_a_us: i64,
     out_rate: c_int,
     out_channels: c_int,
@@ -333,6 +349,9 @@ impl Ctx {
         self.last_v_us = us;
 
         let venc = self.venc;
+        // 后移量只在喂编码器时加上：`last_v_us` 存的是**未后移**的值，否则上面那条
+        // 「时间戳只允许前进」的判据会被自己的后移污染。见 `AAC_PRIMING_SAMPLES`。
+        let shift = self.v_shift_us;
         let need = (self.vw as usize) * (self.vh as usize) * 3 / 2;
         loop {
             if video_progress::cancelled() {
@@ -357,7 +376,7 @@ impl Ctx {
                         self.vw as usize,
                         self.vh as usize,
                     );
-                    ffi::AMediaCodec_queueInputBuffer(venc, idx as usize, 0, need, us as u64, 0);
+                    ffi::AMediaCodec_queueInputBuffer(venc, idx as usize, 0, need, (us + shift) as u64, 0);
                 }
                 return self.drain(venc, true, 0);
             }
@@ -455,6 +474,7 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         a_frames: 0,
         have_v_pts: false,
         v_base_us: 0,
+        v_shift_us: 0,
         last_a_us: 0,
         out_rate: 0,
         out_channels: 0,
@@ -649,6 +669,13 @@ pub fn convert(input: &str, output: &str) -> R<()> {
             }
         }
 
+        // AAC priming 补偿：把视频整体后移一个 priming 时长，让两条轨的**内容**对齐。
+        // 编码器/重采样器任何一步失败都会把 `has_audio` 复位成 false → 这里自然不补偿
+        // （没有音轨就没有 priming，后移只会凭空多出一段黑场）。见 `AAC_PRIMING_SAMPLES`。
+        if c.has_audio && c.out_rate > 0 {
+            c.v_shift_us = AAC_PRIMING_SAMPLES * 1_000_000 / c.out_rate as i64;
+        }
+
         // ---- 输出 ----
         let file = std::fs::OpenOptions::new()
             .write(true)
@@ -782,7 +809,8 @@ pub fn convert(input: &str, output: &str) -> R<()> {
             }
         }
         let (venc, aenc) = (c.venc, c.aenc);
-        c.finish_encoder(venc, true, c.last_v_us)?;
+        // EOS 也要带上后移量，否则编码器会把「末帧时间戳回退」当成异常。
+        c.finish_encoder(venc, true, c.last_v_us + c.v_shift_us)?;
         if c.has_audio {
             c.finish_encoder(aenc, false, c.last_a_us)?;
         }

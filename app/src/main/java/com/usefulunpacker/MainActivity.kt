@@ -410,6 +410,10 @@ class MainActivity : AppCompatActivity() {
         // 清单声明了 configChanges：旋转不重建视图树，终端层按像素算的
         // 顶部偏移（状态栏高度横竖屏不同）必须手动重算。
         _terminalPanel?.relayout()
+        // 主界面（hub）的骨架同样是「拼一次就留着」的 —— 横竖屏是两套布局
+        //（isRoomy 一分为二），不重拼就一直是旧方向那套（真机：竖屏显示横屏骨架）。
+        // 见 browse/HomeHub.kt 的 refreshHubs。
+        refreshHubs()
     }
 
     override fun onBackPressed() {

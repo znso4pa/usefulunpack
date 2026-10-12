@@ -54,6 +54,7 @@ class FolderFragment : Fragment() {
         // 回收站数都是「当下」的状态，不在绑定时缓存（不变式 8）。
         tab.homeRoot = root.findViewById(R.id.homeRoot)
         tab.pathBar = root.findViewById(R.id.pathBar)
+        tab.panel = root.findViewById(R.id.panel)
 
         tab.previewList.enableFastScroll()
         root.findViewById<ImageButton>(R.id.btnPreviewBack).setOnClickListener { act.exitPreview(tab) }

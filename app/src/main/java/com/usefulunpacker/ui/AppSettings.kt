@@ -617,6 +617,9 @@ internal fun MainActivity.showUISettings() {
             // root 在 activity_main.xml 里的底是 bg_file_list（不是 bg_surface）
             findViewById<View>(R.id.root)?.setBackgroundResource(R.color.bg_file_list)
             restoreBackdropInTree(findViewById(R.id.root) ?: return@setOnClickListener)
+            // hub 页面那层也要跟着回到实底（虽然和 homeRoot 的 XML 底同色，不会看出差别，
+            // 但让两层保持一致，别留一个「透明但被同色挡着」的隐性状态）。
+            refreshHubPageBg()
             window?.statusBarColor = 0xBB000000.toInt()
             tvBgInfo.text = getString(R.string.bg_not_set)
             btnClearBg.visibility = View.GONE
@@ -701,6 +704,9 @@ internal fun MainActivity.refreshBackdrop() {
     val root = findViewById<View>(R.id.root) ?: return
     if (hasWallpaper()) applyBackdropInTree(root)
     else restoreBackdropInTree(root)
+    // hub 的页面底色不在这两张表里（它按 hasWallpaper() 现算），得单独跟着重算 ——
+    // 换壁纸时 hub 不会重建，漏了这句主界面就还停在旧底色上。见 browse/HomeHub.kt。
+    refreshHubPageBg()
 }
 
 internal fun MainActivity.applyBackgroundImage(uri: Uri) {

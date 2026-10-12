@@ -971,53 +971,99 @@ class MainActivity : AppCompatActivity() {
             val density = dm.density
             val topInset = viewPager?.takeIf { it.top > 0 }?.top
                 ?: (24f * density).toInt() + (106f * density).toInt()  // status 24dp + toolbar 56dp + tabs 50dp
-            val swipeArea = (swipeAreaDp * density).toInt()
-            val sheetW = minOf(dm.widthPixels, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
-            val sheetH = (dm.heightPixels - topInset - swipeArea).coerceAtLeast(0)
-            w.setGravity(android.view.Gravity.BOTTOM)
-            // Same as keepTabBarTappable: a bottom-anchored window is still
-            // touch-MODAL by default, so taps on the tab strip above it get
-            // swallowed instead of reaching the tabs. The physical offset is not
-            // enough on its own — without this flag Global Search / a non-empty
-            // recycle bin block window switching while the terminal (which uses
-            // keepTabsTappable) did not.
+            val landscape = resources.configuration.orientation ==
+                android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+            // 两种摆法共用的触摸语义：窗口外的点必须落到 tab 条 / pager 上（见下）。
             w.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
-            w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            w.setDimAmount(0f)
-            w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0x99000000.toInt()))
-            if (fitContent) {
-                // Short content must hug its own height — a 1-entry recycle bin
-                // must not open a near-full-screen sheet with a big empty area —
-                // while tall content still has to stop below the tab strip.
-                //
-                // Measure the decor BEFORE show and set an EXACT height. Leaving
-                // the window at WRAP_CONTENT lets the WindowManager position it
-                // at (0,0) for the first frame (gravity cannot be resolved until
-                // the wrapped height is known), which reads as a top-left flash
-                // and swallows tab taps for that instant. Measuring first makes
-                // the very first frame the final one. AlertDialogLayout measures
-                // the custom panel against windowHeight − title − buttons, so a
-                // scrolling child (which MUST be wrap_content, not height=0 +
-                // weight) gets the leftover height and scrolls.
-                val decor = w.decorView
-                val widthSpec = View.MeasureSpec.makeMeasureSpec(sheetW, View.MeasureSpec.AT_MOST)
-                val heightSpec = View.MeasureSpec.makeMeasureSpec(sheetH, View.MeasureSpec.AT_MOST)
-                decor.measure(widthSpec, heightSpec)
-                val measured = decor.measuredHeight
-                w.setLayout(sheetW, if (measured in 1 until sheetH) measured else sheetH)
+            dlg.setCanceledOnTouchOutside(false)
+
+            if (landscape) {
+                // ── 横屏：居中的竖屏比例浮动窗（用户定稿）──────────────────
+                // 「不要在底部呼出……横屏在除掉 tab 栏的窗口里面居中」。
+                // 可用区 = [topInset, 屏高]；Gravity.CENTER 的 y 是**相对中心的偏移**，
+                // 往下推 topInset/2 正好把中心从屏幕中心挪到可用区中心。
+                // 底部不再留 swipeArea —— 卡片四周都是空的，pager 照样能滑。
+                val contentH = dm.heightPixels - topInset
+                val sheetW = (DIALOG_LANDSCAPE_W_DP * density).toInt()
+                    .coerceAtMost(dm.widthPixels - (2 * 16f * density).toInt())
+                val maxH = (contentH - (2 * 20f * density).toInt()).coerceAtLeast(0)
+                if (fitContent) {
+                    // 短内容贴自身高度（1 条的回收站不能开成 near-full-screen），
+                    // 长内容封顶 maxH。先量再定 EXACT 高，避免第一帧在 (0,0) 闪一下
+                    // （gravity 要等包裹高度算出来才解析得了 —— 竖屏分支同一条教训）。
+                    val decor = w.decorView
+                    decor.measure(
+                        View.MeasureSpec.makeMeasureSpec(sheetW, View.MeasureSpec.AT_MOST),
+                        View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST))
+                    val measured = decor.measuredHeight
+                    w.setLayout(sheetW, if (measured in 1 until maxH) measured else maxH)
+                } else {
+                    w.setLayout(sheetW, maxH)
+                }
+                w.setGravity(android.view.Gravity.CENTER)
+                w.attributes = w.attributes.apply { y = topInset / 2 }
+                // 卡片外面用系统压暗，不再用窗口自带的局部 scrim —— 局部 scrim 只能
+                // 盖住窗口矩形，浮动卡外一圈会是亮的，没有模态感。tab 条被压暗但仍可点
+                //（NOT_TOUCH_MODAL 保留）。decor 背景也不再覆盖：卡片外观交给对话框主题
+                // 的圆角 windowBackground（`Theme.UsefulUnpack.Dialog` 的
+                // `@drawable/dialog_bg_rounded`）。
+                w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                w.setDimAmount(0.5f)
             } else {
-                w.setLayout(sheetW, sheetH)
+                // ── 竖屏：底部呼出（定稿不动）──────────────────────────────
+                val swipeArea = (swipeAreaDp * density).toInt()
+                val sheetW = minOf(dm.widthPixels, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
+                val sheetH = (dm.heightPixels - topInset - swipeArea).coerceAtLeast(0)
+                w.setGravity(android.view.Gravity.BOTTOM)
+                // Same as keepTabBarTappable: a bottom-anchored window is still
+                // touch-MODAL by default, so taps on the tab strip above it get
+                // swallowed instead of reaching the tabs. The physical offset is not
+                // enough on its own — without this flag Global Search / a non-empty
+                // recycle bin block window switching while the terminal (which uses
+                // keepTabsTappable) did not.
+                w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                w.setDimAmount(0f)
+                w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0x99000000.toInt()))
+                if (fitContent) {
+                    // Short content must hug its own height — a 1-entry recycle bin
+                    // must not open a near-full-screen sheet with a big empty area —
+                    // while tall content still has to stop below the tab strip.
+                    //
+                    // Measure the decor BEFORE show and set an EXACT height. Leaving
+                    // the window at WRAP_CONTENT lets the WindowManager position it
+                    // at (0,0) for the first frame (gravity cannot be resolved until
+                    // the wrapped height is known), which reads as a top-left flash
+                    // and swallows tab taps for that instant. Measuring first makes
+                    // the very first frame the final one. AlertDialogLayout measures
+                    // the custom panel against windowHeight − title − buttons, so a
+                    // scrolling child (which MUST be wrap_content, not height=0 +
+                    // weight) gets the leftover height and scrolls.
+                    val decor = w.decorView
+                    val widthSpec = View.MeasureSpec.makeMeasureSpec(sheetW, View.MeasureSpec.AT_MOST)
+                    val heightSpec = View.MeasureSpec.makeMeasureSpec(sheetH, View.MeasureSpec.AT_MOST)
+                    decor.measure(widthSpec, heightSpec)
+                    val measured = decor.measuredHeight
+                    w.setLayout(sheetW, if (measured in 1 until sheetH) measured else sheetH)
+                } else {
+                    w.setLayout(sheetW, sheetH)
+                }
             }
         }
         // Same reason as keepTabBarTappable: outside taps go to the tab strip,
         // never "dismiss this dialog".
-        dlg.setCanceledOnTouchOutside(false)
         if (rootToTab) rootDialogToTab(dlg)
         resetPagerInputOnDialogDismiss(dlg, also)
     }
 
     companion object {
         const val MAX_TABS = 4
+        /**
+         * 横屏居中对话框的宽度（dp）—— 竖屏比例，像一台手机立在内容区正中
+         * （用户定稿：「横屏在除掉 tab 栏的窗口里面居中」，宽 ~480dp）。
+         * 竖屏仍走 dialog_max_width 的贴底大窗，见 [belowTabBar]。
+         */
+        private const val DIALOG_LANDSCAPE_W_DP = 480f
         private const val GIB_F = 1024f * 1024f * 1024f
         private const val MIB_F = 1024f * 1024f
     }

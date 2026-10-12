@@ -844,9 +844,22 @@ class MainActivity : AppCompatActivity() {
     internal fun resetPagerInputOnDialogDismiss(dlg: android.app.Dialog, also: (() -> Unit)? = null) {
         dlg.setOnDismissListener {
             also?.invoke()
+            // 触摸护盾（belowTabBar 的默认模式）在这里统一收起 —— 关不掉的话，
+            // 弹窗关了整个内容区还点不动。
+            setContentBlocked(false)
             viewPager.setUserInputEnabled(false)
             viewPager.setUserInputEnabled(true)
         }
+    }
+
+    /**
+     * 盖住/放开内容区的触摸护盾。打开期间：背后的文件列表点不到、pager 滑不动；
+     * **tab 栏与工具栏照常可点**（它们在护盾外面）—— 所以还能切窗口，
+     * tab 固定的弹窗跟着它那个 tab 走，全局弹窗一直跟着你。
+     */
+    private fun setContentBlocked(blocked: Boolean) {
+        findViewById<View>(R.id.touchShield)?.visibility =
+            if (blocked) View.VISIBLE else View.GONE
     }
 
     // ── Per-tab dialog rooting ───────────────────────────────────────────
@@ -964,6 +977,9 @@ class MainActivity : AppCompatActivity() {
         swipeAreaDp: Float = 130f,
         fitContent: Boolean = false,
         rootToTab: Boolean = true,
+        // blockTabBar 必须排在 `also` 之前：调用方普遍用尾随 lambda 传 also，
+        // 排在它后面会把尾记抢到这个 Boolean 上（PreviewFlow 就这么调）。
+        blockTabBar: Boolean = false,
         also: (() -> Unit)? = null,
     ) {
         dlg.window?.let { w ->
@@ -974,8 +990,17 @@ class MainActivity : AppCompatActivity() {
             val landscape = resources.configuration.orientation ==
                 android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
-            // 两种摆法共用的触摸语义：窗口外的点必须落到 tab 条 / pager 上（见下）。
-            w.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+            // 触摸语义（两种模式，用户定稿）：
+            // ① 默认「窗口内独立」：保留 NOT_TOUCH_MODAL 让 tab 栏仍可点（切窗口时
+            //    tab 固定的弹窗跟它那个 tab 走，全局弹窗一直跟着你），同时用触摸护盾
+            //    盖住内容区 —— 弹窗打开时只能动窗口内，点不到背后的文件列表。
+            // ② blockTabBar（说明/使用文档）：改成完全模态，连 tab 栏一起挡住。
+            if (blockTabBar) {
+                w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+            } else {
+                w.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+                setContentBlocked(true) // 收起见 resetPagerInputOnDialogDismiss
+            }
             dlg.setCanceledOnTouchOutside(false)
 
             if (landscape) {
@@ -1100,9 +1125,11 @@ internal fun android.app.Dialog.belowTabs(
     swipeAreaDp: Float = 130f,
     fitContent: Boolean = false,
     rootToTab: Boolean = true,
+    blockTabBar: Boolean = false,
     also: (() -> Unit)? = null,
 ) {
-    context.findMainActivity()?.belowTabBar(this, swipeAreaDp, fitContent, rootToTab, also)
+    // 同上：blockTabBar 排在 also 前面，尾随 lambda 留给 also。
+    context.findMainActivity()?.belowTabBar(this, swipeAreaDp, fitContent, rootToTab, blockTabBar, also)
 }
 
 /**

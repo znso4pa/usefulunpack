@@ -142,6 +142,22 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintEnd_toEndOf="parent" />
 
+        <!-- 触摸护盾：对话框打开期间盖住内容区（只盖 pager，不动 tab 栏/工具栏），
+             让「弹窗打开时只能动窗口内」成立 —— 点不到背后的文件列表。
+             clickable=true 保证事件在这里被吃掉，不会继续往下派发。
+             显隐见 MainActivity.setContentBlocked。 -->
+        <View
+            android:id="@+id/touchShield"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:clickable="true"
+            android:focusable="false"
+            android:visibility="gone"
+            app:layout_constraintTop_toBottomOf="@id/dividerToolbar"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
     </androidx.constraintlayout.widget.ConstraintLayout>
 
     <!-- Drawer: bookmarks -->

@@ -179,7 +179,7 @@ fun showRecycleBinDialog(activity: MainActivity) {
         setCancelable(false)
         show()
     }
-    pd.keepTabsTappable(rootToTab = false)
+    pd.keepTabsTappable(rootToTab = false, blockBehind = false)
     thread {
         val entries = RecycleBin.listEntries(activity)
         activity.runOnUiThread {

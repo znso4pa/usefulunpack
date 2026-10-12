@@ -75,7 +75,7 @@ internal fun encodeImageTo(
 private fun convertImage(activity: AppCompatActivity, file: File, targetFmt: String) {
     val pd = android.app.ProgressDialog(activity)
     pd.setMessage(activity.getString(R.string.msg_loading)); pd.setCancelable(false); pd.show()
-    pd.keepTabsTappable()
+    pd.keepTabsTappable(blockBehind = false)
     thread {
         // 先在后台把成品压到缓存临时文件：目录选择可能被取消——此前取消时
         // 解码出的位图(≤64MB)会一直滞留等 GC。现在选完目录只是搬移成品。

@@ -815,10 +815,10 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(getString(R.string.action_close)) { _, _ -> if (!fromSettings) finish() }
             .setCancelable(fromSettings)
             .show()
-        // 从设置进来的免责声明和别的弹窗同性质：护盾挡住除 tab 栏以外的一切 +
-        // 固定在本 tab（切走隐藏、切回来还在）。首启那一次是**故意的门槛**
-        //（还没接受就不放行，且此时只有一个窗口），保持完全模态不动。
-        if (fromSettings) dlg.belowTabs()
+        // 免责声明和别的弹窗同性质：护盾挡住除 tab 栏以外的一切 + 固定在本 tab。
+        // 首启那一次仍然是一道**闸门**（setCancelable(false)：不接受不放行），
+        // 但触摸语义和其它弹窗统一，不再单独做成完全模态。
+        dlg.belowTabs()
     }
 
     internal var bgImageLauncher: androidx.activity.result.ActivityResultLauncher<String>? = null
@@ -841,26 +841,43 @@ class MainActivity : AppCompatActivity() {
      *  swipes, so tab switching dies until restart. Re-arming the pager's input
      *  state on dismiss resets the internal RecyclerView's touch handling.
      *  [also] runs first if provided. */
-    internal fun resetPagerInputOnDialogDismiss(dlg: android.app.Dialog, also: (() -> Unit)? = null) {
+    internal fun resetPagerInputOnDialogDismiss(
+        dlg: android.app.Dialog,
+        also: (() -> Unit)? = null,
+        releaseShield: Boolean = false,
+    ) {
         dlg.setOnDismissListener {
             also?.invoke()
-            // 触摸护盾（belowTabBar 的默认模式）在这里统一收起 —— 关不掉的话，
-            // 弹窗关了整个内容区还点不动。
-            setContentBlocked(false)
+            // 触摸护盾按「谁申请谁释放」配对：只有申请过的弹窗才在这里收，
+            // 否则会把外层还开着的弹窗的护盾一起收掉（确认弹窗常叠在列表弹窗上）。
+            if (releaseShield) releaseContentBlock()
             viewPager.setUserInputEnabled(false)
             viewPager.setUserInputEnabled(true)
         }
     }
 
     /**
-     * 盖住/放开触摸护盾（`@id/touchShield`）。打开期间它盖住**除 tab 栏以外的一切**
-     * —— 工具栏 + 内容区：背后的文件列表、工具栏按钮全点不动，杜绝误触；
-     * **只有 tab 栏留在护盾外面**，所以还能切窗口（tab 固定的弹窗跟它那个 tab 走，
-     * 全局弹窗一直跟着你）。
+     * 触摸护盾（`@id/touchShield`）的嵌套计数。弹窗可以叠（回收站列表 → 清空确认），
+     * 里层关掉时外层还得挡着 —— 所以用计数而不是布尔。
      */
-    private fun setContentBlocked(blocked: Boolean) {
-        findViewById<View>(R.id.touchShield)?.visibility =
-            if (blocked) View.VISIBLE else View.GONE
+    private var contentBlockDepth = 0
+
+    /**
+     * 申请挡住**除 tab 栏以外的一切**（工具栏 + 内容区）：护盾顶到 `dividerTabBar`
+     * 之下，背后的文件列表、工具栏按钮全吃不到触摸，杜绝误触；tab 栏留在护盾外面，
+     * 所以还能切窗口。配对释放见 [releaseContentBlock]。
+     */
+    private fun blockContentBehind() {
+        contentBlockDepth++
+        findViewById<View>(R.id.touchShield)?.visibility = View.VISIBLE
+    }
+
+    /** 释放一次护盾；计数归零才真正收起。 */
+    private fun releaseContentBlock() {
+        contentBlockDepth = (contentBlockDepth - 1).coerceAtLeast(0)
+        if (contentBlockDepth == 0) {
+            findViewById<View>(R.id.touchShield)?.visibility = View.GONE
+        }
     }
 
     // ── Per-tab dialog rooting ───────────────────────────────────────────
@@ -943,7 +960,13 @@ class MainActivity : AppCompatActivity() {
      *  `rootToTab` (default) pins the dialog to the current tab; pass false for
      *  app-global dialogs (settings / help / recycle bin / installer) that should
      *  stay put across tab switches. */
-    internal fun keepTabBarTappable(dlg: android.app.Dialog, rootToTab: Boolean = true, also: (() -> Unit)? = null) {
+    internal fun keepTabBarTappable(
+        dlg: android.app.Dialog,
+        rootToTab: Boolean = true,
+        // 必须排在 `also` 之前：调用方若用尾随 lambda 传 also，排在后面会把尾记抢走。
+        blockBehind: Boolean = true,
+        also: (() -> Unit)? = null,
+    ) {
         dlg.window?.let { w ->
             w.addFlags(
                 android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
@@ -958,7 +981,11 @@ class MainActivity : AppCompatActivity() {
         // vanished but the window never switched. Explicitly disable it.
         dlg.setCanceledOnTouchOutside(false)
         if (rootToTab) rootDialogToTab(dlg)
-        resetPagerInputOnDialogDismiss(dlg, also)
+        // 默认把「tab 栏以外」全挡上（触摸护盾）：确认类弹窗打开时不该还能点到背后的
+        // 文件列表 —— 那是误触。**进度对话框要传 false**：本应用支持操作排队后继续
+        // 浏览（批量解压/压缩/扫描跑着的时候用户照样能翻目录），挡住内容反而是退化。
+        if (blockBehind) blockContentBehind()
+        resetPagerInputOnDialogDismiss(dlg, also, releaseShield = blockBehind)
     }
 
     /** Bottom-anchored variant of [keepTabBarTappable] for **tall** dialogs.
@@ -993,7 +1020,7 @@ class MainActivity : AppCompatActivity() {
             // 同时用触摸护盾盖住工具栏 + 内容区（`@id/touchShield` 顶到
             // `dividerTabBar` 之下）—— 背后一律吃不到触摸。
             w.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
-            setContentBlocked(true) // 收起见 resetPagerInputOnDialogDismiss
+            blockContentBehind() // 配对释放见 resetPagerInputOnDialogDismiss
             dlg.setCanceledOnTouchOutside(false)
 
             if (landscape) {
@@ -1071,7 +1098,7 @@ class MainActivity : AppCompatActivity() {
         // Same reason as keepTabBarTappable: outside taps go to the tab strip,
         // never "dismiss this dialog".
         if (rootToTab) rootDialogToTab(dlg)
-        resetPagerInputOnDialogDismiss(dlg, also)
+        resetPagerInputOnDialogDismiss(dlg, also, releaseShield = true)
     }
 
     companion object {
@@ -1104,8 +1131,12 @@ private fun android.content.Context.findMainActivity(): MainActivity? {
  * not have to cast. Falling back to plain [android.app.Dialog.show] semantics
  * when no MainActivity hosts the dialog keeps these safe to call unconditionally.
  */
-internal fun android.app.Dialog.keepTabsTappable(rootToTab: Boolean = true, also: (() -> Unit)? = null) {
-    context.findMainActivity()?.keepTabBarTappable(this, rootToTab, also)
+internal fun android.app.Dialog.keepTabsTappable(
+    rootToTab: Boolean = true,
+    blockBehind: Boolean = true,
+    also: (() -> Unit)? = null,
+) {
+    context.findMainActivity()?.keepTabBarTappable(this, rootToTab, blockBehind, also)
 }
 
 /**

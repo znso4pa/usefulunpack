@@ -414,7 +414,7 @@ private fun MainActivity.installViaPackageInstaller(f: File) {
         setCancelable(false)
         show()
     }
-    pd.keepTabsTappable(rootToTab = false)
+    pd.keepTabsTappable(rootToTab = false, blockBehind = false)
     thread {
         try {
             val pm = packageManager

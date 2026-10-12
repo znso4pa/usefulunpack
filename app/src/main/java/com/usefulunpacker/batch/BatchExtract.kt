@@ -141,7 +141,7 @@ internal fun MainActivity.batchPreview(archives: List<File>, fmt: String) {
             return
         }
         val pd = ProgressDialog(this).apply { setTitle(getString(R.string.reading)); setMessage(getString(R.string.reading_archives, filtered.size)); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
-        pd.keepTabsTappable()
+        pd.keepTabsTappable(blockBehind = false)
         thread {
             // Shared password state: asked once for all archives; a cancel stops
             // further prompts (and further listing) instead of silently failing.

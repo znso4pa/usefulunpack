@@ -190,7 +190,7 @@ fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int 
     val pd = android.app.ProgressDialog(activity).apply {
         setMessage(activity.getString(R.string.msg_loading)); setCancelable(false); show()
     }
-    pd.keepTabsTappable()
+    pd.keepTabsTappable(blockBehind = false)
     thread {
         val prefs = (activity as? MainActivity)?.prefs
         val data = runCatching { readPrefix(file, 1 shl 20) }.getOrNull()
@@ -512,7 +512,7 @@ private fun loadAndOpenEditor(activity: AppCompatActivity, file: File, tempFile:
     val pd = android.app.ProgressDialog(activity).apply {
         setMessage(activity.getString(R.string.msg_loading)); setCancelable(false); show()
     }
-    pd.keepTabsTappable()
+    pd.keepTabsTappable(blockBehind = false)
     thread {
         val data = runCatching { file.readBytes() }.getOrNull()
         val tempContent = if (useTempContent) runCatching { tempFile.readText() }.getOrNull() else null

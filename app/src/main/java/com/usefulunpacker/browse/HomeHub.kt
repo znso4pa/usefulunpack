@@ -1,17 +1,12 @@
 package com.usefulunpacker
 
-import android.content.res.ColorStateList
 import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.RippleDrawable
 import android.os.Environment
 import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.TextView
 import com.usefulunpacker.fileops.RecentsStore
 import com.usefulunpacker.fileops.RecycleBin
 import com.usefulunpacker.fileops.showRecycleBinDialog
@@ -234,8 +229,6 @@ internal fun MainActivity.refreshHubs() {
 }
 
 internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: TabState) {
-    val dm = act.resources.displayMetrics
-    fun d(v: Int) = (v * dm.density).toInt()
     // 页面底色跟随文件浏览器（见类注释）：有壁纸 → 透明（壁纸透出）；无壁纸 → 实底。
     // 卡片（cardBg/dimBg）永远实底 #252525 —— 文字不直接压在壁纸上。
     val cardBg = C["surface_dim"]!!
@@ -249,46 +242,42 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
     // ⚠️ 纵向间距见类注释那条：首项 `marginTop`、末项自身 `paddingBottom`，**不要**用
     // `container` 的纵向 padding 或任何 `marginBottom` —— 它们不计入 `mTotalLength`，
     // 会被权重块吃掉、把后面的页脚挤出容器。横向 padding 无此问题（权重只吃纵向）。
-    container.setPadding(d(if (roomy) 40 else 18), 0, d(if (roomy) 40 else 18), 0)
+    container.setPadding(act.dp(if (roomy) 40 else 18), 0, act.dp(if (roomy) 40 else 18), 0)
 
     // ── 命令面板：点击整条 → 全局搜索 ─────────────────────────────
     val palette = LinearLayout(act).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        if (roomy) setPadding(d(20), d(14), d(18), d(14)) else setPadding(d(14), d(11), d(12), d(11))
-        background = GradientDrawable().apply {
-            cornerRadius = d(if (roomy) 16 else 14).toFloat()
-            setColor(dimBg)
-            setStroke(d(1), C["accent_line"]!!)
-        }
+        if (roomy) setPadding(act.dp(20), act.dp(14), act.dp(18), act.dp(14)) else setPadding(act.dp(14), act.dp(11), act.dp(12), act.dp(11))
+        background = roundedBg(act.dp(if (roomy) 16 else 14), dimBg, act.dp(1), C["accent_line"]!!)
         // 首项的上间距：原来在 container 的 padding-top 里，见上面的注释（纵向只能用 margin）。
         // 手机竖屏**按设计稿比例定高**（[PW_PALETTE]），不再是 `wrap_content`。
         layoutParams = LinearLayout.LayoutParams(
             MATCH, if (roomy) WRAP else 0, if (roomy) 0f else PW_PALETTE,
         ).apply {
-            topMargin = d(if (roomy) 24 else 16)
+            topMargin = act.dp(if (roomy) 24 else 16)
         }
-        foreground = RippleDrawable(ColorStateList.valueOf(C["ripple"]!!), null, null)
+        foreground = ripple(C["ripple"]!!)
         isClickable = true
         isFocusable = true
         setOnClickListener { act.globalSearch() }
     }
-    palette.addView(homeIcon(act, R.drawable.ic_search, d(if (roomy) 22 else 19), C["accent"]!!))
-    palette.addView(homeText(
+    palette.addView(iconView(act, R.drawable.ic_search, act.dp(if (roomy) 22 else 19), C["accent"]!!))
+    palette.addView(textView(
         act, act.getString(R.string.home_palette_hint), if (roomy) 15f else 13.5f, C["hint"]!!,
     ).apply {
-        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = d(if (roomy) 14 else 11) }
+        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = act.dp(if (roomy) 14 else 11) }
         // 搜索框惯例：单行，窄屏截断而不是折行把整条撑高。
         maxLines = 1
         ellipsize = android.text.TextUtils.TruncateAt.END
     })
-    palette.addView(homeText(
+    palette.addView(textView(
         act, act.getString(R.string.msg_search_global), if (roomy) 12f else 10.5f, C["accent"]!!,
     ).apply {
         background = GradientDrawable().apply {
-            cornerRadius = d(if (roomy) 7 else 6).toFloat(); setStroke(d(1), C["stroke_white_20"]!!)
+            cornerRadius = act.dp(if (roomy) 7 else 6).toFloat(); setStroke(act.dp(1), C["stroke_white_20"]!!)
         }
-        setPadding(d(if (roomy) 11 else 8), d(4), d(if (roomy) 11 else 8), d(4))
+        setPadding(act.dp(if (roomy) 11 else 8), act.dp(4), act.dp(if (roomy) 11 else 8), act.dp(4))
     })
     // 整条 = 一个「全局搜索」入口（点哪都是打开全局搜索），读成一句。
     palette.mergeIntoA11yNode(act.getString(R.string.home_palette_hint))
@@ -303,18 +292,18 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
     } else {
         act.getString(R.string.home_last_dir, tab.currentDir.name)
     }
-    val browseHero = homeHero(act, R.drawable.ic_folder, act.getString(R.string.home_browse),
+    val browseHero = heroCard(act, R.drawable.ic_folder, act.getString(R.string.home_browse),
         act.getString(R.string.home_browse_desc), browseTag, false, cardBg, roomy) { act.enterBrowser(tab) }
-    val termHero = homeHero(act, R.drawable.ic_terminal, act.getString(R.string.home_terminal),
+    val termHero = heroCard(act, R.drawable.ic_terminal, act.getString(R.string.home_terminal),
         act.getString(R.string.home_terminal_desc),
         act.getString(R.string.home_cmds_tag, UuCommands.cmdCount), true, cardBg, roomy) { act.terminalPanel.show() }
     if (roomy) {
-        container.addView(homeRow(act, browseHero, termHero, gap = d(18)),
-            LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = d(22) })
+        container.addView(equalRow(act, browseHero, termHero, gap = act.dp(18)),
+            LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = act.dp(22) })
     } else {
         // 手机竖屏：两张上下排、**按设计稿比例定高**（[PW_HERO]），不再 `wrap_content`。
-        container.addView(browseHero, LinearLayout.LayoutParams(MATCH, 0, PW_HERO).apply { topMargin = d(12) })
-        container.addView(termHero, LinearLayout.LayoutParams(MATCH, 0, PW_HERO).apply { topMargin = d(12) })
+        container.addView(browseHero, LinearLayout.LayoutParams(MATCH, 0, PW_HERO).apply { topMargin = act.dp(12) })
+        container.addView(termHero, LinearLayout.LayoutParams(MATCH, 0, PW_HERO).apply { topMargin = act.dp(12) })
     }
 
     // ── 快捷入口：搜索 / 回收站 / 根目录 / 设置 ───────────────────
@@ -323,22 +312,22 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
     val recycleSub = if (recycleN == 0) act.getString(R.string.home_recycle_empty)
     else act.getString(R.string.home_recycle_sub, recycleN)
     val minis = listOf(
-        homeMini(act, R.drawable.ic_search, act.getString(R.string.msg_search_global),
+        miniCard(act, R.drawable.ic_search, act.getString(R.string.msg_search_global),
             act.getString(R.string.home_q_search_sub), dimBg, roomy) { act.globalSearch() },
-        homeMini(act, R.drawable.ic_recycle, act.getString(R.string.title_recycle_bin),
+        miniCard(act, R.drawable.ic_recycle, act.getString(R.string.title_recycle_bin),
             recycleSub, dimBg, roomy) { showRecycleBinDialog(act) },
-        homeMini(act, R.drawable.ic_home, act.getString(R.string.home_storage_root),
+        miniCard(act, R.drawable.ic_home, act.getString(R.string.home_storage_root),
             Environment.getExternalStorageDirectory().absolutePath, dimBg, roomy) {
             act.enterBrowserAt(tab, Environment.getExternalStorageDirectory())
         },
-        homeMini(act, R.drawable.ic_settings, act.getString(R.string.settings),
+        miniCard(act, R.drawable.ic_settings, act.getString(R.string.settings),
             act.getString(R.string.home_q_settings_sub), dimBg, roomy) { act.settings() },
     )
     fun miniRow(cells: List<View>, topMarginDp: Int) = container.addView(
-        homeRow(act, *cells.toTypedArray(), gap = d(if (roomy) 14 else 9)),
+        equalRow(act, *cells.toTypedArray(), gap = act.dp(if (roomy) 14 else 9)),
         // 手机竖屏按设计稿比例定高（[PW_QUICK]）；宽屏仍是一整行 `wrap_content`。
         LinearLayout.LayoutParams(MATCH, if (roomy) WRAP else 0, if (roomy) 0f else PW_QUICK)
-            .apply { topMargin = d(topMarginDp) },
+            .apply { topMargin = act.dp(topMarginDp) },
     )
     if (roomy) {
         miniRow(minis, 20)
@@ -360,28 +349,28 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         // 两列用 `WRAP` 高而不是 `MATCH`：本行是 wrap，若子项全 `MATCH` 会把行高算成 0。
         fun col(cap: View, card: View) = LinearLayout(act).apply {
             orientation = LinearLayout.VERTICAL
-            addView(cap)   // 沿用 homeCap 自己的 layoutParams（左右各 2dp 的微调）
-            addView(card, LinearLayout.LayoutParams(MATCH, d(LIST_CARD_H)).apply { topMargin = d(10) })
+            addView(cap)   // 沿用 sectionCap 自己的 layoutParams（左右各 2dp 的微调）
+            addView(card, LinearLayout.LayoutParams(MATCH, act.dp(LIST_CARD_H)).apply { topMargin = act.dp(10) })
         }
         val cols = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL }
-        cols.addView(col(recentsCap, recentsCard), LinearLayout.LayoutParams(0, WRAP, 1.5f).apply { marginEnd = d(20) })
+        cols.addView(col(recentsCap, recentsCard), LinearLayout.LayoutParams(0, WRAP, 1.5f).apply { marginEnd = act.dp(20) })
         cols.addView(col(bmsCap, bmsCard), LinearLayout.LayoutParams(0, WRAP, 1f))
-        container.addView(cols, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = d(22) })
+        container.addView(cols, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = act.dp(22) })
     } else {
         // 手机竖屏：标题 20 / 卡片 154（设计稿比例），间距走各自的 topMargin（权重子项的
-        // `marginTop` 计入 `mTotalLength`）。左右 2dp 是 homeCap 原有的微调，覆盖时要带上。
+        // `marginTop` 计入 `mTotalLength`）。左右 2dp 是 sectionCap 原有的微调，覆盖时要带上。
         container.addView(recentsCap, LinearLayout.LayoutParams(MATCH, 0, PW_CAP).apply {
-            setMargins(d(2), d(14), d(2), 0)
+            setMargins(act.dp(2), act.dp(14), act.dp(2), 0)
         })
-        container.addView(recentsCard, LinearLayout.LayoutParams(MATCH, 0, PW_CARD).apply { topMargin = d(7) })
+        container.addView(recentsCard, LinearLayout.LayoutParams(MATCH, 0, PW_CARD).apply { topMargin = act.dp(7) })
         container.addView(bmsCap, LinearLayout.LayoutParams(MATCH, 0, PW_CAP).apply {
-            setMargins(d(2), d(14), d(2), 0)
+            setMargins(act.dp(2), act.dp(14), act.dp(2), 0)
         })
-        container.addView(bmsCard, LinearLayout.LayoutParams(MATCH, 0, PW_CARD).apply { topMargin = d(7) })
+        container.addView(bmsCard, LinearLayout.LayoutParams(MATCH, 0, PW_CARD).apply { topMargin = act.dp(7) })
     }
 
     // ── 页脚 ─────────────────────────────────────────────────────
-    container.addView(homeText(
+    container.addView(textView(
         act,
         act.getString(R.string.home_foot_fmt, ARCHIVE_EXTS.size) + " · " +
             act.getString(R.string.home_foot_local),
@@ -394,11 +383,11 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         // 写成自身 padding 就是 childHeight 的一部分，一定被计入。
         // 手机竖屏：整列都是权重子项，页脚的高度由权重给定，下间距直接算进 [PW_FOOTER]，
         // 不能再叠一层 paddingBottom（那会撑破权重给的高度）。
-        setPadding(0, 0, 0, if (roomy) d(20) else 0)
+        setPadding(0, 0, 0, if (roomy) act.dp(20) else 0)
         layoutParams = LinearLayout.LayoutParams(
             MATCH, if (roomy) WRAP else 0, if (roomy) 0f else PW_FOOTER,
         ).apply {
-            topMargin = d(if (roomy) 16 else 12)
+            topMargin = act.dp(if (roomy) 16 else 12)
         }
     })
 }
@@ -413,18 +402,16 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
  * 缩放、比例就不准了。宽屏则由调用处把两块塞进一个 `col` 再并排。
  */
 private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, roomy: Boolean): Pair<View, View> {
-    fun d(v: Int) = (v * act.resources.displayMetrics.density).toInt()
     val entries = RecentsStore.list(act)
     // 尾注 = 条数（派生，现查现画）；空列表不摆尾注，提示只在卡片里出现一次。
-    val cap = homeCap(act, act.getString(R.string.home_recents),
-        if (entries.isEmpty()) null else entries.size.toString(), roomy)
+    val cap = sectionCap(act, act.getString(R.string.home_recents),
+        if (entries.isEmpty()) null else entries.size.toString(),
+        if (roomy) 11.5f else 10.5f, if (roomy) 12f else 11f)
     // 卡片**定高**（宽屏 [LIST_CARD_H]、竖屏按设计稿比例 [PW_CARD]）、**行高固定**，
     // 装不下时在卡片内滚动 —— 窗口尺寸不随内容/剩余空间变（行若用 weight 平分：1 条时
     // 被拉成巨行、10 条时被压扁）。高度由调用处给。
     val card = FrameLayout(act).apply {
-        background = GradientDrawable().apply {
-            cornerRadius = d(if (roomy) 16 else 14).toFloat(); setColor(cardBg); setStroke(d(1), C["hairline"]!!)
-        }
+        background = roundedBg(act.dp(if (roomy) 16 else 14), cardBg, act.dp(1), C["hairline"]!!)
         clipToOutline = true
     }
     val scroll = ScrollView(act).apply {
@@ -436,15 +423,15 @@ private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, room
     val list = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL }
     scroll.addView(list)
     if (entries.isEmpty()) {
-        list.addView(homeText(act, act.getString(R.string.home_recents_empty), 12f, C["tertiary"]!!).apply {
+        list.addView(textView(act, act.getString(R.string.home_recents_empty), 12f, C["tertiary"]!!).apply {
             gravity = Gravity.CENTER
-            setPadding(0, d(20), 0, d(20))
+            setPadding(0, act.dp(20), 0, act.dp(20))
         })
     } else {
         entries.forEachIndexed { i, e ->
             if (i > 0) list.addView(View(act).apply {
-                layoutParams = LinearLayout.LayoutParams(MATCH, d(1)).apply {
-                    marginStart = d(14); marginEnd = d(14)
+                layoutParams = LinearLayout.LayoutParams(MATCH, act.dp(1)).apply {
+                    marginStart = act.dp(14); marginEnd = act.dp(14)
                 }
                 setBackgroundColor(C["hairline"]!!)
                 // 纯装饰的分隔线，别让 TalkBack 停在它上面。
@@ -457,40 +444,39 @@ private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, room
 }
 
 private fun homeRecentRow(act: MainActivity, tab: TabState, e: RecentsStore.Entry, roomy: Boolean): LinearLayout {
-    fun d(v: Int) = (v * act.resources.displayMetrics.density).toInt()
     val f = e.file
     val ext = f.extension.lowercase()
     val row = LinearLayout(act).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         setPadding(
-            d(if (roomy) 16 else 13), d(if (roomy) 12 else 10),
-            d(if (roomy) 16 else 13), d(if (roomy) 12 else 10),
+            act.dp(if (roomy) 16 else 13), act.dp(if (roomy) 12 else 10),
+            act.dp(if (roomy) 16 else 13), act.dp(if (roomy) 12 else 10),
         )
-        foreground = RippleDrawable(ColorStateList.valueOf(C["ripple"]!!), null, null)
+        foreground = ripple(C["ripple"]!!)
         isClickable = true
         isFocusable = true
         // v1 先落到归档所在目录（直接在此开预览要接一遍 openKey/互斥，后续再做）。
         setOnClickListener { f.parentFile?.let { act.enterBrowserAt(tab, it) } }
     }
     val fmtColor = FORMAT_COLORS[ext] ?: C["icon_gray_dim"]!!
-    row.addView(homeText(act, ext.uppercase(), if (roomy) 11f else 10f, C["text_bright"]!!).apply {
+    row.addView(textView(act, ext.uppercase(), if (roomy) 11f else 10f, C["text_bright"]!!).apply {
         gravity = Gravity.CENTER
-        background = GradientDrawable().apply { cornerRadius = d(if (roomy) 8 else 7).toFloat(); setColor(fmtColor) }
-        layoutParams = LinearLayout.LayoutParams(d(if (roomy) 54 else 46), d(if (roomy) 28 else 25))
+        background = roundedBg(act.dp(if (roomy) 8 else 7), fmtColor)
+        layoutParams = LinearLayout.LayoutParams(act.dp(if (roomy) 54 else 46), act.dp(if (roomy) 28 else 25))
     })
     val names = LinearLayout(act).apply {
         orientation = LinearLayout.VERTICAL
-        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = d(if (roomy) 14 else 11) }
+        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = act.dp(if (roomy) 14 else 11) }
     }
-    names.addView(homeText(act, f.name, if (roomy) 14f else 12.5f, C["primary"]!!, bold = true).apply {
+    names.addView(textView(act, f.name, if (roomy) 14f else 12.5f, C["primary"]!!, bold = true).apply {
         setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
     })
-    names.addView(homeText(act, f.parent ?: "", if (roomy) 11.5f else 10f, C["tertiary"]!!).apply {
+    names.addView(textView(act, f.parent ?: "", if (roomy) 11.5f else 10f, C["tertiary"]!!).apply {
         setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
     })
     row.addView(names)
-    row.addView(homeText(
+    row.addView(textView(
         act,
         fmt(fileSize(f)) + " · " + SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(e.time)),
         if (roomy) 12f else 10.5f, C["tertiary"]!!,
@@ -504,18 +490,16 @@ private fun homeRecentRow(act: MainActivity, tab: TabState, e: RecentsStore.Entr
 
 /** 「书签」区块 = **标题 + 卡片两块**，理由同 [homeRecentsParts]。 */
 private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, roomy: Boolean): Pair<View, View> {
-    fun d(v: Int) = (v * act.resources.displayMetrics.density).toInt()
     val bookmarks = act.bookmarks
     // 尾注 = 条数；空列表不摆尾注 —— 原来恒显示 home_bookmarks_empty：有书签时也在误导
     // 用户「长按可加书签」，空时又和卡片内的同一句提示重复。
-    val cap = homeCap(act, act.getString(R.string.home_bookmarks),
-        if (bookmarks.isEmpty()) null else bookmarks.size.toString(), roomy)
+    val cap = sectionCap(act, act.getString(R.string.home_bookmarks),
+        if (bookmarks.isEmpty()) null else bookmarks.size.toString(),
+        if (roomy) 11.5f else 10.5f, if (roomy) 12f else 11f)
     // 与「最近」同一套：卡片定高（宽屏 [LIST_CARD_H] / 竖屏 [PW_CARD]）、行高固定、
     // 装不下时在卡片内滚动。高度由调用处给。
     val card = FrameLayout(act).apply {
-        background = GradientDrawable().apply {
-            cornerRadius = d(if (roomy) 16 else 14).toFloat(); setColor(cardBg); setStroke(d(1), C["hairline"]!!)
-        }
+        background = roundedBg(act.dp(if (roomy) 16 else 14), cardBg, act.dp(1), C["hairline"]!!)
         clipToOutline = true
     }
     val scroll = ScrollView(act).apply {
@@ -525,13 +509,13 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
     card.addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
     val box = LinearLayout(act).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(d(6), d(6), d(6), d(6))
+        setPadding(act.dp(6), act.dp(6), act.dp(6), act.dp(6))
     }
     scroll.addView(box)
     if (bookmarks.isEmpty()) {
-        box.addView(homeText(act, act.getString(R.string.home_bookmarks_empty), 12f, C["tertiary"]!!).apply {
+        box.addView(textView(act, act.getString(R.string.home_bookmarks_empty), 12f, C["tertiary"]!!).apply {
             gravity = Gravity.CENTER
-            setPadding(0, d(16), 0, d(16))
+            setPadding(0, act.dp(16), 0, act.dp(16))
         })
     } else {
         bookmarks.forEach { path ->
@@ -539,17 +523,17 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(
-                    d(if (roomy) 14 else 11), d(if (roomy) 12 else 10),
-                    d(if (roomy) 14 else 11), d(if (roomy) 12 else 10),
+                    act.dp(if (roomy) 14 else 11), act.dp(if (roomy) 12 else 10),
+                    act.dp(if (roomy) 14 else 11), act.dp(if (roomy) 12 else 10),
                 )
-                foreground = RippleDrawable(ColorStateList.valueOf(C["ripple"]!!), null, null)
+                foreground = ripple(C["ripple"]!!)
                 isClickable = true
                 isFocusable = true
                 setOnClickListener { act.enterBrowserAt(tab, File(path)) }
-                addView(homeIcon(act, R.drawable.ic_folder, d(if (roomy) 17 else 15), C["accent"]!!))
-                addView(homeText(act, File(path).name.ifEmpty { path },
+                addView(iconView(act, R.drawable.ic_folder, act.dp(if (roomy) 17 else 15), C["accent"]!!))
+                addView(textView(act, File(path).name.ifEmpty { path },
                     if (roomy) 13.5f else 12.5f, C["secondary"]!!).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = d(if (roomy) 12 else 10) }
+                    layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = act.dp(if (roomy) 12 else 10) }
                     setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
                 })
                 // 整行 = 一个 a11y 单元（文件夹图标 / 名字合成一句）。
@@ -558,196 +542,4 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
         }
     }
     return cap to card
-}
-
-// ── 小构件 ───────────────────────────────────────────────────────────
-
-/** 「标题 …… 尾注」的区块头。 */
-private fun homeCap(act: MainActivity, title: String, tail: String?, roomy: Boolean): LinearLayout {
-    fun d(v: Int) = (v * act.resources.displayMetrics.density).toInt()
-    val cap = LinearLayout(act).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL or Gravity.BOTTOM
-        // ⚠️ 这里**不放纵向 margin**：`LinearLayout` 第一遍测量不计子项的 `marginBottom`，
-        // 权重卡片会把那 10dp 也吃掉、自己长高 10dp 并被裁。标题与卡片的间距改由**卡片自己
-        // 的 `topMargin`** 出（权重子项的 margin 是计入的）—— 见调用处。
-        layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
-            .apply { setMargins(d(2), 0, d(2), 0) }
-    }
-    cap.addView(homeText(act, title, if (roomy) 11.5f else 10.5f, C["tertiary"]!!).apply { letterSpacing = 0.12f })
-    if (tail != null) {
-        cap.addView(homeText(act, tail, if (roomy) 12f else 11f, C["tertiary"]!!).apply {
-            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = d(10) }
-            gravity = Gravity.END
-        })
-    }
-    return cap
-}
-
-/** 一行 n 个等重子项，[gap] 为间距（最后一个不加）。 */
-private fun homeRow(act: MainActivity, vararg cells: View, gap: Int): LinearLayout {
-    fun d(v: Int) = (v * act.resources.displayMetrics.density).toInt()
-    val row = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL }
-    cells.forEachIndexed { i, v ->
-        val lp = LinearLayout.LayoutParams(0, MATCH, 1f)
-        if (i < cells.size - 1) lp.marginEnd = d(gap)
-        row.addView(v, lp)
-    }
-    return row
-}
-
-/**
- * hero 卡：**横向内容** —— 图标盒在左、标题+描述居中、角标在右。
- *
- * 两张卡并排时单卡在宽屏约 560dp、手机竖屏约 380dp，纵向内容（图标在上）会让右侧
- * 空掉一大片，所以统一横向。卡高由外部决定：宽屏 `weight=1` 撑满、手机竖屏 `wrap_content`。
- */
-private fun homeHero(
-    act: MainActivity,
-    iconRes: Int,
-    title: String,
-    desc: String,
-    tag: String?,
-    teal: Boolean,
-    fallbackBg: Int,
-    roomy: Boolean,
-    onClick: () -> Unit,
-): View {
-    fun d(v: Int) = (v * act.resources.displayMetrics.density).toInt()
-    val bg = GradientDrawable(
-        GradientDrawable.Orientation.TL_BR,
-        if (teal) intArrayOf(C["hero_grad_teal"]!!, fallbackBg)
-        else intArrayOf(C["hero_grad_plain"]!!, fallbackBg),
-    ).apply {
-        cornerRadius = d(if (roomy) 20 else 17).toFloat()
-    }
-    val box = if (roomy) d(66) else d(46)
-    val glyph = if (roomy) d(34) else d(24)
-
-    val row = LinearLayout(act).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        if (roomy) setPadding(d(30), 0, d(30), 0) else setPadding(d(14), d(13), d(12), d(13))
-    }
-    row.addView(homeIcon(act, iconRes, glyph, C["accent"]!!).apply {
-        background = GradientDrawable().apply {
-            cornerRadius = d(if (roomy) 18 else 13).toFloat(); setColor(C["accent_soft"]!!)
-        }
-        layoutParams = LinearLayout.LayoutParams(box, box)
-    })
-    val textCol = LinearLayout(act).apply {
-        orientation = LinearLayout.VERTICAL
-        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = d(if (roomy) 22 else 14) }
-    }
-    textCol.addView(homeText(act, title, if (roomy) 20f else 16.5f, C["primary"]!!, bold = true))
-    textCol.addView(homeText(act, desc, if (roomy) 13.5f else 12f, C["secondary"]!!).apply {
-        layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = d(if (roomy) 9 else 5) }
-        // 保险：极端窄屏也不让描述把卡片撑成 5 行（横向内容通常 1–2 行）。
-        maxLines = 2
-        ellipsize = android.text.TextUtils.TruncateAt.END
-    })
-    row.addView(textCol)
-    if (tag != null) {
-        row.addView(homeText(act, tag, if (roomy) 11f else 10f, C["accent"]!!).apply {
-            background = GradientDrawable().apply {
-                cornerRadius = d(99).toFloat(); setColor(C["accent_soft"]!!)
-            }
-            setPadding(d(if (roomy) 11 else 9), d(5), d(if (roomy) 11 else 9), d(5))
-            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = d(14) }
-        })
-    }
-
-    return FrameLayout(act).apply {
-        background = bg
-        foreground = RippleDrawable(ColorStateList.valueOf(C["ripple"]!!), null, null)
-        isClickable = true
-        isFocusable = true
-        layoutParams = FrameLayout.LayoutParams(MATCH, WRAP)
-        addView(row)
-        // 整卡 = 一个 a11y 单元（图标 / 标题 / 描述 / 角标合成一句），见 [mergeIntoA11yNode]。
-        mergeIntoA11yNode(if (tag != null) "$title，$desc，$tag" else "$title，$desc")
-        setOnClickListener { onClick() }
-    }
-}
-
-/** 快捷入口小卡：图标盒 + 标题 / 一行说明。 */
-private fun homeMini(
-    act: MainActivity,
-    iconRes: Int,
-    title: String,
-    sub: String,
-    bg: Int,
-    roomy: Boolean,
-    onClick: () -> Unit,
-): LinearLayout {
-    fun d(v: Int) = (v * act.resources.displayMetrics.density).toInt()
-    return LinearLayout(act).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        if (roomy) setPadding(d(16), d(18), d(16), d(18)) else setPadding(d(11), d(11), d(11), d(11))
-        background = GradientDrawable().apply {
-            cornerRadius = d(if (roomy) 16 else 14).toFloat(); setColor(bg); setStroke(d(1), C["hairline"]!!)
-        }
-        foreground = RippleDrawable(ColorStateList.valueOf(C["ripple"]!!), null, null)
-        isClickable = true
-        isFocusable = true
-        layoutParams = FrameLayout.LayoutParams(MATCH, WRAP)
-        addView(homeIcon(act, iconRes, d(if (roomy) 22 else 18), C["accent"]!!).apply {
-            background = GradientDrawable().apply {
-                cornerRadius = d(if (roomy) 13 else 11).toFloat(); setColor(C["accent_soft"]!!)
-            }
-            layoutParams = LinearLayout.LayoutParams(d(if (roomy) 44 else 36), d(if (roomy) 44 else 36))
-                .apply { gravity = Gravity.CENTER }
-        })
-        val names = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL }
-        names.addView(homeText(act, title, if (roomy) 14.5f else 13f, C["primary"]!!, bold = true))
-        names.addView(homeText(act, sub, if (roomy) 11f else 10f, C["tertiary"]!!).apply {
-            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = d(2) }
-            setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
-        })
-        addView(names, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = d(if (roomy) 14 else 11) })
-        // 整卡 = 一个 a11y 单元（图标 / 标题 / 说明合成一句）。
-        mergeIntoA11yNode("$title，$sub")
-        setOnClickListener { onClick() }
-    }
-}
-
-private fun homeIcon(act: MainActivity, res: Int, sizePx: Int, tint: Int): ImageView =
-    ImageView(act).apply {
-        setImageResource(res)
-        setColorFilter(tint)
-        // 装饰性图标：意义由旁边的文字（或所在卡片的整体描述，见 [mergeIntoA11yNode]）承担，
-        // 别让 TalkBack 单独停在它上面。
-        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        layoutParams = ViewGroup.LayoutParams(sizePx, sizePx)
-    }
-
-private fun homeText(
-    act: MainActivity,
-    text: String,
-    sp: Float,
-    color: Int,
-    bold: Boolean = false,
-): TextView = TextView(act).apply {
-    this.text = text
-    textSize = sp
-    setTextColor(color)
-    if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
-}
-
-/**
- * 把一棵子树收成**一个** TalkBack 节点：根设 [desc]，所有后代标为「对无障碍不重要」。
- *
- * hub 的卡片是「图标盒 + 标题 + 描述（+ 角标）」拼出来的、整体是一个可点区域 ——
- * 逐个子 View 读会变成一串碎片（「浏览」「打开文件浏览器」「文件夹图标」…）。
- * 既然整卡只做一件事，就该被读成一句话。装饰性图标见 [homeIcon]。
- */
-private fun View.mergeIntoA11yNode(desc: CharSequence) {
-    contentDescription = desc
-    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-    fun mark(v: View) {
-        if (v is ViewGroup) for (i in 0 until v.childCount) mark(v.getChildAt(i))
-        if (v !== this) v.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-    }
-    mark(this)
 }

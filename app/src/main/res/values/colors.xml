@@ -32,6 +32,10 @@
     <color name="text_tertiary">#9a9a9a</color>
     <color name="text_hint">#8f8f8f</color>
     <color name="text_disabled">#666666</color>
+    <!-- 代码 token C["tertiary"] / C["tertiary_light"] 的色值。这两个与上面 XML 档
+         的 text_tertiary(#9a9a9a) 不是同一个灰 —— 收 token 时按**原值**落盘，不改色。 -->
+    <color name="text_tertiary_dim">#888888</color>
+    <color name="text_tertiary_light">#aaaaaa</color>
 
     <!-- Legacy aliases -->
     <color name="ui_base">@color/accent</color>
@@ -57,4 +61,15 @@
     <!-- ═══ Search highlights ═══ -->
     <color name="search_highlight_selected">#88FFAA00</color>
     <color name="search_highlight_other">#33FFAA00</color>
+
+    <!-- ═══ HomeHub tokens（原先散落在 HomeHub.kt 的字面量，收进 token 表）═══ -->
+    <!-- 快捷胶囊的白描边 -->
+    <color name="stroke_white_20">#33FFFFFF</color>
+    <!-- hero 卡渐变起点：青（终端）/ 灰（浏览） -->
+    <color name="hero_grad_teal">#1F3A41</color>
+    <color name="hero_grad_plain">#2E3D42</color>
+    <!-- 彩色格式块上的亮白字 -->
+    <color name="text_bright">#F0FFFFFF</color>
+    <!-- 未知扩展名的格式块兜底色 -->
+    <color name="icon_gray_dim">#5A5A5A</color>
 </resources>

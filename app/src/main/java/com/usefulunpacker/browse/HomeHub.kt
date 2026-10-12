@@ -259,7 +259,7 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         background = GradientDrawable().apply {
             cornerRadius = d(if (roomy) 16 else 14).toFloat()
             setColor(dimBg)
-            setStroke(d(1), 0x5935ACC6)
+            setStroke(d(1), C["accent_line"]!!)
         }
         // 首项的上间距：原来在 container 的 padding-top 里，见上面的注释（纵向只能用 margin）。
         // 手机竖屏**按设计稿比例定高**（[PW_PALETTE]），不再是 `wrap_content`。
@@ -268,7 +268,7 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         ).apply {
             topMargin = d(if (roomy) 24 else 16)
         }
-        foreground = RippleDrawable(ColorStateList.valueOf(0x24FFFFFF), null, null)
+        foreground = RippleDrawable(ColorStateList.valueOf(C["ripple"]!!), null, null)
         isClickable = true
         isFocusable = true
         setOnClickListener { act.globalSearch() }
@@ -286,7 +286,7 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         act, act.getString(R.string.msg_search_global), if (roomy) 12f else 10.5f, C["accent"]!!,
     ).apply {
         background = GradientDrawable().apply {
-            cornerRadius = d(if (roomy) 7 else 6).toFloat(); setStroke(d(1), 0x33FFFFFF)
+            cornerRadius = d(if (roomy) 7 else 6).toFloat(); setStroke(d(1), C["stroke_white_20"]!!)
         }
         setPadding(d(if (roomy) 11 else 8), d(4), d(if (roomy) 11 else 8), d(4))
     })
@@ -421,7 +421,7 @@ private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, room
     // 被拉成巨行、10 条时被压扁）。高度由调用处给。
     val card = FrameLayout(act).apply {
         background = GradientDrawable().apply {
-            cornerRadius = d(if (roomy) 16 else 14).toFloat(); setColor(cardBg); setStroke(d(1), 0x14E0F9FF)
+            cornerRadius = d(if (roomy) 16 else 14).toFloat(); setColor(cardBg); setStroke(d(1), C["hairline"]!!)
         }
         clipToOutline = true
     }
@@ -444,7 +444,7 @@ private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, room
                 layoutParams = LinearLayout.LayoutParams(MATCH, d(1)).apply {
                     marginStart = d(14); marginEnd = d(14)
                 }
-                setBackgroundColor(0x14E0F9FF)
+                setBackgroundColor(C["hairline"]!!)
             })
             list.addView(homeRecentRow(act, tab, e, roomy))
         }
@@ -463,14 +463,14 @@ private fun homeRecentRow(act: MainActivity, tab: TabState, e: RecentsStore.Entr
             d(if (roomy) 16 else 13), d(if (roomy) 12 else 10),
             d(if (roomy) 16 else 13), d(if (roomy) 12 else 10),
         )
-        foreground = RippleDrawable(ColorStateList.valueOf(0x24FFFFFF), null, null)
+        foreground = RippleDrawable(ColorStateList.valueOf(C["ripple"]!!), null, null)
         isClickable = true
         isFocusable = true
         // v1 先落到归档所在目录（直接在此开预览要接一遍 openKey/互斥，后续再做）。
         setOnClickListener { f.parentFile?.let { act.enterBrowserAt(tab, it) } }
     }
-    val fmtColor = FORMAT_COLORS[ext] ?: 0xFF5A5A5A.toInt()
-    row.addView(homeText(act, ext.uppercase(), if (roomy) 11f else 10f, 0xF0FFFFFF.toInt()).apply {
+    val fmtColor = FORMAT_COLORS[ext] ?: C["icon_gray_dim"]!!
+    row.addView(homeText(act, ext.uppercase(), if (roomy) 11f else 10f, C["text_bright"]!!).apply {
         gravity = Gravity.CENTER
         background = GradientDrawable().apply { cornerRadius = d(if (roomy) 8 else 7).toFloat(); setColor(fmtColor) }
         layoutParams = LinearLayout.LayoutParams(d(if (roomy) 54 else 46), d(if (roomy) 28 else 25))
@@ -508,7 +508,7 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
     // 装不下时在卡片内滚动。高度由调用处给。
     val card = FrameLayout(act).apply {
         background = GradientDrawable().apply {
-            cornerRadius = d(if (roomy) 16 else 14).toFloat(); setColor(cardBg); setStroke(d(1), 0x14E0F9FF)
+            cornerRadius = d(if (roomy) 16 else 14).toFloat(); setColor(cardBg); setStroke(d(1), C["hairline"]!!)
         }
         clipToOutline = true
     }
@@ -536,7 +536,7 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
                     d(if (roomy) 14 else 11), d(if (roomy) 12 else 10),
                     d(if (roomy) 14 else 11), d(if (roomy) 12 else 10),
                 )
-                foreground = RippleDrawable(ColorStateList.valueOf(0x24FFFFFF), null, null)
+                foreground = RippleDrawable(ColorStateList.valueOf(C["ripple"]!!), null, null)
                 isClickable = true
                 isFocusable = true
                 setOnClickListener { act.enterBrowserAt(tab, File(path)) }
@@ -608,8 +608,8 @@ private fun homeHero(
     fun d(v: Int) = (v * act.resources.displayMetrics.density).toInt()
     val bg = GradientDrawable(
         GradientDrawable.Orientation.TL_BR,
-        if (teal) intArrayOf(0xFF1F3A41.toInt(), fallbackBg)
-        else intArrayOf(0xFF2E3D42.toInt(), fallbackBg),
+        if (teal) intArrayOf(C["hero_grad_teal"]!!, fallbackBg)
+        else intArrayOf(C["hero_grad_plain"]!!, fallbackBg),
     ).apply {
         cornerRadius = d(if (roomy) 20 else 17).toFloat()
     }
@@ -623,7 +623,7 @@ private fun homeHero(
     }
     row.addView(homeIcon(act, iconRes, glyph, C["accent"]!!).apply {
         background = GradientDrawable().apply {
-            cornerRadius = d(if (roomy) 18 else 13).toFloat(); setColor(0x2E35ACC6)
+            cornerRadius = d(if (roomy) 18 else 13).toFloat(); setColor(C["accent_soft"]!!)
         }
         layoutParams = LinearLayout.LayoutParams(box, box)
     })
@@ -642,7 +642,7 @@ private fun homeHero(
     if (tag != null) {
         row.addView(homeText(act, tag, if (roomy) 11f else 10f, C["accent"]!!).apply {
             background = GradientDrawable().apply {
-                cornerRadius = d(99).toFloat(); setColor(0x2E35ACC6)
+                cornerRadius = d(99).toFloat(); setColor(C["accent_soft"]!!)
             }
             setPadding(d(if (roomy) 11 else 9), d(5), d(if (roomy) 11 else 9), d(5))
             layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = d(14) }
@@ -651,7 +651,7 @@ private fun homeHero(
 
     return FrameLayout(act).apply {
         background = bg
-        foreground = RippleDrawable(ColorStateList.valueOf(0x24FFFFFF), null, null)
+        foreground = RippleDrawable(ColorStateList.valueOf(C["ripple"]!!), null, null)
         isClickable = true
         isFocusable = true
         layoutParams = FrameLayout.LayoutParams(MATCH, WRAP)
@@ -676,15 +676,15 @@ private fun homeMini(
         gravity = Gravity.CENTER_VERTICAL
         if (roomy) setPadding(d(16), d(18), d(16), d(18)) else setPadding(d(11), d(11), d(11), d(11))
         background = GradientDrawable().apply {
-            cornerRadius = d(if (roomy) 16 else 14).toFloat(); setColor(bg); setStroke(d(1), 0x14E0F9FF)
+            cornerRadius = d(if (roomy) 16 else 14).toFloat(); setColor(bg); setStroke(d(1), C["hairline"]!!)
         }
-        foreground = RippleDrawable(ColorStateList.valueOf(0x24FFFFFF), null, null)
+        foreground = RippleDrawable(ColorStateList.valueOf(C["ripple"]!!), null, null)
         isClickable = true
         isFocusable = true
         layoutParams = FrameLayout.LayoutParams(MATCH, WRAP)
         addView(homeIcon(act, iconRes, d(if (roomy) 22 else 18), C["accent"]!!).apply {
             background = GradientDrawable().apply {
-                cornerRadius = d(if (roomy) 13 else 11).toFloat(); setColor(0x2E35ACC6)
+                cornerRadius = d(if (roomy) 13 else 11).toFloat(); setColor(C["accent_soft"]!!)
             }
             layoutParams = LinearLayout.LayoutParams(d(if (roomy) 44 else 36), d(if (roomy) 44 else 36))
                 .apply { gravity = Gravity.CENTER }

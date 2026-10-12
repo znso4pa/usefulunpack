@@ -19,6 +19,7 @@
 
     <application
         android:allowBackup="true"
+        android:name=".App"
         android:label="UsefulUnpack"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"

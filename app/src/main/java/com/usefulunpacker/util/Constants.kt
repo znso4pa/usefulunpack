@@ -1,5 +1,6 @@
 package com.usefulunpacker
 
+import android.content.Context
 import java.io.File
 
 // Layout params helpers (moved out of MainActivity's companion object).
@@ -13,35 +14,66 @@ const val SEARCH_POLL_INTERVAL_MS = 200L
 const val TEXT_PREVIEW_MAX_CHARS = 50000
 const val RECYCLE_BIN_CLEAN_INTERVAL_MS = 86400000L
 
-val C = mapOf(
-    "accent" to 0xFF35acc6.toInt(),
-    // accent 填充底上压的字：纯黑发闷，用带青的深色（与 colors.xml 的 accent_on 同值）
-    "accent_on" to 0xFF06222A.toInt(),
-    "accent_soft" to 0x2E35ACC6.toInt(),
-    "accent_line" to 0x5935ACC6.toInt(),
-    // 卡片发丝描边（主色 8%）：深色底上刚好一条线
-    "hairline" to 0x14E0F9FF.toInt(),
-    // 行 / 卡片的按压涟漪
-    "ripple" to 0x24FFFFFF.toInt(),
-    "primary" to 0xFFe0f9ff.toInt(),
-    "secondary" to 0xFFb0b0b0.toInt(),
-    "tertiary" to 0xFF888888.toInt(),
-    "tertiary_light" to 0xFFaaaaaa.toInt(),
-    "hint" to 0xFF8f8f8f.toInt(),
-    "surface" to 0xFF303030.toInt(),
-    "surface_dim" to 0xFF252525.toInt(),
-    "surface_dark" to 0xFF1a1a1a.toInt(),
-    "surface_raised" to 0xFF3a3a3a.toInt(),
-    "nav_bg" to 0xFF222222.toInt(),
-    "divider" to 0xFF1a1a1a.toInt(),
-    "divider_subtle" to 0xFF555555.toInt(),
-    "toggle_on" to 0xFF3a3a3a.toInt(),
-    "warning" to 0xFFffa726.toInt(),
-    "error" to 0xFFff5252.toInt(),
-    "success" to 0xFF69f0ae.toInt(),
-    "search_hilite_sel" to 0x88FFAA00.toInt(),
-    "search_hilite_oth" to 0x33FFAA00.toInt(),
+/**
+ * 颜色 token 表的**资源映射** —— 唯一事实是 `res/values/colors.xml`。
+ *
+ * 早先这张表把色值硬编码在 Kotlin 里，与 `colors.xml` 手工同步（`accent_on` 的注释
+ * 自己就写着「与 colors.xml 同值」）。现在两边只有一份：这里只留「键 → 资源名」，
+ * 色值在 [initTokens] 里解析一次（`App.onCreate`）。
+ *
+ * ⚠️ 两个易错点：
+ * - `accent_soft` 映射到 `accent_soft_strong`（`#2E35ACC6`）**不是** `accent_soft`
+ *   （`#2235acc6`）—— 后者更淡，是图标盒用的另一档。
+ * - `tertiary` / `tertiary_light` 与 XML 档的 `text_tertiary` 是**不同**的灰，
+ *   收 token 时按原值各留了一条 `text_tertiary_dim` / `text_tertiary_light`。
+ */
+private val C_RES = mapOf(
+    "accent" to R.color.accent,
+    "accent_on" to R.color.accent_on,
+    "accent_soft" to R.color.accent_soft_strong,
+    "accent_line" to R.color.accent_line,
+    "hairline" to R.color.hairline,
+    "ripple" to R.color.ripple_light,
+    "primary" to R.color.text_primary,
+    "secondary" to R.color.text_secondary,
+    "tertiary" to R.color.text_tertiary_dim,
+    "tertiary_light" to R.color.text_tertiary_light,
+    "hint" to R.color.text_hint,
+    "surface" to R.color.bg_surface,
+    "surface_dim" to R.color.bg_surface_dim,
+    "surface_dark" to R.color.bg_surface_dark,
+    "surface_raised" to R.color.bg_surface_raised,
+    "nav_bg" to R.color.bg_drawer_header,
+    "divider" to R.color.divider,
+    "divider_subtle" to R.color.divider_subtle,
+    "toggle_on" to R.color.bg_surface_raised,
+    "warning" to R.color.state_warning,
+    "error" to R.color.state_error,
+    "success" to R.color.state_success,
+    "search_hilite_sel" to R.color.search_highlight_selected,
+    "search_hilite_oth" to R.color.search_highlight_other,
+    // ── HomeHub 专用：本轮从字面量收进 token ──
+    "stroke_white_20" to R.color.stroke_white_20,
+    "hero_grad_teal" to R.color.hero_grad_teal,
+    "hero_grad_plain" to R.color.hero_grad_plain,
+    "text_bright" to R.color.text_bright,
+    "icon_gray_dim" to R.color.icon_gray_dim,
 )
+
+private var cTokens: Map<String, Int>? = null
+
+/** 解析颜色 token 表（`App.onCreate` 调一次；见 [C]）。 */
+internal fun initTokens(ctx: Context) {
+    val app = ctx.applicationContext
+    cTokens = C_RES.mapValues { (_, id) -> app.getColor(id) }
+}
+
+/**
+ * 颜色 token 表 —— 唯一事实在 `res/values/colors.xml`（经 [initTokens] 解析）。
+ * 用法不变：`C["primary"]!!`。解析前访问会明确报错，而不是静默拿到错的色。
+ */
+internal val C: Map<String, Int>
+    get() = cTokens ?: error("initTokens() 未调用 —— App.onCreate 应先跑")
 
 // 归档格式 → 文件图标着色（ZArchiver 风格，按格式区分）
 val FORMAT_COLORS = mapOf(

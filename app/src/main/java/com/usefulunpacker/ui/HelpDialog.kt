@@ -102,6 +102,6 @@ internal fun MainActivity.showHelpDialog() {
         .create()
     // Tall help viewer (capped ~0.88h) — bottom-anchor below the tab strip.
     // App-global: keep it visible across tab switches (rootToTab = false).
-    dlg.belowTabs(rootToTab = false, blockTabBar = true)
+    dlg.belowTabs()
     dlg.show()
 }

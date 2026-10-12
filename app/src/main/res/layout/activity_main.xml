@@ -142,8 +142,9 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintEnd_toEndOf="parent" />
 
-        <!-- 触摸护盾：对话框打开期间盖住内容区（只盖 pager，不动 tab 栏/工具栏），
-             让「弹窗打开时只能动窗口内」成立 —— 点不到背后的文件列表。
+        <!-- 触摸护盾：对话框打开期间盖住**除 tab 栏以外的一切**（工具栏 + 内容区），
+             让「弹窗打开后除了 tab 栏什么都点不动」成立 —— 背后的文件列表、工具栏
+             按钮全吃不到触摸，杜绝误触；tab 栏留在护盾外面，所以还能切窗口。
              clickable=true 保证事件在这里被吃掉，不会继续往下派发。
              显隐见 MainActivity.setContentBlocked。 -->
         <View
@@ -153,7 +154,7 @@
             android:clickable="true"
             android:focusable="false"
             android:visibility="gone"
-            app:layout_constraintTop_toBottomOf="@id/dividerToolbar"
+            app:layout_constraintTop_toBottomOf="@id/dividerTabBar"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintEnd_toEndOf="parent" />

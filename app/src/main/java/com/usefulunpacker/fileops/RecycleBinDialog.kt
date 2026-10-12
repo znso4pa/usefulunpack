@@ -155,7 +155,7 @@ private fun showEmptyBinDialog(activity: MainActivity) {
     AlertDialog.Builder(activity)
         .setView(body)
         .setPositiveButton(activity.getString(R.string.action_confirm), null)
-        .show().also { it.keepTabsTappable(rootToTab = false) }
+        .show().also { it.belowTabs(fitContent = true) }
 }
 
 fun showRecycleBinDialog(activity: MainActivity) {
@@ -166,7 +166,7 @@ fun showRecycleBinDialog(activity: MainActivity) {
             .setTitle(activity.getString(R.string.title_recycle_bin))
             .setMessage(activity.getString(R.string.recycle_disabled_message))
             .setPositiveButton(activity.getString(R.string.action_confirm), null)
-            .show().also { it.keepTabsTappable(rootToTab = false) }
+            .show().also { it.belowTabs(fitContent = true) }
         return
     }
 
@@ -268,7 +268,7 @@ fun showRecycleBinDialog(activity: MainActivity) {
                         .show().also { it.keepTabsTappable(rootToTab = false) }
                 }
                 .setNegativeButton(activity.getString(R.string.action_close), null)
-                .show().also { it.belowTabs(fitContent = true, rootToTab = false) }
+                .show().also { it.belowTabs(fitContent = true) }
         }
     }
 }

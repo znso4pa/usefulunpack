@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 图标盒（行首的方形色块，颜色由代码 setColor 覆盖）。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/accent_soft_strong" />
+    <corners android:radius="10dp" />
+</shape>

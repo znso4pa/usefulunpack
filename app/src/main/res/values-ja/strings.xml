@@ -278,6 +278,7 @@
     <string name="action_restore">♻️ 復元</string>
     <string name="recycle_loading">ゴミ箱を読み込み中…</string>
     <string name="recycle_empty">ゴミ箱は空です</string>
+    <string name="recycle_empty_hint">削除したファイルはここに移動します。誤って削除してもワンタップで復元できます。</string>
     <string name="recycle_items">%1$d 件（%2$s）</string>
     <string name="recycle_permanent_delete">⚠️ 完全に削除</string>
     <string name="recycle_empty_now">ゴミ箱を空にする</string>

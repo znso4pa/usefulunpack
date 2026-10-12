@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 填充主按钮（搜索 / 运行）：accent 底 + 圆角，配 stateListAnimator=@null 去掉默认投影。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/accent" />
+    <corners android:radius="10dp" />
+</shape>

@@ -15,6 +15,16 @@
     <color name="accent">#35acc6</color>
     <color name="accent_dark">#00728b</color>
     <color name="accent_soft">#2235acc6</color>
+    <!-- accent 上压的文字（按钮填充底）——纯黑在青绿上发闷，用带一点青的深色 -->
+    <color name="accent_on">#06222a</color>
+    <!-- 图标盒 / 徽标的底（比 accent_soft 再实一点，卡片上才看得出） -->
+    <color name="accent_soft_strong">#2E35ACC6</color>
+    <!-- 选中态描边（分段控件、聚焦输入框） -->
+    <color name="accent_line">#5935ACC6</color>
+    <!-- 卡片描边：主色的 8%，深色底上刚好是一条发丝线 -->
+    <color name="hairline">#14E0F9FF</color>
+    <!-- 卡片 / 行的按压涟漪 -->
+    <color name="ripple_light">#24FFFFFF</color>
 
     <!-- ═══ Text — light on dark ═══ -->
     <color name="text_primary">#e0f9ff</color>

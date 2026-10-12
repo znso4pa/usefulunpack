@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 对话框页底：与 app 页色一致（#303030）但带圆角 —— 覆盖 windowBackground
+     的方角，否则对话框四角会露出窗口底那一圈。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/bg_surface" />
+    <corners android:radius="14dp" />
+</shape>

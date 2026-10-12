@@ -83,11 +83,15 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
 
         fun selectMode(mode: Int) {
             searchMode = mode
-            val onColor = C["accent"]!!; val offBg = 0xFF2a2a2a.toInt()
-            btnFilename.setBackgroundColor(if (mode == 0) onColor else offBg)
-            btnFilename.setTextColor(if (mode == 0) 0xFF000000.toInt() else C["tertiary"]!!)
-            btnContent.setBackgroundColor(if (mode == 1) onColor else offBg)
-            btnContent.setTextColor(if (mode == 1) 0xFF000000.toInt() else C["tertiary"]!!)
+            // 分段控件：选中半段 accent 填充 + 深色字，未选中半段透明 + 次级字。
+            // 必须用 drawable 而不是 setBackgroundColor —— 圆角在 drawable 里，
+            // 纯色会把胶囊切成方块（上一版就是两个平面按钮，观感和主题也不搭）。
+            btnFilename.setBackgroundResource(
+                if (mode == 0) R.drawable.bg_segment_on else R.drawable.bg_segment_off)
+            btnFilename.setTextColor(if (mode == 0) C["accent_on"]!! else C["tertiary"]!!)
+            btnContent.setBackgroundResource(
+                if (mode == 1) R.drawable.bg_segment_on else R.drawable.bg_segment_off)
+            btnContent.setTextColor(if (mode == 1) C["accent_on"]!! else C["tertiary"]!!)
         }
         btnFilename.setOnClickListener { selectMode(0) }
         btnContent.setOnClickListener { selectMode(1) }
@@ -299,9 +303,11 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                 })
                 val customInput = EditText(this).apply {
                     hint = getString(R.string.custom_mb); setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                    setBackgroundColor(C["surface_dark"]!!); setPadding(8, 4, 8, 4); textSize = 14f; gravity = Gravity.CENTER
+                    // 圆角输入底（与主搜索框同一套），不再是一块平涂的深色
+                    setBackgroundResource(R.drawable.bg_input_rounded)
+                    setPadding(12, 8, 12, 8); textSize = 14f; gravity = Gravity.CENTER
                     inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
-                    layoutParams = LinearLayout.LayoutParams(120, WRAP).apply { setMargins(12, 0, 0, 0) }
+                    layoutParams = LinearLayout.LayoutParams(140, WRAP).apply { setMargins(12, 0, 0, 0) }
                 }
                 customRow.addView(customInput)
                 body.addView(customRow)

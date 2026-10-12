@@ -15,6 +15,14 @@ const val RECYCLE_BIN_CLEAN_INTERVAL_MS = 86400000L
 
 val C = mapOf(
     "accent" to 0xFF35acc6.toInt(),
+    // accent 填充底上压的字：纯黑发闷，用带青的深色（与 colors.xml 的 accent_on 同值）
+    "accent_on" to 0xFF06222A.toInt(),
+    "accent_soft" to 0x2E35ACC6.toInt(),
+    "accent_line" to 0x5935ACC6.toInt(),
+    // 卡片发丝描边（主色 8%）：深色底上刚好一条线
+    "hairline" to 0x14E0F9FF.toInt(),
+    // 行 / 卡片的按压涟漪
+    "ripple" to 0x24FFFFFF.toInt(),
     "primary" to 0xFFe0f9ff.toInt(),
     "secondary" to 0xFFb0b0b0.toInt(),
     "tertiary" to 0xFF888888.toInt(),

@@ -1,21 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Global search dialog layout -->
+<!-- 全局搜索对话框。
+     视觉与主界面（hub · C2 命令中心）同一套语言：页底 #303030、分组卡 #252525、
+     发丝描边（@color/hairline）、青绿 accent、圆角 10–14dp。
+
+     布局按「一块一块」分：① 范围卡 ② 条件卡（模式 / 关键词 / 选项 / 类型过滤，卡内用发丝线
+     分隔）③ 结果卡（吃掉剩余高度）④ 底栏。上一版是六个各自贴边的裸行 —— 没有分组，
+     眼睛没法把控件成块，而且两个复选框各占一整行、右半屏全空。 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="@color/bg_surface">
+    android:background="@drawable/bg_dialog_page">
 
-    <!-- Search scope row -->
+    <!-- ══ ① 范围卡 ══════════════════════════════════════════════ -->
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="40dp"
+        android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:background="@color/bg_surface_dim"
-        android:paddingStart="16dp"
-        android:paddingEnd="8dp">
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginTop="12dp"
+        android:background="@drawable/bg_card"
+        android:paddingStart="14dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp">
+
+        <!-- 范围文案自带 📁（R.string.search_scope），这里不再放图标，否则出现两个文件夹 -->
 
         <TextView
             android:id="@+id/searchScope"
@@ -31,142 +44,184 @@
             android:id="@+id/btnChangeDir"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:textSize="12sp"
+            android:layout_marginStart="8dp"
+            android:textSize="11sp"
             android:textColor="@color/accent"
-            android:background="@null"
+            android:background="@drawable/bg_chip_accent"
+            android:stateListAnimator="@null"
+            android:minWidth="0dp"
             android:minHeight="0dp"
-            android:padding="8dp" />
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="5dp"
+            android:paddingBottom="5dp"
+            android:letterSpacing="0.02" />
     </LinearLayout>
 
-    <!-- Mode toggle -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp">
-
-        <Button
-            android:id="@+id/btnFilename"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:textSize="13sp"
-            android:minHeight="0dp"
-            android:paddingTop="8dp"
-            android:paddingBottom="8dp" />
-
-        <Button
-            android:id="@+id/btnContent"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="8dp"
-            android:textSize="13sp"
-            android:minHeight="0dp"
-            android:paddingTop="8dp"
-            android:paddingBottom="8dp" />
-    </LinearLayout>
-
-    <!-- Query input with clear button -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp">
-
-        <EditText
-            android:id="@+id/etQuery"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:textSize="14sp"
-            android:singleLine="true"
-            android:imeOptions="actionSearch"
-            android:inputType="text"
-            android:background="@drawable/bg_input"
-            android:padding="12dp"
-            android:textColor="@color/text_primary"
-            android:textColorHint="@color/text_hint" />
-
-        <ImageButton
-            android:id="@+id/btnClear"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:layout_marginStart="4dp"
-            android:src="@drawable/ic_clear"
-            app:tint="@color/text_hint"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:importantForAccessibility="no" />
-
-        <Button
-            android:id="@+id/btnSearch"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:textSize="14sp"
-            android:minHeight="0dp"
-            android:paddingStart="18dp"
-            android:paddingEnd="18dp"
-            android:paddingTop="10dp"
-            android:paddingBottom="10dp"
-            android:backgroundTint="@color/accent"
-            android:textColor="#000000" />
-    </LinearLayout>
-
-    <!-- Search options: stacked vertically so the Chinese labels never crowd
-         on narrow phones. -->
+    <!-- ══ ② 条件卡 ══════════════════════════════════════════════ -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:paddingTop="4dp"
-        android:paddingBottom="4dp">
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/bg_card"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp">
 
-        <CheckBox
-            android:id="@+id/cbRegex"
-            android:layout_width="wrap_content"
+        <!-- 模式：胶囊分段控件（外槽 + 选中半段，由 selectMode 切 drawable） -->
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/search_regex"
-            android:textSize="12sp"
-            android:textColor="@color/text_secondary" />
+            android:orientation="horizontal"
+            android:background="@drawable/bg_segment_track"
+            android:padding="3dp">
 
-        <CheckBox
-            android:id="@+id/cbCaseSensitive"
-            android:layout_width="wrap_content"
+            <Button
+                android:id="@+id/btnFilename"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="13sp"
+                android:background="@drawable/bg_segment_off"
+                android:stateListAnimator="@null"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:paddingTop="9dp"
+                android:paddingBottom="9dp"
+                android:letterSpacing="0.02" />
+
+            <Button
+                android:id="@+id/btnContent"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="3dp"
+                android:textSize="13sp"
+                android:background="@drawable/bg_segment_off"
+                android:stateListAnimator="@null"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:paddingTop="9dp"
+                android:paddingBottom="9dp"
+                android:letterSpacing="0.02" />
+        </LinearLayout>
+
+        <!-- 关键词：圆角输入框（内嵌放大镜 + 清空）＋ 搜索。等高对齐。 -->
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/search_case_sensitive"
-            android:textSize="12sp"
-            android:textColor="@color/text_secondary" />
-    </LinearLayout>
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="10dp">
 
-    <!-- File filter input -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:paddingBottom="4dp">
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="46dp"
+                android:layout_weight="1"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="@drawable/bg_input_rounded"
+                android:paddingStart="12dp"
+                android:paddingEnd="2dp">
+
+                <ImageView
+                    android:layout_width="17dp"
+                    android:layout_height="17dp"
+                    android:src="@drawable/ic_search"
+                    app:tint="@color/text_hint"
+                    android:importantForAccessibility="no" />
+
+                <EditText
+                    android:id="@+id/etQuery"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:layout_marginStart="8dp"
+                    android:textSize="14sp"
+                    android:singleLine="true"
+                    android:imeOptions="actionSearch"
+                    android:inputType="text"
+                    android:background="@null"
+                    android:textColor="@color/text_primary"
+                    android:textColorHint="@color/text_hint" />
+
+                <ImageButton
+                    android:id="@+id/btnClear"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:src="@drawable/ic_clear"
+                    app:tint="@color/text_hint"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:importantForAccessibility="no" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnSearch"
+                android:layout_width="wrap_content"
+                android:layout_height="46dp"
+                android:layout_marginStart="8dp"
+                android:textSize="14sp"
+                android:textColor="@color/accent_on"
+                android:background="@drawable/bg_btn_accent"
+                android:stateListAnimator="@null"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:paddingStart="22dp"
+                android:paddingEnd="22dp"
+                android:letterSpacing="0.04" />
+        </LinearLayout>
+
+        <!-- 选项：一行两个，右半屏不再空着 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="6dp">
+
+            <CheckBox
+                android:id="@+id/cbRegex"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/search_regex"
+                android:textSize="12sp"
+                android:textColor="@color/text_secondary" />
+
+            <CheckBox
+                android:id="@+id/cbCaseSensitive"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/search_case_sensitive"
+                android:textSize="12sp"
+                android:textColor="@color/text_secondary" />
+        </LinearLayout>
+
+        <!-- 卡内发丝分隔线：把「选项」和「类型过滤」分成两组 -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="10dp"
+            android:layout_marginBottom="10dp"
+            android:background="@color/hairline" />
 
         <EditText
             android:id="@+id/etFileFilter"
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
             android:textSize="12sp"
             android:singleLine="true"
             android:hint="@string/search_file_filter"
-            android:background="@drawable/bg_input"
-            android:padding="8dp"
+            android:background="@drawable/bg_input_rounded"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp"
             android:textColor="@color/text_primary"
             android:textColorHint="@color/text_hint" />
     </LinearLayout>
@@ -179,64 +234,91 @@
         android:id="@+id/searchProgress"
         android:layout_width="match_parent"
         android:layout_height="6dp"
-        android:layout_marginStart="16dp"
-        android:layout_marginEnd="16dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
         android:layout_marginTop="10dp"
-        android:layout_marginBottom="4dp"
         android:visibility="gone" />
 
-    <!-- Results -->
-    <ListView
-        android:id="@+id/listResults"
+    <!-- ══ ③ 结果卡（吃满剩余高度） ══════════════════════════════ -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:divider="@color/divider"
-        android:dividerHeight="1dp"
-        android:listSelector="#40ffffff"
-        android:fastScrollEnabled="true"
-        android:fastScrollAlwaysVisible="true"
-        android:fastScrollThumbDrawable="@drawable/fastscroll_thumb"
-        android:fastScrollTrackDrawable="@drawable/fastscroll_track" />
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/bg_card"
+        android:clipToOutline="true">
 
-    <!-- Bottom action bar: stats + continue + close (bottom-right) -->
+        <ListView
+            android:id="@+id/listResults"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:divider="@color/divider"
+            android:dividerHeight="1dp"
+            android:listSelector="#40ffffff"
+            android:fastScrollEnabled="true"
+            android:fastScrollAlwaysVisible="true"
+            android:fastScrollThumbDrawable="@drawable/fastscroll_thumb"
+            android:fastScrollTrackDrawable="@drawable/fastscroll_track" />
+    </FrameLayout>
+
+    <!-- ══ ④ 底栏 ════════════════════════════════════════════════ -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
-        android:background="@color/bg_surface_dim"
-        android:paddingStart="16dp"
-        android:paddingEnd="8dp">
+        android:orientation="vertical"
+        android:layout_marginTop="10dp">
 
-        <TextView
-            android:id="@+id/tvStats"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:textSize="12sp"
-            android:textColor="@color/text_tertiary" />
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@color/divider" />
 
-        <Button
-            android:id="@+id/btnContinue"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="12sp"
-            android:textColor="@color/accent"
-            android:background="@null"
-            android:visibility="gone"
-            android:minHeight="0dp"
-            android:padding="8dp" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@color/bg_surface_dim"
+            android:paddingStart="16dp"
+            android:paddingEnd="10dp"
+            android:paddingTop="3dp"
+            android:paddingBottom="3dp">
 
-        <Button
-            android:id="@+id/btnClose"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textSize="13sp"
-            android:textColor="@color/text_secondary"
-            android:background="@null"
-            android:minHeight="0dp"
-            android:padding="10dp" />
+            <TextView
+                android:id="@+id/tvStats"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="12sp"
+                android:textColor="@color/text_tertiary" />
+
+            <Button
+                android:id="@+id/btnContinue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="12sp"
+                android:textColor="@color/accent"
+                android:background="@null"
+                android:visibility="gone"
+                android:stateListAnimator="@null"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:padding="11dp" />
+
+            <Button
+                android:id="@+id/btnClose"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="13sp"
+                android:textColor="@color/text_secondary"
+                android:background="@null"
+                android:stateListAnimator="@null"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:padding="11dp" />
+        </LinearLayout>
     </LinearLayout>
 
 </LinearLayout>

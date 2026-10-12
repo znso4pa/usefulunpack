@@ -1,88 +1,117 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 回收站条目：图标盒 + 名称 / 原路径 / 删除时间·大小 + 还原 · 彻底删除。
+     观感与主界面「最近打开的归档」一致（圆角色块 + 着色图标）；行本身不带卡片底 ——
+     外层的列表容器才是卡片，行之间用发丝线分隔。 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="horizontal"
     android:gravity="center_vertical"
-    android:padding="@dimen/space_md"
-    android:background="?attr/selectableItemBackground">
+    android:background="?attr/selectableItemBackground"
+    android:paddingStart="12dp"
+    android:paddingEnd="8dp"
+    android:paddingTop="10dp"
+    android:paddingBottom="10dp">
+
+    <ImageView
+        android:id="@+id/recycle_icon"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:padding="9dp"
+        android:scaleType="fitCenter"
+        android:background="@drawable/bg_icon_box"
+        android:importantForAccessibility="no" />
 
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="1"
-        android:orientation="vertical"
-        android:paddingEnd="@dimen/space_sm">
+        android:layout_marginStart="12dp"
+        android:orientation="vertical">
 
         <TextView
             android:id="@+id/recycle_name"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="@dimen/text_xl"
+            android:textSize="13.5sp"
+            android:textStyle="bold"
             android:textColor="@color/text_primary"
             android:singleLine="true"
             android:ellipsize="end" />
 
         <TextView
             android:id="@+id/recycle_path"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="@dimen/text_xs"
+            android:layout_marginTop="2dp"
+            android:textSize="10.5sp"
             android:textColor="@color/text_hint"
             android:singleLine="true"
-            android:ellipsize="start"
-            android:layout_marginTop="@dimen/space_xs" />
+            android:ellipsize="start" />
 
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="@dimen/space_xs">
+            android:layout_marginTop="3dp"
+            android:orientation="horizontal">
 
             <TextView
                 android:id="@+id/recycle_date"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:textSize="@dimen/text_xs"
-                android:textColor="@color/text_hint" />
+                android:textSize="10.5sp"
+                android:textColor="@color/text_tertiary" />
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text=" · "
-                android:textSize="@dimen/text_xs"
-                android:textColor="@color/text_hint" />
+                android:textSize="10.5sp"
+                android:textColor="@color/text_tertiary" />
 
             <TextView
                 android:id="@+id/recycle_size"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:textSize="@dimen/text_xs"
-                android:textColor="@color/text_hint" />
+                android:textSize="10.5sp"
+                android:textColor="@color/text_tertiary" />
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Text-labeled actions: an icon-only ✕ read as "close", not "delete". -->
+    <!-- 动作：还原 = 主色胶囊；彻底删除 = 纯文字（危险色）。两边都留文字 ——
+         图标化会被读成「关闭」。 -->
     <Button
         android:id="@+id/btnRestore"
-        style="@style/Widget.MaterialComponents.Button.TextButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:minWidth="0dp"
+        android:layout_marginStart="8dp"
         android:text="@string/action_restore"
-        android:textSize="12sp"
-        android:textColor="@color/accent" />
+        android:textSize="11sp"
+        android:textColor="@color/accent"
+        android:background="@drawable/bg_chip_accent"
+        android:stateListAnimator="@null"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp" />
 
     <Button
         android:id="@+id/btnPermanentDelete"
-        style="@style/Widget.MaterialComponents.Button.TextButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:minWidth="0dp"
-        android:layout_marginStart="4dp"
+        android:layout_marginStart="2dp"
         android:text="@string/recycle_permanent_delete"
-        android:textSize="12sp"
-        android:textColor="@color/state_error" />
+        android:textSize="11sp"
+        android:textColor="@color/state_error"
+        android:background="@null"
+        android:stateListAnimator="@null"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp" />
 
 </LinearLayout>

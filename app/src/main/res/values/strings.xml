@@ -298,6 +298,7 @@
     <string name="action_restore">♻️ Restore</string>
     <string name="recycle_loading">Loading recycle bin…</string>
     <string name="recycle_empty">Recycle bin is empty</string>
+    <string name="recycle_empty_hint">Deleted files land here first — restore one with a single tap.</string>
     <string name="recycle_items">%1$d items (%2$s)</string>
     <string name="recycle_permanent_delete">⚠️ Permanently delete</string>
     <string name="recycle_empty_now">Empty recycle bin</string>

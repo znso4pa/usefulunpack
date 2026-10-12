@@ -109,13 +109,13 @@ internal class TerminalPanel(private val act: MainActivity) {
         val dm = act.resources.displayMetrics
         fun dp(v: Int) = (v * dm.density).toInt()
 
-        // ── 输出区 ──────────────────────────────────────────────────────
+        // ── 输出区：控制台底色（比页底更暗）＋ 更松的行距 ─────────────────
         val outView = TextView(act).apply {
             setTextColor(C["secondary"]!!)
-            textSize = 12f
+            textSize = 12.5f
             typeface = android.graphics.Typeface.MONOSPACE
-            setLineSpacing(0f, 1.25f)
-            setPadding(dp(12), dp(8), dp(12), dp(12))
+            setLineSpacing(0f, 1.35f)
+            setPadding(dp(14), dp(12), dp(14), dp(16))
             setTextIsSelectable(true)
         }
         val scroll = ScrollView(act).apply {
@@ -124,37 +124,53 @@ internal class TerminalPanel(private val act: MainActivity) {
             isVerticalScrollBarEnabled = false
             isHorizontalScrollBarEnabled = false
             clipToPadding = false
+            // 三层分层：头部 #3a3a3a / 输入区 #303030 / 输出区 #1a1a1a。
+            // 上一版三层同色，整块终端是一片糊的平面。
+            setBackgroundColor(C["surface_dark"]!!)
         }
         scroll.addView(outView)
         scroller = scroll
         out = outView
 
-        // ── 顶部工具行：标题 + cwd + 清屏/关闭 ────────────────────────────
+        // ── 顶部工具行：状态点 + 标题 + cwd 胶囊 + 动作 ───────────────────
+        // 上一版把标题、cwd、三个动作全塞进一行、上下只有 6dp，动作之间没有间距，
+        // 右边挤成一坨。现在：标题左侧加状态点、cwd 做成贴住文字的胶囊（限宽、超长中省略）、
+        // 一个弹性空档把动作推到最右，动作各自留出点击留白。
         val header = LinearLayout(act).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(C["surface_raised"]!!)
-            setPadding(dp(12), dp(6), dp(4), dp(6))
+            setPadding(dp(14), dp(9), dp(8), dp(9))
+            addView(View(act).apply { setBackgroundResource(R.drawable.bg_dot_accent) },
+                LinearLayout.LayoutParams(dp(7), dp(7)))
             addView(TextView(act).apply {
                 text = act.getString(R.string.terminal_title)
                 setTextColor(C["primary"]!!); textSize = 14f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
-            })
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(9) })
             addView(TextView(act).apply {
                 id = R.id.terminal_cwd
                 text = sess.cwd.name.ifEmpty { "/" }
-                setTextColor(C["hint"]!!); textSize = 11f
+                setTextColor(C["accent"]!!); textSize = 11f
+                background = act.getDrawable(R.drawable.bg_chip_accent)
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                    .apply { marginStart = dp(8) }
+                // 限宽：cwd 名字很长时胶囊不会把右侧动作顶出屏幕
+                maxWidth = dp(180)
+                setPadding(dp(10), dp(3), dp(10), dp(3))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { marginStart = dp(10) }
                 also { cwdView = it }
             })
+            addView(View(act), LinearLayout.LayoutParams(0, 1, 1f))
             addView(action(R.string.terminal_docs) {
                 append(UuCommands.renderDocs())
             })
             addView(action(R.string.terminal_clear) { sess.clearOutput(); render() })
-            addView(action(R.string.terminal_close) { hide() })
+            addView(action(R.string.terminal_close) { hide() }.apply { setTextColor(C["accent"]!!) })
         }
 
         // ── 底部输入行：提示符 + 输入框 + 运行 ────────────────────────────
@@ -178,31 +194,53 @@ internal class TerminalPanel(private val act: MainActivity) {
             }
         }
         input = inp
-        val inputBar = LinearLayout(act).apply {
+        // 输入框包一层圆角：提示符在框内，与「运行」之间留出间距。
+        // 上一版提示符 / 输入框 / 运行是三个平铺的兄弟，运行按钮贴着屏幕右边缘、还是个纯文字。
+        val inputBox = LinearLayout(act).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(C["surface"]!!)
-            setPadding(dp(12), dp(10), dp(8), dp(10))
+            background = act.getDrawable(R.drawable.bg_input_rounded)
+            minimumHeight = dp(46)
+            setPadding(dp(12), dp(4), dp(8), dp(4))
             addView(TextView(act).apply {
                 text = PROMPT
                 setTextColor(C["accent"]!!); textSize = 13f
                 typeface = android.graphics.Typeface.MONOSPACE
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { marginEnd = dp(6) }
-            })
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(7) })
             addView(inp, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(action(R.string.terminal_run) { run0() }.apply {
-                setTextColor(C["accent"]!!)
-            })
+        }
+        val runBtn = TextView(act).apply {
+            text = act.getString(R.string.terminal_run)
+            setTextColor(C["accent_on"]!!)
+            textSize = 13f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = act.getDrawable(R.drawable.bg_btn_accent)
+            minimumHeight = dp(46)
+            setPadding(dp(22), 0, dp(22), 0)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { run0() }
+        }
+        val inputBar = LinearLayout(act).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(C["surface"]!!)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            addView(inputBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(runBtn, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(9) })
         }
         // 分隔线必须**独立一层**：放进水平 LinearLayout 且宽度 MATCH_PARENT 的话，
         // 它会吃掉整行宽度，把提示符和运行按钮挤出屏幕（第一版就这么全空了）。
         val inputStack = LinearLayout(act).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(C["surface"]!!)
-            addView(View(act).apply { setBackgroundColor(C["divider"]!!) },
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1))
+            addView(View(act).apply { setBackgroundColor(C["hairline"]!!) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
             addView(inputBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
 
@@ -218,8 +256,8 @@ internal class TerminalPanel(private val act: MainActivity) {
                 setTextColor(C["accent"]!!)
                 textSize = 11f
                 typeface = android.graphics.Typeface.MONOSPACE
-                setPadding(dp(12), dp(4), dp(12), dp(4))
-                setBackgroundColor(C["surface_dim"]!!)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                background = act.getDrawable(R.drawable.bg_chip_accent)
                 isSingleLine = true
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 isClickable = true
@@ -235,7 +273,8 @@ internal class TerminalPanel(private val act: MainActivity) {
                         .setNegativeButton(R.string.action_cancel, null)
                         .show()
                 }
-            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { setMargins(dp(12), dp(6), dp(12), dp(6)) })
             addView(inputStack, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
 
@@ -287,8 +326,11 @@ internal class TerminalPanel(private val act: MainActivity) {
 
     private fun action(resId: Int, onClick: () -> Unit) = TextView(act).apply {
         text = act.getString(resId)
-        setTextColor(C["primary"]!!); textSize = 13f
-        val pad = (12 * act.resources.displayMetrics.density).toInt()
+        setTextColor(C["secondary"]!!); textSize = 12.5f
+        val pad = (11 * act.resources.displayMetrics.density).toInt()
+        // 最小可点高 40dp：原来这三个动作挤在 6dp 行高里，点起来发虚
+        minimumHeight = (40 * act.resources.displayMetrics.density).toInt()
+        gravity = Gravity.CENTER_VERTICAL
         setPadding(pad, pad / 2, pad, pad / 2)
         val ripple = android.util.TypedValue()
         act.theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, ripple, true)

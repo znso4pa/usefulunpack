@@ -848,34 +848,32 @@ class MainActivity : AppCompatActivity() {
     ) {
         dlg.setOnDismissListener {
             also?.invoke()
-            // 触摸护盾按「谁申请谁释放」配对：只有申请过的弹窗才在这里收，
-            // 否则会把外层还开着的弹窗的护盾一起收掉（确认弹窗常叠在列表弹窗上）。
-            if (releaseShield) releaseContentBlock()
+            // 触摸护盾按「谁申请谁释放」配对（集合幂等，重复释放是 no-op）。
+            if (releaseShield) releaseContentBlock(dlg)
             viewPager.setUserInputEnabled(false)
             viewPager.setUserInputEnabled(true)
         }
     }
 
     /**
-     * 触摸护盾（`@id/touchShield`）的嵌套计数。弹窗可以叠（回收站列表 → 清空确认），
-     * 里层关掉时外层还得挡着 —— 所以用计数而不是布尔。
+     * 触摸护盾（`@id/touchShield`）的持有者集合。
+     *
+     * 弹窗可以叠（回收站列表 → 清空确认），也可以被 `syncRootedDialogs` 藏到别的
+     * tab 底下再回来 —— 所以「谁还挡着」用一个集合记账，而不是布尔或裸计数：
+     * **重复申请 / 重复释放都是幂等的**，集合空了护盾才收起。
      */
-    private var contentBlockDepth = 0
+    private val shieldHolders = mutableSetOf<android.app.Dialog>()
 
-    /**
-     * 申请挡住**除 tab 栏以外的一切**（工具栏 + 内容区）：护盾顶到 `dividerTabBar`
-     * 之下，背后的文件列表、工具栏按钮全吃不到触摸，杜绝误触；tab 栏留在护盾外面，
-     * 所以还能切窗口。配对释放见 [releaseContentBlock]。
-     */
-    private fun blockContentBehind() {
-        contentBlockDepth++
-        findViewById<View>(R.id.touchShield)?.visibility = View.VISIBLE
+    /** 申请挡住**除 tab 栏以外的一切**（工具栏 + 内容区）。配对释放见 [releaseContentBlock]。 */
+    private fun blockContentBehind(dlg: android.app.Dialog) {
+        if (shieldHolders.add(dlg)) {
+            findViewById<View>(R.id.touchShield)?.visibility = View.VISIBLE
+        }
     }
 
-    /** 释放一次护盾；计数归零才真正收起。 */
-    private fun releaseContentBlock() {
-        contentBlockDepth = (contentBlockDepth - 1).coerceAtLeast(0)
-        if (contentBlockDepth == 0) {
+    /** 释放一次；集合空了护盾才真正收起（重复释放是 no-op）。 */
+    private fun releaseContentBlock(dlg: android.app.Dialog) {
+        if (shieldHolders.remove(dlg) && shieldHolders.isEmpty()) {
             findViewById<View>(R.id.touchShield)?.visibility = View.GONE
         }
     }
@@ -887,16 +885,21 @@ class MainActivity : AppCompatActivity() {
     // different tab is active; returning to its tab shows it again with its
     // state (search results, editor text, ...) intact. Progress cards already
     // do this via OpOverlay and are not affected.
-    private class RootedDialog(val dlg: android.app.Dialog, val ownerTabId: Int) {
+    private class RootedDialog(
+        val dlg: android.app.Dialog,
+        val ownerTabId: Int,
+        /** 这个弹窗要不要护盾（进度对话框不要）。切 tab 藏/放它时按这个配对。 */
+        val wantsShield: Boolean,
+    ) {
         var hidden = false
     }
 
     private val rootedDialogs = mutableListOf<RootedDialog>()
 
     /** Pin [dlg] to the tab that is active right now. Safe before or after `show()`. */
-    internal fun rootDialogToTab(dlg: android.app.Dialog) {
+    internal fun rootDialogToTab(dlg: android.app.Dialog, wantsShield: Boolean = true) {
         if (tabs.isEmpty()) return
-        val entry = RootedDialog(dlg, activeTab.tabId)
+        val entry = RootedDialog(dlg, activeTab.tabId, wantsShield)
         rootedDialogs.add(entry)
         dlg.window?.decorView?.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) {}
@@ -917,6 +920,14 @@ class MainActivity : AppCompatActivity() {
             if (shouldShow == !entry.hidden) continue
             setRootedDialogHidden(entry.dlg, !shouldShow)
             entry.hidden = !shouldShow
+            // 护盾必须跟着弹窗的可见性走：藏起来时它还在旧 tab 里，护盾却盖在新
+            // tab 上 —— 新 tab 没有任何东西能关掉它，整个界面死锁（真机踩过）。
+            // 按 entry.wantsShield 配对：进度对话框（不要护盾）两头都是 no-op。
+            if (shouldShow) {
+                if (entry.wantsShield) blockContentBehind(entry.dlg)
+            } else {
+                releaseContentBlock(entry.dlg)
+            }
         }
     }
 
@@ -980,11 +991,11 @@ class MainActivity : AppCompatActivity() {
         // ACTION_OUTSIDE and dismisses while the tab click is lost — the dialog
         // vanished but the window never switched. Explicitly disable it.
         dlg.setCanceledOnTouchOutside(false)
-        if (rootToTab) rootDialogToTab(dlg)
+        if (rootToTab) rootDialogToTab(dlg, wantsShield = blockBehind)
         // 默认把「tab 栏以外」全挡上（触摸护盾）：确认类弹窗打开时不该还能点到背后的
         // 文件列表 —— 那是误触。**进度对话框要传 false**：本应用支持操作排队后继续
         // 浏览（批量解压/压缩/扫描跑着的时候用户照样能翻目录），挡住内容反而是退化。
-        if (blockBehind) blockContentBehind()
+        if (blockBehind) blockContentBehind(dlg)
         resetPagerInputOnDialogDismiss(dlg, also, releaseShield = blockBehind)
     }
 
@@ -1020,7 +1031,7 @@ class MainActivity : AppCompatActivity() {
             // 同时用触摸护盾盖住工具栏 + 内容区（`@id/touchShield` 顶到
             // `dividerTabBar` 之下）—— 背后一律吃不到触摸。
             w.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
-            blockContentBehind() // 配对释放见 resetPagerInputOnDialogDismiss
+            blockContentBehind(dlg) // 配对释放见 resetPagerInputOnDialogDismiss
             dlg.setCanceledOnTouchOutside(false)
 
             if (landscape) {
@@ -1097,7 +1108,7 @@ class MainActivity : AppCompatActivity() {
         }
         // Same reason as keepTabBarTappable: outside taps go to the tab strip,
         // never "dismiss this dialog".
-        if (rootToTab) rootDialogToTab(dlg)
+        if (rootToTab) rootDialogToTab(dlg, wantsShield = true)
         resetPagerInputOnDialogDismiss(dlg, also, releaseShield = true)
     }
 

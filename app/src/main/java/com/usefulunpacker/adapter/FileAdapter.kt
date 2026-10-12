@@ -59,11 +59,16 @@ class FileAdapter(
             val bm = bookmarks.contains(f.absolutePath)
             starBtn.setImageResource(if (bm) R.drawable.ic_star_on else R.drawable.ic_star_off)
             starBtn.setColorFilter(if (bm) 0xFFffc107.toInt() else 0xFF666666.toInt())
+            // 星标是个**真控件**（独立可点），必须自带描述，否则 TalkBack 只会念
+            // 「未标记的按钮」——描述还要跟着选中态走（加入 / 取消）。
+            starBtn.contentDescription =
+                view.context.getString(if (bm) R.string.a11y_bm_remove else R.string.a11y_bm_add)
             starBtn.setOnClickListener {
                 onBookmarkToggled(f.absolutePath)
                 notifyDataSetChanged()
             }
             icon.setImageResource(R.drawable.ic_folder); icon.setColorFilter(C["warning"]!!)
+            icon.contentDescription = view.context.getString(R.string.a11y_type_folder)
             label.text = f.name; size.text = ""; date.text = ""
         } else {
             starBtn.visibility = View.GONE
@@ -71,6 +76,10 @@ class FileAdapter(
             val isArc = isArchiveFile(f)
             icon.setImageResource(if (isApk || isArc) R.drawable.ic_archive else R.drawable.ic_file)
             icon.setColorFilter(if (isApk) 0xFF1976D2.toInt() else iconTintFor(f))
+            // 行图标是「徽标」——名字本身不含类型信息时（如 .png_），这一句才是类型的唯一来源。
+            icon.contentDescription = view.context.getString(
+                if (isApk || isArc) R.string.a11y_type_archive else R.string.a11y_type_file,
+            )
             label.text = f.name
             size.text = (if (f.absolutePath in passwordProtected) "🔒 " else "") + fmt(fileSize(f))
             date.text = df.format(Date(f.lastModified()))

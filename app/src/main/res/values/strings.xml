@@ -793,6 +793,14 @@
     <string name="home_recents_empty">No archive opened yet</string>
     <string name="home_bookmarks">Bookmarks</string>
     <string name="home_bookmarks_empty">Long-press a folder in the list to bookmark it</string>
+    <!-- Accessibility (TalkBack): the row star is a real control, so it needs its own label. -->
+    <string name="a11y_bm_add">Add bookmark</string>
+    <string name="a11y_bm_remove">Remove bookmark</string>
+    <string name="a11y_type_folder">Folder</string>
+    <string name="a11y_type_archive">Archive</string>
+    <string name="a11y_type_file">File</string>
+    <string name="a11y_drawer">Open drawer</string>
+    <string name="a11y_home">Back to home</string>
     <string name="home_storage_root">Storage root</string>
     <string name="home_q_search_sub">Name · content</string>
     <string name="home_recycle_sub">%1$d items to restore</string>

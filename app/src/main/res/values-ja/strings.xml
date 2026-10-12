@@ -786,6 +786,13 @@
     <string name="home_recents_empty">まだアーカイブを開いていません</string>
     <string name="home_bookmarks">ブックマーク</string>
     <string name="home_bookmarks_empty">一覧のフォルダを長押しで追加できます</string>
+    <string name="a11y_bm_add">ブックマークに追加</string>
+    <string name="a11y_bm_remove">ブックマークを解除</string>
+    <string name="a11y_type_folder">フォルダ</string>
+    <string name="a11y_type_archive">アーカイブ</string>
+    <string name="a11y_type_file">ファイル</string>
+    <string name="a11y_drawer">ドロワーを開く</string>
+    <string name="a11y_home">ホームに戻る</string>
     <string name="home_storage_root">ストレージのルート</string>
     <string name="home_q_search_sub">名前 · 内容</string>
     <string name="home_recycle_sub">%1$d 件復元できます</string>

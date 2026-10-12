@@ -791,6 +791,13 @@
     <string name="home_recents_empty">还没有打开过归档</string>
     <string name="home_bookmarks">书签</string>
     <string name="home_bookmarks_empty">长按列表里的目录可加书签</string>
+    <string name="a11y_bm_add">加入书签</string>
+    <string name="a11y_bm_remove">取消书签</string>
+    <string name="a11y_type_folder">文件夹</string>
+    <string name="a11y_type_archive">归档</string>
+    <string name="a11y_type_file">文件</string>
+    <string name="a11y_drawer">打开侧栏</string>
+    <string name="a11y_home">回到主界面</string>
     <string name="home_storage_root">存储根目录</string>
     <string name="home_q_search_sub">文件名 · 内容</string>
     <string name="home_recycle_sub">%1$d 项可还原</string>

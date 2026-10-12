@@ -786,6 +786,13 @@
     <string name="home_recents_empty">還沒有開啟過封存</string>
     <string name="home_bookmarks">書籤</string>
     <string name="home_bookmarks_empty">長按清單裡的目錄可加書籤</string>
+    <string name="a11y_bm_add">加入書籤</string>
+    <string name="a11y_bm_remove">取消書籤</string>
+    <string name="a11y_type_folder">資料夾</string>
+    <string name="a11y_type_archive">壓縮檔</string>
+    <string name="a11y_type_file">檔案</string>
+    <string name="a11y_drawer">開啟側欄</string>
+    <string name="a11y_home">回到主畫面</string>
     <string name="home_storage_root">儲存根目錄</string>
     <string name="home_q_search_sub">檔名 · 內容</string>
     <string name="home_recycle_sub">%1$d 項可還原</string>

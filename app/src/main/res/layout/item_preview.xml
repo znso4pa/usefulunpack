@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Preview archive entry row: CheckBox + icon + name + size -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="@dimen/row_preview"
     android:orientation="horizontal"
@@ -15,12 +16,14 @@
         android:layout_height="32dp"
         android:buttonTint="@color/accent" />
 
+    <!-- 描述在 PreviewAdapter.getView 里按文件类型设置（XML 给不了动态值）。 -->
     <ImageView
         android:id="@+id/icon"
         android:layout_width="@dimen/icon_list"
         android:layout_height="@dimen/icon_list"
         android:scaleType="centerInside"
-        android:padding="@dimen/space_xs" />
+        android:padding="@dimen/space_xs"
+        tools:ignore="ContentDescription" />
 
     <TextView
         android:id="@+id/label"

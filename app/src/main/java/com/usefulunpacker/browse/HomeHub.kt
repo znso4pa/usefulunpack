@@ -290,6 +290,8 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         }
         setPadding(d(if (roomy) 11 else 8), d(4), d(if (roomy) 11 else 8), d(4))
     })
+    // 整条 = 一个「全局搜索」入口（点哪都是打开全局搜索），读成一句。
+    palette.mergeIntoA11yNode(act.getString(R.string.home_palette_hint))
     container.addView(palette)
 
     // ── 两张 hero 卡 ─────────────────────────────────────────────
@@ -445,6 +447,8 @@ private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, room
                     marginStart = d(14); marginEnd = d(14)
                 }
                 setBackgroundColor(C["hairline"]!!)
+                // 纯装饰的分隔线，别让 TalkBack 停在它上面。
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             })
             list.addView(homeRecentRow(act, tab, e, roomy))
         }
@@ -491,6 +495,8 @@ private fun homeRecentRow(act: MainActivity, tab: TabState, e: RecentsStore.Entr
         fmt(fileSize(f)) + " · " + SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(e.time)),
         if (roomy) 12f else 10.5f, C["tertiary"]!!,
     ))
+    // 整行 = 一个 a11y 单元（格式块 / 文件名 / 目录 / 大小时间合成一句；格式块是装饰）。
+    row.mergeIntoA11yNode("${f.name}，${f.parent ?: ""}")
     return row
 }
 
@@ -546,6 +552,8 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
                     layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = d(if (roomy) 12 else 10) }
                     setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
                 })
+                // 整行 = 一个 a11y 单元（文件夹图标 / 名字合成一句）。
+                mergeIntoA11yNode(File(path).name.ifEmpty { path })
             })
         }
     }
@@ -656,6 +664,8 @@ private fun homeHero(
         isFocusable = true
         layoutParams = FrameLayout.LayoutParams(MATCH, WRAP)
         addView(row)
+        // 整卡 = 一个 a11y 单元（图标 / 标题 / 描述 / 角标合成一句），见 [mergeIntoA11yNode]。
+        mergeIntoA11yNode(if (tag != null) "$title，$desc，$tag" else "$title，$desc")
         setOnClickListener { onClick() }
     }
 }
@@ -696,6 +706,8 @@ private fun homeMini(
             setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
         })
         addView(names, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = d(if (roomy) 14 else 11) })
+        // 整卡 = 一个 a11y 单元（图标 / 标题 / 说明合成一句）。
+        mergeIntoA11yNode("$title，$sub")
         setOnClickListener { onClick() }
     }
 }
@@ -704,6 +716,9 @@ private fun homeIcon(act: MainActivity, res: Int, sizePx: Int, tint: Int): Image
     ImageView(act).apply {
         setImageResource(res)
         setColorFilter(tint)
+        // 装饰性图标：意义由旁边的文字（或所在卡片的整体描述，见 [mergeIntoA11yNode]）承担，
+        // 别让 TalkBack 单独停在它上面。
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         layoutParams = ViewGroup.LayoutParams(sizePx, sizePx)
     }
 
@@ -718,4 +733,21 @@ private fun homeText(
     textSize = sp
     setTextColor(color)
     if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
+}
+
+/**
+ * 把一棵子树收成**一个** TalkBack 节点：根设 [desc]，所有后代标为「对无障碍不重要」。
+ *
+ * hub 的卡片是「图标盒 + 标题 + 描述（+ 角标）」拼出来的、整体是一个可点区域 ——
+ * 逐个子 View 读会变成一串碎片（「浏览」「打开文件浏览器」「文件夹图标」…）。
+ * 既然整卡只做一件事，就该被读成一句话。装饰性图标见 [homeIcon]。
+ */
+private fun View.mergeIntoA11yNode(desc: CharSequence) {
+    contentDescription = desc
+    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+    fun mark(v: View) {
+        if (v is ViewGroup) for (i in 0 until v.childCount) mark(v.getChildAt(i))
+        if (v !== this) v.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+    mark(this)
 }

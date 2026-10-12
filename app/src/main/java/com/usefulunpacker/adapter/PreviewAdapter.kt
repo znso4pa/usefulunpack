@@ -97,6 +97,9 @@ class PreviewAdapter(
         if (entry.isDirectory) {
             icon.setImageResource(R.drawable.ic_folder)
             icon.setColorFilter(C["warning"]!!)
+            // 这个图标是可点的（与名字同一动作：展开 / 折叠），必须有描述，
+            // 否则 TalkBack 只会念「按钮」。
+            icon.contentDescription = view.context.getString(R.string.a11y_type_folder)
             val toggle = View.OnClickListener {
                 if (expandedPaths.contains(entry.path)) expandedPaths.remove(entry.path)
                 else expandedPaths.add(entry.path)
@@ -110,6 +113,9 @@ class PreviewAdapter(
             val fmt = formatOfName(entry.path)
             icon.setImageResource(if (fmt != null) R.drawable.ic_archive else R.drawable.ic_file)
             icon.setColorFilter(iconTintForName(entry.path))
+            icon.contentDescription = view.context.getString(
+                if (fmt != null) R.string.a11y_type_archive else R.string.a11y_type_file,
+            )
             label.text = entry.name
             val click = View.OnClickListener { onFileClick(entry) }
             icon.setOnClickListener(click)

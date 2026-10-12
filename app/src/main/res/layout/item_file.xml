@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- File list row (ZArchiver-style compact) -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="@dimen/row_file"
     android:orientation="horizontal"
@@ -16,6 +17,7 @@
         android:buttonTint="@color/accent"
         android:visibility="gone" />
 
+    <!-- 描述在 FileAdapter.getView 里按「书签态 / 文件类型」设置（XML 给不了动态值）。 -->
     <ImageView
         android:id="@+id/btnStar"
         android:layout_width="32dp"
@@ -23,14 +25,16 @@
         android:scaleType="centerInside"
         android:padding="4dp"
         android:visibility="gone"
-        android:background="?attr/selectableItemBackgroundBorderless" />
+        android:background="?attr/selectableItemBackgroundBorderless"
+        tools:ignore="ContentDescription" />
 
     <ImageView
         android:id="@+id/icon"
         android:layout_width="@dimen/icon_list"
         android:layout_height="@dimen/icon_list"
         android:scaleType="centerInside"
-        android:padding="@dimen/space_xs" />
+        android:padding="@dimen/space_xs"
+        tools:ignore="ContentDescription" />
 
     <TextView
         android:id="@+id/label"

@@ -29,7 +29,8 @@
             android:layout_height="32dp"
             android:src="@drawable/ic_back"
             android:background="?attr/selectableItemBackgroundBorderless"
-            app:tint="@color/ui_icon_tint" />
+            app:tint="@color/ui_icon_tint"
+            android:contentDescription="@string/nav_up" />
 
         <TextView
             android:id="@+id/tvPath"
@@ -153,6 +154,7 @@
         android:src="@drawable/ic_extract"
         android:visibility="gone"
         android:backgroundTint="@color/ui_base"
+        android:contentDescription="@string/msg_extract_title"
         app:fabSize="normal"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />

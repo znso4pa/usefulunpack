@@ -34,6 +34,20 @@ internal fun MainActivity.shareFile(f: File) {
 /** Navigates the active tab. Kept as the entry point used by legacy code. */
 internal fun MainActivity.nav(dir: File) = navTab(activeTab, dir)
 
+/**
+ * 当前列表顶部那一项的「路径 + 行顶偏移」。
+ *
+ * 重设 adapter 会把 ListView 的滚动清零 —— [FileAdapter] 没重写 `hasStableIds()`，
+ * `BaseAdapter` 默认返回 false，ListView 就没法按 item id 恢复位置。所以同目录
+ * 刷新前后要把这个锚点搬过去：用户正在看第 30 个文件，别的进程（ROM 扫描器 /
+ * 下载完成 / 本应用写临时文件）往这个目录写一个文件，不该把他弹回顶部。
+ */
+private fun android.widget.ListView.topAnchor(): Pair<String, Int>? {
+    val a = adapter as? FileAdapter ?: return null
+    val f = a.itemAt(firstVisiblePosition) ?: return null
+    return f.absolutePath to (getChildAt(0)?.top ?: 0)
+}
+
 internal fun MainActivity.navTab(tab: TabState, dir: File) {
         // If this tab's fragment hasn't bound its views yet (e.g. right after
         // startup addTab), just record the directory — the fragment re-renders
@@ -41,6 +55,11 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
         val prevDir = tab.currentDir
         tab.currentDir = dir
         if (!tab.viewsBound) return
+        // 同目录刷新 = FileObserver 的自动刷新（或同目录重复 nav）。这一路必须
+        // 保住滚动位置，也要先取锚点/旧列表 —— 下面换 adapter 就晚了。
+        val sameDir = prevDir == dir
+        val anchor = if (sameDir) tab.listFiles.topAnchor() else null
+        val prevPaths = if (sameDir) (tab.listFiles.adapter as? FileAdapter)?.paths() else null
         // Leave an in-tab preview if we're navigating this tab elsewhere.
         if (tab.previewActive) {
             tab.previewActive = false
@@ -75,7 +94,11 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
         updateTitle()
         tab.tvCount.text = "…"
         tab.tvEmpty.visibility = View.GONE
-        tab.listFiles.adapter = FileAdapter(this, emptyList(), bookmarks, { path -> if (bookmarks.contains(path)) bookmarks.remove(path) else bookmarks.add(0, path); saveBookmarks() }, df)
+        // 换目录才先塞空 adapter（清列表、给扫描让位）。同目录刷新不塞 ——
+        // 那一塞就把滚动清零、列表还要白闪一下。
+        if (!sameDir) {
+            tab.listFiles.adapter = FileAdapter(this, emptyList(), bookmarks, { path -> if (bookmarks.contains(path)) bookmarks.remove(path) else bookmarks.add(0, path); saveBookmarks() }, df)
+        }
 
         thread {
             val raw = dir.listFiles()?.filter { it.name != ".recycle" }
@@ -110,7 +133,17 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
                     tab.tvEmpty.text = if (raw == null) getString(R.string.no_permission) else getString(R.string.empty_folder)
                     tab.tvEmpty.visibility = View.VISIBLE
                 } else tab.tvEmpty.visibility = View.GONE
+                val newPaths = files.map { it.absolutePath }
+                // 列表内容没变就别换 adapter：换一次闪一次，还把滚动位置丢掉
+                //（FileObserver 的自动刷新经常是同内容重扫）。
+                if (prevPaths != null && prevPaths == newPaths) return@runOnUiThread
                 tab.listFiles.adapter = adapter
+                // 同目录刷新：把顶部锚点搬回新列表里的同一项（项没了就不动，
+                // 让它停在原位置附近，别硬跳回顶部）。
+                anchor?.let { (path, top) ->
+                    val idx = newPaths.indexOf(path)
+                    if (idx >= 0) tab.listFiles.setSelectionFromTop(idx, top)
+                }
             }
             // Background password detection for archive files → 🔒 badge.
             val archives = files.filter { it.isFile && (it.extension.lowercase() in ARCHIVE_EXTS || isVolumeFile(it) != null) }

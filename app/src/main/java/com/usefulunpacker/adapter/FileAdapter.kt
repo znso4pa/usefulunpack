@@ -29,6 +29,12 @@ class FileAdapter(
     override fun getItem(pos: Int) = files[pos]
     override fun getItemId(pos: Int) = pos.toLong()
 
+    /** 当前列表的文件路径（顺序即显示顺序）—— navTab 用它判断「这次刷新列表变没变」。 */
+    fun paths(): List<String> = files.map { it.absolutePath }
+
+    /** 第 [pos] 项的文件；越界返回 null（滚动锚点用）。 */
+    fun itemAt(pos: Int): File? = files.getOrNull(pos)
+
     override fun getView(pos: Int, v: View?, p: ViewGroup?): View {
         val view = v ?: inflater.inflate(R.layout.item_file, p, false)
         val f = files[pos]

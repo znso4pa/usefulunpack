@@ -152,10 +152,13 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
                     tab.pendingLocatePath = null
                     val idx = newPaths.indexOf(target)
                     if (idx >= 0) {
+                        // 顺序有讲究：先高亮（内部 notifyDataSetChanged 会把 ListView
+                        // 标成 dataChanged），**再** setSelectionFromTop —— 反过来的话
+                        // 那次 notify 可能把待处理的 LAYOUT_SPECIFIC 冲掉，列表停在顶部。
+                        (tab.listFiles.adapter as? FileAdapter)?.flashLocated(target)
                         // 往下压 72dp（≈一行半）：目标别顶死在列表第一行，头顶留点上下文
                         tab.listFiles.setSelectionFromTop(
                             idx, (72 * resources.displayMetrics.density).toInt())
-                        (tab.listFiles.adapter as? FileAdapter)?.flashLocated(target)
                     }
                 }
             }

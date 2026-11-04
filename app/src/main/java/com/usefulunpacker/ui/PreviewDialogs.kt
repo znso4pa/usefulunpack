@@ -742,13 +742,15 @@ fun playAudio(activity: AppCompatActivity, file: File) {
         .setMessage(activity.getString(R.string.msg_audio_playing))
         .setPositiveButton(activity.getString(R.string.action_stop), null)
         .create()
-    dlg.setOnDismissListener {
-        // 停止/返回键/手动 dismiss 统一在这里释放（按引用比对，防止
-        // 与 OnCompletionListener 双重释放）。
+    // 停止 / 返回键 / 手动 dismiss 统一在 dismiss 监听里释放（按引用比对，防止
+    // 与 OnCompletionListener 双重释放）。
+    // ⚠️ 必须走 keepTabsTappable 的 `also`：它内部的 resetPagerInputOnDialogDismiss()
+    // **独占** dismiss 监听器 —— 单独 setOnDismissListener 会被它整个覆盖，那样关掉
+    // 播放对话框后 MediaPlayer 既不 stop 也不 release，音频继续响、文件句柄不释放。
+    dlg.keepTabsTappable(also = {
         m?.currentMediaPlayer?.let { cur -> m.currentMediaPlayer = null; cur.release() }
         if (m?.currentAudioDialog === dlg) m.currentAudioDialog = null
-    }
-    dlg.keepTabsTappable()
+    })
     dlg.show()
     m?.currentAudioDialog = dlg
 

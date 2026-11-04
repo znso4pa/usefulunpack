@@ -18,11 +18,19 @@ import android.view.View
  *   （竖屏贴底 / 横屏居中浮动卡）。
  */
 
-/** Honor/EMUI touch-state workaround: a dismissed dialog (its fast-scroll
- *  list / scrollview) can leave the ViewPager2 unable to intercept horizontal
- *  swipes, so tab switching dies until restart. Re-arming the pager's input
- *  state on dismiss resets the internal RecyclerView's touch handling.
- *  [also] runs first if provided. */
+/**
+ * Honor/EMUI touch-state workaround: a dismissed dialog (its fast-scroll
+ * list / scrollview) can leave the ViewPager2 unable to intercept horizontal
+ * swipes, so tab switching dies until restart. Re-arming the pager's input
+ * state on dismiss resets the internal RecyclerView's touch handling.
+ * [also] runs first if provided.
+ *
+ * ⚠️ **本函数独占 dismiss 监听器**：`Dialog.setOnDismissListener` 只有一个槽位，
+ * 这里一设就把调用方之前设的**整个覆盖掉**。所以任何「关闭时要做的事」都必须从
+ * [also] 传进来，不能自己再 `setOnDismissListener`。真机上踩过两次：
+ * 全局搜索的 worker 线程永不 interrupt（关掉搜索框后继续把整个存储扫完）、
+ * 音频播放对话框的 MediaPlayer 永不 release（关掉后还在响）。
+ */
 internal fun MainActivity.resetPagerInputOnDialogDismiss(
     dlg: android.app.Dialog,
     also: (() -> Unit)? = null,

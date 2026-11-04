@@ -192,17 +192,21 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
             .setView(view)
             .create()
         btnClose.setOnClickListener { searchDialog.dismiss() }
-        searchDialog.setOnDismissListener {
-            searchThread?.interrupt()
-            searchThread = null
-            searchProgress.stopAnim()
-        }
         // Size the window BEFORE show so the first layout pass is already the
         // final size — setting it in onShow resizes after the enter animation
         // starts, causing a flash/jump and an empty-results bottom bar that
         // isn't pinned to the window bottom.
         // Tall search window (capped 0.85h) — bottom-anchor below the tab strip.
-        searchDialog.belowTabs()
+        //
+        // ⚠️ 收尾清理必须走 `also`：belowTabs() 内部会调
+        // resetPagerInputOnDialogDismiss()，那个函数**独占** dismiss 监听器 ——
+        // 之前单独 setOnDismissListener 会被它整个覆盖，搜索线程于是永远不会被
+        // interrupt（关掉搜索框后仍在后台把整个存储扫完）。真机 debug 出来的。
+        searchDialog.belowTabs(also = {
+            searchThread?.interrupt()
+            searchThread = null
+            searchProgress.stopAnim()
+        })
         searchDialog.show()
 
         // Launch search

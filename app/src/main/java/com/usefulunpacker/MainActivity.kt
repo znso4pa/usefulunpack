@@ -352,7 +352,9 @@ class MainActivity : AppCompatActivity() {
         // Note: the compression-mode "→" folder button is now created per-tab
         // in FolderFragment (bottomBar lives in each tab's folder_view).
         listBookmarks.onItemClickListener = OnItemClickListener { _, _, pos, _ ->
-            nav(File(bookmarks[pos])); drawer.close()
+            // 抽屉在主界面（hub）也能拉开 → 必须走 enterBrowserAt 让 hub 让位，
+            // 否则 nav() 只在 hub 底下渲染列表，用户看到的还是主界面。
+            enterBrowserAt(activeTab, File(bookmarks[pos])); drawer.close()
         }
         listBookmarks.onItemLongClickListener = AdapterView.OnItemLongClickListener { _, _, pos, _ ->
             bookmarks.removeAt(pos); saveBookmarks(); true

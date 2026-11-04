@@ -80,46 +80,9 @@
         <item name="android:textColor">@color/accent</item>
     </style>
 
-    <!-- ── 翻新：一套统一的小控件样式 ────────────────────────────────
-         行内动作按钮（还原 / 彻底删除 / 文档 / 清屏…）：Material 的文字按钮
-         自带 4dp 上下的 inset 与 64dp 最小宽，在密集列表里会互相顶开，这里压平。 -->
-    <style name="Widget.UsefulUnpack.TextButton" parent="Widget.MaterialComponents.Button.TextButton">
-        <item name="android:textColor">@color/accent</item>
-        <item name="android:textSize">12sp</item>
-        <item name="android:minWidth">0dp</item>
-        <item name="android:minHeight">0dp</item>
-        <item name="android:insetTop">0dp</item>
-        <item name="android:insetBottom">0dp</item>
-        <item name="android:paddingStart">10dp</item>
-        <item name="android:paddingEnd">10dp</item>
-        <item name="android:paddingTop">6dp</item>
-        <item name="android:paddingBottom">6dp</item>
-        <item name="android:letterSpacing">0.02</item>
-        <item name="rippleColor">@color/ripple_light</item>
-    </style>
-
-    <!-- 危险动作（彻底删除）：同一套，只换文字色 -->
-    <style name="Widget.UsefulUnpack.TextButton.Danger">
-        <item name="android:textColor">@color/state_error</item>
-    </style>
-
-    <!-- 填充式主按钮（搜索 / 运行）：圆角胶囊 + accent 底 + 深色字 -->
-    <style name="Widget.UsefulUnpack.Button.Filled" parent="Widget.MaterialComponents.Button">
-        <item name="android:textColor">@color/accent_on</item>
-        <item name="android:textSize">13sp</item>
-        <item name="android:minWidth">0dp</item>
-        <item name="android:minHeight">0dp</item>
-        <item name="android:insetTop">0dp</item>
-        <item name="android:insetBottom">0dp</item>
-        <item name="android:paddingStart">18dp</item>
-        <item name="android:paddingEnd">18dp</item>
-        <item name="android:paddingTop">9dp</item>
-        <item name="android:paddingBottom">9dp</item>
-        <item name="backgroundTint">@color/accent</item>
-        <item name="cornerRadius">10dp</item>
-        <item name="android:letterSpacing">0.03</item>
-        <item name="android:textAllCaps">false</item>
-    </style>
+    <!-- 翻新时这里曾放过 TextButton / TextButton.Danger / Button.Filled 三个样式，
+         最后各对话框都改用显式 drawable（bg_chip_accent / bg_btn_accent）配普通
+         Button —— 样式没人引用就是死代码，已删。要再抽样式先看调用点。 -->
 
     <!-- Draggable fast-scroll handle styling, applied via AbsListView.setFastScrollStyle -->
     <style name="FastScrollStyle">

@@ -23,7 +23,7 @@
     <color name="accent_line">#5935ACC6</color>
     <!-- 卡片描边：主色的 8%，深色底上刚好是一条发丝线 -->
     <color name="hairline">#14E0F9FF</color>
-    <!-- 卡片 / 行的按压涟漪 -->
+    <!-- 卡片 / 行的按压涟漪（C 表的 "ripple" 键指向它，kit.kt 的 hero/mini 卡在用） -->
     <color name="ripple_light">#24FFFFFF</color>
 
     <!-- ═══ Text — light on dark ═══ -->

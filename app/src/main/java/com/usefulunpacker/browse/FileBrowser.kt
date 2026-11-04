@@ -136,13 +136,27 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
                 val newPaths = files.map { it.absolutePath }
                 // 列表内容没变就别换 adapter：换一次闪一次，还把滚动位置丢掉
                 //（FileObserver 的自动刷新经常是同内容重扫）。
-                if (prevPaths != null && prevPaths == newPaths) return@runOnUiThread
-                tab.listFiles.adapter = adapter
-                // 同目录刷新：把顶部锚点搬回新列表里的同一项（项没了就不动，
-                // 让它停在原位置附近，别硬跳回顶部）。
-                anchor?.let { (path, top) ->
-                    val idx = newPaths.indexOf(path)
-                    if (idx >= 0) tab.listFiles.setSelectionFromTop(idx, top)
+                if (prevPaths == null || prevPaths != newPaths) {
+                    tab.listFiles.adapter = adapter
+                    // 同目录刷新：把顶部锚点搬回新列表里的同一项（项没了就不动，
+                    // 让它停在原位置附近，别硬跳回顶部）。
+                    anchor?.let { (path, top) ->
+                        val idx = newPaths.indexOf(path)
+                        if (idx >= 0) tab.listFiles.setSelectionFromTop(idx, top)
+                    }
+                }
+                // 「定位到文件」请求（全局搜索点结果）：必须排在换 adapter **之后** ——
+                // 换之前那一份列表里还没有目标。而同目录刷新（上面那个 if 不成立）也得
+                // 能定位，所以这段放在 if 外面。目标不在这一层（已删 / 改名）就静默丢掉。
+                tab.pendingLocatePath?.let { target ->
+                    tab.pendingLocatePath = null
+                    val idx = newPaths.indexOf(target)
+                    if (idx >= 0) {
+                        // 往下压 72dp（≈一行半）：目标别顶死在列表第一行，头顶留点上下文
+                        tab.listFiles.setSelectionFromTop(
+                            idx, (72 * resources.displayMetrics.density).toInt())
+                        (tab.listFiles.adapter as? FileAdapter)?.flashLocated(target)
+                    }
                 }
             }
             // Background password detection for archive files → 🔒 badge.

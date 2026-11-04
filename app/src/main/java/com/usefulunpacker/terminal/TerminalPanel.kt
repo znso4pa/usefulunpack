@@ -1284,7 +1284,9 @@ internal class TerminalPanel(private val act: MainActivity) {
                 ?: return str(R.string.terminal_not_found, "$target (${owner})") to 1
             act.runOnUiThread {
                 if (act.isFinishing || act.isDestroyed) return@runOnUiThread
-                act.navTab(ownerTab, norm)
+                // enterBrowserAt 而不是 navTab：终端可以从主界面（hub）的 hero 卡直接打开，
+                // 那时 hub 还盖着 —— 只调 navTab 的话 cd 完了退出终端，看到的还是主界面。
+                act.enterBrowserAt(ownerTab, norm)
             }
         }
         return "→ ${norm.absolutePath}" to 0

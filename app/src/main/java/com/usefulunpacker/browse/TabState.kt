@@ -106,6 +106,16 @@ class TabState(val tabId: Int) {
     /** Whether a background operation is in flight for this tab. */
     @Volatile var operationActive: Boolean = false
 
+    /**
+     * 一次性「跳过去之后把这一项滚进视野」请求（全局搜索点结果时设）。
+     *
+     * 列表是 `navTab` 在**工作线程**里扫完目录才换上的，所以调用方没法直接
+     * `setSelectionFromTop` —— 那一刻 adapter 还是空的那一份。改成把目标路径挂在这里，
+     * `navTab` 换完 adapter 再消费它（换之前 `indexOf` 找不到目标）。
+     * 消费即清空，避免下次无关导航又跳一次。
+     */
+    var pendingLocatePath: String? = null
+
     /** Whether the folder fragment has bound this tab's views yet. */
     @Volatile var viewsBound: Boolean = false
 

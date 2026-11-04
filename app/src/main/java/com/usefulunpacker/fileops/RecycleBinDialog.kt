@@ -14,6 +14,7 @@ import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
 import com.usefulunpacker.C
+import com.usefulunpacker.enterBrowserAt
 import com.usefulunpacker.formatOfName
 import com.usefulunpacker.iconTintForName
 import com.usefulunpacker.keepTabsTappable
@@ -83,7 +84,9 @@ private class RecycleEntryAdapter(
                     if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                     if (success) {
                         Toast.makeText(activity, activity.getString(R.string.action_restore), Toast.LENGTH_SHORT).show()
-                        activity.nav(activity.currentDir)
+                        // enterBrowserAt 而不是 nav()：回收站是全局弹窗，从主界面（hub）
+                        // 也能打开 —— nav() 只会在 hub 底下刷新列表，用户还看着主界面。
+                        activity.enterBrowserAt(activity.activeTab, activity.currentDir)
                     } else {
                         Toast.makeText(activity, activity.getString(R.string.msg_restore_failed, 1), Toast.LENGTH_SHORT).show()
                     }
@@ -260,7 +263,8 @@ fun showRecycleBinDialog(activity: MainActivity) {
                                     if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                                     Toast.makeText(activity, activity.getString(R.string.recycle_empty), Toast.LENGTH_SHORT).show()
                                     dialog?.dismiss()
-                                    activity.nav(activity.currentDir)
+                                    // 同 restore：走 enterBrowserAt，hub 盖着时也能真的看到列表
+                                    activity.enterBrowserAt(activity.activeTab, activity.currentDir)
                                 }
                             }
                         }

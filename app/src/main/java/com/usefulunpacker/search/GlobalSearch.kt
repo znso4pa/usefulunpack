@@ -170,14 +170,20 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                         runOnUiThread {
                             if (isFinishing || isDestroyed) return@runOnUiThread
                             pd.dismiss()
-                            if (cancelled) toast(getString(R.string.msg_cancelled)) else previewClickedFile(r, queryText)
+                            if (cancelled) {
+                                toast(getString(R.string.msg_cancelled))
+                            } else if (!previewClickedFile(r, queryText)) {
+                                // 定位类结果：搜索框必须收起，否则列表被它压着看不见
+                                searchDialog.dismiss()
+                            }
                         }
                     } finally {
                         opH.release()
                     }
                 }
             } else {
-                previewClickedFile(r, queryText)
+                // 定位类结果（非预览）：定位完就收起搜索框，让用户直接看到那一行
+                if (!previewClickedFile(r, queryText)) searchDialog.dismiss()
             }
         }
 
@@ -337,19 +343,42 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         }
     }
 
-internal fun MainActivity.previewClickedFile(r: SearchResult, highlightQuery: String = "") {
+/**
+ * 点了搜索结果之后去哪儿。
+ *
+ * **返回 true = 已经进入「看这个文件」的界面**（预览 / 文本查看），调用方据此把搜索框留着
+ * —— 预览是从搜索里出去的，回来还能接着点下一条。
+ *
+ * **返回 false = 只是回到文件列表并把目标定位出来**，这时调用方必须收起搜索框，否则列表
+ * 被它压着，用户看不见跳转结果。
+ */
+internal fun MainActivity.previewClickedFile(r: SearchResult, highlightQuery: String = ""): Boolean {
         if (r.snippet.isNotEmpty()) {
             showTextPreview(this, r.file, r.lineNumber, highlightQuery)
-        } else {
-            val ext = r.file.name.lowercase().substringAfterLast('.')
-            if (ext in PREVIEW_EXTS || ext in TEXT_SEARCH_EXTS) {
-                previewLocalFile(this, r.file)
-            } else {
-                val parent = r.file.parentFile
-                if (parent != null) { nav(parent); toast(r.file.name) }
-                else toast(r.file.path)
-            }
+            return true
         }
+        val ext = r.file.name.lowercase().substringAfterLast('.')
+        if (ext in PREVIEW_EXTS || ext in TEXT_SEARCH_EXTS) {
+            previewLocalFile(this, r.file)
+            return true
+        }
+        val tab = activeTab
+        // 目录结果 → 直接进去（原来会跳到它的**父目录**，等于没进去）。
+        if (r.file.isDirectory) {
+            enterBrowserAt(tab, r.file)
+            return false
+        }
+        // 文件结果 → 回到它所在目录，并且**把文件本身滚进视野 + 短暂高亮**。
+        // 只报路径是不够的：文件可能排在几百项之后、被屏幕挡住，用户还得自己翻。
+        val parent = r.file.parentFile
+        if (parent == null) { toast(r.file.path); return false }
+        // ⚠️ 必须走 enterBrowserAt，不能再用 nav()：从主界面（hub）发起搜索时 hub 还盖着，
+        // nav() 只在它**下面**渲染列表 —— 用户看到的仍然是主界面。这就是真机反馈的
+        // 「主页用了全局搜索不会跳转」（不是图层收回顺序的问题，是根本没让 hub 让位）。
+        tab.pendingLocatePath = r.file.absolutePath
+        enterBrowserAt(tab, parent)
+        toast(r.file.name)
+        return false
     }
 
 internal fun MainActivity.walkSearch(

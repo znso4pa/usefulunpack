@@ -276,6 +276,12 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         fun runSearch() {
             queryText = etQuery.text.toString().trim()
             if (queryText.isEmpty()) { toast(getString(R.string.msg_enter_keyword)); return }
+            // 搜索一开始就收起键盘：横屏 + 键盘时可用高度只剩 ~416dp，结果列表只剩
+            // 一两行；收起后窗口会长回去（ADJUST_RESIZE），结果才铺得开。
+            runCatching {
+                getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                    ?.hideSoftInputFromWindow(etQuery.windowToken, 0)
+            }
             if (searchMode == 1) {
                 val labels = resources.getStringArray(R.array.search_size_limits) + getString(R.string.level_extreme)
                 val limits = longArrayOf(100_000L, 500_000L, 1_000_000L, 5_000_000L, 10_000_000L, Long.MAX_VALUE)

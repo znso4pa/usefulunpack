@@ -176,54 +176,64 @@
         </LinearLayout>
 
         <!-- 选项：一行两个，右半屏不再空着 -->
+        <!-- 「高级选项」整块：勾选 + 类型过滤。空间不够时（横屏 + 输入法弹出，可用高度
+             只剩 ~416dp）由 GlobalSearch.kt 整块收起来，把高度让给结果列表 —— 否则
+             固定控件会把列表挤成 0 高，结果根本看不见。 -->
         <LinearLayout
+            android:id="@+id/searchOptions"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginTop="6dp">
+            android:orientation="vertical">
 
-            <CheckBox
-                android:id="@+id/cbRegex"
-                android:layout_width="0dp"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/search_regex"
-                android:textSize="12sp"
-                android:textColor="@color/text_secondary" />
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="6dp">
 
-            <CheckBox
-                android:id="@+id/cbCaseSensitive"
-                android:layout_width="0dp"
+                <CheckBox
+                    android:id="@+id/cbRegex"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/search_regex"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_secondary" />
+
+                <CheckBox
+                    android:id="@+id/cbCaseSensitive"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/search_case_sensitive"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_secondary" />
+            </LinearLayout>
+
+            <!-- 卡内发丝分隔线：把「选项」和「类型过滤」分成两组 -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="10dp"
+                android:layout_marginBottom="10dp"
+                android:background="@color/hairline" />
+
+            <EditText
+                android:id="@+id/etFileFilter"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/search_case_sensitive"
                 android:textSize="12sp"
-                android:textColor="@color/text_secondary" />
+                android:singleLine="true"
+                android:hint="@string/search_file_filter"
+                android:background="@drawable/bg_input_rounded"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="10dp"
+                android:paddingBottom="10dp"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_hint" />
         </LinearLayout>
-
-        <!-- 卡内发丝分隔线：把「选项」和「类型过滤」分成两组 -->
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:layout_marginTop="10dp"
-            android:layout_marginBottom="10dp"
-            android:background="@color/hairline" />
-
-        <EditText
-            android:id="@+id/etFileFilter"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="12sp"
-            android:singleLine="true"
-            android:hint="@string/search_file_filter"
-            android:background="@drawable/bg_input_rounded"
-            android:paddingStart="12dp"
-            android:paddingEnd="12dp"
-            android:paddingTop="10dp"
-            android:paddingBottom="10dp"
-            android:textColor="@color/text_primary"
-            android:textColorHint="@color/text_hint" />
     </LinearLayout>
 
     <!-- Flowing indeterminate progress bar while searching. Honor/EMUI's stock

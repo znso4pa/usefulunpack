@@ -46,6 +46,34 @@
 //! 的真机行为只能上机验（csd、设备给的行跨度是 I420 还是 NV12、时间戳精度都没法在
 //! 主机上模拟；纯逻辑部分在 `yuv.rs` 有单测）。
 //!
+//! # Opus 音轨也走设备解码器（`Ctx::adec_hw`）
+//!
+//! WebM 现在几乎全是 Opus 音轨（Vorbis 是上一代），而 ffmpeg 的 Opus 解码器**不便宜**：
+//! `libavcodec/opus/*.o` 实测 **141.7 KB/ABI**（tab 30.3 + silk 26.0 + dec 17.5 +
+//! pvq 15.9 + celt 15.4 + parse 12.5 + rc 12.4 + dec_celt 3.9 + parser 3.9 + dsp 2.3），
+//! 两个 ABI 就是 0.28 MB。设备自带的 `audio/opus`（`c2.android.opus.decoder`，**API 29+**）
+//! 一个字节都不占，所以 Opus 交给 `AMediaCodec`，其余音频解码器仍归 ffmpeg。
+//!
+//! 形状与视频硬解**不同**：Opus 解出来就是 PCM，直接进 `swresample` → AAC 编码器，
+//! 不经过 `AImageReader`。所以这里没有「第二条管线」，只是把「谁来解」换掉：
+//!
+//! ```text
+//!   Opus 包 ──AMediaCodec(audio/opus)──► 交错 PCM ──swresample──► AAC 编码器
+//! ```
+//!
+//! 四个必须记住的点：
+//!
+//! * **`pcm-encoding` 要显式要 16 位**。设备默认就是 S16，但那是「默认」不是「保证」；
+//!   真给出 float 而我们按 S16 读，声音是一整片噪声 —— 而转换照样「成功」。
+//!   `OUTPUT_FORMAT_CHANGED` 时会核对一遍真实值，不一致就按真实值重建重采样器
+//!   （见 [`Ctx::opus_format_changed`]）。
+//! * **`csd-0` = `CodecPrivate`（OpusHead）**。pre-skip（Matroska 的 `CodecDelay`）
+//!   写在里面，不传的话开头会多出约 6.5 ms 的垃圾样本。
+//! * **一个输入缓冲放一个 Opus 包**。包最长 1275 字节，设备给的缓冲总够；不够就是
+//!   异常，**截断着喂**只会解出噪声，所以宁可报错。
+//! * **API 26~28 上没有这个解码器**（`AMediaCodec_createDecoderByType` 返回 NULL）。
+//!   那种机器退回「只转视频」—— 和「没有 WMA 解码器」时一样，不报错、不失败。
+//!
 //! # 两条轨的错位
 //!
 //! `AMediaMuxer` 必须**两条轨都 addTrack 完**才能 `start()`，而每条轨的格式要到它
@@ -159,6 +187,18 @@ struct Ctx {
     astream: c_int,
     vdec: *mut ffi::AVCodecContext,
     adec: *mut ffi::AVCodecContext,
+    /// 音轨走设备解码器（Opus）时的那个解码器；此时 [`Ctx::adec`] 是**空指针**。
+    /// 为什么要多这一条、为什么不用 ffmpeg 的 Opus，见模块文档「Opus 音轨也走设备
+    /// 解码器」。
+    adec_hw: *mut ffi::AMediaCodec,
+    /// 喂给重采样器的**源**采样格式。ffmpeg 那条路从 `adec` 读，Opus 这条路只能
+    /// 自己记 —— 设备解码器没有 `AVCodecContext`。正常是交错的 S16，
+    /// `OUTPUT_FORMAT_CHANGED` 报出别的编码时会跟着改。
+    a_src_fmt: ffi::AVSampleFormat::Type,
+    /// 同上，源采样率。Opus 内部恒为 48 kHz。
+    a_src_rate: c_int,
+    /// 同上，源声道数。可能被设备下混，所以以它**报出来的**为准。
+    a_src_channels: c_int,
 
     mux: *mut ffi::AMediaMuxer,
     /// 持有 fd 的所有权：`AMediaMuxer` 只是借用这个 fd，文件不能提前关。
@@ -236,6 +276,11 @@ impl Drop for Ctx {
             }
             if !self.adec.is_null() {
                 ffi::avcodec_free_context(&mut self.adec);
+            }
+            // 设备解码器（Opus）。和视频那条一样：先 stop 再 delete。
+            if !self.adec_hw.is_null() {
+                ffi::AMediaCodec_stop(self.adec_hw);
+                ffi::AMediaCodec_delete(self.adec_hw);
             }
             // 硬解：**先停解码器（生产者）再停编码器（消费者）**。
             // 解码器还挂着 reader 的 window，先把它停掉，reader 才能安全销毁。
@@ -917,6 +962,362 @@ impl Ctx {
         }
         Ok(())
     }
+
+    /// 建（或重建）重采样器：源 → 交错的 S16 / [`Ctx::out_rate`] / [`Ctx::out_channels`]。
+    ///
+    /// 源参数按「谁在解」分两种：ffmpeg 的解码器从 `adec` 读；Opus 走设备解码器，
+    /// 只能从 [`Ctx::a_src_fmt`] / [`Ctx::a_src_rate`] / [`Ctx::a_src_channels`] 拿。
+    ///
+    /// 返回 false = 建不起来。调用方按「只转视频」处理 —— 这从来不是致命错误，
+    /// 视频本身还是好的。
+    fn setup_swr(&mut self) -> bool {
+        unsafe {
+            if !self.swr.is_null() {
+                ffi::swr_free(&mut self.swr);
+            }
+            // 两条路的源声道布局来源不同，而 `swr_alloc_set_opts2` 只要一个指针，
+            // 所以这里统一成「先拿到指针，再统一调用」。设备那条路的布局是**我们自己
+            // 建的**，用完得 uninit（ffmpeg 那条路是借 `adec` 的，不能碰）。
+            let mut src_ch: ffi::AVChannelLayout = std::mem::zeroed();
+            let borrowed = !self.adec.is_null();
+            let (src_fmt, src_rate, src_ch_ptr) = if borrowed {
+                (
+                    (*self.adec).sample_fmt,
+                    (*self.adec).sample_rate,
+                    &(*self.adec).ch_layout as *const ffi::AVChannelLayout,
+                )
+            } else {
+                ffi::av_channel_layout_default(&mut src_ch, self.a_src_channels);
+                (
+                    self.a_src_fmt,
+                    self.a_src_rate,
+                    &src_ch as *const ffi::AVChannelLayout,
+                )
+            };
+            let mut out_ch: ffi::AVChannelLayout = std::mem::zeroed();
+            ffi::av_channel_layout_default(&mut out_ch, self.out_channels);
+            let ok = ffi::swr_alloc_set_opts2(
+                &mut self.swr,
+                &out_ch,
+                ffi::AVSampleFormat::AV_SAMPLE_FMT_S16,
+                self.out_rate,
+                src_ch_ptr,
+                src_fmt,
+                src_rate,
+                0,
+                std::ptr::null_mut(),
+            ) >= 0
+                && ffi::swr_init(self.swr) >= 0;
+            ffi::av_channel_layout_uninit(&mut out_ch);
+            if !borrowed {
+                ffi::av_channel_layout_uninit(&mut src_ch);
+            }
+            ok
+        }
+    }
+
+    // ---- Opus 音轨的设备解码器（见模块文档）----
+    //
+    // 和视频那条硬解**不一样**：解出来就是 PCM，直接进 swr → AAC 编码器，
+    // 没有 `AImageReader`、没有 `AImage`。三个入口：喂包、收 PCM、收尾。
+
+    /// 开设备自带的 Opus 解码器。
+    ///
+    /// 返回 false = 这台机器上没有（API 26~28）或配不起来 —— 调用方退回「只转视频」，
+    /// 和「没有 WMA 解码器」时一样，不报错也不失败。
+    unsafe fn open_opus(&mut self, par: *mut ffi::AVCodecParameters) -> bool {
+        let dec = ffi::AMediaCodec_createDecoderByType(cstr!("audio/opus"));
+        if dec.is_null() {
+            return false;
+        }
+        // Opus 内部恒为 48 kHz，容器头里也这么写；万一没写就按 48 kHz。
+        let rate = if (*par).sample_rate > 0 {
+            (*par).sample_rate
+        } else {
+            48_000
+        };
+        // 最多 8 声道（Opus 的映射上限）。**不在这里压到 2**：重采样器负责下混，
+        // 压在这里会让「源是 5.1」这个事实丢失，下混规则也就跟着丢了。
+        let ch = (*par).ch_layout.nb_channels.clamp(1, 8);
+        let af = ffi::AMediaFormat_new();
+        ffi::AMediaFormat_setString(af, cstr!("mime"), cstr!("audio/opus"));
+        ffi::AMediaFormat_setInt32(af, cstr!("sample-rate"), rate);
+        ffi::AMediaFormat_setInt32(af, cstr!("channel-count"), ch);
+        // 2 = ENCODING_PCM_16BIT。设备默认就是它，但「默认」不是「保证」——
+        // 显式要一次，`opus_format_changed` 再核对一次。
+        ffi::AMediaFormat_setInt32(af, cstr!("pcm-encoding"), 2);
+        // `csd-0` = OpusHead（Matroska 的 `CodecPrivate`），pre-skip 在里面。
+        if !(*par).extradata.is_null() && (*par).extradata_size > 0 {
+            ffi::AMediaFormat_setBuffer(
+                af,
+                cstr!("csd-0"),
+                (*par).extradata as *const std::ffi::c_void,
+                (*par).extradata_size as usize,
+            );
+        }
+        let st = ffi::AMediaCodec_configure(dec, af, std::ptr::null_mut(), std::ptr::null_mut(), 0);
+        ffi::AMediaFormat_delete(af);
+        if st != ffi::media_status_t::AMEDIA_OK
+            || ffi::AMediaCodec_start(dec) != ffi::media_status_t::AMEDIA_OK
+        {
+            ffi::AMediaCodec_delete(dec);
+            return false;
+        }
+        self.adec_hw = dec;
+        self.a_src_fmt = ffi::AVSampleFormat::AV_SAMPLE_FMT_S16;
+        self.a_src_rate = rate;
+        self.a_src_channels = ch;
+        self.has_audio = true;
+        true
+    }
+
+    /// 一个 Opus 包进解码器。
+    ///
+    /// 输入队列取不到缓冲时**先收 PCM 再重试** —— 不解出来就没有空位，干等着就是
+    /// 死锁。动机和视频那条 `pump_hw_images` 一样：解码器是生产者，它的输出不搬走，
+    /// 它就再也不接收输入。
+    fn feed_opus_packet(&mut self, pkt: &ffi::AVPacket) -> R<()> {
+        let n = pkt.size.max(0) as usize;
+        if n == 0 || pkt.data.is_null() {
+            return Ok(());
+        }
+        let dec = self.adec_hw;
+        let mut tries = 0;
+        loop {
+            if video_progress::cancelled() {
+                return Err(ConvertError::Cancelled);
+            }
+            let idx = unsafe { ffi::AMediaCodec_dequeueInputBuffer(dec, 5_000) };
+            if idx >= 0 {
+                let mut cap: usize = 0;
+                let buf = unsafe { ffi::AMediaCodec_getInputBuffer(dec, idx as usize, &mut cap) };
+                if buf.is_null() {
+                    return Err(msg("Opus 解码器输入缓冲不可用"));
+                }
+                // 一个 Opus 包最长 1275 字节，设备给的缓冲总够。不够就是异常，
+                // **截断着喂**只会解出噪声 —— 宁可报错，别交出一段坏音频。
+                if n > cap {
+                    unsafe { ffi::AMediaCodec_queueInputBuffer(dec, idx as usize, 0, 0, 0, 0) };
+                    return Err(msg(format!("Opus 包 {n} 字节，超过解码器输入缓冲 {cap}")));
+                }
+                unsafe {
+                    std::ptr::copy_nonoverlapping(pkt.data, buf, n);
+                    // PTS 传 0：音频时间轴完全由 `a_frames` 累加得出（见 `feed_audio`），
+                    // 设备解码器的输出时间戳一个都不用。
+                    ffi::AMediaCodec_queueInputBuffer(dec, idx as usize, 0, n, 0, 0);
+                }
+                return self.drain_opus(0).map(|_| ());
+            }
+            // 没有空位：把已经解出来的收走，给它腾地方。
+            self.drain_opus(0)?;
+            tries += 1;
+            if tries > 400 {
+                return Err(msg("Opus 解码器一直不接收输入"));
+            }
+        }
+    }
+
+    /// 收设备解码器解出来的 PCM，过重采样器喂给 AAC 编码器。
+    ///
+    /// 返回 true = 解码器已经吐过 EOS 输出标志（收尾循环靠它判断「不用再等了」）。
+    fn drain_opus(&mut self, poll_us: i64) -> R<bool> {
+        let dec = self.adec_hw;
+        loop {
+            let mut info = ffi::AMediaCodecBufferInfo {
+                offset: 0,
+                size: 0,
+                presentationTimeUs: 0,
+                flags: 0,
+            };
+            let idx = unsafe { ffi::AMediaCodec_dequeueOutputBuffer(dec, &mut info, poll_us) };
+            if idx >= 0 {
+                let mut osize: usize = 0;
+                let buf = unsafe { ffi::AMediaCodec_getOutputBuffer(dec, idx as usize, &mut osize) };
+                let res = if info.size > 0 && !buf.is_null() {
+                    let n = (info.size as usize).min(osize);
+                    // 取整到完整采样帧：半帧会让左右声道从此错位（`feed_audio` 里
+                    // 切 PCM 是同一条理由）。
+                    let fb = (self.a_src_channels as usize) * sample_bytes(self.a_src_fmt);
+                    let n = if fb == 0 { 0 } else { n - n % fb };
+                    if n == 0 {
+                        Ok(())
+                    } else {
+                        let pcm =
+                            unsafe { std::slice::from_raw_parts(buf.add(info.offset as usize), n) };
+                        self.push_opus_pcm(pcm)
+                    }
+                } else {
+                    Ok(())
+                };
+                let eos = info.flags & ffi::BufferFlags::AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM != 0;
+                unsafe { ffi::AMediaCodec_releaseOutputBuffer(dec, idx as usize, false) };
+                res?;
+                if eos {
+                    return Ok(true);
+                }
+            } else if idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED as isize {
+                self.opus_format_changed()?;
+            } else if idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED as isize {
+                // 老 API 的产物，忽略。
+            } else {
+                // TRY_AGAIN_LATER：这一轮收干净了。
+                return Ok(false);
+            }
+        }
+    }
+
+    /// 设备解码器报出了真实输出参数 —— 按它校一遍。
+    ///
+    /// 容器里写的声道数不一定等于设备真正吐的（多声道 Opus 会被下混），而
+    /// `pcm-encoding` 更是「默认 S16、但不保证」。按错的值去读 PCM，结果是**一整片
+    /// 噪声**却照样「转换成功」—— 所以这里宁可重建一次重采样器。重建会丢掉它内部
+    /// 缓冲的那几毫秒，但这条分支只在第一个输出缓冲之前触发，那时还没有样本进过 swr。
+    fn opus_format_changed(&mut self) -> R<()> {
+        let f = unsafe { ffi::AMediaCodec_getOutputFormat(self.adec_hw) };
+        if f.is_null() {
+            return Ok(());
+        }
+        let mut rate: i32 = 0;
+        let mut ch: i32 = 0;
+        let mut enc: i32 = 2;
+        let has_rate = unsafe { ffi::AMediaFormat_getInt32(f, cstr!("sample-rate"), &mut rate) };
+        let has_ch = unsafe { ffi::AMediaFormat_getInt32(f, cstr!("channel-count"), &mut ch) };
+        let has_enc = unsafe { ffi::AMediaFormat_getInt32(f, cstr!("pcm-encoding"), &mut enc) };
+        unsafe { ffi::AMediaFormat_delete(f) };
+
+        let mut changed = false;
+        if has_rate && rate > 0 && rate != self.a_src_rate {
+            self.a_src_rate = rate;
+            changed = true;
+        }
+        if has_ch && ch > 0 && ch != self.a_src_channels {
+            self.a_src_channels = ch;
+            changed = true;
+        }
+        if has_enc {
+            // 只认能表达的这几种；其余（24/32 位打包之类）保持 S16 并留一条日志 ——
+            // 那种情况下声音会是噪声，但至少日志里能查到「设备没按 16 位给」。
+            let fmt = match enc {
+                2 => Some(ffi::AVSampleFormat::AV_SAMPLE_FMT_S16), // ENCODING_PCM_16BIT
+                3 => Some(ffi::AVSampleFormat::AV_SAMPLE_FMT_U8),  // ENCODING_PCM_8BIT
+                4 => Some(ffi::AVSampleFormat::AV_SAMPLE_FMT_FLT), // ENCODING_PCM_FLOAT
+                22 => Some(ffi::AVSampleFormat::AV_SAMPLE_FMT_S32), // ENCODING_PCM_32BIT
+                other => {
+                    ffi::log_err(&format!("Opus 解码器输出 pcm-encoding={other}，按 16 位处理"));
+                    None
+                }
+            };
+            if let Some(fmt) = fmt {
+                if fmt != self.a_src_fmt {
+                    self.a_src_fmt = fmt;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            // `out_rate` / `out_channels` 已经定了，不该跟着源变 —— 变了说明设备
+            // 下混到了别的声道数，那正是我们要在 swr 里补上的那一层。
+            if !self.setup_swr() {
+                ffi::log_err("Opus 输出参数变了，重采样器重建失败");
+            }
+        }
+        Ok(())
+    }
+
+    /// 一段交错的**源** PCM → 重采样 → 喂 AAC 编码器。
+    fn push_opus_pcm(&mut self, pcm: &[u8]) -> R<()> {
+        let fb = (self.a_src_channels as usize) * sample_bytes(self.a_src_fmt);
+        if fb == 0 {
+            return Ok(());
+        }
+        let frames = pcm.len() / fb;
+        if frames == 0 {
+            return Ok(());
+        }
+        let out_n = unsafe { ffi::swr_get_out_samples(self.swr, frames as c_int) };
+        if out_n <= 0 {
+            return Ok(());
+        }
+        let mut outbuf: *mut u8 = std::ptr::null_mut();
+        if unsafe {
+            ffi::av_samples_alloc(
+                &mut outbuf,
+                std::ptr::null_mut(),
+                self.out_channels,
+                out_n,
+                ffi::AVSampleFormat::AV_SAMPLE_FMT_S16,
+                0,
+            )
+        } < 0
+        {
+            return Ok(());
+        }
+        // 交错格式只有一个平面，所以指针数组就一个元素 —— 这和 `convert_audio_frame`
+        // 传 `extended_data`（可能多平面）不同，别照抄那边的写法。
+        let inp: *const u8 = pcm.as_ptr();
+        let got = unsafe { ffi::swr_convert(self.swr, &mut outbuf, out_n, &inp, frames as c_int) };
+        if got <= 0 {
+            unsafe { ffi::av_freep(&mut outbuf as *mut *mut u8 as *mut std::ffi::c_void) };
+            return Ok(());
+        }
+        let bytes = unsafe {
+            std::slice::from_raw_parts(outbuf, got as usize * self.out_channels as usize * 2)
+        };
+        let r = self.feed_audio(bytes);
+        unsafe { ffi::av_freep(&mut outbuf as *mut *mut u8 as *mut std::ffi::c_void) };
+        r
+    }
+
+    /// 给设备解码器发 EOS，把管道里的 PCM 收干净。
+    ///
+    /// 不发 EOS 的话，最后几十毫秒会留在解码器里 —— 和「只 flush 视频解码器、
+    /// 忘了音频解码器」是同一个坑（见 `convert` 收尾那段）。
+    fn finish_opus(&mut self) -> R<()> {
+        let dec = self.adec_hw;
+        let deadline = Instant::now() + std::time::Duration::from_micros(FINISH_BUDGET_US as u64);
+        // 输入队列可能一时取不到（输出队列满了）—— 一边收一边重试，别把 EOS 丢了。
+        loop {
+            let idx = unsafe { ffi::AMediaCodec_dequeueInputBuffer(dec, 10_000) };
+            if idx >= 0 {
+                unsafe {
+                    ffi::AMediaCodec_queueInputBuffer(
+                        dec,
+                        idx as usize,
+                        0,
+                        0,
+                        0,
+                        ffi::BufferFlags::AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM,
+                    );
+                }
+                break;
+            }
+            if self.drain_opus(0)? || Instant::now() >= deadline {
+                // 已经吐过 EOS，或者等太久了：EOS 排不进去也不影响已经解出来的部分。
+                return Ok(());
+            }
+        }
+        // 等 EOS 输出标志。`drain_opus` 带 10 ms 等待，循环自己就有节奏。
+        while !self.drain_opus(10_000)? {
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 一个采样在内存里占几个字节（**源**格式，只有设备解码器那条路用得上）。
+///
+/// 平面格式不在考虑内：`AMediaCodec` 吐的音频一律是交错的。真出现平面格式会落到
+/// `_ => 2`，也就是按 S16 读 —— 那是错的，但比 panic 好，且 `opus_format_changed`
+/// 不会给出平面格式。
+fn sample_bytes(fmt: ffi::AVSampleFormat::Type) -> usize {
+    match fmt {
+        ffi::AVSampleFormat::AV_SAMPLE_FMT_U8 => 1,
+        ffi::AVSampleFormat::AV_SAMPLE_FMT_S32 => 4,
+        ffi::AVSampleFormat::AV_SAMPLE_FMT_FLT => 4,
+        _ => 2,
+    }
 }
 
 /// AAC 编码器只吃这几个采样率，别的一律降到 44100。
@@ -944,6 +1345,11 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         astream: -1,
         vdec: std::ptr::null_mut(),
         adec: std::ptr::null_mut(),
+        adec_hw: std::ptr::null_mut(),
+        // 只有 Opus 那条路会用到这三个；ffmpeg 那条路一律从 `adec` 读。
+        a_src_fmt: ffi::AVSampleFormat::AV_SAMPLE_FMT_S16,
+        a_src_rate: 0,
+        a_src_channels: 0,
         mux: std::ptr::null_mut(),
         out_file: None,
         venc: std::ptr::null_mut(),
@@ -1138,24 +1544,32 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         // ---- 音频解码器（拿不到就只转视频）----
         if c.astream >= 0 {
             let par = (*c.stream(c.astream)).codecpar;
-            let dec = ffi::avcodec_find_decoder((*par).codec_id);
-            if !dec.is_null() {
-                let adec = ffi::avcodec_alloc_context3(dec);
-                if !adec.is_null()
-                    && ffi::avcodec_parameters_to_context(adec, par) >= 0
-                    && ffi::avcodec_open2(adec, dec, std::ptr::null_mut()) >= 0
-                {
-                    c.adec = adec;
-                    c.has_audio = true;
-                } else if !adec.is_null() {
-                    let mut a = adec;
-                    ffi::avcodec_free_context(&mut a);
+            if (*par).codec_id == ffi::AVCodecID::AV_CODEC_ID_OPUS {
+                // Opus 交给设备解码器：ffmpeg 那个要 141.7 KB/ABI，设备这个是零字节。
+                // 开不起来（API 26~28）就静默退回只转视频。
+                if !c.open_opus(par) {
+                    ffi::log_err("这台设备没有 Opus 解码器（API 29+ 才有），只转视频");
                 }
             } else {
-                let name = std::ffi::CStr::from_ptr(ffi::avcodec_get_name((*par).codec_id))
-                    .to_string_lossy()
-                    .into_owned();
-                ffi::log_err(&format!("没有 {name} 的解码器，只转视频"));
+                let dec = ffi::avcodec_find_decoder((*par).codec_id);
+                if !dec.is_null() {
+                    let adec = ffi::avcodec_alloc_context3(dec);
+                    if !adec.is_null()
+                        && ffi::avcodec_parameters_to_context(adec, par) >= 0
+                        && ffi::avcodec_open2(adec, dec, std::ptr::null_mut()) >= 0
+                    {
+                        c.adec = adec;
+                        c.has_audio = true;
+                    } else if !adec.is_null() {
+                        let mut a = adec;
+                        ffi::avcodec_free_context(&mut a);
+                    }
+                } else {
+                    let name = std::ffi::CStr::from_ptr(ffi::avcodec_get_name((*par).codec_id))
+                        .to_string_lossy()
+                        .into_owned();
+                    ffi::log_err(&format!("没有 {name} 的解码器，只转视频"));
+                }
             }
         }
 
@@ -1219,9 +1633,15 @@ pub fn convert(input: &str, output: &str) -> R<()> {
 
         // ---- AAC 编码器 + 重采样器（任一失败就只转视频）----
         if c.has_audio {
-            c.out_rate = pick_rate((*c.adec).sample_rate);
-            let ch = (*c.adec).ch_layout.nb_channels.clamp(1, 2);
-            c.out_channels = ch;
+            // 源参数按「谁在解」分两种：ffmpeg 的解码器在 `adec` 里，Opus 走设备
+            // 解码器（`adec` 是空指针），参数是开解码器时记下来的。
+            let (src_rate, src_ch) = if c.adec.is_null() {
+                (c.a_src_rate, c.a_src_channels)
+            } else {
+                ((*c.adec).sample_rate, (*c.adec).ch_layout.nb_channels)
+            };
+            c.out_rate = pick_rate(src_rate);
+            c.out_channels = src_ch.clamp(1, 2);
 
             c.aenc = ffi::AMediaCodec_createEncoderByType(cstr!("audio/mp4a-latm"));
             if c.aenc.is_null() {
@@ -1253,29 +1673,12 @@ pub fn convert(input: &str, output: &str) -> R<()> {
                     ffi::AMediaCodec_delete(c.aenc);
                     c.aenc = std::ptr::null_mut();
                     c.has_audio = false;
-                } else {
-                    let mut out_ch: ffi::AVChannelLayout = std::mem::zeroed();
-                    ffi::av_channel_layout_default(&mut out_ch, c.out_channels);
-                    let ok = ffi::swr_alloc_set_opts2(
-                        &mut c.swr,
-                        &out_ch,
-                        ffi::AVSampleFormat::AV_SAMPLE_FMT_S16,
-                        c.out_rate,
-                        &(*c.adec).ch_layout,
-                        (*c.adec).sample_fmt,
-                        (*c.adec).sample_rate,
-                        0,
-                        std::ptr::null_mut(),
-                    ) >= 0
-                        && ffi::swr_init(c.swr) >= 0;
-                    ffi::av_channel_layout_uninit(&mut out_ch);
-                    if !ok {
-                        ffi::log_err("重采样器起不来，只转视频");
-                        c.has_audio = false;
-                        ffi::AMediaCodec_stop(c.aenc);
-                        ffi::AMediaCodec_delete(c.aenc);
-                        c.aenc = std::ptr::null_mut();
-                    }
+                } else if !c.setup_swr() {
+                    ffi::log_err("重采样器起不来，只转视频");
+                    c.has_audio = false;
+                    ffi::AMediaCodec_stop(c.aenc);
+                    ffi::AMediaCodec_delete(c.aenc);
+                    c.aenc = std::ptr::null_mut();
                 }
             }
         }
@@ -1363,7 +1766,16 @@ pub fn convert(input: &str, output: &str) -> R<()> {
                     }
                 }
             } else if c.has_audio && si == c.astream {
-                if ffi::avcodec_send_packet(c.adec, pkt) >= 0 {
+                if !c.adec_hw.is_null() {
+                    // Opus：包直接进设备解码器，PCM 在 `feed_opus_packet` 里被收走。
+                    if let Err(e) = c.feed_opus_packet(&*pkt) {
+                        let mut p = pkt;
+                        let mut f = frame;
+                        ffi::av_packet_free(&mut p);
+                        ffi::av_frame_free(&mut f);
+                        return Err(e);
+                    }
+                } else if ffi::avcodec_send_packet(c.adec, pkt) >= 0 {
                     while ffi::avcodec_receive_frame(c.adec, frame) == 0 {
                         if let Err(e) = convert_audio_frame(&mut c, frame) {
                             let mut p = pkt;
@@ -1399,13 +1811,19 @@ pub fn convert(input: &str, output: &str) -> R<()> {
             }
         }
         if c.has_audio {
-            // **音频解码器也要 flush**：只对视频解码器发 NULL 包，音频解码器里缓冲的帧
-            // 就永远留在那儿了（丢掉几 ms 的尾巴）。必须在重采样器尾巴**之前**做，
-            // 否则那些帧根本进不了 swr。（`convert_audio_frame` 内部自己 unref。）
-            let adec = c.adec;
-            ffi::avcodec_send_packet(adec, std::ptr::null());
-            while ffi::avcodec_receive_frame(adec, frame) == 0 {
-                convert_audio_frame(&mut c, frame)?;
+            if !c.adec_hw.is_null() {
+                // 设备解码器（Opus）也要发 EOS：不给它，管道里最后那几十毫秒就留在
+                // 里面了。理由和下面 ffmpeg 那条完全一样。
+                c.finish_opus()?;
+            } else {
+                // **音频解码器也要 flush**：只对视频解码器发 NULL 包，音频解码器里缓冲的帧
+                // 就永远留在那儿了（丢掉几 ms 的尾巴）。必须在重采样器尾巴**之前**做，
+                // 否则那些帧根本进不了 swr。（`convert_audio_frame` 内部自己 unref。）
+                let adec = c.adec;
+                ffi::avcodec_send_packet(adec, std::ptr::null());
+                while ffi::avcodec_receive_frame(adec, frame) == 0 {
+                    convert_audio_frame(&mut c, frame)?;
+                }
             }
             // 重采样器的尾巴
             let out_n = ffi::swr_get_out_samples(c.swr, 0);

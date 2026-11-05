@@ -97,6 +97,14 @@ API=26
 # 才是 flv1）。下面 `verify_components` 会逐个核对生成的注册表，把这类错误挡在编译期。
 VIDEO_DECODERS="vc1,wmv1,wmv2,wmv3,msmpeg4v1,msmpeg4v2,msmpeg4v3,mpeg4,\
 mpeg1video,mpeg2video,h263,flv,mjpeg,vp6,vp6a,vp6f"
+# ⚠️ **`opus` 刻意不在这里** —— WebM 现在几乎全是 Opus 音轨，看着很想加，但
+# `libavcodec/opus/*.o` 实测 **141.7 KB/ABI**（tab 30.3 + silk 26.0 + dec 17.5 +
+# pvq 15.9 + celt 15.4 + parse 12.5 + rc 12.4 + dec_celt 3.9 + parser 3.9 + dsp 2.3），
+# 两个 ABI 就是 0.28 MB。设备自带的 `audio/opus`（`c2.android.opus.decoder`，API 29+）
+# 一个字节都不占，所以 Opus 由 crates/video-core 里的 `Ctx::adec_hw` 直接调
+# `AMediaCodec` 解，只有 API 26~28 上没有这个解码器（那种机器退回「只转视频」）。
+# 真要加回来：实测加完 .so 只涨约 0.28 MB 而不是 141.7 KB×2 —— 因为 gc-sections
+# 会砍掉一部分，别拿 .o 的总和当最终增量。
 AUDIO_DECODERS="wmav1,wmav2,wmapro,wmavoice,mp3,mp2,aac,ac3,eac3,vorbis,\
 pcm_s16le,pcm_s16be,pcm_u8,pcm_s24le,pcm_f32le,pcm_mulaw,pcm_alaw,\
 adpcm_ms,adpcm_ima_wav,adpcm_ima_qt"

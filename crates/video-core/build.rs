@@ -123,6 +123,8 @@ const FUNCS: &[&str] = &[
     "AMediaFormat_delete",
     "AMediaFormat_setString",
     "AMediaFormat_setInt32",
+    // 硬解诊断：解码器实际选了什么输出色彩格式 / 跨度，只有它自己说得清。
+    "AMediaFormat_getInt32",
     "AMediaFormat_setBuffer",
     "AMediaMuxer_new",
     "AMediaMuxer_delete",
@@ -225,6 +227,8 @@ fn main() {
         println!("cargo:rustc-link-lib=static={lib}");
     }
     // NDK 自带的媒体栈（MediaCodec / MediaMuxer）与日志。
+    // 注意 `AHardwareBuffer_*` 在 **libandroid** 里、不在 libmediandk，真要用得另加
+    // `-landroid`（漏了是 `dlopen: cannot locate symbol`，不是链接期报错）。
     for lib in ["mediandk", "log", "m"] {
         println!("cargo:rustc-link-lib=dylib={lib}");
     }

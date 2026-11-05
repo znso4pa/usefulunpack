@@ -160,6 +160,8 @@ struct Ctx {
     img_reader: *mut ffi::AImageReader,
     /// 解码器已经吐过 EOS 输出标志 —— 收尾循环靠它判断「不用再等了」。
     hw_eos: bool,
+    /// 第一帧的设备几何（平面长度 / 行跨度 / 像素跨度）只记一条日志，别刷屏。
+    hw_geom_logged: bool,
     /// 源视频是 H.264 → 走硬解。此时 [`Ctx::vdec`] 是空指针。
     use_hw: bool,
     /// `avcC` 解析结果（`use_hw` 时才有）。
@@ -464,17 +466,19 @@ impl Ctx {
         }
     }
 
-    /// 排空硬解解码器。`wait_us` 的语义与 [`Ctx::drain`] 一致。
+    /// 排**一个**硬解解码器的输出缓冲，把它渲进 [`Ctx::img_reader`]。
+    ///
+    /// 返回 `true` 表示渲进去了一帧（调用方要立刻去 acquire），`false` 表示这一刻
+    /// 没有了（或已经 EOS）。
     ///
     /// **release 必须带 `render = true`**：解码器的输出面是 [`Ctx::img_reader`] 的
     /// window，只有 release 时把 render 置位，帧才会被投递过去、变成一张可 acquire
     /// 的 `AImage`。传 `false` 不会报错 —— 解码器照常推进、`dequeue` 照常返回，
     /// reader 里却一张图都没有，最后交出一个 0 字节的 MP4。
-    fn drain_hw_dec(&mut self, wait_us: i64) -> R<()> {
+    ///
+    /// `poll_us` 是 `dequeueOutputBuffer` 的阻塞时长（0 = 不阻塞）。
+    fn render_one(&mut self, poll_us: i64) -> R<bool> {
         let dec = self.h264dec;
-        let deadline =
-            (wait_us > 0).then(|| Instant::now() + std::time::Duration::from_micros(wait_us as u64));
-        let poll_us = if wait_us > 0 { 10_000 } else { 0 };
         loop {
             let mut info = ffi::AMediaCodecBufferInfo {
                 offset: 0,
@@ -488,23 +492,37 @@ impl Ctx {
                 unsafe { ffi::AMediaCodec_releaseOutputBuffer(dec, idx as usize, true) };
                 if eos {
                     self.hw_eos = true;
-                    return Ok(());
+                    return Ok(false);
                 }
+                return Ok(true);
             } else if idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED as isize {
                 // 硬解器的输出格式（色彩格式 / 尺寸）我们不从这条路取 —— 每一帧的
                 // 真实尺寸和跨度由 `AImage_get*` 明说。但这个对象是新建的，必须释放。
                 let f = unsafe { ffi::AMediaCodec_getOutputFormat(dec) };
                 if !f.is_null() {
+                    // 诊断用：真机上色度平面为什么是空的，只有这一行能说清。
+                    let mut cf: c_int = -1;
+                    let mut stride: c_int = -1;
+                    let mut slice: c_int = -1;
+                    let mut ow: c_int = -1;
+                    let mut oh: c_int = -1;
+                    unsafe {
+                        ffi::AMediaFormat_getInt32(f, cstr!("color-format"), &mut cf);
+                        ffi::AMediaFormat_getInt32(f, cstr!("stride"), &mut stride);
+                        ffi::AMediaFormat_getInt32(f, cstr!("slice-height"), &mut slice);
+                        ffi::AMediaFormat_getInt32(f, cstr!("width"), &mut ow);
+                        ffi::AMediaFormat_getInt32(f, cstr!("height"), &mut oh);
+                    }
+                    ffi::log_err(&format!(
+                        "hw outfmt color-format=0x{cf:x} ({cf}) stride={stride} slice-height={slice} {ow}x{oh}"
+                    ));
                     unsafe { ffi::AMediaFormat_delete(f) };
                 }
             } else if idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED as isize {
                 // 老 API 的产物，忽略。
             } else {
-                match deadline {
-                    Some(d) if Instant::now() >= d => return Ok(()),
-                    Some(_) => {}
-                    None => return Ok(()),
-                }
+                // TRY_AGAIN_LATER
+                return Ok(false);
             }
         }
     }
@@ -581,11 +599,37 @@ impl Ctx {
 
     /// 把解码器此刻能出的帧全部取出来、转 NV12、喂进编码器。
     ///
-    /// 四步是一个整体：排空解码器的输出缓冲（`render = true` 才会真的渲进 reader）
-    /// → 从 reader 逐张 acquire → 转 NV12 喂编码器 → 排空编码器。**只排不取会把
-    /// reader 的队列撑满**，解码器随即卡在「输出面没缓冲」上，输入槽也就永远拿不到。
+    /// **渲一帧就立刻取走**，不要「先把解码器排空、再统一 acquire」：reader 只有
+    /// `AImageReader_new` 给的那么几个槽，解码器一次吐出 5 帧以上时，多出来的那几帧
+    /// 在 `releaseOutputBuffer(render = true)` 时无处可去，会被**静默丢掉**
+    /// （实测 90 帧的源只出来 41 帧，全程零警告）。交错着做就没有这个窗口。
     fn pump_hw_images(&mut self, wait_us: i64) -> R<()> {
-        self.drain_hw_dec(wait_us)?;
+        let poll_us = if wait_us > 0 { 10_000 } else { 0 };
+        let deadline = (wait_us > 0)
+            .then(|| Instant::now() + std::time::Duration::from_micros(wait_us as u64));
+        loop {
+            if video_progress::cancelled() {
+                return Err(ConvertError::Cancelled);
+            }
+            let rendered = self.render_one(poll_us)?;
+            self.acquire_images()?;
+            if self.hw_eos {
+                break;
+            }
+            if !rendered {
+                match deadline {
+                    // 还在等的窗口里：解码器可能只是慢一拍。
+                    Some(d) if Instant::now() < d => continue,
+                    _ => break,
+                }
+            }
+        }
+        let venc = self.venc;
+        self.drain(venc, true, 0)
+    }
+
+    /// 把 reader 里此刻能拿到的图全部取走、转 NV12、喂编码器。
+    fn acquire_images(&mut self) -> R<()> {
         let reader = self.img_reader;
         let (vw, vh) = (self.vw, self.vh);
         loop {
@@ -602,8 +646,7 @@ impl Ctx {
             unsafe { ffi::AImage_delete(img) };
             r?;
         }
-        let venc = self.venc;
-        self.drain(venc, true, 0)
+        Ok(())
     }
 
     /// 一张 `AImage` → NV12 → 编码器。
@@ -622,18 +665,60 @@ impl Ctx {
             return Err(msg(format!("硬解输出的图像不可用（{w}×{h}，{nplanes} 个平面）")));
         }
         let mut ptrs = [std::ptr::null_mut::<u8>(); 3];
-        let mut lens = [0 as c_int; 3];
-        let mut rows = [0 as c_int; 3];
-        let mut px = [0 as c_int; 3];
+        let mut lens = [-1 as c_int; 3];
+        let mut rows = [-1 as c_int; 3];
+        let mut px = [-1 as c_int; 3];
+        let mut st_data = [ffi::media_status_t::AMEDIA_ERROR_UNKNOWN; 3];
+        let mut st_row = [ffi::media_status_t::AMEDIA_ERROR_UNKNOWN; 3];
+        let mut st_px = [ffi::media_status_t::AMEDIA_ERROR_UNKNOWN; 3];
         for i in 0..3usize {
             unsafe {
-                ffi::AImage_getPlaneData(img, i as c_int, &mut ptrs[i], &mut lens[i]);
-                ffi::AImage_getPlaneRowStride(img, i as c_int, &mut rows[i]);
-                ffi::AImage_getPlanePixelStride(img, i as c_int, &mut px[i]);
+                st_data[i] = ffi::AImage_getPlaneData(img, i as c_int, &mut ptrs[i], &mut lens[i]);
+                st_row[i] = ffi::AImage_getPlaneRowStride(img, i as c_int, &mut rows[i]);
+                st_px[i] = ffi::AImage_getPlanePixelStride(img, i as c_int, &mut px[i]);
             }
+        }
+        // 第一帧把设备给的几何记一条日志：真机上「行跨度是 I420 还是 NV12」只能这么确认。
+        // 只在第一次打，长片不会刷屏。
+        //
+        // **不要**在这里调 `AImage_getHardwareBuffer` + `AHardwareBuffer_describe` 去问
+        // 底层格式：那个多出来的引用会让 reader 的槽位计数错乱，`AImageReader_delete`
+        // 时在 `ConsumerBase::onBuffersReleased` 里空指针崩掉（实测两次，2026-11-05）。
+        // 需要看真实格式时用 `AMediaCodec_getOutputFormat` 那一条日志，够用。
+        if !self.hw_geom_logged {
+            self.hw_geom_logged = true;
+            ffi::log_err(&format!(
+                "hw img {w}x{h} n={nplanes} ts={ts_ns}\n  \
+                 Y ptr={:p} len={} row={} px={} st=({},{},{})\n  \
+                 U ptr={:p} len={} row={} px={} st=({},{},{})\n  \
+                 V ptr={:p} len={} row={} px={} st=({},{},{})",
+                ptrs[0], lens[0], rows[0], px[0], st_data[0] as i32, st_row[0] as i32, st_px[0] as i32,
+                ptrs[1], lens[1], rows[1], px[1], st_data[1] as i32, st_row[1] as i32, st_px[1] as i32,
+                ptrs[2], lens[2], rows[2], px[2], st_data[2] as i32, st_row[2] as i32, st_px[2] as i32,
+            ));
         }
         if ptrs[0].is_null() || lens[0] <= 0 {
             return Err(msg("硬解输出的 Y 平面为空"));
+        }
+        // 三个平面**逐个**校验，不能只看 Y。`from_raw_parts(null, n>0)` 是 UB：切片拿到
+        // 空指针后，`yuv::sample` 的 `.get()` 只会越界判负、不会救回来 —— 真机上是
+        // `ldrb w8, [x30, x15]` 而 x30 == 0，直接 SIGSEGV（2026-11-05 实测）。
+        //
+        // ---- 色度拿不到 = 这个解码器不给可读的 YUV，直接说清楚 ----
+        //
+        // 真机实测（`c2.qti.avc.decoder`，API 36，2026-11-05）：
+        //   `AMediaCodec_getOutputFormat` 报 `color-format=0x7F000789`（YUV420Flexible），
+        //   但底层 `AHardwareBuffer` 的**真实格式是 0x7FA30C06**（高通私有 tiled），
+        //   Y 平面有数据，U/V 是 `ptr=null / len=1 / stride=0 / px=0`，三个调用都返回
+        //   AMEDIA_OK。也就是说解码器确实渲进去了，只是没把色度平面的布局暴露出来。
+        //
+        // **不要**按「UV 紧跟 Y、U/V 差 1 字节」硬算：tiled 缓冲的总大小和排布都不是
+        // 那个约定，硬读会越界（实测 SIGSEGV），侥幸读到也是花屏。
+        if ptrs[1].is_null() || ptrs[2].is_null() {
+            return Err(msg(format!(
+                "这个解码器不给可读的 YUV 色度平面（{w}×{h}，色度 len={}/{}）",
+                lens[1], lens[2]
+            )));
         }
         // 三个平面指针的有效期到 `AImage_delete` 为止 —— 调用方紧接着就删，别存。
         let plane = |i: usize| crate::yuv::Plane {
@@ -780,6 +865,7 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         h264dec: std::ptr::null_mut(),
         img_reader: std::ptr::null_mut(),
         hw_eos: false,
+        hw_geom_logged: false,
         use_hw: false,
         avc: None,
         annexb: Vec::new(),
@@ -870,6 +956,12 @@ pub fn convert(input: &str, output: &str) -> R<()> {
                 ffi::AMediaFormat_setString(df, cstr!("mime"), cstr!("video/avc"));
                 ffi::AMediaFormat_setInt32(df, cstr!("width"), c.vw);
                 ffi::AMediaFormat_setInt32(df, cstr!("height"), c.vh);
+                // **明确要线性 NV12**（`COLOR_FormatYUV420SemiPlanar` = 21）。
+                // 不写的话，高通的 C2 解码器会自己挑一个私有 tiled 格式
+                // （实测 `0x7FA30C06`）：`AImage` 的 Y 平面能读，色度平面却是
+                // `ptr=null`，于是 `yuv.rs` 无从下手。surface 输出时这个键按理会被
+                // 忽略，但 C2 组件确实会照它分配线性缓冲 —— 这是让色度可读的唯一开关。
+                ffi::AMediaFormat_setInt32(df, cstr!("color-format"), 21);
                 // 解码器要**带起始码**的 SPS / PPS（csd-0 / csd-1），avcC 里存的是裸 NAL。
                 let mut csd0 = Vec::with_capacity(avc.sps.len() + 4);
                 csd0.extend_from_slice(&[0, 0, 0, 1]);

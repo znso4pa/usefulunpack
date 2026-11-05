@@ -221,88 +221,100 @@ internal fun MainActivity.belowTabBar(
     rootToTab: Boolean = true,
     also: (() -> Unit)? = null,
 ) {
-    dlg.window?.let { w ->
-        val dm = resources.displayMetrics
-        val density = dm.density
-        val topInset = viewPager?.takeIf { it.top > 0 }?.top
-            ?: (24f * density).toInt() + (106f * density).toInt()  // status 24dp + toolbar 56dp + tabs 50dp
-        val landscape = resources.configuration.orientation ==
-            android.content.res.Configuration.ORIENTATION_LANDSCAPE
-
-        // 触摸语义（用户定稿）：**除了 tab 栏什么都不能点**。这里只管几何/明暗，
-        // 标志 + 护盾 + 扎根 + 收尾统一交给 placeDialog（配对只有一份）。
-        if (landscape) {
-            // ── 横屏：居中的竖屏比例浮动窗（用户定稿）──────────────────
-            // 「不要在底部呼出……横屏在除掉 tab 栏的窗口里面居中」。
-            // 可用区 = [topInset, 屏高]；Gravity.CENTER 的 y 是**相对中心的偏移**，
-            // 往下推 topInset/2 正好把中心从屏幕中心挪到可用区中心。
-            // 底部不再留 swipeArea —— 卡片四周都是空的，pager 照样能滑。
-            val contentH = dm.heightPixels - topInset
-            val sheetW = (DIALOG_LANDSCAPE_W_DP * density).toInt()
-                .coerceAtMost(dm.widthPixels - (2 * 16f * density).toInt())
-            val maxH = (contentH - (2 * 20f * density).toInt()).coerceAtLeast(0)
-            if (fitContent) {
-                // 短内容贴自身高度（1 条的回收站不能开成 near-full-screen），
-                // 长内容封顶 maxH。先量再定 EXACT 高，避免第一帧在 (0,0) 闪一下
-                // （gravity 要等包裹高度算出来才解析得了 —— 竖屏分支同一条教训）。
-                val decor = w.decorView
-                decor.measure(
-                    View.MeasureSpec.makeMeasureSpec(sheetW, View.MeasureSpec.AT_MOST),
-                    View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST))
-                val measured = decor.measuredHeight
-                w.setLayout(sheetW, if (measured in 1 until maxH) measured else maxH)
-            } else {
-                w.setLayout(sheetW, maxH)
-            }
-            w.setGravity(android.view.Gravity.CENTER)
-            w.attributes = w.attributes.apply { y = topInset / 2 }
-            // 卡片外面用系统压暗，不再用窗口自带的局部 scrim —— 局部 scrim 只能
-            // 盖住窗口矩形，浮动卡外一圈会是亮的，没有模态感。tab 条被压暗但仍可点
-            //（NOT_TOUCH_MODAL 保留）。decor 背景也不再覆盖：卡片外观交给对话框主题
-            // 的圆角 windowBackground（`Theme.UsefulUnpack.Dialog` 的
-            // `@drawable/dialog_bg_rounded`）。
-            w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            w.setDimAmount(0.5f)
-        } else {
-            // ── 竖屏：底部呼出（定稿不动）──────────────────────────────
-            val swipeArea = (swipeAreaDp * density).toInt()
-            val sheetW = minOf(dm.widthPixels, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
-            val sheetH = (dm.heightPixels - topInset - swipeArea).coerceAtLeast(0)
-            w.setGravity(android.view.Gravity.BOTTOM)
-            // Same as keepTabBarTappable: a bottom-anchored window is still
-            // touch-MODAL by default, so taps on the tab strip above it get
-            // swallowed instead of reaching the tabs. The physical offset is not
-            // enough on its own — without this flag Global Search / a non-empty
-            // recycle bin block window switching while the terminal (which uses
-            // keepTabsTappable) did not.
-            w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            w.setDimAmount(0f)
-            w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0x99000000.toInt()))
-            if (fitContent) {
-                // Short content must hug its own height — a 1-entry recycle bin
-                // must not open a near-full-screen sheet with a big empty area —
-                // while tall content still has to stop below the tab strip.
-                //
-                // Measure the decor BEFORE show and set an EXACT height. Leaving
-                // the window at WRAP_CONTENT lets the WindowManager position it
-                // at (0,0) for the first frame (gravity cannot be resolved until
-                // the wrapped height is known), which reads as a top-left flash
-                // and swallows tab taps for that instant. Measuring first makes
-                // the very first frame the final one. AlertDialogLayout measures
-                // the custom panel against windowHeight − title − buttons, so a
-                // scrolling child (which MUST be wrap_content, not height=0 +
-                // weight) gets the leftover height and scrolls.
-                val decor = w.decorView
-                val widthSpec = View.MeasureSpec.makeMeasureSpec(sheetW, View.MeasureSpec.AT_MOST)
-                val heightSpec = View.MeasureSpec.makeMeasureSpec(sheetH, View.MeasureSpec.AT_MOST)
-                decor.measure(widthSpec, heightSpec)
-                val measured = decor.measuredHeight
-                w.setLayout(sheetW, if (measured in 1 until sheetH) measured else sheetH)
-            } else {
-                w.setLayout(sheetW, sheetH)
-            }
-        }
+    val w = dlg.window ?: return
+    val dm = resources.displayMetrics
+    val density = dm.density
+    val topInset = viewPager?.takeIf { it.top > 0 }?.top
+        ?: (24f * density).toInt() + (106f * density).toInt()  // status 24dp + toolbar 56dp + tabs 50dp
+    val landscape = resources.configuration.orientation ==
+        android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    val sheetW = if (landscape) {
+        (DIALOG_LANDSCAPE_W_DP * density).toInt()
+            .coerceAtMost(dm.widthPixels - (2 * 16f * density).toInt())
+    } else {
+        minOf(dm.widthPixels, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
     }
+    val sheetH = if (landscape) {
+        (dm.heightPixels - topInset - (2 * 20f * density).toInt()).coerceAtLeast(0)
+    } else {
+        (dm.heightPixels - topInset - (swipeAreaDp * density).toInt()).coerceAtLeast(0)
+    }
+
+    // ── 几何 / 明暗：与调用顺序无关，当场生效 ────────────────────────────
+    if (landscape) {
+        // 可用区 = [topInset, 屏高]；Gravity.CENTER 的 y 是**相对中心的偏移**，
+        // 往下推 topInset/2 正好把中心从屏幕中心挪到可用区中心。
+        w.setGravity(android.view.Gravity.CENTER)
+        w.attributes = w.attributes.apply { y = topInset / 2 }
+        // 卡片外面用系统压暗，不再用窗口自带的局部 scrim —— 局部 scrim 只能盖住窗口
+        // 矩形，浮动卡外一圈会是亮的，没有模态感。tab 条被压暗但仍可点
+        //（NOT_TOUCH_MODAL 保留）。卡片外观交给对话框主题的圆角 windowBackground。
+        w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        w.setDimAmount(0.5f)
+    } else {
+        w.setGravity(android.view.Gravity.BOTTOM)
+        // 竖屏仍是贴底大窗 + 窗口自带的局部 scrim（不动 tab 条的亮度）
+        w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        w.setDimAmount(0f)
+        w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0x99000000.toInt()))
+    }
+
+    /**
+     * 尺寸**必须在 show 之后设**：`AlertDialog.show()` 会走
+     * onCreate → AlertController.installContent() → setContentView → installDecor，
+     * 把窗口的 LayoutParams 重置成 WRAP_CONTENT —— show 之前 setLayout 设的尺寸
+     * **整个丢掉**（真机实测：show 前设 1800×2344，窗口实际 1463×1111 = 内容自然尺寸）。
+     *
+     * 所以同一个 Placement 之前会因为调用顺序不同而几何不同：`show().also { belowTabs() }`
+     * 生效，`belowTabs(); show()` 失效。现在统一在「decor 挂上窗口之后」补一次，
+     * 两种写法结果一致。
+     */
+    fun applySize() {
+        // 可用高度取**父窗口当前的实际高度**（root 会被输入法压矮），不是屏幕高度 ——
+        // 拿 displayMetrics 算出来的高度在键盘弹出后就是超的，超出的那截收不到触摸。
+        val rootH = findViewById<View>(R.id.root)?.height ?: 0
+        val availH = (rootH - topInset - (2 * 20f * density).toInt()).coerceAtLeast((160 * density).toInt())
+        if (!fitContent) {
+            // 长内容：给**面板**（AlertDialog 的 android.R.id.content 第一层子）设精确高度，
+            // 不碰窗口。窗口是 WRAP，会跟着面板量；面板内部列表带权重，自然分到剩余高度。
+            // （给窗口设死高度不行：AlertController 的 customPanel 是 WRAP，内容不会撑开，
+            // 列表会塌成 0 高 —— 真机踩过。）
+            fitDialogPanel(dlg, sheetW, availH)
+            return
+        }
+        // 短内容贴自身高度（1 条的回收站不该开成 near-full-screen）。先量再定 EXACT 高。
+        val decor = w.decorView
+        decor.measure(
+            View.MeasureSpec.makeMeasureSpec(sheetW, View.MeasureSpec.AT_MOST),
+            View.MeasureSpec.makeMeasureSpec(availH, View.MeasureSpec.AT_MOST))
+        val measured = decor.measuredHeight
+        w.setLayout(sheetW, if (measured in 1 until availH) measured else availH)
+    }
+    if (dlg.isShowing) {
+        applySize()
+    } else {
+        // 用 attach 监听而不是 setOnShowListener：那个槽位调用方也在用
+        //（PreviewFlow 的按钮重绑），抢了就把它顶掉 —— 和 dismiss 监听器同一个坑。
+        val decor = w.decorView
+        decor.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {
+                v.removeOnAttachStateChangeListener(this)
+                v.post { applySize() }
+            }
+            override fun onViewDetachedFromWindow(v: View) {}
+        })
+    }
+
+    // ⚠️ 输入法弹出时父窗口（Activity）被压矮（横屏实测 1944 → 1121px），而窗口是按
+    // **当时**的可用高度量出来的、之后不会自己重算 —— 超出父窗口的那一截**收不到触摸**
+    //（真机：横屏搜出结果后点列表下半部分毫无反应，探针确认 itemClick 没触发）。
+    // insets 变化时请求一次重新布局，窗口就会按新的可用高度重新量。
+    w.decorView.setOnApplyWindowInsetsListener { v, insets ->
+        // 输入法弹出/收起 → root 高度变了 → 重新按当前可用高度算一次面板尺寸
+        v.post { applySize() }
+        insets
+    }
+
     // 弹窗一律要护盾（除 tab 栏外全挡）；配对全在 placeDialog 里。
     placeDialog(dlg, rootToTab = rootToTab, shield = true, also = also)
 }
@@ -313,6 +325,28 @@ internal fun MainActivity.belowTabBar(
  * 竖屏仍走 dialog_max_width 的贴底大窗，见 [belowTabBar]。
  */
 private const val DIALOG_LANDSCAPE_W_DP = 480f
+
+/**
+ * 把 AlertDialog 的**面板**设成精确高度并居中（不碰窗口的 LayoutParams）。
+ *
+ * 为什么是面板而不是窗口：`AlertDialog.show()` 会重置窗口的 LayoutParams（show 前设的
+ * 尺寸全丢），而窗口给了死高度后 `AlertController` 的 customPanel 是 WRAP、内容不会
+ * 跟着撑开 —— 列表（0dp + weight=1）会塌成 0 高。面板（`android.R.id.content` 的第一
+ * 层子，即 AlertDialogLayout）是普通视图，设高度不会被打回，内部权重也照常分配。
+ *
+ * 找不到面板就静默返回（布局结构变了也不至于崩）。
+ */
+private fun MainActivity.fitDialogPanel(dlg: android.app.Dialog, widthPx: Int, heightPx: Int) {
+    val content = dlg.window?.decorView?.findViewById<android.view.ViewGroup>(android.R.id.content)
+        ?: return
+    val panel = content.getChildAt(0) ?: return
+    val lp = panel.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
+    if (lp.width == widthPx && lp.height == heightPx && lp.gravity == android.view.Gravity.CENTER) return
+    lp.width = widthPx
+    lp.height = heightPx
+    lp.gravity = android.view.Gravity.CENTER
+    panel.layoutParams = lp
+}
 
 /** Unwrap `ContextWrapper`s to reach the hosting [MainActivity], if any. */
 private fun android.content.Context.findMainActivity(): MainActivity? {

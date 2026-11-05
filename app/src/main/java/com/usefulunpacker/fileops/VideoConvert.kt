@@ -45,6 +45,8 @@ internal fun MainActivity.convertVideo(
         if (!opH.await()) return@thread
         try {
             val ok = VideoCore.videoConvert("", src.path, outFile.path, target, opts)
+            // 必须在工作线程上读：这是 C 侧的全局槽，进 UI 线程之前取好快照。
+            val short = if (ok) VideoCore.videoDecodedPercent() else 0
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 prog.dismiss()
@@ -52,7 +54,13 @@ internal fun MainActivity.convertVideo(
                     outFile.delete()
                     toast(getString(R.string.msg_cancelled))
                 } else if (ok) {
-                    toast(getString(R.string.msg_convert_done, outFile.name))
+                    // 截断的源会「成功但很短」：片留着（能解出来的部分是好的），
+                    // 但要说清为什么短，否则用户以为转换器坏了。
+                    if (short in 1..99) {
+                        toast(getString(R.string.msg_convert_short, outFile.name, short))
+                    } else {
+                        toast(getString(R.string.msg_convert_done, outFile.name))
+                    }
                     // 刷拥有该操作的窗口，而不是瞬时的活跃窗口——长转换期间
                     // 用户切窗后结果要出现在发起它的那个 tab 里。
                     refreshTab(ownerTab)

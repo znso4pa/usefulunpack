@@ -402,6 +402,10 @@ unsafe fn run(input: &str, output: &str) -> R<()> {
         return Err(msg("写 ASF 尾失败"));
     }
     c.trailer_done = true;
+
+    // 截断的源不报错，只会少一截。这里逐帧计数，换算成时长再和容器的声明比。
+    let declared = crate::health::declared_video_us(c.ifmt, c.vstream);
+    crate::health::report(declared, crate::health::frames_to_us(v_pts, fps));
     Ok(())
 }
 

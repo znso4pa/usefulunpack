@@ -77,6 +77,7 @@
     <string name="title_convert_failed">转换失败</string>
     <string name="msg_convert_failed_why">转换失败：%1$s</string>
     <string name="msg_convert_done">已转换: %1$s</string>
+    <string name="msg_convert_short">已转换: %1$s —— 源文件不完整，只读出了 %2$d%%</string>
     <string name="action_new_folder">新文件夹</string>
     <string name="nav_home">回到根目录</string>
     <string name="nav_up">上一级</string>
@@ -696,6 +697,7 @@
     <string name="cli_one_src_only">%1$s 一次只接受一个源和一个目标；批量请用 UUT 的 for 循环</string>
     <string name="cli_img_bad_fmt">不认识的图片格式：%1$s（jpg / png / webp）</string>
     <string name="cli_conv_ok">%1$s → %2$s</string>
+    <string name="cli_conv_short">  ! 源文件不完整 —— 只读出了 %1$s%%</string>
     <string name="cli_img_fail">无法转换：%1$s</string>
     <string name="cli_conv_summary">转换成功 %1$s，失败 %2$s</string>
     <string name="cli_audio_bad_fmt">不认识的音频格式：%1$s（mp3 / ogg / wav）</string>

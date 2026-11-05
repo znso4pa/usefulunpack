@@ -80,6 +80,7 @@
     <string name="title_convert_failed">轉換失敗</string>
     <string name="msg_convert_failed_why">轉換失敗：%1$s</string>
     <string name="msg_convert_done">已轉換: %1$s</string>
+    <string name="msg_convert_short">已轉換: %1$s —— 來源檔不完整，只讀出了 %2$d%%</string>
     <string name="action_new_folder">新資料夾</string>
     <string name="title_new_folder">新增資料夾</string>
     <string name="nav_home">回到根目錄</string>
@@ -691,6 +692,7 @@
     <string name="cli_one_src_only">%1$s 一次只接受一個來源與一個目標；批次請用 UUT 的 for 迴圈</string>
     <string name="cli_img_bad_fmt">不認識的圖片格式：%1$s（jpg / png / webp）</string>
     <string name="cli_conv_ok">%1$s → %2$s</string>
+    <string name="cli_conv_short">  ! 來源檔不完整 —— 只讀出了 %1$s%%</string>
     <string name="cli_img_fail">無法轉換：%1$s</string>
     <string name="cli_conv_summary">轉換成功 %1$s，失敗 %2$s</string>
     <string name="cli_audio_bad_fmt">不認識的音訊格式：%1$s（mp3 / ogg / wav）</string>

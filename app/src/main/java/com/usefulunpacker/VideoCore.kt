@@ -29,4 +29,13 @@ object VideoCore {
     external fun videoProgressFileTotal(): Long
     external fun videoProgressName(): String?
     external fun videoCancel()
+
+    /**
+     * 上一次转换实际解出的百分比：**0 = 正常（或判断不了）**，`1..=99` = 只解出这么多。
+     *
+     * 截断的源（下载中断、拷贝没拷完）不会失败 —— `moov` 完好，解到数据尽头就是
+     * 正常 EOF，能解多少解多少。所以这条信息走返回值、不走异常：转换成功之后读它，
+     * 决定要不要提醒用户「片是好的，只是短」。每次操作入口 C 侧会清零。
+     */
+    external fun videoDecodedPercent(): Int
 }

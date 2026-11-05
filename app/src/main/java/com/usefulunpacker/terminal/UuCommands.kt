@@ -2161,6 +2161,11 @@ internal object UuCommands {
                 }
                 ok++
                 sb.append(ctx.text(R.string.cli_conv_ok, src.name, outF.name)).append('\n')
+                // 截断的源会「成功但很短」—— 片留着，但要当场说清为什么短。
+                val short = VideoCore.videoDecodedPercent()
+                if (short in 1..99) {
+                    sb.append(ctx.text(R.string.cli_conv_short, short.toString())).append('\n')
+                }
             }
 
             if (cancelled.get()) return Result(UuText.extractCancelled(ctx.str), 1)

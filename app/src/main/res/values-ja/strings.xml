@@ -77,6 +77,7 @@
     <string name="title_convert_failed">変換失敗</string>
     <string name="msg_convert_failed_why">変換失敗：%1$s</string>
     <string name="msg_convert_done">変換完了: %1$s</string>
+    <string name="msg_convert_short">変換完了: %1$s — 元ファイルが不完全で、%2$d%% しか読み出せませんでした</string>
     <string name="action_new_folder">新規フォルダ</string>
     <string name="nav_home">ルートに戻る</string>
     <string name="nav_up">上へ</string>
@@ -691,6 +692,7 @@
     <string name="cli_one_src_only">%1$s は 1 つのソースと 1 つの宛先のみ受け付けます。一括処理は UUT の for ループで</string>
     <string name="cli_img_bad_fmt">不明な画像形式：%1$s（jpg / png / webp）</string>
     <string name="cli_conv_ok">%1$s → %2$s</string>
+    <string name="cli_conv_short">  ! 元ファイルが不完全 — %1$s%% しか読み出せませんでした</string>
     <string name="cli_img_fail">変換できません：%1$s</string>
     <string name="cli_conv_summary">変換 %1$s 件、失敗 %2$s 件</string>
     <string name="cli_audio_bad_fmt">音声形式ではありません：%1$s（mp3 / ogg / wav）</string>

@@ -82,6 +82,7 @@
     <string name="title_convert_failed">Convert failed</string>
     <string name="msg_convert_failed_why">Convert failed: %1$s</string>
     <string name="msg_convert_done">Converted: %1$s</string>
+    <string name="msg_convert_short">Converted: %1$s — the source file looks incomplete, only %2$d%% of it could be read</string>
     <string name="action_new_folder">New folder</string>
     <string name="nav_home">Home</string>
     <string name="nav_up">Up</string>
@@ -698,6 +699,7 @@
     <string name="cli_one_src_only">%1$s takes exactly one source and one destination; for batches use a UUT for loop</string>
     <string name="cli_img_bad_fmt">unknown image format: %1$s (jpg / png / webp)</string>
     <string name="cli_conv_ok">%1$s → %2$s</string>
+    <string name="cli_conv_short">  ! source file looks incomplete — only %1$s%% could be read</string>
     <string name="cli_img_fail">cannot convert: %1$s</string>
     <string name="cli_conv_summary">%1$s converted, %2$s failed</string>
     <string name="cli_audio_bad_fmt">not an audio format: %1$s (mp3 / ogg / wav)</string>

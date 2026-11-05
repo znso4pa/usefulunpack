@@ -1369,6 +1369,11 @@ pub fn convert(input: &str, output: &str) -> R<()> {
             return Err(msg("编码器没有产出任何数据"));
         }
 
+        // 截断的源不会报错，只会安静地少一截。把「声明 vs 实解」的对比交给 UI，
+        // 让它在成功后提醒一句 —— 不在这里拦，是因为能解出来的部分是真能用的。
+        let declared = crate::health::declared_video_us(c.ifmt, c.vstream);
+        crate::health::report(declared, c.last_v_us + c.frame_dur_us);
+
         let mut p = pkt;
         let mut f = frame;
         ffi::av_packet_free(&mut p);

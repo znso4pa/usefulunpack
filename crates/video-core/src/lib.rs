@@ -33,6 +33,8 @@
 //! | [`nv12`] | yuv420p → NV12（MediaCodec 的 `color-format 21` 要的排布） |
 //! | [`yuv`] | `AImage` 三平面 → NV12（硬解那条路；含行/像素跨度与缩放，主机可测） |
 //! | [`rotate`] | 显示矩阵角度：ffmpeg 的逆时针 → 容器要的顺时针（纯逻辑，主机可测） |
+//! | [`trunc`] | 「源短了一截」的判定：声明时长 vs 实解时长（纯逻辑，主机可测） |
+//! | [`health`] | 读容器声明的视频时长 + 存「这次解出了百分之几」的全局槽 |
 //! | [`convert`] | 整条链路：解封装 → 解码 → 编码 → 封装，含进度与取消 |
 //!
 //! ## 进度与取消
@@ -54,13 +56,17 @@ mod asf;
 mod convert;
 #[cfg(not(uu_no_ffmpeg))]
 mod ffi;
-// 纯逻辑（avcC 解析 + AVCC→Annex-B / AImage 平面 → NV12 / 显示矩阵角度换算），
-// 没有 FFI —— 主机上也要能跑单测，所以**不**跟上面几个一起 cfg 掉。非 Android 目标下
-// 没人调用，dead_code 是预期的。
+#[cfg(not(uu_no_ffmpeg))]
+mod health;
+// 纯逻辑（avcC 解析 + AVCC→Annex-B / AImage 平面 → NV12 / 显示矩阵角度换算 /
+// 「源短了一截」的判定），没有 FFI —— 主机上也要能跑单测，所以**不**跟上面几个一起
+// cfg 掉。非 Android 目标下没人调用，dead_code 是预期的。
 #[allow(dead_code)]
 mod h264;
 #[allow(dead_code)]
 mod rotate;
+#[allow(dead_code)]
+mod trunc;
 #[allow(dead_code)]
 mod yuv;
 #[cfg(not(uu_no_ffmpeg))]
@@ -79,7 +85,7 @@ use jni::JNIEnv;
 #[cfg(not(uu_no_ffmpeg))]
 use jni::objects::JString;
 #[cfg(not(uu_no_ffmpeg))]
-use jni::sys::{jboolean, JNI_FALSE, JNI_TRUE};
+use jni::sys::{jboolean, jint, JNI_FALSE, JNI_TRUE};
 
 /// 转换失败的原因。取消要能和真失败区分开 —— 取消不是错误，Kotlin 那边不该弹
 /// 「转换失败」。
@@ -133,6 +139,8 @@ pub extern "system" fn Java_com_usefulunpacker_VideoCore_videoConvert(
 ) -> jboolean {
     // 每个新操作都先清取消位：上一次的取消不能毒死这一次。
     video_progress::clear_cancel();
+    // 同理，「上次源短了一截」的结论也不能留给这一次。
+    health::reset();
     let input = archive_common::s(&mut e, &input);
     let output = archive_common::s(&mut e, &output);
     let target = archive_common::s(&mut e, &target);
@@ -194,4 +202,17 @@ pub extern "system" fn Java_com_usefulunpacker_VideoCore_videoProgressName(
 #[no_mangle]
 pub extern "system" fn Java_com_usefulunpacker_VideoCore_videoCancel(_: JNIEnv, _: JClass) {
     video_progress::cancel();
+}
+
+/// 上一次转换实际解出的百分比：`0` = 正常（或判断不了），`1..=99` = 只解出这么多。
+///
+/// 截断的源**不会失败** —— 能解多少解多少，片是好的，只是短。所以这条信息走
+/// 返回值而不是异常：UI 在成功后读它，决定要不要提醒「源文件不完整」。
+#[cfg(not(uu_no_ffmpeg))]
+#[no_mangle]
+pub extern "system" fn Java_com_usefulunpacker_VideoCore_videoDecodedPercent(
+    _: JNIEnv,
+    _: JClass,
+) -> jint {
+    health::decoded_percent()
 }

@@ -221,6 +221,24 @@ internal fun MainActivity.belowTabBar(
     rootToTab: Boolean = true,
     also: (() -> Unit)? = null,
 ) {
+    registerPlacement(dlg, swipeAreaDp, fitContent)
+    applyDialogGeometry(dlg, swipeAreaDp, fitContent)
+    // 弹窗一律要护盾（除 tab 栏外全挡）；配对全在 placeDialog 里。
+    placeDialog(dlg, rootToTab = rootToTab, shield = true, also = also)
+}
+
+/**
+ * `belowTabs` 的**几何**（方向相关：横屏居中卡片 / 竖屏贴底）。
+ *
+ * 单独抽出来是因为它必须能在**旋转后重算**：Activity 声明了 `configChanges`，转屏不重建
+ * 视图树，没人会替开着的弹窗重算 —— 真机上横屏开着的搜索框转竖屏后仍是 480dp 宽、
+ * 还按横屏的 y 偏移居中（和终端层的像素偏移、hub 的骨架是同一类坑）。
+ */
+private fun MainActivity.applyDialogGeometry(
+    dlg: android.app.Dialog,
+    swipeAreaDp: Float,
+    fitContent: Boolean,
+) {
     val w = dlg.window ?: return
     val dm = resources.displayMetrics
     val density = dm.density
@@ -318,8 +336,35 @@ internal fun MainActivity.belowTabBar(
         insets
     }
 
-    // 弹窗一律要护盾（除 tab 栏外全挡）；配对全在 placeDialog 里。
-    placeDialog(dlg, rootToTab = rootToTab, shield = true, also = also)
+}
+/** 记录「几何与方向相关」的弹窗，转屏时按新方向重算（[reapplyDialogPlacements]）。 */
+private val placedDialogs =
+    mutableListOf<Triple<java.lang.ref.WeakReference<android.app.Dialog>, Float, Boolean>>()
+
+private fun registerPlacement(dlg: android.app.Dialog, swipeAreaDp: Float, fitContent: Boolean) {
+    placedDialogs.removeAll { it.first.get() == null || it.first.get() === dlg }
+    placedDialogs.add(Triple(java.lang.ref.WeakReference(dlg), swipeAreaDp, fitContent))
+}
+
+/**
+ * 方向变了 → 给所有还在显示的 `belowTabs` 弹窗重算几何
+ * （`keepTabsTappable` 的居中弹窗是 WRAP + CENTER，不受方向影响）。
+ *
+ * ⚠️ **必须 post 到下一帧**：`onConfigurationChanged` 是在新方向还没走完布局时回调的，
+ * 此刻 `R.id.root.height` 还是旧方向的值 —— 直接算等于拿旧尺寸又设了一遍。
+ */
+internal fun MainActivity.reapplyDialogPlacements() {
+    window?.decorView?.post { reapplyDialogPlacementsNow() }
+}
+
+private fun MainActivity.reapplyDialogPlacementsNow() {
+    val iter = placedDialogs.iterator()
+    while (iter.hasNext()) {
+        val (ref, swipeAreaDp, fitContent) = iter.next()
+        val d = ref.get()
+        if (d == null || !d.isShowing) { iter.remove(); continue }
+        applyDialogGeometry(d, swipeAreaDp, fitContent)
+    }
 }
 
 /**

@@ -155,7 +155,8 @@ internal fun MainActivity.exitPreview(tab: TabState) {
     tab.previewSelected.clear()
     tab.previewExpanded.clear()
     if (tab.viewsBound) {
-        tab.previewRoot.visibility = View.GONE
+        // 可见性不在这里写：navTab 末尾的 applyLayer 会按 previewActive=false 收层
+        //（唯一写入点是 browse/TabLayers.kt，这里多写一行就会破坏那条不变式）。
         navTab(tab, tab.currentDir)
     }
     // This window just gave up its archive, which may have been another window's

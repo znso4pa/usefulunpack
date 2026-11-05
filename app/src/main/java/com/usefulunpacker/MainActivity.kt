@@ -416,6 +416,10 @@ class MainActivity : AppCompatActivity() {
         //（isRoomy 一分为二），不重拼就一直是旧方向那套（真机：竖屏显示横屏骨架）。
         // 见 browse/HomeHub.kt 的 refreshHubs。
         refreshHubs()
+        // 弹窗也是「按当时方向算一次」的：belowTabs 的居中/贴底、480dp/720dp 宽度
+        // 都是转屏前的值，不重算就还是旧方向那套（真机：横屏开着的搜索框转竖屏后
+        // 仍是 480dp 宽、还按横屏的 y 偏移居中）。见 ui/DialogHost.kt。
+        reapplyDialogPlacements()
     }
 
     override fun onBackPressed() {

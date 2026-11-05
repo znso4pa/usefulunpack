@@ -15,7 +15,8 @@ import android.view.View
  *
  * 现在：**状态只由 showHome / enterBrowserAt / navTab / syncPreview 改，视图只由
  * [applyLayer] 改**。状态与可见性之间只有这一处映射，漏配平在结构上不可能发生。
- * 自查：`grep -rn "homeRoot?.visibility\|panel?.visibility\|previewRoot.visibility\|pathBar?.visibility"`
+ * 自查（别用 `\|` 拼交替 —— 本机 grep 会漏）：
+ * `rg '(homeRoot|panel|previewRoot|pathBar)\??\.visibility\s*=' app/src/main/java`
  * 应当只命中本文件。
  *
  * ## 层序与映射

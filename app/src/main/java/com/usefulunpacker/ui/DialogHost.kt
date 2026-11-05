@@ -279,7 +279,10 @@ internal fun MainActivity.belowTabBar(
             // 不碰窗口。窗口是 WRAP，会跟着面板量；面板内部列表带权重，自然分到剩余高度。
             // （给窗口设死高度不行：AlertController 的 customPanel 是 WRAP，内容不会撑开，
             // 列表会塌成 0 高 —— 真机踩过。）
-            fitDialogPanel(dlg, sheetW, availH)
+            // 宽高都由窗口定死（show 之后 setLayout 有效）。只定宽不定高的话窗口会比面板
+            // 高出装饰层那点内边距，面板居中 → 底部露出一条窗口底色，看着像从底部呼出的。
+            w.setLayout(sheetW, availH)
+            fitDialogPanel(dlg)
             return
         }
         // 短内容贴自身高度（1 条的回收站不该开成 near-full-screen）。先量再定 EXACT 高。
@@ -336,16 +339,77 @@ private const val DIALOG_LANDSCAPE_W_DP = 480f
  *
  * 找不到面板就静默返回（布局结构变了也不至于崩）。
  */
-private fun MainActivity.fitDialogPanel(dlg: android.app.Dialog, widthPx: Int, heightPx: Int) {
-    val content = dlg.window?.decorView?.findViewById<android.view.ViewGroup>(android.R.id.content)
-        ?: return
+private fun MainActivity.fitDialogPanel(dlg: android.app.Dialog) {
+    val decor = dlg.window?.decorView ?: return
+    // ⚠️ 对话框主题自带最小宽度（Material 按屏宽百分比算，横屏下约 548dp），
+    // 不清掉的话面板设成 480dp 也会被它顶回去 —— 同一批弹窗宽度就对不齐了。
+    if (decor.minimumWidth != 0) decor.minimumWidth = 0
+    val content = decor.findViewById<android.view.ViewGroup>(android.R.id.content) ?: return
+    // ⚠️ `android:id/content` 这个 FrameLayout 是 **WRAP + 顶部对齐**的：窗口定了高度，
+    // 它只包裹面板那么高，下面剩下的窗口区域露的是被压暗的**背后界面** —— 看起来就是
+    // 卡片下面多出一条（真机采样：卡片 1140px、窗口 1473px，底部 318px 是背景色）。
+    // 先让它撑满窗口，面板再撑满它，整张卡才贴住窗口。
+    (content.layoutParams as? android.widget.FrameLayout.LayoutParams)?.let { clp ->
+        if (clp.height != android.view.ViewGroup.LayoutParams.MATCH_PARENT) {
+            clp.height = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            content.layoutParams = clp
+        }
+    }
     val panel = content.getChildAt(0) ?: return
     val lp = panel.layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
-    if (lp.width == widthPx && lp.height == heightPx && lp.gravity == android.view.Gravity.CENTER) return
-    lp.width = widthPx
-    lp.height = heightPx
-    lp.gravity = android.view.Gravity.CENTER
-    panel.layoutParams = lp
+    // 面板撑满窗口：窗口已经定死尺寸，面板用 MATCH_PARENT 才贴合（用固定高度的话
+    // 窗口比面板高的那部分会在底部露出一条底色）。
+    if (lp.width != android.view.ViewGroup.LayoutParams.MATCH_PARENT ||
+        lp.height != android.view.ViewGroup.LayoutParams.MATCH_PARENT) {
+        lp.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+        lp.height = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+        lp.gravity = android.view.Gravity.CENTER
+        panel.layoutParams = lp
+    }
+    // ⚠️ 平台 `AlertDialogLayout` 里有一个给 setMessage 用的**空壳** contentPanel，
+    // 它带 weight=1；而放自定义视图的 customPanel 是 WRAP 且没有权重 —— 剩余高度全被
+    // 那个空壳吃掉，自定义内容只占上半截，下面留一块面板底色（看着像底部又多了一条）。
+    // 两个 id 都是 @hide（`android.R.id.customPanel` 编不过），所以按结构识别：
+    //   * 没有任何子视图的空壳 → 不许吃权重；
+    //   * 子树最大的那个（= 自定义内容）→ 拿走权重。
+    val ll = panel as? android.widget.LinearLayout ?: return
+    var contentChild: android.view.View? = null
+    var bestCount = -1
+    for (i in 0 until ll.childCount) {
+        val c = ll.getChildAt(i)
+        val clp = c.layoutParams as? android.widget.LinearLayout.LayoutParams ?: continue
+        val n = descendants(c)
+        if (n > bestCount) { bestCount = n; contentChild = c }
+        if (n == 0 && clp.weight != 0f) {
+            clp.weight = 0f; c.layoutParams = clp
+        }
+    }
+    contentChild?.let { c ->
+        val clp = c.layoutParams as? android.widget.LinearLayout.LayoutParams ?: return@let
+        if (clp.weight != 1f || clp.height != 0) {
+            clp.height = 0; clp.weight = 1f; c.layoutParams = clp
+        }
+        // ⚠️ `setView()` 给自定义视图的是 MATCH_PARENT × **WRAP** —— 面板撑满了，
+        // 内容却只占它的自然高度，下面那一截露面板底色（就是「底部多一条」）。
+        // 把内容根也设成 MATCH_PARENT。
+        val holder = c as? android.view.ViewGroup ?: return@let
+        for (k in 0 until holder.childCount) {
+            val v = holder.getChildAt(k)
+            val vlp = v.layoutParams as? android.widget.FrameLayout.LayoutParams ?: continue
+            if (vlp.height != android.view.ViewGroup.LayoutParams.MATCH_PARENT) {
+                vlp.height = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                v.layoutParams = vlp
+            }
+        }
+    }
+}
+
+/** 子树节点数（含自身）。只用来判断「谁是真正的内容面板」。 */
+private fun descendants(v: android.view.View): Int {
+    if (v !is android.view.ViewGroup) return 1
+    var n = 1
+    for (i in 0 until v.childCount) n += descendants(v.getChildAt(i))
+    return n
 }
 
 /** Unwrap `ContextWrapper`s to reach the hosting [MainActivity], if any. */

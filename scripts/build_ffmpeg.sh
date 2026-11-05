@@ -70,6 +70,12 @@ API=26
 #     armv7 2,671,148 → **2,863,484**（+188 KB），合计 +0.37 MB → 两个 ABI 共 5.79 MB。
 #   * H.264 解码器从未启用过、**也不该**启用：libx264 是 GPL，C 解码器本身约 1 MB/ABI。
 #     视频**编解码**都走 Android 的 MediaCodec（硬件 H.264），ffmpeg 只解不编。
+#     **实测过一次**（把 `h264` 加进 `VIDEO_DECODERS`）：`libavcodec.a` 3839 → 4825 KB，
+#     最终 .so arm64 3,209,112 → **4,424,104**（+1.16 MB）、armv7 2,863,484 →
+#     **3,907,556**（+1.00 MB），两 ABI 合计 5.79 → **7.95 MB**。这就是「改用 ffmpeg
+#     软解、彻底不碰 MediaCodec 解码器」的完整代价 —— 做取舍时别再重新量一遍。
+#     注意它只省掉「解」：ffmpeg 里唯一的 H.264 **编码器**是 libx264（GPL），
+#     编码那一半永远得是 MediaCodec。
 #   * mov 解复用器**不需要** `h264` parser：MP4 的样本本来就是完整的访问单元，
 #     mov 给视频流设的是 `AVSTREAM_PARSE_HEADERS`（demux.c 会打 `PARSER_FLAG_COMPLETE_FRAMES`），
 #     而 demux.c:1413 在找不到 parser 时只打一条 verbose 日志、把包**原样**交出来 ——

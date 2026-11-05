@@ -70,17 +70,18 @@ internal fun iconView(ctx: Context, res: Int, sizePx: Int, tint: Int): ImageView
 /**
  * 一行 n 个等重子项（最后一个不加间距）。
  *
- * [gap] 是 **dp 值**（和其它 kit 构件一致），内部换算成像素。
+ * [gapDp] 是 **dp 值**（和其它 kit 构件一致），内部换算成像素 —— 参数名带 `Dp` 后缀，
+ * 就是为了让「这里要传 18，不是 `dp(18)`」在调用处一眼可见。
  *
  * 历史：旧 `HomeHub.homeRow` 的调用处传的是 `act.dp(18)`（已是像素），函数内又 `ctx.dp(gap)`
  * 一次 → 实际间距被放大到「设计值 × density」（≈49dp，取决于屏幕），不是 18dp。
- * P4 纯重构时原样保留，本轮（v6.5.0）按原意图修正：间距回到调用处写的 18 / 14 / 9 dp。
+ * P4 纯重构时原样保留，v6.5.0 按原意图修正：间距回到调用处写的 18 / 14 / 9 dp。
  */
-internal fun equalRow(ctx: Context, vararg cells: View, gap: Int): LinearLayout {
+internal fun equalRow(ctx: Context, vararg cells: View, gapDp: Int): LinearLayout {
     val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
     cells.forEachIndexed { i, v ->
         val lp = LinearLayout.LayoutParams(0, MATCH, 1f)
-        if (i < cells.size - 1) lp.marginEnd = ctx.dp(gap)
+        if (i < cells.size - 1) lp.marginEnd = ctx.dp(gapDp)
         row.addView(v, lp)
     }
     return row

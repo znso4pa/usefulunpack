@@ -287,7 +287,7 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         act.getString(R.string.home_terminal_desc),
         act.getString(R.string.home_cmds_tag, UuCommands.cmdCount), true, cardBg, roomy) { act.terminalPanel.show() }
     if (roomy) {
-        container.addView(equalRow(act, browseHero, termHero, gap = 18),
+        container.addView(equalRow(act, browseHero, termHero, gapDp = 18),
             LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = act.dp(22) })
     } else {
         // 手机竖屏：两张上下排、**按设计稿比例定高**（[PW_HERO]），不再 `wrap_content`。
@@ -313,7 +313,7 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
             act.getString(R.string.home_q_settings_sub), dimBg, roomy) { act.settings() },
     )
     fun miniRow(cells: List<View>, topMarginDp: Int) = container.addView(
-        equalRow(act, *cells.toTypedArray(), gap = if (roomy) 14 else 9),
+        equalRow(act, *cells.toTypedArray(), gapDp = if (roomy) 14 else 9),
         // 手机竖屏按设计稿比例定高（[PW_QUICK]）；宽屏仍是一整行 `wrap_content`。
         LinearLayout.LayoutParams(MATCH, if (roomy) WRAP else 0, if (roomy) 0f else PW_QUICK)
             .apply { topMargin = act.dp(topMarginDp) },

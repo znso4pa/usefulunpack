@@ -236,7 +236,10 @@ internal fun MainActivity.belowTabBar(
  */
 private fun MainActivity.applyDialogGeometry(
     dlg: android.app.Dialog,
-    swipeAreaDp: Float,
+    // ⚠️ 目前**不参与计算**：它只被登记下来，实际可用高度由 `applySize()` 按
+    // `R.id.root` 的**当前**高度算（键盘弹出时 root 会被压矮，那个值才是真的）。
+    // 早先这里用它算过一个 `sheetH`，但那个变量从头到尾没人用，已删。
+    @Suppress("UNUSED_PARAMETER") swipeAreaDp: Float,
     fitContent: Boolean,
 ) {
     val w = dlg.window ?: return
@@ -252,11 +255,6 @@ private fun MainActivity.applyDialogGeometry(
     } else {
         minOf(dm.widthPixels, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
     }
-    val sheetH = if (landscape) {
-        (dm.heightPixels - topInset - (2 * 20f * density).toInt()).coerceAtLeast(0)
-    } else {
-        (dm.heightPixels - topInset - (swipeAreaDp * density).toInt()).coerceAtLeast(0)
-    }
 
     // ── 几何 / 明暗：与调用顺序无关，当场生效 ────────────────────────────
     if (landscape) {
@@ -269,8 +267,21 @@ private fun MainActivity.applyDialogGeometry(
         //（NOT_TOUCH_MODAL 保留）。卡片外观交给对话框主题的圆角 windowBackground。
         w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         w.setDimAmount(0.5f)
+        // ⚠️ 转屏重算时必须把窗口背景**换回主题的圆角底**：竖屏分支把它替换成了纯色
+        // scrim（见下），而窗口背景一旦被 setBackgroundDrawable 改过就没有「恢复默认」
+        // 的 API —— 不换回来的话，竖屏转横屏后浮动卡变直角、外面还压着一层 0x99000000。
+        // 取的是 `w.context`（对话框主题包装过的），不是 Activity 的 context。
+        val ta = w.context.obtainStyledAttributes(intArrayOf(android.R.attr.windowBackground))
+        val themedBg = ta.getDrawable(0)
+        ta.recycle()
+        // 主题里没设就不动：宁可留着上一次的背景，也不要 setBackgroundDrawable(null)
+        // 把卡片变成全透明。
+        if (themedBg != null) w.setBackgroundDrawable(themedBg)
     } else {
         w.setGravity(android.view.Gravity.BOTTOM)
+        // ⚠️ y 必须归零：横屏分支把它设成 topInset/2，BOTTOM 重力下这个正值会把窗口
+        // 往下推出屏幕（底边被裁掉）。同样只有转屏重算才会碰到。
+        w.attributes = w.attributes.apply { y = 0 }
         // 竖屏仍是贴底大窗 + 窗口自带的局部 scrim（不动 tab 条的亮度）
         w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         w.setDimAmount(0f)
@@ -342,6 +353,10 @@ private val placedDialogs =
     mutableListOf<Triple<java.lang.ref.WeakReference<android.app.Dialog>, Float, Boolean>>()
 
 private fun registerPlacement(dlg: android.app.Dialog, swipeAreaDp: Float, fitContent: Boolean) {
+    // ⚠️ 只清「已被 GC」和「同一个弹窗的旧登记」，**不要**顺手清 `!isShowing` 的：
+    // `belowTabs` 有一半调用点在 `show()` 之前，此时弹窗还没显示。若在 A 注册、尚未
+    // show 时注册 B，按 isShowing 清就会把 A 误剔掉 —— A 显示后再转屏就不重算了。
+    // 表里积累的弱引用条目由 [reapplyDialogPlacementsNow] 在转屏时统一回收。
     placedDialogs.removeAll { it.first.get() == null || it.first.get() === dlg }
     placedDialogs.add(Triple(java.lang.ref.WeakReference(dlg), swipeAreaDp, fitContent))
 }

@@ -735,4 +735,18 @@ mod tests {
         extract_progress::adjust_total(i64::MIN);
         assert_eq!(extract_progress::total_bytes(), 0);
     }
+
+    /// The two signatures v6.5.0 added: MPEG program stream pack header and the
+    /// UTF-16LE BOM. Both exist for the same blind spot — a member whose only
+    /// recognizable feature sits in a short prefix (a video stream, a UTF-16
+    /// script) and which is too large for the ADLR identity to cover.
+    #[test]
+    fn recognizes_mpeg_ps_and_utf16le() {
+        assert!(looks_decrypted(b"\x00\x00\x01\xba\x44\x00\x04\x00\x04\x01"));
+        assert!(looks_decrypted(b"\xff\xfeH\x00i\x00"));
+        // Near misses: 0xBB is the system-header start code, not the pack header;
+        // FE FF is the UTF-16**BE** BOM, which is deliberately not a signature.
+        assert!(!looks_decrypted(b"\x00\x00\x01\xbb\x44\x00"));
+        assert!(!looks_decrypted(b"\xfe\xff\x00H"));
+    }
 }

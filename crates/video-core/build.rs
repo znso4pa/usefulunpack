@@ -82,16 +82,32 @@ const FUNCS: &[&str] = &[
     // NDK media（MediaCodec / MediaFormat / MediaMuxer）—— 同样交给 bindgen，
     // 手抄这套签名只会抄错。
     "AMediaCodec_createEncoderByType",
-    // 硬解（H.264 源）：解码器把帧直接渲进编码器的 input surface，全程不碰 YUV 布局。
-    // NDK 的 AMediaCodec **没有** getOutputImage（那是 Java 侧 ImageReader 的东西），
-    // ByteBuffer 输出的 stride/slice-height 又因设备而异 —— surface 直连是唯一稳的路。
+    // 硬解（H.264 源）：解码器的输出面是**一个 AImageReader**，不是编码器的 input surface。
+    //
+    // 为什么不走 surface 直连：那条路要求「解码器的输出面 = 编码器的输入面」，帧全程
+    // 不落地，代价是我们永远拿不到像素 —— 时间戳、旋转、任何要碰画面的处理都没法做，
+    // 而且它依赖 `releaseOutputBuffer(render=true)` 这类只写错不报错的行为。
+    //
+    // AImageReader 这条把「一帧」变成**看得见的东西**：三个平面 + 行跨度 + 像素跨度 +
+    // 时间戳，全是接口明说的（`AImage_getPlaneRowStride` / `AImage_getTimestamp`）。
+    // 拿到之后就是普通的「YUV → NV12 → 编码器输入缓冲」，和 ffmpeg 那条路同一个形状。
+    // 代价是每帧多一次 CPU 读（`AImageReader_new` 隐含 CPU_READ_OFTEN）。
     "AMediaCodec_createDecoderByType",
-    "AMediaCodec_createInputSurface",
-    "AMediaCodec_setOutputSurface",
-    // surface 输入时**不能**再 queue 输入缓冲（编码器没有输入队列），收尾只能靠这个。
-    "AMediaCodec_signalEndOfInputStream",
-    // `createInputSurface` 交出来的 surface 所有权在我们手上。
-    "ANativeWindow_release",
+    "AImageReader_new",
+    "AImageReader_getWindow",
+    // 非阻塞：队列空时返回 `AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE`，正好能塞进现有的
+    // 非阻塞 drain 循环里（`acquireLatestImage` 会丢帧，批处理不能用它）。
+    "AImageReader_acquireNextImage",
+    "AImageReader_delete",
+    "AImage_getWidth",
+    "AImage_getHeight",
+    "AImage_getNumberOfPlanes",
+    "AImage_getPlaneData",
+    "AImage_getPlaneRowStride",
+    "AImage_getPlanePixelStride",
+    // 解码器把输入 pts 原样写进缓冲时间戳（纳秒）—— 显示顺序就靠它。
+    "AImage_getTimestamp",
+    "AImage_delete",
     "AMediaCodec_configure",
     "AMediaCodec_start",
     "AMediaCodec_stop",
@@ -139,8 +155,11 @@ const TYPES: &[&str] = &[
     "AMediaMuxer",
     "AMediaCodecBufferInfo",
     "media_status_t",
-    // 硬解管线里编码器的 input surface（`createInputSurface` 的出参）。
+    // 解码器的输出面（`AMediaCodec_configure` 要一个 ANativeWindow*，由 reader 持有，
+    // **不能** release）。`AImage` 是一帧，用完 `AImage_delete` 还给 reader。
     "ANativeWindow",
+    "AImageReader",
+    "AImage",
 ];
 
 const VARS: &[&str] = &[
@@ -254,6 +273,8 @@ fn main() {
              #include <media/NdkMediaCodec.h>\n\
              #include <media/NdkMediaFormat.h>\n\
              #include <media/NdkMediaMuxer.h>\n\
+             #include <media/NdkImageReader.h>\n\
+             #include <media/NdkImage.h>\n\
              #include <android/native_window.h>\n",
         )
         // configure 生成的 avconfig.h 在 build 目录，公共头在源码目录 —— 两个都要。

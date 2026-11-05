@@ -5,7 +5,7 @@
 //!     av_read_frame ──► ffmpeg 解码 ──► AVFrame ──► NV12 ──► AMediaCodec(H.264) ─┐
 //!                                                                                ├─► AMediaMuxer ──► MP4
 //!   H.264 源（MP4 / MOV）
-//!     av_read_frame ──► AMediaCodec 硬解 ──(input surface)──► AMediaCodec(H.264) ─┤
+//!     av_read_frame ──► AMediaCodec 硬解 ──► AImageReader ──► AImage ──► NV12 ──► AMediaCodec(H.264) ─┤
 //!                                                                                │
 //!   任意源
 //!     av_read_frame ──► ffmpeg 解码 ──► swresample ──► PCM ──► AMediaCodec(AAC) ──┘
@@ -22,12 +22,28 @@
 //! # H.264 源走硬解（`Ctx::use_hw`）
 //!
 //! 同上一条的理由反过来：ffmpeg 里也没有 H.264 **解码器**。所以 H.264 源（MP4/MOV
-//! 家族）由设备自己的 `AMediaCodec` 解，**解码器的输出面就是编码器的输入面**
-//! （surface 直连，零拷贝）。为什么不是「解出来再喂编码器」：NDK 的 `AMediaCodec`
-//! 没有 `getOutputImage`，ByteBuffer 输出的 YUV 布局因设备而异，写错只花屏不报错。
+//! 家族）由设备自己的 `AMediaCodec` 解。
+//!
+//! 解码器的输出面是**一个 `AImageReader` 的 window**，每渲一帧就 acquire 出一张
+//! `AImage` —— 三个平面、行/像素跨度、时间戳全是接口明说的，然后走 `yuv.rs` 转
+//! NV12 喂给编码器。形状与 ffmpeg 那条**完全一样**，只有「谁解」不同。
+//!
+//! 为什么不是「解码器直接渲进编码器的 input surface」（那条路更短、零拷贝）：
+//!
+//! * 帧全程不落地 → 拿不到 `AImage_getTimestamp`，时间戳只能靠 surface 的缓冲间接
+//!   传，B 帧重排之后连「这一帧是哪一帧」都要自己猜；
+//! * 旋转矩阵无从处理；
+//! * 依赖 `releaseOutputBuffer(render = true)` 这类**只写错不报错**的行为 —— 传
+//!   `false` 时解码器照常推进、`dequeue` 照常返回，reader 里却一张图都没有，最后
+//!   交出一个 0 字节的 MP4。
+//!
+//! 代价只是每帧多一次 CPU 读。另一条备选路（让 ffmpeg 自己软解）实测过：
+//! `libavcodec.a` 3839 → 4825 KB，两个 ABI 的 `.so` 从 5.79 MB 涨到 7.95 MB，
+//! 而且只换掉解码、编码仍要 MediaCodec（libx264 是 GPL）—— 不值。
 //!
 //! 代价：H.264 源只能转 MP4（→ WMV 那条路全程 ffmpeg，见 `asf.rs`），而且这条管线
-//! 的真机行为只能上机验（csd、surface 的时间戳传递、色彩格式都没法在主机上模拟）。
+//! 的真机行为只能上机验（csd、设备给的行跨度是 I420 还是 NV12、时间戳精度都没法在
+//! 主机上模拟；纯逻辑部分在 `yuv.rs` 有单测）。
 //!
 //! # 两条轨的错位
 //!
@@ -130,24 +146,26 @@ struct Ctx {
 
     // ---- H.264 源的硬解（`use_hw`）----
     //
-    // 为什么是「解码器渲进编码器的 surface」而不是「解出来再喂编码器」：
-    // NDK 的 AMediaCodec **没有** `getOutputImage`（那是 Java 侧 ImageReader 的 API），
-    // ByteBuffer 输出的 YUV 布局（NV12 / I420、stride 是否等于 width、slice-height）
-    // **因设备而异**，写错只会花屏不会报错。surface 直连把这段整个绕开。
+    // 形态和 ffmpeg 那条**一样**：解出一帧 YUV → 转 NV12 → 塞进编码器的输入缓冲。
+    // 唯一不同的是「谁解」：ffmpeg 的 AVFrame 换成 MediaCodec 的 `AImage`。
     //
-    /// H.264 解码器。它没有输出缓冲 —— 帧直接渲进 [`Ctx::hw_surface`]。
+    // 为什么不是「解码器渲进编码器的 input surface」（那条路更短，但更脆）：
+    // 帧全程不落地 → 时间戳只能靠 surface 的缓冲时间戳间接传、旋转没法处理、
+    // 而且依赖 `releaseOutputBuffer(render = true)` 这类**只写错不报错**的行为。
+    // `AImageReader` 把一帧变成看得见的东西（三个平面 + 行/像素跨度 + 时间戳），
+    // 代价只是每帧多一次 CPU 读。
+    /// H.264 解码器。它的输出面是 [`Ctx::img_reader`] 的 window，不是编码器。
     h264dec: *mut ffi::AMediaCodec,
-    /// `venc` 的 input surface；`createInputSurface` 把所有权交给我们，必须 release。
-    hw_surface: *mut ffi::ANativeWindow,
-    /// 源视频是 H.264 → 走零拷贝硬解。此时 [`Ctx::vdec`] 是空指针。
+    /// 解码器的输出面。每渲一帧就能 acquire 出一个 `AImage`。
+    img_reader: *mut ffi::AImageReader,
+    /// 解码器已经吐过 EOS 输出标志 —— 收尾循环靠它判断「不用再等了」。
+    hw_eos: bool,
+    /// 源视频是 H.264 → 走硬解。此时 [`Ctx::vdec`] 是空指针。
     use_hw: bool,
     /// `avcC` 解析结果（`use_hw` 时才有）。
     avc: Option<crate::h264::AvcConfig>,
     /// AVCC → Annex-B 的复用缓冲（每包一次，免得每帧分配）。
     annexb: Vec<u8>,
-    /// 硬解路径下最后一个解码输出的 PTS。收尾给编码器发 EOS 时要用 ——
-    /// surface 模式没有 `feed_video`，`last_v_us` 一直是 0。
-    last_hw_pts_us: i64,
 }
 
 impl Drop for Ctx {
@@ -163,8 +181,8 @@ impl Drop for Ctx {
             if !self.adec.is_null() {
                 ffi::avcodec_free_context(&mut self.adec);
             }
-            // 硬解：**先停解码器（生产者）再停编码器（surface 的消费者）**。
-            // 反过来做的话，解码器手里可能还有一帧正往一个已经停掉的 surface 里渲。
+            // 硬解：**先停解码器（生产者）再停编码器（消费者）**。
+            // 解码器还挂着 reader 的 window，先把它停掉，reader 才能安全销毁。
             if !self.h264dec.is_null() {
                 ffi::AMediaCodec_stop(self.h264dec);
                 ffi::AMediaCodec_delete(self.h264dec);
@@ -173,9 +191,9 @@ impl Drop for Ctx {
                 ffi::AMediaCodec_stop(self.venc);
                 ffi::AMediaCodec_delete(self.venc);
             }
-            // surface 的所有权在 `createInputSurface` 之后归我们，两个编解码器都不管它。
-            if !self.hw_surface.is_null() {
-                ffi::ANativeWindow_release(self.hw_surface);
+            // reader 的 window 归 reader 自己管，**不要**对它 `ANativeWindow_release`。
+            if !self.img_reader.is_null() {
+                ffi::AImageReader_delete(self.img_reader);
             }
             if !self.aenc.is_null() {
                 ffi::AMediaCodec_stop(self.aenc);
@@ -353,6 +371,7 @@ impl Ctx {
         self.drain(codec, is_video, FINISH_BUDGET_US)
     }
 
+    /// ffmpeg 解出来的一帧 → NV12 → 编码器。
     fn feed_video(&mut self, f: &ffi::AVFrame) -> R<()> {
         let mut us = f.best_effort_timestamp;
         if us == ffi::AV_NOPTS_VALUE {
@@ -364,39 +383,54 @@ impl Ctx {
             let tb = unsafe { (*self.stream(self.vstream)).time_base };
             us = unsafe { ffi::av_rescale_q(us, tb, ffi::AVRational { num: 1, den: 1_000_000 }) };
         }
+        // 归零 / 单调前进的规则见 `video_pts` 上的注释。
+        let pts = self.video_pts(us);
+        let (fw, fh) = (f.width as usize, f.height as usize);
+        let (vw, vh) = (self.vw as usize, self.vh as usize);
+        self.feed_nv12(pts, |dst| unsafe {
+            frame_to_nv12(f, dst.as_mut_ptr(), fw, fh, vw, vh)
+        })
+    }
 
-        // 整条视频轨**归零**：首帧的 PTS 记成基准，其后一律减去它。
-        //
-        // 源里那个起始偏移是**复用器的 muxdelay**，不是内容真的晚开始 ——
-        // 实测 MPEG-PS 音视频都从 0.54 s 起、MPEG-TS 从 1.44 s 起，AVI/FLV 从 0 起。
-        // 不减掉它，视频轨从 0.54 s 开始、而音频轨按采样数从 0 累加（见 `feed_audio`
-        // 的 `last_a_us`），两条轨就整整错开一个 muxdelay —— 画面和声音对不上，
-        // 容器时长还凭空多出这一段（实测 3.00 s 的源出来 3.54 s）。AVI/FLV 源恰好
-        // 从 0 起，所以这个错位一直没暴露。
-        //
-        // 前提：源里音频与视频的起始时刻基本一致（我们支持的五种容器都如此，
-        // muxdelay 是整包生效的）。真带「音轨故意晚 N 秒」的源会丢掉那个偏移。
-        //
-        // 时间戳只允许前进。首帧要**单独判**：`last_v_us` 初值是 0，直接写
-        // `us <= last_v_us` 会把源里合法的首帧 PTS=0 当成「回退」，把它推到一个
-        // 帧长之后；下一帧又跟它相等，于是级联下去 —— 整条视频平移一个帧长，
-        // 末帧还会被挤出容器（实测 455 帧的样本变成 454 帧、首帧从 0.000 变 0.040）。
+    /// 把源时间戳归一化成容器里的 PTS（µs）：减去归零点、并保证只前进。
+    ///
+    /// `us < 0` 表示这一帧没带时间戳。归零点取**第一条显示出来的帧**的时间戳：
+    /// 硬解那边 `AImage` 已经是显示顺序，第一条就是最小的一条；ffmpeg 那边解出来的
+    /// 也是显示顺序。两边同一个口径，所以只有这一份实现。
+    ///
+    /// 为什么必须归一化：源里那个起始偏移是复用器的 muxdelay，不是内容真的晚开始
+    /// （实测 MPEG-PS 从 0.54 s 起、MPEG-TS 从 1.44 s 起、AVI/FLV 从 0 起）。不减掉
+    /// 它，视频轨从 0.54 s 开始、而音频轨按采样数从 0 累加，两条轨整整错开一个
+    /// muxdelay —— 画面和声音对不上，容器时长还凭空多出这一段。
+    ///
+    /// 首帧要**单独判**：`last_v_us` 初值是 0，直接写 `us <= last_v_us` 会把源里合法
+    /// 的首帧 PTS=0 当成「回退」推后一帧，然后级联下去 —— 整条视频平移一个帧长，
+    /// 末帧还会被挤出容器（实测 455 帧的样本变成 454 帧）。
+    fn video_pts(&mut self, us: i64) -> i64 {
         if !self.have_v_pts {
-            self.v_base_us = if us >= 0 { us } else { 0 };
             self.have_v_pts = true;
-            us = if us >= 0 { us - self.v_base_us } else { 0 };
-        } else {
-            if us >= 0 {
-                us -= self.v_base_us;
-            }
-            if us < 0 || us <= self.last_v_us {
-                us = self.last_v_us + self.frame_dur_us;
-            }
+            self.v_base_us = if us >= 0 { us } else { 0 };
+            self.last_v_us = 0;
+            return 0;
         }
-        self.last_v_us = us;
+        let mut t = if us >= 0 { us - self.v_base_us } else { -1 };
+        if t < 0 || t <= self.last_v_us {
+            t = self.last_v_us + self.frame_dur_us;
+        }
+        self.last_v_us = t;
+        t
+    }
 
+    /// 把一帧 NV12 喂进编码器。`fill` 负责把像素写进编码器的输入缓冲。
+    ///
+    /// 两条解码路（ffmpeg 的 `AVFrame` / MediaCodec 硬解的 `AImage`）都走这里，
+    /// 所以缓冲大小检查与 AAC priming 的后移量只有一份实现。
+    fn feed_nv12<F>(&mut self, us: i64, fill: F) -> R<()>
+    where
+        F: Fn(&mut [u8]),
+    {
         let venc = self.venc;
-        // 后移量只在喂编码器时加上：`last_v_us` 存的是**未后移**的值，否则上面那条
+        // 后移量只在喂编码器时加上：`last_v_us` 存的是**未后移**的值，否则
         // 「时间戳只允许前进」的判据会被自己的后移污染。见 `AAC_PRIMING_SAMPLES`。
         let shift = self.v_shift_us;
         let need = (self.vw as usize) * (self.vh as usize) * 3 / 2;
@@ -410,21 +444,13 @@ impl Ctx {
                 let buf = unsafe { ffi::AMediaCodec_getInputBuffer(venc, idx as usize, &mut cap) };
                 if buf.is_null() || cap < need {
                     unsafe { ffi::AMediaCodec_queueInputBuffer(venc, idx as usize, 0, 0, us as u64, 0) };
-                    return Err(msg(format!(
-                        "H.264 编码器输入缓冲太小（{cap} < {need}）"
-                    )));
+                    return Err(msg(format!("H.264 编码器输入缓冲太小（{cap} < {need}）")));
                 }
+                let dst = unsafe { std::slice::from_raw_parts_mut(buf, need) };
+                fill(dst);
                 unsafe {
-                    frame_to_nv12(
-                        f,
-                        buf,
-                        f.width as usize,
-                        f.height as usize,
-                        self.vw as usize,
-                        self.vh as usize,
-                    );
-                    ffi::AMediaCodec_queueInputBuffer(venc, idx as usize, 0, need, (us + shift) as u64, 0);
-                }
+                    ffi::AMediaCodec_queueInputBuffer(venc, idx as usize, 0, need, (us + shift) as u64, 0)
+                };
                 return self.drain(venc, true, 0);
             }
             if idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED as isize
@@ -438,30 +464,12 @@ impl Ctx {
         }
     }
 
-    /// 视频轨的归零点（µs）：优先用容器的 `start_time`，拿不到返回 `None`
-    /// 让调用方退回首包 PTS。
-    ///
-    /// 硬解路径不能用「首包 PTS」当基准 —— 解码顺序上第一个包不一定是 PTS 最小的
-    /// 那个（开放 GOP 的前导 B 帧），拿它当零会把整条轨平移几帧。
-    unsafe fn hw_base_us(&self) -> Option<i64> {
-        let st = self.stream(self.vstream);
-        let stt = (*st).start_time;
-        if stt == ffi::AV_NOPTS_VALUE {
-            return None;
-        }
-        Some(ffi::av_rescale_q(
-            stt,
-            (*st).time_base,
-            ffi::AVRational { num: 1, den: 1_000_000 },
-        ))
-    }
-
     /// 排空硬解解码器。`wait_us` 的语义与 [`Ctx::drain`] 一致。
     ///
-    /// **release 必须带 `render = true`**：surface 模式下帧不在 ByteBuffer 里，
-    /// 只有 release 时把 render 置位，帧才会被投递到编码器的 input surface。
-    /// 传 `false` 不会报错 —— 解码器照常推进、`dequeue` 照常返回，编码器却一帧都
-    /// 收不到，最后交出一个 0 字节的 MP4。这是这条路上最容易写错的一行。
+    /// **release 必须带 `render = true`**：解码器的输出面是 [`Ctx::img_reader`] 的
+    /// window，只有 release 时把 render 置位，帧才会被投递过去、变成一张可 acquire
+    /// 的 `AImage`。传 `false` 不会报错 —— 解码器照常推进、`dequeue` 照常返回，
+    /// reader 里却一张图都没有，最后交出一个 0 字节的 MP4。
     fn drain_hw_dec(&mut self, wait_us: i64) -> R<()> {
         let dec = self.h264dec;
         let deadline =
@@ -476,17 +484,15 @@ impl Ctx {
             };
             let idx = unsafe { ffi::AMediaCodec_dequeueOutputBuffer(dec, &mut info, poll_us) };
             if idx >= 0 {
-                if info.presentationTimeUs > self.last_hw_pts_us {
-                    self.last_hw_pts_us = info.presentationTimeUs;
-                }
                 let eos = info.flags & ffi::BufferFlags::AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM != 0;
                 unsafe { ffi::AMediaCodec_releaseOutputBuffer(dec, idx as usize, true) };
                 if eos {
+                    self.hw_eos = true;
                     return Ok(());
                 }
             } else if idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED as isize {
-                // 硬解器的输出格式（色彩格式 / stride / 尺寸）我们不关心 —— 帧直接进
-                // surface，不经过我们的内存。但这个对象是新建的，必须释放。
+                // 硬解器的输出格式（色彩格式 / 尺寸）我们不从这条路取 —— 每一帧的
+                // 真实尺寸和跨度由 `AImage_get*` 明说。但这个对象是新建的，必须释放。
                 let f = unsafe { ffi::AMediaCodec_getOutputFormat(dec) };
                 if !f.is_null() {
                     unsafe { ffi::AMediaFormat_delete(f) };
@@ -503,15 +509,12 @@ impl Ctx {
         }
     }
 
-    /// 硬解路径：把一个 H.264 包喂给 MediaCodec 解码器。
+    /// 硬解路径：把一个 H.264 包喂给 MediaCodec 解码器，再把能出的帧取走。
     ///
-    /// 与 [`Ctx::feed_video`] 的三点不同：
-    ///
-    /// 1. **不做单调性修正**。这里拿到的是**解码顺序**的包 PTS，B 帧会让它来回跳；
-    ///    按显示顺序重排是解码器的活（它输出缓冲上的 PTS 已经是显示顺序）。
-    ///    硬套 `feed_video` 那条「只允许前进」的判据会把 B 帧的时间戳全部改坏。
-    /// 2. **基准取容器的 `start_time`**，见 [`Ctx::hw_base_us`]。
-    /// 3. 只把包排进解码器，**帧不在我们手里**：见 [`Ctx::drain_hw_dec`]。
+    /// 与 [`Ctx::feed_video`] 的区别只有一条：**这里不做时间戳归一化**。拿到的是
+    /// **解码顺序**的包 PTS（B 帧会让它来回跳），真正的显示顺序要等解码器吐帧时
+    /// 由 `AImage_getTimestamp` 带回来 —— 那一步在 [`Ctx::pump_hw_images`] 里做。
+    /// 所以喂进去的 pts 只是「让解码器能把它带回输出」，归一化在出帧那边做。
     fn feed_hw_packet(&mut self, pkt: &ffi::AVPacket) -> R<()> {
         let mut us = (*pkt).pts;
         if us == ffi::AV_NOPTS_VALUE {
@@ -521,22 +524,9 @@ impl Ctx {
             let tb = unsafe { (*self.stream(self.vstream)).time_base };
             us = unsafe { ffi::av_rescale_q(us, tb, ffi::AVRational { num: 1, den: 1_000_000 }) };
         }
-
-        if !self.have_v_pts {
-            self.have_v_pts = true;
-            let base = unsafe { self.hw_base_us() };
-            self.v_base_us = base.unwrap_or_else(|| if us >= 0 { us } else { 0 });
-        }
-        // 拿不到时间戳的包（极少见）按「上一帧 + 一个帧长」补，别让它和上一帧撞。
-        if us == ffi::AV_NOPTS_VALUE {
-            us = self.last_hw_pts_us + self.frame_dur_us;
-        }
-        us -= self.v_base_us;
-        if us < 0 {
-            us = 0;
-        }
-        self.last_v_us = us;
-        self.last_hw_pts_us = us;
+        // 拿不到时间戳的包（极少见）：喂 0 进去，出帧那边看到 0 会按「上一帧 + 一个
+        // 帧长」补（见 `feed_image`）。解码器只接受 u64，负数进不去。
+        let pts = us.max(0) as u64;
 
         {
             let avc = self.avc.as_ref().ok_or_else(|| msg("硬解路径缺 avcC 配置"))?;
@@ -557,10 +547,7 @@ impl Ctx {
         }
 
         let dec = self.h264dec;
-        let venc = self.venc;
         let need = self.annexb.len();
-        // 后移量同 `feed_video`：只在喂进去的时候加，`last_v_us` 保持未后移的值。
-        let pts = (us + self.v_shift_us) as u64;
         loop {
             if video_progress::cancelled() {
                 return Err(ConvertError::Cancelled);
@@ -577,31 +564,100 @@ impl Ctx {
                     std::ptr::copy_nonoverlapping(self.annexb.as_ptr(), buf, need);
                     ffi::AMediaCodec_queueInputBuffer(dec, idx as usize, 0, need, pts, 0);
                 }
-                self.drain_hw_dec(0)?;
-                return self.drain(venc, true, 0);
+                return self.pump_hw_images(0);
             }
             if idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED as isize
                 || idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED as isize
             {
-                self.drain_hw_dec(0)?;
-                self.drain(venc, true, 0)?;
+                self.pump_hw_images(0)?;
                 continue;
             }
-            // TRY_AGAIN_LATER：解码器取不到输入槽，说明它的输出面被占满了 ——
-            // **编码器不排空，解码器就永远渲不进去**，两边互相等成死循环。所以这里
-            // 两个都要排，顺序是「先解码器后编码器」（渲出去的帧要有人接）。
-            self.drain_hw_dec(0)?;
-            self.drain(venc, true, 0)?;
+            // TRY_AGAIN_LATER：输入槽取不到，几乎总是「输出面没缓冲」——解码器渲不
+            // 进去就不肯收新包。所以这里必须把 reader 里的图取走（`pump_hw_images`
+            // 内部先排解码器再取图），否则下一轮还是取不到，死循环。
+            self.pump_hw_images(0)?;
         }
     }
 
-    /// 硬解收尾：EOS 依次过「解码器 → 编码器」。
+    /// 把解码器此刻能出的帧全部取出来、转 NV12、喂进编码器。
     ///
-    /// 顺序不能反：解码器里还压着几帧，得先让它们渲进 surface，再告诉编码器没有更多
-    /// 输入了；反过来尾部几帧会直接丢。
+    /// 四步是一个整体：排空解码器的输出缓冲（`render = true` 才会真的渲进 reader）
+    /// → 从 reader 逐张 acquire → 转 NV12 喂编码器 → 排空编码器。**只排不取会把
+    /// reader 的队列撑满**，解码器随即卡在「输出面没缓冲」上，输入槽也就永远拿不到。
+    fn pump_hw_images(&mut self, wait_us: i64) -> R<()> {
+        self.drain_hw_dec(wait_us)?;
+        let reader = self.img_reader;
+        let (vw, vh) = (self.vw, self.vh);
+        loop {
+            if video_progress::cancelled() {
+                return Err(ConvertError::Cancelled);
+            }
+            let mut img: *mut ffi::AImage = std::ptr::null_mut();
+            let st = unsafe { ffi::AImageReader_acquireNextImage(reader, &mut img) };
+            if st != ffi::media_status_t::AMEDIA_OK || img.is_null() {
+                // NO_BUFFER_AVAILABLE：这一刻没有了。**不是**流结束 —— 那是 EOS 标志。
+                break;
+            }
+            let r = self.feed_image(img, vw, vh);
+            unsafe { ffi::AImage_delete(img) };
+            r?;
+        }
+        let venc = self.venc;
+        self.drain(venc, true, 0)
+    }
+
+    /// 一张 `AImage` → NV12 → 编码器。
     ///
-    /// 编码器这一侧**不能**用 [`Ctx::finish_encoder`] —— surface 输入时它没有输入
-    /// 队列（`dequeueInputBuffer` 永远返回负值），只能走 `signalEndOfInputStream`。
+    /// 时间戳用 `AImage_getTimestamp`（纳秒）：解码器把喂进去的 pts 原样写在缓冲上，
+    /// 而缓冲是按**显示顺序**交出来的 —— 这就是 B 帧重排之后我们需要的那个值。
+    fn feed_image(&mut self, img: *mut ffi::AImage, vw: c_int, vh: c_int) -> R<()> {
+        let (mut w, mut h, mut ts_ns, mut nplanes) = (0 as c_int, 0 as c_int, 0i64, 0 as c_int);
+        unsafe {
+            ffi::AImage_getWidth(img, &mut w);
+            ffi::AImage_getHeight(img, &mut h);
+            ffi::AImage_getTimestamp(img, &mut ts_ns);
+            ffi::AImage_getNumberOfPlanes(img, &mut nplanes);
+        }
+        if nplanes < 3 || w <= 0 || h <= 0 {
+            return Err(msg(format!("硬解输出的图像不可用（{w}×{h}，{nplanes} 个平面）")));
+        }
+        let mut ptrs = [std::ptr::null_mut::<u8>(); 3];
+        let mut lens = [0 as c_int; 3];
+        let mut rows = [0 as c_int; 3];
+        let mut px = [0 as c_int; 3];
+        for i in 0..3usize {
+            unsafe {
+                ffi::AImage_getPlaneData(img, i as c_int, &mut ptrs[i], &mut lens[i]);
+                ffi::AImage_getPlaneRowStride(img, i as c_int, &mut rows[i]);
+                ffi::AImage_getPlanePixelStride(img, i as c_int, &mut px[i]);
+            }
+        }
+        if ptrs[0].is_null() || lens[0] <= 0 {
+            return Err(msg("硬解输出的 Y 平面为空"));
+        }
+        // 三个平面指针的有效期到 `AImage_delete` 为止 —— 调用方紧接着就删，别存。
+        let plane = |i: usize| crate::yuv::Plane {
+            data: unsafe { std::slice::from_raw_parts(ptrs[i], lens[i].max(0) as usize) },
+            row_stride: rows[i].max(0) as usize,
+            pixel_stride: px[i].max(1) as usize,
+        };
+        let frame = crate::yuv::YuvImage {
+            y: plane(0),
+            u: plane(1),
+            v: plane(2),
+            width: w as usize,
+            height: h as usize,
+        };
+        // 时间戳为 0 当作「没带」：交给 `video_pts` 按帧长补。
+        let us = if ts_ns > 0 { ts_ns / 1000 } else { -1 };
+        let pts = self.video_pts(us);
+        let (ow, oh) = (vw.max(2) as usize, vh.max(2) as usize);
+        self.feed_nv12(pts, |dst| frame.to_nv12(dst, ow, oh))
+    }
+
+    /// 硬解收尾：先让解码器把尾巴吐干净、帧全部取走，再走**和软解同一条**编码器收尾。
+    ///
+    /// 顺序不能反：解码器里还压着几帧（B 帧重排的尾巴），先关编码器它们就无处可去。
     fn finish_hw(&mut self) -> R<()> {
         let dec = self.h264dec;
         let idx = unsafe { ffi::AMediaCodec_dequeueInputBuffer(dec, 100_000) };
@@ -614,18 +670,20 @@ impl Ctx {
                 idx as usize,
                 0,
                 0,
-                self.last_hw_pts_us.max(0) as u64,
+                self.last_v_us.max(0) as u64,
                 ffi::BufferFlags::AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM,
             )
         };
-        // 等解码器吐到 EOS：这一步把最后的帧真正渲进 surface。
-        self.drain_hw_dec(FINISH_BUDGET_US)?;
-        let venc = self.venc;
-        let st = unsafe { ffi::AMediaCodec_signalEndOfInputStream(venc) };
-        if st != ffi::media_status_t::AMEDIA_OK {
-            return Err(msg(format!("编码器收不到输入结束信号：{st}")));
+        // 等到解码器吐 EOS 为止。每一轮都要把图取走，不然 reader 满了解码器就停住。
+        let deadline = Instant::now() + std::time::Duration::from_micros(FINISH_BUDGET_US as u64);
+        while !self.hw_eos && Instant::now() < deadline {
+            self.pump_hw_images(20_000)?;
         }
-        self.drain(venc, true, FINISH_BUDGET_US)
+        // 收个尾：EOS 之后 reader 里可能还有最后几张。
+        self.pump_hw_images(0)?;
+        let venc = self.venc;
+        // EOS 也要带上后移量，否则编码器会把「末帧时间戳回退」当成异常。
+        self.finish_encoder(venc, true, self.last_v_us + self.v_shift_us)
     }
 
     /// 喂一段交错的 S16 PCM。一个 PCM 帧不能从中间切断（切了左右声道就错位），
@@ -720,11 +778,11 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         frame_dur_us: 0,
         swr: std::ptr::null_mut(),
         h264dec: std::ptr::null_mut(),
-        hw_surface: std::ptr::null_mut(),
+        img_reader: std::ptr::null_mut(),
+        hw_eos: false,
         use_hw: false,
         avc: None,
         annexb: Vec::new(),
-        last_hw_pts_us: 0,
     };
 
     unsafe {
@@ -773,14 +831,45 @@ pub fn convert(input: &str, output: &str) -> R<()> {
                 let avc = crate::h264::AvcConfig::parse(extra).ok_or_else(|| {
                     msg("H.264 源的 extradata 不是 avcC —— 目前只支持 MP4/MOV 一类容器")
                 })?;
+                // 4:2:0 的宽高必须是偶数。硬解没有 `AVCodecContext`，尺寸只能从
+                // `codecpar` 取（H.264 的 SPS 早就把宽高写进流信息了）。
+                c.vw = ((*par).width + 1) & !1;
+                c.vh = ((*par).height + 1) & !1;
+                if c.vw <= 0 || c.vh <= 0 {
+                    return Err(msg(format!(
+                        "H.264 源的分辨率不可用（{}×{}）",
+                        (*par).width, (*par).height
+                    )));
+                }
+
                 c.h264dec = ffi::AMediaCodec_createDecoderByType(cstr!("video/avc"));
                 if c.h264dec.is_null() {
                     return Err(msg("这台设备没有 H.264 解码器"));
                 }
+                // 解码器的输出面 = **一个 AImageReader 的 window**（不是编码器的输入面）。
+                // 这样每渲一帧就能 acquire 出一张 `AImage`：三个平面 + 行/像素跨度 +
+                // 时间戳全是接口明说的，见 `Ctx::img_reader` 那段。
+                // `AImageReader_new` 隐含 `CPU_READ_OFTEN` —— 我们本来就要读像素。
+                let st = ffi::AImageReader_new(
+                    c.vw,
+                    c.vh,
+                    0x23, // AIMAGE_FORMAT_YUV_420_888
+                    4,    // 同时最多 4 张在途，够解码器周转
+                    &mut c.img_reader,
+                );
+                if st != ffi::media_status_t::AMEDIA_OK || c.img_reader.is_null() {
+                    return Err(msg(format!("建不了解码器输出面（AImageReader）：{st}")));
+                }
+                let mut win: *mut ffi::ANativeWindow = std::ptr::null_mut();
+                let st = ffi::AImageReader_getWindow(c.img_reader, &mut win);
+                if st != ffi::media_status_t::AMEDIA_OK || win.is_null() {
+                    return Err(msg(format!("拿不到 AImageReader 的 window：{st}")));
+                }
+
                 let df = ffi::AMediaFormat_new();
                 ffi::AMediaFormat_setString(df, cstr!("mime"), cstr!("video/avc"));
-                ffi::AMediaFormat_setInt32(df, cstr!("width"), (*par).width);
-                ffi::AMediaFormat_setInt32(df, cstr!("height"), (*par).height);
+                ffi::AMediaFormat_setInt32(df, cstr!("width"), c.vw);
+                ffi::AMediaFormat_setInt32(df, cstr!("height"), c.vh);
                 // 解码器要**带起始码**的 SPS / PPS（csd-0 / csd-1），avcC 里存的是裸 NAL。
                 let mut csd0 = Vec::with_capacity(avc.sps.len() + 4);
                 csd0.extend_from_slice(&[0, 0, 0, 1]);
@@ -790,17 +879,12 @@ pub fn convert(input: &str, output: &str) -> R<()> {
                 csd1.extend_from_slice(&avc.pps);
                 ffi::AMediaFormat_setBuffer(df, cstr!("csd-0"), csd0.as_ptr().cast(), csd0.len());
                 ffi::AMediaFormat_setBuffer(df, cstr!("csd-1"), csd1.as_ptr().cast(), csd1.len());
-                let st = ffi::AMediaCodec_configure(
-                    c.h264dec,
-                    df,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    0,
-                );
+                let st = ffi::AMediaCodec_configure(c.h264dec, df, win, std::ptr::null_mut(), 0);
                 ffi::AMediaFormat_delete(df);
                 if st != ffi::media_status_t::AMEDIA_OK {
                     return Err(msg(format!("H.264 解码器配置失败：{st}")));
                 }
+                // window 归 reader 所有，**不要** `ANativeWindow_release`。
                 c.avc = Some(avc);
                 c.use_hw = true;
             } else {
@@ -880,12 +964,9 @@ pub fn convert(input: &str, output: &str) -> R<()> {
             ffi::AMediaFormat_setString(vf, cstr!("mime"), cstr!("video/avc"));
             ffi::AMediaFormat_setInt32(vf, cstr!("width"), c.vw);
             ffi::AMediaFormat_setInt32(vf, cstr!("height"), c.vh);
-            // COLOR_FormatYUV420SemiPlanar —— 见 nv12.rs。
-            // **surface 输入时不能设**：帧是解码器直接渲进来的，编码器没有 YUV 缓冲，
-            // 设了 color-format 反而会让 createInputSurface 失败（有的设备直接报错）。
-            if !c.use_hw {
-                ffi::AMediaFormat_setInt32(vf, cstr!("color-format"), 21);
-            }
+            // COLOR_FormatYUV420SemiPlanar —— 见 nv12.rs。两条路都是 ByteBuffer 输入
+            // （硬解也要经过 `yuv.rs` 转一次），所以**无条件**设。
+            ffi::AMediaFormat_setInt32(vf, cstr!("color-format"), 21);
             ffi::AMediaFormat_setInt32(vf, cstr!("bitrate"), video_bitrate(c.vw, c.vh));
             ffi::AMediaFormat_setInt32(vf, cstr!("frame-rate"), fps);
             ffi::AMediaFormat_setInt32(vf, cstr!("i-frame-interval"), 1);
@@ -901,22 +982,8 @@ pub fn convert(input: &str, output: &str) -> R<()> {
                 return Err(msg(format!("H.264 编码器配置失败：{st}")));
             }
         }
-        // 硬解：把编码器的 input surface 交给解码器当输出面 —— 解码出的帧**直接**进
-        // 编码器，中间不经过我们的内存（所以没有 YUV 布局可言，见 Ctx 上的注释）。
-        // 顺序是硬要求：`createInputSurface` 在编码器 configure 之后、start 之前；
-        // `setOutputSurface` 在解码器 start 之前。
-        if c.use_hw {
-            let mut surf: *mut ffi::ANativeWindow = std::ptr::null_mut();
-            let st = ffi::AMediaCodec_createInputSurface(c.venc, &mut surf);
-            if st != ffi::media_status_t::AMEDIA_OK || surf.is_null() {
-                return Err(msg(format!("编码器建不了 input surface：{st}")));
-            }
-            c.hw_surface = surf;
-            let st = ffi::AMediaCodec_setOutputSurface(c.h264dec, surf);
-            if st != ffi::media_status_t::AMEDIA_OK {
-                return Err(msg(format!("解码器接不上编码器的 surface：{st}")));
-            }
-        }
+        // 解码器已经 configure 到 `img_reader` 的 window 上了（在开尺寸那段做的），
+        // 这里只要在喂第一个包之前把它 start 起来。
         if ffi::AMediaCodec_start(c.venc) != ffi::media_status_t::AMEDIA_OK {
             return Err(msg("H.264 编码器启动失败"));
         }
@@ -1140,8 +1207,8 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         }
         let (venc, aenc) = (c.venc, c.aenc);
         if c.use_hw {
-            // 硬解：视频编码器吃的是 surface，没有输入队列，收尾只能走
-            // `signalEndOfInputStream`。EOS 的顺序（先解码器后编码器）见 `finish_hw`。
+            // 硬解：先给解码器发 EOS 并把 `img_reader` 里剩的帧吐干净，再收编码器
+            // （顺序见 `finish_hw`）。
             c.finish_hw()?;
         } else {
             // EOS 也要带上后移量，否则编码器会把「末帧时间戳回退」当成异常。

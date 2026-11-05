@@ -130,8 +130,12 @@ const FUNCS: &[&str] = &[
     "AMediaMuxer_delete",
     "AMediaMuxer_start",
     "AMediaMuxer_stop",
+    // 旋转只改容器（写进 `tkhd` 的显示矩阵），不重编码。
+    "AMediaMuxer_setOrientationHint",
     "AMediaMuxer_addTrack",
     "AMediaMuxer_writeSampleData",
+    // 显示矩阵 → 角度。ffmpeg 给的是**逆时针**，容器要的是**顺时针**，符号要反。
+    "av_display_rotation_get",
 ];
 
 const TYPES: &[&str] = &[
@@ -177,6 +181,9 @@ const VARS: &[&str] = &[
     "AMEDIACODEC_INFO_TRY_AGAIN_LATER",
     "AMEDIA_OK",
     "AMEDIAMUXER_OUTPUT_FORMAT_MPEG_4",
+    // `codecpar->coded_side_data` 里装显示矩阵的那一类的编号（ffmpeg 7.1 里是 5，
+    // 但别硬写 5 —— 枚举顺序是上游的事）。
+    "AV_PKT_DATA_DISPLAYMATRIX",
 ];
 
 fn main() {
@@ -270,6 +277,7 @@ fn main() {
             "#include <libavcodec/avcodec.h>\n\
              #include <libavformat/avformat.h>\n\
              #include <libavutil/channel_layout.h>\n\
+             #include <libavutil/display.h>\n\
              #include <libavutil/mathematics.h>\n\
              #include <libavutil/pixdesc.h>\n\
              #include <libavutil/samplefmt.h>\n\

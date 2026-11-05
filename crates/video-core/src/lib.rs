@@ -32,6 +32,7 @@
 //! | [`h264`] | `avcC` 解析（取 SPS/PPS）+ AVCC → Annex-B（纯逻辑，主机可测） |
 //! | [`nv12`] | yuv420p → NV12（MediaCodec 的 `color-format 21` 要的排布） |
 //! | [`yuv`] | `AImage` 三平面 → NV12（硬解那条路；含行/像素跨度与缩放，主机可测） |
+//! | [`rotate`] | 显示矩阵角度：ffmpeg 的逆时针 → 容器要的顺时针（纯逻辑，主机可测） |
 //! | [`convert`] | 整条链路：解封装 → 解码 → 编码 → 封装，含进度与取消 |
 //!
 //! ## 进度与取消
@@ -53,10 +54,13 @@ mod asf;
 mod convert;
 #[cfg(not(uu_no_ffmpeg))]
 mod ffi;
-// 纯逻辑（avcC 解析 + AVCC→Annex-B / AImage 平面 → NV12），没有 FFI —— 主机上也要
-// 能跑单测，所以**不**跟上面几个一起 cfg 掉。非 Android 目标下没人调用，dead_code 是预期的。
+// 纯逻辑（avcC 解析 + AVCC→Annex-B / AImage 平面 → NV12 / 显示矩阵角度换算），
+// 没有 FFI —— 主机上也要能跑单测，所以**不**跟上面几个一起 cfg 掉。非 Android 目标下
+// 没人调用，dead_code 是预期的。
 #[allow(dead_code)]
 mod h264;
+#[allow(dead_code)]
+mod rotate;
 #[allow(dead_code)]
 mod yuv;
 #[cfg(not(uu_no_ffmpeg))]

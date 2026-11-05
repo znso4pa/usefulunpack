@@ -220,6 +220,47 @@ impl Ctx {
         *(*self.ifmt).streams.add(i as usize)
     }
 
+    /// 源视频流的**顺时针**显示旋转角（0 / 90 / 180 / 270）。
+    ///
+    /// 手机竖拍的 MP4 里，帧本身是横的，方向靠容器里的显示矩阵表达。这个矩阵在
+    /// `codecpar->coded_side_data` 里（`AV_PKT_DATA_DISPLAYMATRIX`，9 个 `i32`）。
+    /// 不读它、又不写回去的话，输出就是躺倒的 —— 帧数、时长、画质全对，只是方向错，
+    /// 属于「不报错但明显不对」的那一类。
+    ///
+    /// **符号别搞反**：`av_display_rotation_get` 返回的是**逆时针**角度，
+    /// 而 `AMediaMuxer_setOrientationHint` 要的是**顺时针**角度。取负再规整。
+    ///
+    /// 拿不到矩阵、矩阵尺寸不对、角度不是 90 的倍数（极少数变形矩阵）→ 一律返回 0，
+    /// 也就是「不写旋转提示」。宁可躺倒，也别瞎转一个角度。
+    fn stream_rotation_cw(&self) -> c_int {
+        if self.vstream < 0 {
+            return 0;
+        }
+        let par = unsafe { (*self.stream(self.vstream)).codecpar };
+        if par.is_null() {
+            return 0;
+        }
+        let (sd, n) = unsafe { ((*par).coded_side_data, (*par).nb_coded_side_data) };
+        if sd.is_null() || n <= 0 {
+            return 0;
+        }
+        for i in 0..n as usize {
+            let e = unsafe { &*sd.add(i) };
+            // 一个显示矩阵正好 9 个 i32 = 36 字节；短了就不碰。
+            if e.type_ != ffi::AVPacketSideDataType::AV_PKT_DATA_DISPLAYMATRIX
+                || e.size < 9 * std::mem::size_of::<i32>()
+                || e.data.is_null()
+            {
+                continue;
+            }
+            let ccw = unsafe { ffi::av_display_rotation_get(e.data as *const i32) };
+            // 逆时针 → 顺时针、规整到 0/90/180/270 的算术在 `rotate` 里（主机可测）。
+            // 不是 90 的倍数就**不写**旋转提示：宁可躺倒，也别转一个错的角度。
+            return crate::rotate::cw_from_ccw(ccw).unwrap_or(0);
+        }
+        0
+    }
+
     /// 写一个样本。`track < 0`（那条轨没建起来）时静默丢弃。
     fn mux_write(&self, track: isize, data: &[u8], pts_us: i64, flags: u32) -> R<()> {
         if track < 0 {
@@ -1165,6 +1206,16 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         c.mux = ffi::AMediaMuxer_new(fd, ffi::OutputFormat::AMEDIAMUXER_OUTPUT_FORMAT_MPEG_4);
         if c.mux.is_null() {
             return Err(msg("建不了 MP4 封装器"));
+        }
+        // 旋转：只改容器里的显示矩阵，**不重编码**（帧还是原样，方向交给播放器）。
+        // 必须在 `AMediaMuxer_start` 之前调，之后再设会被忽略。
+        let rot = c.stream_rotation_cw();
+        if rot != 0 {
+            let st = ffi::AMediaMuxer_setOrientationHint(c.mux, rot);
+            if st != ffi::media_status_t::AMEDIA_OK {
+                // 写不进去只是「方向丢了」，片本身是好的 —— 不值得让整个转换失败。
+                ffi::log_err(&format!("封装器不接受旋转提示 {rot}°：{st}"));
+            }
         }
 
         // ---- 进度 ----

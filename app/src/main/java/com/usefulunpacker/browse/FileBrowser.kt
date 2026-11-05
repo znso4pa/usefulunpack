@@ -86,7 +86,9 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
             tab.previewSelected.clear()
             tab.previewExpanded.clear()
         }
-        tab.previewRoot.visibility = View.GONE
+        // 预览态已作废 → 交给 applyLayer 统一收层（它同时保证 hub 显示时列表不外露：
+        // homeVisible 为真则 panel 仍是 GONE，不会再出现「hub 盖着、列表在底下渲染」）。
+        applyLayer(tab)
         // Clear any leftover multi-select when navigating to a DIFFERENT
         // directory — otherwise the batch bar persists and the selection mixes
         // files from old dirs (batch delete could target files the user can no

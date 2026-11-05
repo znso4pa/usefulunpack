@@ -296,7 +296,8 @@ internal fun MainActivity.previewZipManage(tab: TabState) {
 internal fun MainActivity.syncPreview(tab: TabState) {
     if (!tab.viewsBound) return
     val src = tab.previewSrc ?: return
-    tab.previewRoot.visibility = View.VISIBLE
+    // 层可见性统一由 applyLayer 配平（previewActive 为真 → previewRoot 亮、hub 让位）
+    applyLayer(tab)
     // The preview covers the list but NOT the path bar, and this runs on every
     // tab switch / fragment rebuild — so the bar is refreshed from the tab's
     // derived state here too, not only in navTab. Without this the bar kept

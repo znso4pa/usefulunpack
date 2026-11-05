@@ -87,22 +87,13 @@ import java.util.Locale
  */
 /** 切到主界面。视图未绑时（启动期 addTab）只记状态，fragment 建视图时按它渲染。 */
 internal fun MainActivity.showHome(tab: TabState) {
-    if (!tab.viewsBound) {
-        tab.homeVisible = true
-        return
-    }
     tab.homeVisible = true
+    if (!tab.viewsBound) return
     val root = tab.homeRoot ?: return
     buildHomeCards(this, root.findViewById(R.id.homeGrid), tab)
-    root.visibility = View.VISIBLE
-    tab.pathBar?.visibility = View.GONE
-    // `panel`（文件列表）必须一起藏：hub 页面在有壁纸时是**透明**的（透 root 的壁纸，
-    // 见类注释），列表还画在下面就会透出来 —— 第一版「全都透了过来」的根因。
-    tab.panel?.visibility = View.GONE
-    tab.previewRoot.visibility = View.GONE
-    tab.bottomBar.visibility = View.GONE
-    tab.fabExtract.visibility = View.GONE
-    tab.batchBar?.visibility = View.GONE
+    // 唯一改可见性的地方：homeRoot 亮、列表/预览/路径栏按层收起。
+    // （以前这里手写 6 行 setVisibility，任何新路径漏一行就漏光 —— 见 TabLayers.kt）
+    applyLayer(tab)
     // 不动 previewActive：hub 只是盖在上面，重建视图时预览还能恢复；
     // 真正进文件浏览器（enterBrowser → navTab）才把它作废。
 }
@@ -113,12 +104,10 @@ internal fun MainActivity.enterBrowser(tab: TabState) = enterBrowserAt(tab, tab.
 /** 进文件浏览器并直接落在 [dir]（hub 的「存储根目录」卡 / 最近书签用）。 */
 internal fun MainActivity.enterBrowserAt(tab: TabState, dir: File) {
     tab.homeVisible = false
-    tab.homeRoot?.visibility = View.GONE
-    tab.pathBar?.visibility = View.VISIBLE
-    // 把 hub 藏起来的文件列表放回来（showHome 里 GONE 的，必须在这里配平）。
-    tab.panel?.visibility = View.VISIBLE
-    // navTab 会清掉多选 / 预览态、重启 FileObserver、刷新列表 —— 全套进浏览器。
+    // navTab 内部会清预览态并 applyLayer；这里再补一次，覆盖
+    // 「viewsBound=false 时 navTab 提前返回」的情形（状态已改，视图等绑定时再配平）。
     navTab(tab, dir)
+    applyLayer(tab)
 }
 
 // ── 卡片构建 ─────────────────────────────────────────────────────────

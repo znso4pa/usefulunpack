@@ -132,6 +132,42 @@ internal fun MainActivity.dismissRootedDialogsFor(tabId: Int) {
     doomed.forEach { runCatching { it.dlg.dismiss() } }
 }
 
+/**
+ * 弹窗落位的**唯一配对点**：窗口标志 + 触摸护盾 + 按 tab 扎根 + dismiss 收尾。
+ *
+ * [keepTabBarTappable] 与 [belowTabBar] 只负责各自的几何 / 明暗，配对全部走这里。
+ * 这一族 bug（护盾跨 tab 死锁、切 tab 后弹窗浮在别的窗口上、dismiss 监听器被覆盖）
+ * 的共同根因是：**同一件事有 3 套并行机制**（窗口标志 / 护盾视图 / rootedDialogs），
+ * 配对点散在各处，谁少写一行谁出 bug。现在配对只有一份。
+ *
+ * 三条不变式：
+ *  1. 窗口外点击必须落到 tab 栏（[FLAG_NOT_TOUCH_MODAL]）→ 所以绝不能「点外面关闭」；
+ *  2. 要护盾就**当场**申请，并由 [resetPagerInputOnDialogDismiss] 配对释放
+ *     （集合记账，重复释放是 no-op）；
+ *  3. 扎根时的 `wantsShield` 必须与这里一致 —— 不一致就是「切 tab 后护盾盖在新 tab 上、
+ *     没人能关掉」那次死锁。
+ */
+private fun MainActivity.placeDialog(
+    dlg: android.app.Dialog,
+    rootToTab: Boolean,
+    shield: Boolean,
+    also: (() -> Unit)?,
+) {
+    dlg.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+    // The whole point is that an outside tap belongs to the UI behind (the
+    // tab strip), so the dialog must never treat it as "tap outside to
+    // dismiss". On some ROMs (Honor/EMUI) the outside-down still raises
+    // ACTION_OUTSIDE and dismisses while the tab click is lost — the dialog
+    // vanished but the window never switched. Explicitly disable it.
+    dlg.setCanceledOnTouchOutside(false)
+    if (rootToTab) rootDialogToTab(dlg, wantsShield = shield)
+    // 默认把「tab 栏以外」全挡上（触摸护盾）：确认类弹窗打开时不该还能点到背后的
+    // 文件列表 —— 那是误触。**进度对话框要传 false**：本应用支持操作排队后继续
+    // 浏览（批量解压/压缩/扫描跑着的时候用户照样能翻目录），挡住内容反而是退化。
+    if (shield) blockContentBehind(dlg)
+    resetPagerInputOnDialogDismiss(dlg, also, releaseShield = shield)
+}
+
 /** Let the tab strip stay bright and tappable while a settings dialog is open.
  *
  *  A plain `AlertDialog` is touch-modal (its window consumes pointers outside
@@ -158,24 +194,12 @@ internal fun MainActivity.keepTabBarTappable(
     also: (() -> Unit)? = null,
 ) {
     dlg.window?.let { w ->
-        w.addFlags(
-            android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-        )
+        // 只有「居中 + 亮 tab 栏」这一件事是 keepTabBarTappable 独有的几何/明暗处理；
+        // 标志 / 护盾 / 扎根 / 收尾全交给 placeDialog（配对只有一份）。
         w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         w.setDimAmount(0f)
     }
-    // The whole point is that an outside tap belongs to the UI behind (the
-    // tab strip), so the dialog must never treat it as "tap outside to
-    // dismiss". On some ROMs (Honor/EMUI) the outside-down still raises
-    // ACTION_OUTSIDE and dismisses while the tab click is lost — the dialog
-    // vanished but the window never switched. Explicitly disable it.
-    dlg.setCanceledOnTouchOutside(false)
-    if (rootToTab) rootDialogToTab(dlg, wantsShield = blockBehind)
-    // 默认把「tab 栏以外」全挡上（触摸护盾）：确认类弹窗打开时不该还能点到背后的
-    // 文件列表 —— 那是误触。**进度对话框要传 false**：本应用支持操作排队后继续
-    // 浏览（批量解压/压缩/扫描跑着的时候用户照样能翻目录），挡住内容反而是退化。
-    if (blockBehind) blockContentBehind(dlg)
-    resetPagerInputOnDialogDismiss(dlg, also, releaseShield = blockBehind)
+    placeDialog(dlg, rootToTab = rootToTab, shield = blockBehind, also = also)
 }
 
 /** Bottom-anchored variant of [keepTabBarTappable] for **tall** dialogs.
@@ -205,14 +229,8 @@ internal fun MainActivity.belowTabBar(
         val landscape = resources.configuration.orientation ==
             android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
-        // 触摸语义（用户定稿）：**除了 tab 栏什么都不能点**。保留
-        // NOT_TOUCH_MODAL 让 tab 栏仍可点（切窗口时弹窗跟它那个 tab 走），
-        // 同时用触摸护盾盖住工具栏 + 内容区（`@id/touchShield` 顶到
-        // `dividerTabBar` 之下）—— 背后一律吃不到触摸。
-        w.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
-        blockContentBehind(dlg) // 配对释放见 resetPagerInputOnDialogDismiss
-        dlg.setCanceledOnTouchOutside(false)
-
+        // 触摸语义（用户定稿）：**除了 tab 栏什么都不能点**。这里只管几何/明暗，
+        // 标志 + 护盾 + 扎根 + 收尾统一交给 placeDialog（配对只有一份）。
         if (landscape) {
             // ── 横屏：居中的竖屏比例浮动窗（用户定稿）──────────────────
             // 「不要在底部呼出……横屏在除掉 tab 栏的窗口里面居中」。
@@ -285,10 +303,8 @@ internal fun MainActivity.belowTabBar(
             }
         }
     }
-    // Same reason as keepTabBarTappable: outside taps go to the tab strip,
-    // never "dismiss this dialog".
-    if (rootToTab) rootDialogToTab(dlg, wantsShield = true)
-    resetPagerInputOnDialogDismiss(dlg, also, releaseShield = true)
+    // 弹窗一律要护盾（除 tab 栏外全挡）；配对全在 placeDialog 里。
+    placeDialog(dlg, rootToTab = rootToTab, shield = true, also = also)
 }
 
 /**

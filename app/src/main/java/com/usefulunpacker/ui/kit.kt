@@ -70,10 +70,11 @@ internal fun iconView(ctx: Context, res: Int, sizePx: Int, tint: Int): ImageView
 /**
  * 一行 n 个等重子项（最后一个不加间距）。
  *
- * ⚠️ [gap] 的处理**照搬**旧 `HomeHub.homeRow`，包括它那个**双重换算**：内部再 `ctx.dp(gap)`
- * 一次，而调用处传进来的 `act.dp(18)` 本身已经是像素 → 实际间距是 `dp(dp(18))`（≈49dp，
- * 不是 18dp）。这是**既存行为**（疑似笔误），P4 是重构**先原样保留、不趁机改版式**；
- * 存疑点已记在 TODO.md。
+ * [gap] 是 **dp 值**（和其它 kit 构件一致），内部换算成像素。
+ *
+ * 历史：旧 `HomeHub.homeRow` 的调用处传的是 `act.dp(18)`（已是像素），函数内又 `ctx.dp(gap)`
+ * 一次 → 实际间距被放大到「设计值 × density」（≈49dp，取决于屏幕），不是 18dp。
+ * P4 纯重构时原样保留，本轮（v6.5.0）按原意图修正：间距回到调用处写的 18 / 14 / 9 dp。
  */
 internal fun equalRow(ctx: Context, vararg cells: View, gap: Int): LinearLayout {
     val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
@@ -224,7 +225,9 @@ internal fun miniCard(
         foreground = ripple(C["ripple"]!!)
         isClickable = true
         isFocusable = true
-        layoutParams = FrameLayout.LayoutParams(MATCH, WRAP)
+        // 返回的就是 LinearLayout，布局参数必须是同一族 —— 原先给的是
+        // FrameLayout.LayoutParams（调用处都会覆盖，所以从没出过事）。
+        layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
         addView(iconView(ctx, iconRes, d(if (roomy) 22 else 18), C["accent"]!!).apply {
             background = GradientDrawable().apply {
                 cornerRadius = d(if (roomy) 13 else 11).toFloat(); setColor(C["accent_soft"]!!)

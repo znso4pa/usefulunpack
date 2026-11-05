@@ -929,6 +929,27 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// The video-archive shape: a member far above `PROBE_ADLR_MAX`, so the
+    /// probe can only ever see a 64-byte prefix, and its only signature is the
+    /// MPEG-PS pack header. Neither signal worked before the pack start code
+    /// was added to `looks_decrypted` — the ADLR identity is unavailable on a
+    /// prefix, and no other magic matched a video stream. This is the whole
+    /// reason that signature exists.
+    #[test]
+    fn mpeg_ps_member_is_detected_from_a_prefix() {
+        let dir = tmp("mpeg_ps");
+        fs::create_dir_all(&dir).unwrap();
+        let size = PROBE_ADLR_MAX as usize * 3; // prefix-only by construction
+        let mut plain = b"\x00\x00\x01\xba".to_vec();
+        plain.extend_from_slice(&[0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x00, 0x00, 0x03, 0xf8]);
+        plain.extend((plain.len()..size).map(|i| ((i * 17 + 5) % 256) as u8));
+        let (hash, enc) = encrypt_entry(Scheme::FateCrypt, &plain);
+        let xp3 = dir.join("media.xp3");
+        fs::write(&xp3, build_xp3_flagged(&[("movie/op.mpg", hash, enc)], 0)).unwrap();
+        assert_eq!(probe_scheme(xp3.to_str().unwrap()), Some(Scheme::FateCrypt));
+        fs::remove_dir_all(&dir).ok();
+    }
+
     /// The ADLR signal must not resurrect the plain-archive false positive: a
     /// plain member satisfies `adler32(raw) == stored`, which the test's second
     /// half rejects.

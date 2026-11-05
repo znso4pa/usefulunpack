@@ -376,8 +376,8 @@
     <string name="search_scope">📁 搜尋範圍: %1$s</string>
     <string name="match_tag">  (%1$d 處匹配)</string>
     <string name="line_tag">  [行 %1$d]</string>
-    <string name="search_result_stats">找到 %1$d 個結果（共掃描 %2$d 個檔案）</string>
-    <string name="search_progress_stats">搜尋中… 已掃描 %1$d 個檔案，找到 %2$d 個結果</string>
+    <string name="search_result_stats">找到 %1$d 個結果（共掃描 %2$d 項）</string>
+    <string name="search_progress_stats">搜尋中… 已掃描 %1$d 項，找到 %2$d 個結果</string>
     <string name="bookmark_item">📁 %1$s</string>
     <string name="label_size">大小: %1$s</string>
     <string name="label_time">時間: %1$s</string>

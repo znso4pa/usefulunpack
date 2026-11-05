@@ -369,8 +369,8 @@
     <string name="search_scope">📁 検索範囲: %1$s</string>
     <string name="match_tag">  (%1$d 件ヒット)</string>
     <string name="line_tag">  [行 %1$d]</string>
-    <string name="search_result_stats">%1$d 件ヒット（%2$d ファイル走査）</string>
-    <string name="search_progress_stats">検索中… %1$d ファイル走査、%2$d 件ヒット</string>
+    <string name="search_result_stats">%1$d 件ヒット（%2$d 項目を走査）</string>
+    <string name="search_progress_stats">検索中… %1$d 項目を走査、%2$d 件ヒット</string>
     <string name="bookmark_item">📁 %1$s</string>
     <string name="label_size">サイズ: %1$s</string>
     <string name="label_time">時刻: %1$s</string>

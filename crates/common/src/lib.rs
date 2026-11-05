@@ -387,6 +387,18 @@ pub fn looks_decrypted(data: &[u8]) -> bool {
         b"MThd",              // MIDI
         b"MZ",                // PE executable
         b"\xfe\xfe",          // Kirikiri KSD script wrapper
+        // MPEG program stream pack header. A video archive's members are `.mpg`
+        // files far above `PROBE_ADLR_MAX`, so only a short prefix is ever
+        // sampled — this is the only signature they can offer. Kept at 4 bytes
+        // because FateCrypt XORs the whole range (including byte 0), so the
+        // start code does discriminate; it does NOT discriminate AppliqueCrypt,
+        // which leaves the first 5 bytes verbatim, but that scheme has PNG/TLG
+        // to key on instead.
+        b"\x00\x00\x01\xba",
+        // UTF-16LE BOM: scripts and configs in some archives are UTF-16, and
+        // without this a plaintext UTF-16 member cannot be told from ciphertext
+        // by the signature signal.
+        b"\xff\xfe",
     ];
     if MAGICS.iter().any(|m| data.starts_with(m)) {
         return true;

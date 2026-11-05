@@ -416,12 +416,15 @@ internal fun MainActivity.walkSearch(
             val children = dir.listFiles() ?: continue
             for (child in children) {
                 if (results.size >= limit || Thread.currentThread().isInterrupted) return
+                // 「已扫描」数的是**条目**（文件 + 目录），不是只数文件。只数文件时，
+                // 目录多、文件少的树会让这个数字长时间不动（真机 2.7 万项扫 80s，
+                // 进度看着像卡死）；目录本身也是这一趟遍历的实打实工作量。
+                scanned[0]++
                 try {
                     if (child.isFile) {
                         // File filter check
                         if (filterExtensions.isNotEmpty() && child.extension.lowercase() !in filterExtensions) continue
-                        
-                        scanned[0]++
+
                         val absPath = child.absolutePath
                         if (seenFiles.contains(absPath)) continue
                         if (mode == 0) {

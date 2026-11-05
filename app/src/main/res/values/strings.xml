@@ -391,8 +391,8 @@
     <string name="search_scope">📁 Search scope: %1$s</string>
     <string name="match_tag">  (%1$d matches)</string>
     <string name="line_tag">  [line %1$d]</string>
-    <string name="search_result_stats">%1$d results (scanned %2$d files)</string>
-    <string name="search_progress_stats">Searching… scanned %1$d files, %2$d results</string>
+    <string name="search_result_stats">%1$d results (scanned %2$d items)</string>
+    <string name="search_progress_stats">Searching… scanned %1$d items, %2$d results</string>
     <string name="bookmark_item">📁 %1$s</string>
     <string name="label_size">Size: %1$s</string>
     <string name="label_time">Time: %1$s</string>

@@ -31,6 +31,23 @@ internal fun MainActivity.shareFile(f: File) {
     startActivity(Intent.createChooser(intent, getString(R.string.action_share)))
 }
 
+/**
+ * 导航 vs 刷新 —— 这条规则是「图层错乱」那一类 bug 的唯一闸门，**必须守住**：
+ *
+ * * [navTab] **只换列表，不切层**。它完全不碰 `homeVisible` / `homeRoot` / `panel` /
+ *   `pathBar` —— 所以在 hub 显示时调它，列表只会在 hub **底下**渲染，用户什么都看不到
+ *   （「主页搜完不跳转」就是这么来的）。
+ * * **切到文件浏览器只有一扇门：[enterBrowserAt]**（HomeHub.kt）。它配平 4 个视图的
+ *   可见性再调 [navTab]。
+ *
+ * 于是调用点只有两种合法写法：
+ *  1. `navTab(tab, tab.currentDir)` —— **原地刷新**（解压完/删除完/FileObserver），hub 该留着；
+ *  2. `enterBrowserAt(tab, 某个目录)` —— **导航**（点文件夹 / 上一级 / 搜索定位 / 复制完成）。
+ *
+ * 想新增导航路径时先问一句：这是「用户要去别的地方」还是「当前列表要重扫」？
+ * 前者走门，后者才用 [navTab]。写完用
+ * `grep -rn "navTab(" | grep -v currentDir` 自查一遍，不该再出现第三类。
+ */
 /** Navigates the active tab. Kept as the entry point used by legacy code. */
 internal fun MainActivity.nav(dir: File) = navTab(activeTab, dir)
 

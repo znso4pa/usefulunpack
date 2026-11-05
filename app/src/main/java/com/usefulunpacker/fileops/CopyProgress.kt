@@ -174,7 +174,9 @@ private fun MainActivity.copyInto(
 /** Re-lists the target directory, but only if it is still the active tab's. */
 private fun MainActivity.refreshAfterCopy(targetDir: File, ownerTabId: Int?) {
     val tab = tabs.firstOrNull { it.tabId == ownerTabId } ?: return
-    if (activeTab === tab) navTab(tab, targetDir)
+    // 复制完成 = 导航到目标目录 → 必须走 enterBrowserAt（让 hub 让位）。
+    // 只调 navTab 的话，用户正停在主界面时列表会在它底下渲染，看不到复制结果。
+    if (activeTab === tab) enterBrowserAt(tab, targetDir)
 }
 
 private enum class CopyOutcome { Done, Cancelled, Failed }

@@ -133,7 +133,7 @@ class FolderFragment : Fragment() {
             textSize = 14f
             visibility = View.GONE
             setPadding(8, 0, 8, 0)
-            setOnClickListener { tab.selectedFile?.let { if (it.isDirectory) act.navTab(tab, it) } }
+            setOnClickListener { tab.selectedFile?.let { if (it.isDirectory) act.enterBrowserAt(tab, it) } }
         }
         tab.bottomBar.addView(tab.btnFolderNext, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -143,7 +143,7 @@ class FolderFragment : Fragment() {
 
         // Up button
         root.findViewById<ImageButton>(R.id.btnUp).setOnClickListener {
-            tab.currentDir.parentFile?.let { (activity as? MainActivity)?.navTab(tab, it) }
+            tab.currentDir.parentFile?.let { (activity as? MainActivity)?.enterBrowserAt(tab, it) }
         }
         // Picker-mode "✓ pick this dir" button (dir-mode only; hidden otherwise).
         val btnPickDir = root.findViewById<Button>(R.id.btnPickDir)
@@ -171,7 +171,7 @@ class FolderFragment : Fragment() {
             if (tab.multiSelectMode) { act.toggleMultiSelect(tab, f); return@OnItemClickListener }
             if (f.isDirectory) {
                 // Picker mode always navigates (never enters compress selection).
-                if (tab.pickerCallback != null) { act.navTab(tab, f); return@OnItemClickListener }
+                if (tab.pickerCallback != null) { act.enterBrowserAt(tab, f); return@OnItemClickListener }
                 val isCompressMode = act.prefs.getInt("work_mode", 0) == 1
                 if (isCompressMode) {
                     tab.selectedFile = f
@@ -183,7 +183,7 @@ class FolderFragment : Fragment() {
                     if (act.activeTab === tab) tab.btnFolderNext?.visibility = View.VISIBLE
                     tab.progress.visibility = View.GONE
                 } else {
-                    act.navTab(tab, f)
+                    act.enterBrowserAt(tab, f)
                 }
                 return@OnItemClickListener
             }

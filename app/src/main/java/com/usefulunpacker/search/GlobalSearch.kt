@@ -47,6 +47,11 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         lateinit var searchDialog: AlertDialog
         var currentLimit = 200
         val seenFiles = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+        // 已经走过的**目录**（canonical path）。两个作用：
+        //  ① 「继续扫描」跳过走过的目录 —— 否则每次续扫都从根重新走一遍，
+        //     内容搜索等于把整棵树重读一次（续扫 N 次 = N 倍 I/O）；
+        //  ② 软链成环时不会无限打转（从 `/` 起搜就有 `/sdcard` 这类链接）。
+        val seenDirs = java.util.Collections.synchronizedSet(mutableSetOf<String>())
         var queryText = ""
         var currentMaxFileSize = Long.MAX_VALUE
         var useRegex = false
@@ -220,8 +225,12 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
             useRegex = cbRegex.isChecked
             caseSensitive = cbCaseSensitive.isChecked
             fileFilter = etFileFilter.text.toString().trim()
-            if (!isContinue) { synchronized(results) { results.clear() }; synchronized(seenFiles) { seenFiles.clear() }; currentLimit = 200 }
-            else currentLimit += 200
+            if (!isContinue) {
+                synchronized(results) { results.clear() }
+                synchronized(seenFiles) { seenFiles.clear() }
+                synchronized(seenDirs) { seenDirs.clear() }
+                currentLimit = 200
+            } else currentLimit += 200
             resultAdapter.refresh()
             searchProgress.visibility = View.VISIBLE
             searchProgress.startAnim()
@@ -235,7 +244,8 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                 // \p{Lu}, [A-Z], character classes, etc.); IGNORE_CASE is applied
                 // separately when compiling the regex.
                 val searchQuery = if (caseSensitive || useRegex) query else query.lowercase()
-                walkSearch(searchQuery, searchDir, mode, results, currentLimit, maxFileSize, scanned, seenFiles, useRegex, caseSensitive, fileFilter)
+                walkSearch(searchQuery, searchDir, mode, results, currentLimit, maxFileSize, scanned,
+                    seenFiles, seenDirs, useRegex, caseSensitive, fileFilter)
                 runOnUiThread {
                     // A newer search may have started while this one was
                     // interrupted — only publish results if we're still the
@@ -393,7 +403,8 @@ internal fun MainActivity.previewClickedFile(r: SearchResult, highlightQuery: St
 
 internal fun MainActivity.walkSearch(
         query: String, startDir: File, mode: Int, results: MutableList<SearchResult>, limit: Int,
-        maxFileSize: Long, scanned: IntArray, seenFiles: MutableSet<String>,
+        maxFileSize: Long, scanned: IntArray,
+        seenFiles: MutableSet<String>, seenDirs: MutableSet<String>,
         useRegex: Boolean = false, caseSensitive: Boolean = false, fileFilter: String = ""
     ) {
         // Iterative DFS — deeply nested trees can't overflow the call stack.
@@ -413,9 +424,17 @@ internal fun MainActivity.walkSearch(
         
         while (stack.isNotEmpty() && results.size < limit && !Thread.currentThread().isInterrupted) {
             val dir = stack.removeLast()
+            // 目录按 **canonical path** 去重（见 `seenDirs` 的说明）。取不到就退回绝对
+            // 路径 —— 宁可多走一遍，也不能因为一次 IO 失败就把整个目录漏掉。
+            val dirKey = runCatching { dir.canonicalPath }.getOrElse { dir.absolutePath }
+            if (dirKey in seenDirs) continue
             val children = dir.listFiles() ?: continue
+            // ⚠️ **走完才登记**。若在 `add` 之后被 limit 截断，那个目录只扫了一半，
+            // 续扫时却被当成「已访问」跳过 —— 后半截的命中就永远找不回来了。
+            // 半截目录下次重走，重复的命中由 `seenFiles` 挡掉，代价只是重扫。
+            var finished = true
             for (child in children) {
-                if (results.size >= limit || Thread.currentThread().isInterrupted) return
+                if (results.size >= limit || Thread.currentThread().isInterrupted) { finished = false; break }
                 // 「已扫描」数的是**条目**（文件 + 目录），不是只数文件。只数文件时，
                 // 目录多、文件少的树会让这个数字长时间不动（真机 2.7 万项扫 80s，
                 // 进度看着像卡死）；目录本身也是这一趟遍历的实打实工作量。
@@ -428,14 +447,9 @@ internal fun MainActivity.walkSearch(
                         val absPath = child.absolutePath
                         if (seenFiles.contains(absPath)) continue
                         if (mode == 0) {
-                            // Filename search
-                            val fileName = if (caseSensitive) child.name else child.name.lowercase()
-                            val matches = if (regex != null) {
-                                regex.containsMatchIn(fileName)
-                            } else {
-                                fileName.contains(query)
-                            }
-                            if (matches) {
+                            // 文件名搜索。判定统一走 `textMatches`（原文匹配 + ignoreCase），
+                            // 不再为每个名字分配一份小写副本。
+                            if (textMatches(child.name, query, regex, caseSensitive)) {
                                 seenFiles.add(absPath)
                                 results.add(SearchResult(child))
                             }
@@ -458,16 +472,12 @@ internal fun MainActivity.walkSearch(
                                     val enc = detectBestEncoding(bytes)
                                         ?: prefs.getString("text_encoding", "UTF-8") ?: "UTF-8"
                                     val text = decodeTextStrict(bytes, enc)
-                                    text.lines().forEach { line ->
+                                    // `lineSequence()` 而不是 `lines()`：后者先把整份文本切成
+                                    // 一个 List，大文件光是切行就产生几十万个 String。
+                                    text.lineSequence().forEach { line ->
                                             if (Thread.currentThread().isInterrupted) return@forEach
                                             lineNum++
-                                            val lineToSearch = if (caseSensitive) line else line.lowercase()
-                                            val matches = if (regex != null) {
-                                                regex.containsMatchIn(lineToSearch)
-                                            } else {
-                                                lineToSearch.contains(query)
-                                            }
-                                            if (matches) {
+                                            if (textMatches(line, query, regex, caseSensitive)) {
                                                 matchCount++
                                                 if (firstLine == 0) {
                                                     firstLine = lineNum
@@ -487,5 +497,6 @@ internal fun MainActivity.walkSearch(
                     }
                 } catch (_: Exception) { }
             }
+            if (finished) seenDirs.add(dirKey)
         }
     }

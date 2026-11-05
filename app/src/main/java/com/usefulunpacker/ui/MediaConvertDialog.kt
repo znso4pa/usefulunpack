@@ -54,8 +54,9 @@ internal val AUDIO_TARGETS = setOf("mp3", "ogg", "wav", "aiff", "au", "aac")
  * `crates/video-core/src/h264.rs` 与 `convert.rs` 的 `use_hw`）。这条路的输出目标
  * 只能是 MP4，理由见 [MP4_FAMILY_EXTS]。
  *
- * `.mkv` / `.webm` **仍然不在**：matroska / webm 解复用器没接（光 `matroskadec.o`
- * 再加 ~250 KB/ABI，而 H.264 的解码器依然不进来）。容器没接就别假装能用。
+ * `.mkv` / `.webm` 由 **matroska 解复用器**覆盖（一个组件同时注册 `mkv,mk3d,mka,mks,webm`，
+ * 实测 `matroskadec.o` + `matroska.o` 共 ~81 KB/ABI）。里面的 H.264 / VP8 / VP9 同样走
+ * MediaCodec 硬解（`convert.rs` 的 `HwCodec`），所以目标也只给 MP4。
  *
  * `.ts` 既是 MPEG-TS 也是 TypeScript 的后缀 —— 这里按视频收。真拿一个 TypeScript
  * 文件进来，ffmpeg 的解复用器探不出来会直接报错，不会产出垃圾。
@@ -67,21 +68,22 @@ internal val VIDEO_SOURCE_EXTS = setOf(
     "mpg", "mpeg", "vob",           // MPEG-PS
     "ts", "m2ts", "mts",            // MPEG-TS
     "mp4", "mov", "m4v", "3gp", "3g2", // MOV
+    "mkv", "webm",                  // Matroska / WebM
 )
 
 /**
  * MP4 家族：**只有 MP4 这一个视频目标接得上**。
  *
- * 这类容器里的视频轨几乎都是 H.264（或 HEVC），解码走 MediaCodec 硬件解码 ——
- * 因为 ffmpeg 里根本没有 H.264 解码器（libx264 是 GPL，C 解码器还要 ~1 MB/ABI）。
+ * 这类容器里的视频轨几乎都是 H.264（或 HEVC / VP8 / VP9），解码走 MediaCodec 硬件解码 ——
+ * 因为 ffmpeg 里根本没有这些解码器（libx264 是 GPL，C 解码器还要 ~1 MB/ABI）。
  * 而「转 WMV」那条路（`asf.rs`）是**全程 ffmpeg**：解、编、封都由 ffmpeg 做，
- * Android 没有 WMV 编码器。没有 H.264 解码器，它就开不了工。
+ * Android 没有 WMV 编码器。没有对应解码器，它就开不了工。
  *
  * 为什么按扩展名判而不是按编码判：[mediaColumnsFor] 只拿得到扩展名。宁可对
  * 「MP4 里装 MPEG-4 Part 2」这种少数情况保守一点，也别对绝大多数情况撒谎
  * （灰掉的格子点一下有提示，硬开一个必然失败的目标才是骗人）。
  */
-private val MP4_FAMILY_EXTS = setOf("mp4", "mov", "m4v", "3gp", "3g2")
+private val MP4_FAMILY_EXTS = setOf("mp4", "mov", "m4v", "3gp", "3g2", "mkv", "webm")
 
 /**
  * 视频目标：MP4（H.264 + AAC，Android 编/封）与 **WMV**（WMV8 + WMA2，全程 ffmpeg）。

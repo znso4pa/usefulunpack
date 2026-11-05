@@ -97,7 +97,7 @@ API=26
 # 才是 flv1）。下面 `verify_components` 会逐个核对生成的注册表，把这类错误挡在编译期。
 VIDEO_DECODERS="vc1,wmv1,wmv2,wmv3,msmpeg4v1,msmpeg4v2,msmpeg4v3,mpeg4,\
 mpeg1video,mpeg2video,h263,flv,mjpeg,vp6,vp6a,vp6f"
-AUDIO_DECODERS="wmav1,wmav2,wmapro,wmavoice,mp3,mp2,aac,ac3,eac3,\
+AUDIO_DECODERS="wmav1,wmav2,wmapro,wmavoice,mp3,mp2,aac,ac3,eac3,vorbis,\
 pcm_s16le,pcm_s16be,pcm_u8,pcm_s24le,pcm_f32le,pcm_mulaw,pcm_alaw,\
 adpcm_ms,adpcm_ima_wav,adpcm_ima_qt"
 PARSERS="vc1,mpeg4video,mpegvideo,h263,mjpeg,aac,ac3,mpegaudio"
@@ -112,7 +112,9 @@ PARSERS="vc1,mpeg4video,mpegvideo,h263,mjpeg,aac,ac3,mpegaudio"
 # 探测恒返回 0，所以它只在「流内 PES 载荷」上生效，不会顶掉 `mpegps`。
 # `mov` 同时覆盖 mp4 / mov / m4v / 3gp / m4a（一个解复用器注册一串扩展名），
 # 所以 MP4 家族不用再单列。M4A 音频也走它 —— 音频那边是独立的 .so，这里只是顺带。
-DEMUXERS="asf,avi,flv,mpegps,mpegts,mpegvideo,m4v,mov"
+# `matroska` 一个解复用器同时注册 `mkv,mk3d,mka,mks,webm`（`p.name = "matroska,webm"`），
+# 所以 WebM 不用单列 —— 也没有单独的 `webm` 组件可写。
+DEMUXERS="asf,avi,flv,mpegps,mpegts,mpegvideo,m4v,mov,matroska"
 
 # ---- 「往 wmv 走」的编码器 + 封装器 ----
 #

@@ -569,9 +569,9 @@
     <string name="media_opt_aac_note">AAC 輸出是裸 ADTS 基本流（.aac），不是 .m4a 容器 —— 任何播放器都能讀，但不帶標籤資訊。</string>
     <string name="media_opt_lossless_note">32 位元 AIFF / AU 存的是整數 PCM。（WAV 的 32 位元寫的是浮點。）</string>
     <string name="media_unsupported_source">%1$s 不是本應用程式能解碼的音訊格式（支援 MP3、OGG、WAV、FLAC、M4A、AAC、AIFF、AU）。</string>
-    <string name="media_unsupported_video_source">%1$s 不是本應用程式能解碼的視訊格式（支援 WMV、ASF、AVI、FLV、MPEG、VOB、TS、MP4、MOV）。</string>
-    <string name="media_video_note">目標可選 MP4（H.264 + AAC）或 WMV（WMV8 + WMA2）。VC-1、WMV3、MSMPEG4、MPEG-2、H.263、MJPEG、VP6 等編碼都會重新編碼。</string>
-    <string name="media_mp4_source_note">MP4/MOV 源裡的 H.264 走硬體解碼，所以視訊目標只有 MP4 —— 轉 WMV 需要 ffmpeg 的 H.264 解碼器，本建置裡沒有。</string>
+<string name="media_unsupported_video_source">%1$s 不是本應用程式能解碼的視訊格式（支援 WMV、ASF、AVI、FLV、MPEG、VOB、TS、MP4、MOV、MKV、WebM）。</string>
+<string name="media_video_note">目標可選 MP4（H.264 + AAC）或 WMV（WMV8 + WMA2）。VC-1、WMV3、MSMPEG4、MPEG-2、H.263、MJPEG、VP6 等編碼都會重新編碼；H.264、VP8、VP9 走硬體解碼。</string>
+<string name="media_mp4_source_note">MP4/MOV/MKV/WebM 裡的 H.264、VP8、VP9 走硬體解碼，所以視訊目標只有 MP4 —— 轉 WMV 需要 ffmpeg 的對應解碼器，本建置裡沒有。</string>
     <string name="media_no_preview_ext">Android 無法預覽 %1$s 影片 —— 請用外部播放器開啟。</string>
     <string name="img_edit_crop_hint">拖曳框選區域後，再次點擊「裁剪」確認</string>
     <string name="img_edit_stretch">拉伸</string>
@@ -698,7 +698,7 @@
     <string name="cli_audio_bad_fmt">不認識的音訊格式：%1$s（mp3 / ogg / wav）</string>
     <string name="cli_audio_bad_src">不是本應用程式能解碼的音訊：%1$s</string>
     <string name="cli_conv_fail">轉換失敗：%1$s — %2$s</string>
-    <string name="cli_video_bad_src">不是本應用程式能解碼的視訊：%1$s（支援 WMV、ASF、AVI、FLV、MPEG、VOB、TS）</string>
+<string name="cli_video_bad_src">不是本應用程式能解碼的視訊：%1$s（支援 WMV、ASF、AVI、FLV、MPEG、VOB、TS、MP4、MOV、MKV、WebM）</string>
     <string name="cli_json_one_file">uu l -j 一次只能處理一個封包（收到 %1$s 個）——請逐個呼叫</string>
     <string name="cli_x_glob_none">沒有條目匹配：%1$s</string>
     <string name="cli_x_glob_miss">未匹配（已略過）：%1$s</string>

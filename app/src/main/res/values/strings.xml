@@ -589,8 +589,9 @@
     <string name="media_opt_aac_note">AAC output is a raw ADTS stream (.aac), not an .m4a container — every player reads it, but it carries no tags.</string>
     <string name="media_opt_lossless_note">32-bit AIFF and AU store integer PCM. (WAV writes 32-bit as float instead.)</string>
     <string name="media_unsupported_source">%1$s is not an audio format this app can decode (MP3, OGG, WAV, FLAC, M4A, AAC, AIFF and AU are supported).</string>
-    <string name="media_unsupported_video_source">%1$s is not a video format this app can decode (WMV, ASF, AVI, FLV, MPEG, VOB and TS are supported).</string>
+    <string name="media_unsupported_video_source">%1$s is not a video format this app can decode (WMV, ASF, AVI, FLV, MPEG, VOB, TS, MP4 and MOV are supported).</string>
     <string name="media_video_note">Pick MP4 (H.264 + AAC) or WMV (WMV8 + WMA2). VC-1, WMV3, MSMPEG4, MPEG-2, H.263, MJPEG and VP6 are all re-encoded.</string>
+    <string name="media_mp4_source_note">MP4/MOV sources decode H.264 in hardware, so MP4 is the only video target — WMV needs an H.264 decoder that this build does not carry.</string>
     <string name="media_no_preview_ext">Android can\u2019t preview %1$s video — open it with an external player.</string>
 
     <!-- Preview workspace (在窗口中打开) -->

@@ -82,6 +82,16 @@ const FUNCS: &[&str] = &[
     // NDK media（MediaCodec / MediaFormat / MediaMuxer）—— 同样交给 bindgen，
     // 手抄这套签名只会抄错。
     "AMediaCodec_createEncoderByType",
+    // 硬解（H.264 源）：解码器把帧直接渲进编码器的 input surface，全程不碰 YUV 布局。
+    // NDK 的 AMediaCodec **没有** getOutputImage（那是 Java 侧 ImageReader 的东西），
+    // ByteBuffer 输出的 stride/slice-height 又因设备而异 —— surface 直连是唯一稳的路。
+    "AMediaCodec_createDecoderByType",
+    "AMediaCodec_createInputSurface",
+    "AMediaCodec_setOutputSurface",
+    // surface 输入时**不能**再 queue 输入缓冲（编码器没有输入队列），收尾只能靠这个。
+    "AMediaCodec_signalEndOfInputStream",
+    // `createInputSurface` 交出来的 surface 所有权在我们手上。
+    "ANativeWindow_release",
     "AMediaCodec_configure",
     "AMediaCodec_start",
     "AMediaCodec_stop",
@@ -97,6 +107,7 @@ const FUNCS: &[&str] = &[
     "AMediaFormat_delete",
     "AMediaFormat_setString",
     "AMediaFormat_setInt32",
+    "AMediaFormat_setBuffer",
     "AMediaMuxer_new",
     "AMediaMuxer_delete",
     "AMediaMuxer_start",
@@ -128,6 +139,8 @@ const TYPES: &[&str] = &[
     "AMediaMuxer",
     "AMediaCodecBufferInfo",
     "media_status_t",
+    // 硬解管线里编码器的 input surface（`createInputSurface` 的出参）。
+    "ANativeWindow",
 ];
 
 const VARS: &[&str] = &[
@@ -240,7 +253,8 @@ fn main() {
              #include <libswresample/swresample.h>\n\
              #include <media/NdkMediaCodec.h>\n\
              #include <media/NdkMediaFormat.h>\n\
-             #include <media/NdkMediaMuxer.h>\n",
+             #include <media/NdkMediaMuxer.h>\n\
+             #include <android/native_window.h>\n",
         )
         // configure 生成的 avconfig.h 在 build 目录，公共头在源码目录 —— 两个都要。
         .clang_arg(format!("-I{}", build.display()))

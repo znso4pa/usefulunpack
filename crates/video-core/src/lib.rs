@@ -1,21 +1,24 @@
-//! WMV / ASF → MP4（H.264 + AAC）。
+//! WMV / ASF / AVI / FLV / MPEG / MP4 → MP4（H.264 + AAC）。
 //!
 //! 本仓其余格式都是「纯 Rust 解析器 + JNI」，视频这条路多了一个 C 依赖 ——
 //! **ffmpeg**。原因很直接：VC-1 / WMV3 没有可用的纯 Rust 解码器（社区那几个
 //! crate 都是刚发布、下载量两位数的个人项目，进不了发布版），而 Android 自带的
 //! 解码器只认自己那几种容器。
 //!
-//! ## 为什么 ffmpeg 只负责「解」
+//! ## 谁解、谁编
 //!
 //! ```text
-//!   WMV/ASF ──ffmpeg 解封装+解码──► AVFrame / PCM ──Android 编码──► MP4
-//!             (libavformat/avcodec)                  (MediaCodec/Muxer)
+//!   WMV/ASF/AVI/… ──ffmpeg 解封装+解码──► AVFrame / PCM ──Android 编码──► MP4
+//!                   (libavformat/avcodec)                  (MediaCodec/Muxer)
+//!   MP4/MOV       ──ffmpeg 解封装──► AVC 样本 ──MediaCodec 硬解(surface)──► 同上
 //! ```
 //!
 //! * **体积**：ffmpeg 自带 mpeg4+aac 编码器的那套配置，两个 ABI 合计 6.07 MB，
 //!   超了 5 MB 的门槛；只留解码器是 3.15 MB。编解码这一半是 Android 白送的。
 //! * **兼容性**：ffmpeg 里**没有** H.264 编码器（libx264 是 GPL），而 MediaCodec
 //!   出的是硬件 H.264 + AAC，播放器兼容性最好。
+//! * **H.264 源**：ffmpeg 里同样**没有** H.264 解码器，所以 MP4/MOV 家族交给设备的
+//!   硬件解码器，输出面直连编码器的输入面（见 [`convert`] 的 `use_hw`）。
 //! * **许可证**：`LGPL-2.1-or-later`、`CONFIG_GPL 0`。动态链接一个未修改的 LGPL
 //!   库配 MIT 应用是标准做法。
 //!
@@ -24,6 +27,7 @@
 //! | 文件 | 职责 |
 //! |---|---|
 //! | [`ffi`] | `build.rs` 用 bindgen 现场生成的 ffmpeg + NDK media 绑定 |
+//! | [`h264`] | `avcC` 解析（取 SPS/PPS）+ AVCC → Annex-B（纯逻辑，主机可测） |
 //! | [`nv12`] | yuv420p → NV12（MediaCodec 的 `color-format 21` 要的排布） |
 //! | [`convert`] | 整条链路：解封装 → 解码 → 编码 → 封装，含进度与取消 |
 //!
@@ -46,6 +50,10 @@ mod asf;
 mod convert;
 #[cfg(not(uu_no_ffmpeg))]
 mod ffi;
+// 纯逻辑（avcC 解析 + AVCC→Annex-B），没有 FFI —— 主机上也要能跑单测，
+// 所以**不**跟上面几个一起 cfg 掉。非 Android 目标下没人调用，dead_code 是预期的。
+#[allow(dead_code)]
+mod h264;
 #[cfg(not(uu_no_ffmpeg))]
 mod nv12;
 

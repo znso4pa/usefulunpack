@@ -45,24 +45,43 @@ internal val AUDIO_SOURCE_EXTS = setOf(
 internal val AUDIO_TARGETS = setOf("mp3", "ogg", "wav", "aiff", "au", "aac")
 
 /**
- * 能作为**视频转换源**的扩展名 —— 引擎里接了五个解复用器（ASF / AVI / FLV /
- * MPEG-PS / MPEG-TS）与 VC-1 / WMV1-3 / MSMPEG4 / MPEG-1·2 / H.263 / Sorenson /
- * MJPEG / VP6 解码器。
+ * 能作为**视频转换源**的扩展名 —— 引擎里接了六个解复用器（ASF / AVI / FLV /
+ * MPEG-PS / MPEG-TS / MOV）与 VC-1 / WMV1-3 / MSMPEG4 / MPEG-1·2 / H.263 /
+ * Sorenson / MJPEG / VP6 解码器。
  *
- * `.mkv` / `.mp4` / `.webm` **不在这里**：它们里面装的通常是 H.264 或 VP8/VP9，
- * 而这两个解码器进不了 5 MB 的体积预算（VP8/VP9 光它自己就要 2.3 MB，还会连带
- * 把 H.264 的帧内预测 DSP 拖进来）。容器没接就别假装能用。
+ * MP4 家族（`mp4` / `mov` / `m4v` / `3gp` / `3g2`）由 **MOV 解复用器**一并覆盖，
+ * 但它们的视频轨不归 ffmpeg 解：H.264 走 MediaCodec **硬件解码**（见
+ * `crates/video-core/src/h264.rs` 与 `convert.rs` 的 `use_hw`）。这条路的输出目标
+ * 只能是 MP4，理由见 [MP4_FAMILY_EXTS]。
+ *
+ * `.mkv` / `.webm` **仍然不在**：matroska / webm 解复用器没接（光 `matroskadec.o`
+ * 再加 ~250 KB/ABI，而 H.264 的解码器依然不进来）。容器没接就别假装能用。
  *
  * `.ts` 既是 MPEG-TS 也是 TypeScript 的后缀 —— 这里按视频收。真拿一个 TypeScript
  * 文件进来，ffmpeg 的解复用器探不出来会直接报错，不会产出垃圾。
  */
 internal val VIDEO_SOURCE_EXTS = setOf(
-    "wmv", "asf",           // ASF
-    "avi",                  // AVI
-    "flv",                  // FLV
-    "mpg", "mpeg", "vob",   // MPEG-PS
-    "ts", "m2ts", "mts",    // MPEG-TS
+    "wmv", "asf",                   // ASF
+    "avi",                          // AVI
+    "flv",                          // FLV
+    "mpg", "mpeg", "vob",           // MPEG-PS
+    "ts", "m2ts", "mts",            // MPEG-TS
+    "mp4", "mov", "m4v", "3gp", "3g2", // MOV
 )
+
+/**
+ * MP4 家族：**只有 MP4 这一个视频目标接得上**。
+ *
+ * 这类容器里的视频轨几乎都是 H.264（或 HEVC），解码走 MediaCodec 硬件解码 ——
+ * 因为 ffmpeg 里根本没有 H.264 解码器（libx264 是 GPL，C 解码器还要 ~1 MB/ABI）。
+ * 而「转 WMV」那条路（`asf.rs`）是**全程 ffmpeg**：解、编、封都由 ffmpeg 做，
+ * Android 没有 WMV 编码器。没有 H.264 解码器，它就开不了工。
+ *
+ * 为什么按扩展名判而不是按编码判：[mediaColumnsFor] 只拿得到扩展名。宁可对
+ * 「MP4 里装 MPEG-4 Part 2」这种少数情况保守一点，也别对绝大多数情况撒谎
+ * （灰掉的格子点一下有提示，硬开一个必然失败的目标才是骗人）。
+ */
+private val MP4_FAMILY_EXTS = setOf("mp4", "mov", "m4v", "3gp", "3g2")
 
 /**
  * 视频目标：MP4（H.264 + AAC，Android 编/封）与 **WMV**（WMV8 + WMA2，全程 ffmpeg）。
@@ -98,11 +117,13 @@ internal fun mediaColumnsFor(src: File): List<Pair<Int, List<MediaTarget>>> {
     val ext = src.extension.lowercase()
     val canDecodeAudio = ext in AUDIO_SOURCE_EXTS
     val canDecodeVideo = ext in VIDEO_SOURCE_EXTS
+    // MP4 家族只有 MP4 目标接得上（见 MP4_FAMILY_EXTS）。
+    val mp4Family = ext in MP4_FAMILY_EXTS
     return MEDIA_SHAPE.map { (header, items) ->
         header to items.map { (fmt, label) ->
             val ok = when {
                 fmt in AUDIO_TARGETS -> canDecodeAudio
-                fmt in VIDEO_TARGETS -> canDecodeVideo
+                fmt in VIDEO_TARGETS -> canDecodeVideo && (!mp4Family || fmt == "mp4")
                 else -> false
             }
             MediaTarget(fmt, label, available = ok)
@@ -181,7 +202,12 @@ internal fun showMediaConvertDialog(activity: MainActivity, file: File) {
     }
     if (ext in VIDEO_SOURCE_EXTS) {
         // 源编码五花八门（VC-1 / WMV3 / MSMPEG4 / MPEG4…），用户会想知道变成什么。
-        addHint(activity.getString(R.string.media_video_note))
+        // MP4 家族是例外：它只能转 MP4，那句「MP4 或 WMV」会把人带沟里。
+        addHint(
+            activity.getString(
+                if (ext in MP4_FAMILY_EXTS) R.string.media_mp4_source_note else R.string.media_video_note
+            )
+        )
     }
 
     val scroller = ScrollView(activity).apply {

@@ -50,18 +50,30 @@ API=26
 #
 # ⚠️ 体积只能按**最终 .so** 量。`-ffunction-sections` + `--gc-sections` 之后，
 # `.o` 增量大约只剩 50~54% 会落进 `.so`（实测 +1.01 MB `.o` → +0.51 MB `.so`/ABI）。
-# 已量过的事实：
+# 已量过的事实（都是最终 `.so`）：
 #   * 基线（只有 ASF）    arm64 2,204,432 B / armv7 1,876,612 B，合计 3.89 MB
-#   * 本清单             arm64 2,716,664 B / armv7 2,383,380 B，合计 **5.10 MB**
+#   * 6.3 那轮（老容器）  arm64 2,716,664 B / armv7 2,383,380 B，合计 5.10 MB
 #     （+1.01 MB `.o` → 两个 ABI 各 +0.50 MB）
+#   * 6.4（无格式变化）   arm64 3,008,744 B / armv7 2,671,148 B，合计 5.42 MB
+#   * 6.5 本清单（+mov）  arm64 **3,209,112** B / armv7 **2,863,484** B，合计 **5.79 MB**
+#     —— 见下面 `mov.o` 那条。
 #   * 再加 VP8/VP9/Theora  arm64 单边就 +2.05 MB —— **不要**。
 #     注意 `h264qpel.o`(745 KB) 与 `h264pred.o`(273 KB) **不是 H.264 解码器**，
 #     是 VP8/VP9 选中的（它们复用 H.264 的帧内预测与四分之一像素插值 DSP），
 #     所以「我只要 VP8」实际上会连 H.264 那套 DSP 一起拖进来。
-#   * `mov.o`(238 KB) 是单个最大的成员，MP4/MOV 解复用器 —— 没有 H.264 解码器时
-#     它只能解 MPEG-4 Part 2 / MPEG-2 装进 MP4 的少数情况，收益不抵体积，故不启用。
-#   * H.264 解码器从未启用过：libx264 是 GPL，且 C 解码器本身约 1 MB/ABI。
-#     视频**编码**走 Android 的 MediaCodec（硬件 H.264），不需要 ffmpeg 出编码器。
+#   * `mov.o`(238 KB) 是单个最大的成员，MP4/MOV 解复用器。6.3 之前没启用：那时没有
+#     H.264 解码器，它只能解「MPEG-4 Part 2 / MPEG-2 装进 MP4」这种少数情况，收益
+#     不抵体积。**6.5 起了变化**：H.264 源改走 MediaCodec 硬解（见 crates/video-core
+#     的 h264.rs / convert.rs），ffmpeg 这边只负责把 MP4 的样本切出来 —— mov 解复用器
+#     立刻变成「解锁全世界最常见的视频格式」的那一个。
+#     实测（含新加的 Rust 代码）：arm64 .so 3,008,744 → **3,209,112**（+196 KB）、
+#     armv7 2,671,148 → **2,863,484**（+188 KB），合计 +0.37 MB → 两个 ABI 共 5.79 MB。
+#   * H.264 解码器从未启用过、**也不该**启用：libx264 是 GPL，C 解码器本身约 1 MB/ABI。
+#     视频**编解码**都走 Android 的 MediaCodec（硬件 H.264），ffmpeg 只解不编。
+#   * mov 解复用器**不需要** `h264` parser：MP4 的样本本来就是完整的访问单元，
+#     mov 给视频流设的是 `AVSTREAM_PARSE_HEADERS`（demux.c 会打 `PARSER_FLAG_COMPLETE_FRAMES`），
+#     而 demux.c:1413 在找不到 parser 时只打一条 verbose 日志、把包**原样**交出来 ——
+#     对我们正好够用。加 parser 反而会拖进 h264.h/h264data.h 那一大坨。
 #   * `aac` 与 `aac_fixed` **一样大**（后者是定点版，SBR/PS 一个不少），换不掉。
 #
 # 本轮花掉的 1.01 MB `.o` 明细（arm64，按大小）：AAC 全家 200 KB、MJPEG 82 KB、
@@ -92,7 +104,9 @@ PARSERS="vc1,mpeg4video,mpegvideo,h263,mjpeg,aac,ac3,mpegaudio"
 #（mpegts 从 PMT 直接拿 codec）。实测栽过一次。
 # 抢格式的风险为零：`mpegvideo_probe` 的第一条就是 `!pspack`，带 pack 头的 PS 文件
 # 探测恒返回 0，所以它只在「流内 PES 载荷」上生效，不会顶掉 `mpegps`。
-DEMUXERS="asf,avi,flv,mpegps,mpegts,mpegvideo,m4v"
+# `mov` 同时覆盖 mp4 / mov / m4v / 3gp / m4a（一个解复用器注册一串扩展名），
+# 所以 MP4 家族不用再单列。M4A 音频也走它 —— 音频那边是独立的 .so，这里只是顺带。
+DEMUXERS="asf,avi,flv,mpegps,mpegts,mpegvideo,m4v,mov"
 
 # ---- 「往 wmv 走」的编码器 + 封装器 ----
 #

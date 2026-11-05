@@ -561,8 +561,9 @@
     <string name="media_opt_aac_note">AAC の出力は生の ADTS エレメンタリストリーム（.aac）で、.m4a コンテナではありません —— どのプレイヤーでも再生できますが、タグ情報は含まれません。</string>
     <string name="media_opt_lossless_note">32 ビットの AIFF / AU は整数 PCM を格納します。（WAV の 32 ビットは浮動小数点です。）</string>
     <string name="media_unsupported_source">%1$s は本アプリがデコードできる音声形式ではありません（MP3・OGG・WAV・FLAC・M4A・AAC・AIFF・AU に対応）。</string>
-    <string name="media_unsupported_video_source">%1$s は本アプリがデコードできる動画形式ではありません（WMV・ASF・AVI・FLV・MPEG・VOB・TS に対応）。</string>
+    <string name="media_unsupported_video_source">%1$s は本アプリがデコードできる動画形式ではありません（WMV・ASF・AVI・FLV・MPEG・VOB・TS・MP4・MOV に対応）。</string>
     <string name="media_video_note">出力は MP4（H.264 + AAC）または WMV（WMV8 + WMA2）から選べます。VC-1・WMV3・MSMPEG4・MPEG-2・H.263・MJPEG・VP6 などは再エンコードされます。</string>
+    <string name="media_mp4_source_note">MP4/MOV の H.264 はハードウェアデコードなので、動画の出力先は MP4 のみです。WMV への変換には ffmpeg の H.264 デコーダーが必要ですが、このビルドには含まれていません。</string>
     <string name="media_no_preview_ext">Android では %1$s 動画をプレビューできません —— 外部プレイヤーで開いてください。</string>
     <string name="img_edit_crop_hint">ドラッグで範囲を選択後、もう一度「切り取り」をタップして確定</string>
     <string name="img_edit_stretch">引き伸ばし</string>

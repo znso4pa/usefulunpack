@@ -123,7 +123,7 @@ internal object UuCommands {
         // 极限）。格式清单放进 summary（那一列不补空格，长短无所谓），旗标解释
         // 放进 PARAMETERS —— 那里本来就是讲旗标的地方。
         Cmd("audio",  Kind.AUDIO,        "Convert audio — in: mp3/ogg/wav/flac/m4a/aac/aiff/au · out: mp3/ogg/wav/aiff/au/aac", "uu audio <src...> <fmt> [-o dir] [--rate N] [--ch N] [--depth N] [--br N]"),
-        Cmd("video",  Kind.VIDEO,        "Convert video (wmv/asf/avi/flv/mpeg/ts → mp4|wmv)", "uu video <src...> [mp4|wmv] [-o dir]"),
+        Cmd("video",  Kind.VIDEO,        "Convert video (wmv/asf/avi/flv/mpeg/ts/mp4/mov → mp4|wmv)", "uu video <src...> [mp4|wmv] [-o dir]"),
         Cmd("enc",    Kind.ENC,          "Convert text encoding (BOM kept)",               "uu enc <file> <from|auto> <to> [out]"),
         Cmd("mvdec",  Kind.MVDEC,        "Decode RPG Maker MV/MZ assets (no key needed)",  "uu mvdec <file...> [-o dir]"),
         Cmd("rmd",    Kind.RMD,          "Delete entries from a ZIP (name-cn copy)",       "uu rmd <zip> <entry...> [-p pw] (globs ok)"),
@@ -2083,8 +2083,12 @@ internal object UuCommands {
      * 形状与 `uu audio` 完全一致：逐条转换、逐条打印，一条失败不影响其余，末行给汇总；
      * 失败时把引擎给的原因原样带出来（JNI 抛的是 `IOException("video: …")`）。
      *
-     * 目标目前只有 mp4（WMV 没有编码器），所以格式关键字可省 —— 位置参数里**最后一个**
-     * 恰好是 `mp4` 时当格式，其余都当源。
+     * 目标有两个（`mp4` / `wmv`，见 `VIDEO_TARGETS`），位置参数里**最后一个**恰好是
+     * 其中之一时当格式，其余都当源。不写就默认 mp4。
+     *
+     * 这里**不按扩展名拦**（和界面上的 `VIDEO_SOURCE_EXTS` 不同）：命令行是给人用的，
+     * 引擎自己会报「这个文件里没有视频轨」/「没有 XXX 的解码器」，比在终端里再维护
+     * 一份白名单诚实。`.mp4` 源选 `wmv` 会被引擎拒掉（没有 H.264 解码器），也是引擎报的。
      */
     private fun video(args: List<String>, ctx: Ctx): Result {
         val pa = splitFlags(args, listOf("-o"))

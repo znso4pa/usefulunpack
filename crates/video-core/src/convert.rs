@@ -1,18 +1,33 @@
-//! WMV/ASF → MP4 的转换链路。
+//! WMV/ASF/AVI/FLV/MPEG/MP4 → MP4 的转换链路。
 //!
 //! ```text
-//!   av_read_frame ──► ffmpeg 解码 ──► AVFrame ──► NV12 ──► AMediaCodec(H.264) ─┐
-//!        │                    │                                               ├─► AMediaMuxer ──► MP4
-//!        └──────────────► ffmpeg 解码 ──► swresample ──► PCM ──► AMediaCodec(AAC) ┘
+//!   非 H.264 源（VC-1 / WMV3 / MSMPEG4 / MPEG-1·2 / H.263 / VP6 …）
+//!     av_read_frame ──► ffmpeg 解码 ──► AVFrame ──► NV12 ──► AMediaCodec(H.264) ─┐
+//!                                                                                ├─► AMediaMuxer ──► MP4
+//!   H.264 源（MP4 / MOV）
+//!     av_read_frame ──► AMediaCodec 硬解 ──(input surface)──► AMediaCodec(H.264) ─┤
+//!                                                                                │
+//!   任意源
+//!     av_read_frame ──► ffmpeg 解码 ──► swresample ──► PCM ──► AMediaCodec(AAC) ──┘
 //! ```
 //!
-//! ffmpeg 只负责**解**（ASF 解封装 + VC-1/WMV3/MSMPEG4/MPEG4 + WMA 解码），
+//! ffmpeg 只负责**解**（解封装 + VC-1/WMV3/MSMPEG4/MPEG4/WMA 解码），
 //! **编**和**封**交给 Android 自己的 `AMediaCodec` / `AMediaMuxer`：
 //!
 //! * 体积：ffmpeg 自带 mpeg4+aac 编码器的那版两 ABI 合计 6.07 MB，超了 5 MB 门槛；
 //!   只留解码器是 3.15 MB。编解码这一半等于白送。
 //! * 兼容性：ffmpeg 里**没有** H.264 编码器（libx264 是 GPL），而 MediaCodec 出的是
 //!   硬件 H.264 + AAC，播放器兼容性最好。
+//!
+//! # H.264 源走硬解（`Ctx::use_hw`）
+//!
+//! 同上一条的理由反过来：ffmpeg 里也没有 H.264 **解码器**。所以 H.264 源（MP4/MOV
+//! 家族）由设备自己的 `AMediaCodec` 解，**解码器的输出面就是编码器的输入面**
+//! （surface 直连，零拷贝）。为什么不是「解出来再喂编码器」：NDK 的 `AMediaCodec`
+//! 没有 `getOutputImage`，ByteBuffer 输出的 YUV 布局因设备而异，写错只花屏不报错。
+//!
+//! 代价：H.264 源只能转 MP4（→ WMV 那条路全程 ffmpeg，见 `asf.rs`），而且这条管线
+//! 的真机行为只能上机验（csd、surface 的时间戳传递、色彩格式都没法在主机上模拟）。
 //!
 //! # 两条轨的错位
 //!
@@ -23,7 +38,8 @@
 //! # 时间戳
 //!
 //! 视频 PTS 只允许前进，**首帧单独判**（见 [`Ctx::feed_video`]）；音频 PTS 完全由
-//! 我们自己按喂进去的采样数累加，不信容器。
+//! 我们自己按喂进去的采样数累加，不信容器。硬解那条路的规则不一样（解码顺序 vs
+//! 显示顺序），见 [`Ctx::feed_hw_packet`]。
 
 use std::collections::VecDeque;
 use std::ffi::CString;
@@ -111,6 +127,27 @@ struct Ctx {
     frame_dur_us: i64,
 
     swr: *mut ffi::SwrContext,
+
+    // ---- H.264 源的硬解（`use_hw`）----
+    //
+    // 为什么是「解码器渲进编码器的 surface」而不是「解出来再喂编码器」：
+    // NDK 的 AMediaCodec **没有** `getOutputImage`（那是 Java 侧 ImageReader 的 API），
+    // ByteBuffer 输出的 YUV 布局（NV12 / I420、stride 是否等于 width、slice-height）
+    // **因设备而异**，写错只会花屏不会报错。surface 直连把这段整个绕开。
+    //
+    /// H.264 解码器。它没有输出缓冲 —— 帧直接渲进 [`Ctx::hw_surface`]。
+    h264dec: *mut ffi::AMediaCodec,
+    /// `venc` 的 input surface；`createInputSurface` 把所有权交给我们，必须 release。
+    hw_surface: *mut ffi::ANativeWindow,
+    /// 源视频是 H.264 → 走零拷贝硬解。此时 [`Ctx::vdec`] 是空指针。
+    use_hw: bool,
+    /// `avcC` 解析结果（`use_hw` 时才有）。
+    avc: Option<crate::h264::AvcConfig>,
+    /// AVCC → Annex-B 的复用缓冲（每包一次，免得每帧分配）。
+    annexb: Vec<u8>,
+    /// 硬解路径下最后一个解码输出的 PTS。收尾给编码器发 EOS 时要用 ——
+    /// surface 模式没有 `feed_video`，`last_v_us` 一直是 0。
+    last_hw_pts_us: i64,
 }
 
 impl Drop for Ctx {
@@ -126,9 +163,19 @@ impl Drop for Ctx {
             if !self.adec.is_null() {
                 ffi::avcodec_free_context(&mut self.adec);
             }
+            // 硬解：**先停解码器（生产者）再停编码器（surface 的消费者）**。
+            // 反过来做的话，解码器手里可能还有一帧正往一个已经停掉的 surface 里渲。
+            if !self.h264dec.is_null() {
+                ffi::AMediaCodec_stop(self.h264dec);
+                ffi::AMediaCodec_delete(self.h264dec);
+            }
             if !self.venc.is_null() {
                 ffi::AMediaCodec_stop(self.venc);
                 ffi::AMediaCodec_delete(self.venc);
+            }
+            // surface 的所有权在 `createInputSurface` 之后归我们，两个编解码器都不管它。
+            if !self.hw_surface.is_null() {
+                ffi::ANativeWindow_release(self.hw_surface);
             }
             if !self.aenc.is_null() {
                 ffi::AMediaCodec_stop(self.aenc);
@@ -391,6 +438,196 @@ impl Ctx {
         }
     }
 
+    /// 视频轨的归零点（µs）：优先用容器的 `start_time`，拿不到返回 `None`
+    /// 让调用方退回首包 PTS。
+    ///
+    /// 硬解路径不能用「首包 PTS」当基准 —— 解码顺序上第一个包不一定是 PTS 最小的
+    /// 那个（开放 GOP 的前导 B 帧），拿它当零会把整条轨平移几帧。
+    unsafe fn hw_base_us(&self) -> Option<i64> {
+        let st = self.stream(self.vstream);
+        let stt = (*st).start_time;
+        if stt == ffi::AV_NOPTS_VALUE {
+            return None;
+        }
+        Some(ffi::av_rescale_q(
+            stt,
+            (*st).time_base,
+            ffi::AVRational { num: 1, den: 1_000_000 },
+        ))
+    }
+
+    /// 排空硬解解码器。`wait_us` 的语义与 [`Ctx::drain`] 一致。
+    ///
+    /// **release 必须带 `render = true`**：surface 模式下帧不在 ByteBuffer 里，
+    /// 只有 release 时把 render 置位，帧才会被投递到编码器的 input surface。
+    /// 传 `false` 不会报错 —— 解码器照常推进、`dequeue` 照常返回，编码器却一帧都
+    /// 收不到，最后交出一个 0 字节的 MP4。这是这条路上最容易写错的一行。
+    fn drain_hw_dec(&mut self, wait_us: i64) -> R<()> {
+        let dec = self.h264dec;
+        let deadline =
+            (wait_us > 0).then(|| Instant::now() + std::time::Duration::from_micros(wait_us as u64));
+        let poll_us = if wait_us > 0 { 10_000 } else { 0 };
+        loop {
+            let mut info = ffi::AMediaCodecBufferInfo {
+                offset: 0,
+                size: 0,
+                presentationTimeUs: 0,
+                flags: 0,
+            };
+            let idx = unsafe { ffi::AMediaCodec_dequeueOutputBuffer(dec, &mut info, poll_us) };
+            if idx >= 0 {
+                if info.presentationTimeUs > self.last_hw_pts_us {
+                    self.last_hw_pts_us = info.presentationTimeUs;
+                }
+                let eos = info.flags & ffi::BufferFlags::AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM != 0;
+                unsafe { ffi::AMediaCodec_releaseOutputBuffer(dec, idx as usize, true) };
+                if eos {
+                    return Ok(());
+                }
+            } else if idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED as isize {
+                // 硬解器的输出格式（色彩格式 / stride / 尺寸）我们不关心 —— 帧直接进
+                // surface，不经过我们的内存。但这个对象是新建的，必须释放。
+                let f = unsafe { ffi::AMediaCodec_getOutputFormat(dec) };
+                if !f.is_null() {
+                    unsafe { ffi::AMediaFormat_delete(f) };
+                }
+            } else if idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED as isize {
+                // 老 API 的产物，忽略。
+            } else {
+                match deadline {
+                    Some(d) if Instant::now() >= d => return Ok(()),
+                    Some(_) => {}
+                    None => return Ok(()),
+                }
+            }
+        }
+    }
+
+    /// 硬解路径：把一个 H.264 包喂给 MediaCodec 解码器。
+    ///
+    /// 与 [`Ctx::feed_video`] 的三点不同：
+    ///
+    /// 1. **不做单调性修正**。这里拿到的是**解码顺序**的包 PTS，B 帧会让它来回跳；
+    ///    按显示顺序重排是解码器的活（它输出缓冲上的 PTS 已经是显示顺序）。
+    ///    硬套 `feed_video` 那条「只允许前进」的判据会把 B 帧的时间戳全部改坏。
+    /// 2. **基准取容器的 `start_time`**，见 [`Ctx::hw_base_us`]。
+    /// 3. 只把包排进解码器，**帧不在我们手里**：见 [`Ctx::drain_hw_dec`]。
+    fn feed_hw_packet(&mut self, pkt: &ffi::AVPacket) -> R<()> {
+        let mut us = (*pkt).pts;
+        if us == ffi::AV_NOPTS_VALUE {
+            us = (*pkt).dts;
+        }
+        if us != ffi::AV_NOPTS_VALUE {
+            let tb = unsafe { (*self.stream(self.vstream)).time_base };
+            us = unsafe { ffi::av_rescale_q(us, tb, ffi::AVRational { num: 1, den: 1_000_000 }) };
+        }
+
+        if !self.have_v_pts {
+            self.have_v_pts = true;
+            let base = unsafe { self.hw_base_us() };
+            self.v_base_us = base.unwrap_or_else(|| if us >= 0 { us } else { 0 });
+        }
+        // 拿不到时间戳的包（极少见）按「上一帧 + 一个帧长」补，别让它和上一帧撞。
+        if us == ffi::AV_NOPTS_VALUE {
+            us = self.last_hw_pts_us + self.frame_dur_us;
+        }
+        us -= self.v_base_us;
+        if us < 0 {
+            us = 0;
+        }
+        self.last_v_us = us;
+        self.last_hw_pts_us = us;
+
+        {
+            let avc = self.avc.as_ref().ok_or_else(|| msg("硬解路径缺 avcC 配置"))?;
+            let data = unsafe {
+                if (*pkt).data.is_null() || (*pkt).size <= 0 {
+                    &[][..]
+                } else {
+                    std::slice::from_raw_parts((*pkt).data, (*pkt).size as usize)
+                }
+            };
+            if data.is_empty() {
+                return Ok(());
+            }
+            avc.to_annexb(data, &mut self.annexb);
+        }
+        if self.annexb.is_empty() {
+            return Ok(());
+        }
+
+        let dec = self.h264dec;
+        let venc = self.venc;
+        let need = self.annexb.len();
+        // 后移量同 `feed_video`：只在喂进去的时候加，`last_v_us` 保持未后移的值。
+        let pts = (us + self.v_shift_us) as u64;
+        loop {
+            if video_progress::cancelled() {
+                return Err(ConvertError::Cancelled);
+            }
+            let idx = unsafe { ffi::AMediaCodec_dequeueInputBuffer(dec, 10_000) };
+            if idx >= 0 {
+                let mut cap: usize = 0;
+                let buf = unsafe { ffi::AMediaCodec_getInputBuffer(dec, idx as usize, &mut cap) };
+                if buf.is_null() || cap < need {
+                    unsafe { ffi::AMediaCodec_queueInputBuffer(dec, idx as usize, 0, 0, pts, 0) };
+                    return Err(msg(format!("H.264 解码器输入缓冲太小（{cap} < {need}）")));
+                }
+                unsafe {
+                    std::ptr::copy_nonoverlapping(self.annexb.as_ptr(), buf, need);
+                    ffi::AMediaCodec_queueInputBuffer(dec, idx as usize, 0, need, pts, 0);
+                }
+                self.drain_hw_dec(0)?;
+                return self.drain(venc, true, 0);
+            }
+            if idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED as isize
+                || idx == ffi::CodecInfo::AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED as isize
+            {
+                self.drain_hw_dec(0)?;
+                self.drain(venc, true, 0)?;
+                continue;
+            }
+            // TRY_AGAIN_LATER：解码器取不到输入槽，说明它的输出面被占满了 ——
+            // **编码器不排空，解码器就永远渲不进去**，两边互相等成死循环。所以这里
+            // 两个都要排，顺序是「先解码器后编码器」（渲出去的帧要有人接）。
+            self.drain_hw_dec(0)?;
+            self.drain(venc, true, 0)?;
+        }
+    }
+
+    /// 硬解收尾：EOS 依次过「解码器 → 编码器」。
+    ///
+    /// 顺序不能反：解码器里还压着几帧，得先让它们渲进 surface，再告诉编码器没有更多
+    /// 输入了；反过来尾部几帧会直接丢。
+    ///
+    /// 编码器这一侧**不能**用 [`Ctx::finish_encoder`] —— surface 输入时它没有输入
+    /// 队列（`dequeueInputBuffer` 永远返回负值），只能走 `signalEndOfInputStream`。
+    fn finish_hw(&mut self) -> R<()> {
+        let dec = self.h264dec;
+        let idx = unsafe { ffi::AMediaCodec_dequeueInputBuffer(dec, 100_000) };
+        if idx < 0 {
+            return Err(msg(format!("收尾时取不到解码器输入缓冲：{idx}")));
+        }
+        unsafe {
+            ffi::AMediaCodec_queueInputBuffer(
+                dec,
+                idx as usize,
+                0,
+                0,
+                self.last_hw_pts_us.max(0) as u64,
+                ffi::BufferFlags::AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM,
+            )
+        };
+        // 等解码器吐到 EOS：这一步把最后的帧真正渲进 surface。
+        self.drain_hw_dec(FINISH_BUDGET_US)?;
+        let venc = self.venc;
+        let st = unsafe { ffi::AMediaCodec_signalEndOfInputStream(venc) };
+        if st != ffi::media_status_t::AMEDIA_OK {
+            return Err(msg(format!("编码器收不到输入结束信号：{st}")));
+        }
+        self.drain(venc, true, FINISH_BUDGET_US)
+    }
+
     /// 喂一段交错的 S16 PCM。一个 PCM 帧不能从中间切断（切了左右声道就错位），
     /// 所以按「能整除一个帧」的粒度往输入缓冲里塞。
     fn feed_audio(&mut self, pcm: &[u8]) -> R<()> {
@@ -482,6 +719,12 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         vh: 0,
         frame_dur_us: 0,
         swr: std::ptr::null_mut(),
+        h264dec: std::ptr::null_mut(),
+        hw_surface: std::ptr::null_mut(),
+        use_hw: false,
+        avc: None,
+        annexb: Vec::new(),
+        last_hw_pts_us: 0,
     };
 
     unsafe {
@@ -514,26 +757,71 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         }
 
         // ---- 视频解码器 ----
+        //
+        // H.264 走 MediaCodec **硬解**：ffmpeg 里没编 h264 解码器（libx264 是 GPL，
+        // C 解码器本身还要 ~1 MB/ABI），而设备自带的硬解是免费的。其余格式仍由
+        // ffmpeg 解 —— 它们已经有纯 C 实现且体积小。
         {
             let par = (*c.stream(c.vstream)).codecpar;
             let codec_id = (*par).codec_id;
-            let dec = ffi::avcodec_find_decoder(codec_id);
-            if dec.is_null() {
-                let name = std::ffi::CStr::from_ptr(ffi::avcodec_get_name(codec_id))
-                    .to_string_lossy()
-                    .into_owned();
-                return Err(msg(format!("没有 {name} 的解码器")));
-            }
-            c.vdec = ffi::avcodec_alloc_context3(dec);
-            if c.vdec.is_null() {
-                return Err(msg("视频解码器分配失败"));
-            }
-            if ffi::avcodec_parameters_to_context(c.vdec, par) < 0 {
-                return Err(msg("视频解码参数拷贝失败"));
-            }
-            (*c.vdec).thread_count = 2;
-            if ffi::avcodec_open2(c.vdec, dec, std::ptr::null_mut()) < 0 {
-                return Err(msg("视频解码器打不开"));
+            if codec_id == ffi::AVCodecID::AV_CODEC_ID_H264 {
+                let extra: &[u8] = if (*par).extradata.is_null() || (*par).extradata_size <= 0 {
+                    &[]
+                } else {
+                    std::slice::from_raw_parts((*par).extradata, (*par).extradata_size as usize)
+                };
+                let avc = crate::h264::AvcConfig::parse(extra).ok_or_else(|| {
+                    msg("H.264 源的 extradata 不是 avcC —— 目前只支持 MP4/MOV 一类容器")
+                })?;
+                c.h264dec = ffi::AMediaCodec_createDecoderByType(cstr!("video/avc"));
+                if c.h264dec.is_null() {
+                    return Err(msg("这台设备没有 H.264 解码器"));
+                }
+                let df = ffi::AMediaFormat_new();
+                ffi::AMediaFormat_setString(df, cstr!("mime"), cstr!("video/avc"));
+                ffi::AMediaFormat_setInt32(df, cstr!("width"), (*par).width);
+                ffi::AMediaFormat_setInt32(df, cstr!("height"), (*par).height);
+                // 解码器要**带起始码**的 SPS / PPS（csd-0 / csd-1），avcC 里存的是裸 NAL。
+                let mut csd0 = Vec::with_capacity(avc.sps.len() + 4);
+                csd0.extend_from_slice(&[0, 0, 0, 1]);
+                csd0.extend_from_slice(&avc.sps);
+                let mut csd1 = Vec::with_capacity(avc.pps.len() + 4);
+                csd1.extend_from_slice(&[0, 0, 0, 1]);
+                csd1.extend_from_slice(&avc.pps);
+                ffi::AMediaFormat_setBuffer(df, cstr!("csd-0"), csd0.as_ptr().cast(), csd0.len());
+                ffi::AMediaFormat_setBuffer(df, cstr!("csd-1"), csd1.as_ptr().cast(), csd1.len());
+                let st = ffi::AMediaCodec_configure(
+                    c.h264dec,
+                    df,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    0,
+                );
+                ffi::AMediaFormat_delete(df);
+                if st != ffi::media_status_t::AMEDIA_OK {
+                    return Err(msg(format!("H.264 解码器配置失败：{st}")));
+                }
+                c.avc = Some(avc);
+                c.use_hw = true;
+            } else {
+                let dec = ffi::avcodec_find_decoder(codec_id);
+                if dec.is_null() {
+                    let name = std::ffi::CStr::from_ptr(ffi::avcodec_get_name(codec_id))
+                        .to_string_lossy()
+                        .into_owned();
+                    return Err(msg(format!("没有 {name} 的解码器")));
+                }
+                c.vdec = ffi::avcodec_alloc_context3(dec);
+                if c.vdec.is_null() {
+                    return Err(msg("视频解码器分配失败"));
+                }
+                if ffi::avcodec_parameters_to_context(c.vdec, par) < 0 {
+                    return Err(msg("视频解码参数拷贝失败"));
+                }
+                (*c.vdec).thread_count = 2;
+                if ffi::avcodec_open2(c.vdec, dec, std::ptr::null_mut()) < 0 {
+                    return Err(msg("视频解码器打不开"));
+                }
             }
         }
 
@@ -562,8 +850,15 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         }
 
         c.has_video = true;
-        c.vw = ((*c.vdec).width + 1) & !1;
-        c.vh = ((*c.vdec).height + 1) & !1;
+        // 硬解时没有 `vdec`，尺寸从 codecpar 取 —— H.264 的 SPS 早就把宽高写进流信息了。
+        if c.use_hw {
+            let par = (*c.stream(c.vstream)).codecpar;
+            c.vw = ((*par).width + 1) & !1;
+            c.vh = ((*par).height + 1) & !1;
+        } else {
+            c.vw = ((*c.vdec).width + 1) & !1;
+            c.vh = ((*c.vdec).height + 1) & !1;
+        }
 
         // ---- H.264 编码器 ----
         c.venc = ffi::AMediaCodec_createEncoderByType(cstr!("video/avc"));
@@ -586,7 +881,11 @@ pub fn convert(input: &str, output: &str) -> R<()> {
             ffi::AMediaFormat_setInt32(vf, cstr!("width"), c.vw);
             ffi::AMediaFormat_setInt32(vf, cstr!("height"), c.vh);
             // COLOR_FormatYUV420SemiPlanar —— 见 nv12.rs。
-            ffi::AMediaFormat_setInt32(vf, cstr!("color-format"), 21);
+            // **surface 输入时不能设**：帧是解码器直接渲进来的，编码器没有 YUV 缓冲，
+            // 设了 color-format 反而会让 createInputSurface 失败（有的设备直接报错）。
+            if !c.use_hw {
+                ffi::AMediaFormat_setInt32(vf, cstr!("color-format"), 21);
+            }
             ffi::AMediaFormat_setInt32(vf, cstr!("bitrate"), video_bitrate(c.vw, c.vh));
             ffi::AMediaFormat_setInt32(vf, cstr!("frame-rate"), fps);
             ffi::AMediaFormat_setInt32(vf, cstr!("i-frame-interval"), 1);
@@ -602,8 +901,27 @@ pub fn convert(input: &str, output: &str) -> R<()> {
                 return Err(msg(format!("H.264 编码器配置失败：{st}")));
             }
         }
+        // 硬解：把编码器的 input surface 交给解码器当输出面 —— 解码出的帧**直接**进
+        // 编码器，中间不经过我们的内存（所以没有 YUV 布局可言，见 Ctx 上的注释）。
+        // 顺序是硬要求：`createInputSurface` 在编码器 configure 之后、start 之前；
+        // `setOutputSurface` 在解码器 start 之前。
+        if c.use_hw {
+            let mut surf: *mut ffi::ANativeWindow = std::ptr::null_mut();
+            let st = ffi::AMediaCodec_createInputSurface(c.venc, &mut surf);
+            if st != ffi::media_status_t::AMEDIA_OK || surf.is_null() {
+                return Err(msg(format!("编码器建不了 input surface：{st}")));
+            }
+            c.hw_surface = surf;
+            let st = ffi::AMediaCodec_setOutputSurface(c.h264dec, surf);
+            if st != ffi::media_status_t::AMEDIA_OK {
+                return Err(msg(format!("解码器接不上编码器的 surface：{st}")));
+            }
+        }
         if ffi::AMediaCodec_start(c.venc) != ffi::media_status_t::AMEDIA_OK {
             return Err(msg("H.264 编码器启动失败"));
+        }
+        if c.use_hw && ffi::AMediaCodec_start(c.h264dec) != ffi::media_status_t::AMEDIA_OK {
+            return Err(msg("H.264 解码器启动失败"));
         }
 
         // ---- AAC 编码器 + 重采样器（任一失败就只转视频）----
@@ -719,7 +1037,16 @@ pub fn convert(input: &str, output: &str) -> R<()> {
             video_progress::add_bytes((*pkt).size.max(0) as u64);
             let si = (*pkt).stream_index;
             if si == c.vstream {
-                if ffi::avcodec_send_packet(c.vdec, pkt) >= 0 {
+                if c.use_hw {
+                    // 硬解：包直接进 MediaCodec，`vdec` 是空指针（不能碰 avcodec）。
+                    if let Err(e) = c.feed_hw_packet(&*pkt) {
+                        let mut p = pkt;
+                        let mut f = frame;
+                        ffi::av_packet_free(&mut p);
+                        ffi::av_frame_free(&mut f);
+                        return Err(e);
+                    }
+                } else if ffi::avcodec_send_packet(c.vdec, pkt) >= 0 {
                     while ffi::avcodec_receive_frame(c.vdec, frame) == 0 {
                         let r = c.feed_video(&*frame);
                         ffi::av_frame_unref(frame);
@@ -759,11 +1086,14 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         }
 
         // ---- 收尾：把两个解码器/重采样器/编码器里的存货全部逼出来 ----
-        ffi::avcodec_send_packet(c.vdec, std::ptr::null());
-        while ffi::avcodec_receive_frame(c.vdec, frame) == 0 {
-            let r = c.feed_video(&*frame);
-            ffi::av_frame_unref(frame);
-            r?;
+        // 硬解路径没有 ffmpeg 视频解码器，flush 走 `finish_hw`（见下）。
+        if !c.use_hw {
+            ffi::avcodec_send_packet(c.vdec, std::ptr::null());
+            while ffi::avcodec_receive_frame(c.vdec, frame) == 0 {
+                let r = c.feed_video(&*frame);
+                ffi::av_frame_unref(frame);
+                r?;
+            }
         }
         if c.has_audio {
             // **音频解码器也要 flush**：只对视频解码器发 NULL 包，音频解码器里缓冲的帧
@@ -809,8 +1139,14 @@ pub fn convert(input: &str, output: &str) -> R<()> {
             }
         }
         let (venc, aenc) = (c.venc, c.aenc);
-        // EOS 也要带上后移量，否则编码器会把「末帧时间戳回退」当成异常。
-        c.finish_encoder(venc, true, c.last_v_us + c.v_shift_us)?;
+        if c.use_hw {
+            // 硬解：视频编码器吃的是 surface，没有输入队列，收尾只能走
+            // `signalEndOfInputStream`。EOS 的顺序（先解码器后编码器）见 `finish_hw`。
+            c.finish_hw()?;
+        } else {
+            // EOS 也要带上后移量，否则编码器会把「末帧时间戳回退」当成异常。
+            c.finish_encoder(venc, true, c.last_v_us + c.v_shift_us)?;
+        }
         if c.has_audio {
             c.finish_encoder(aenc, false, c.last_a_us)?;
         }

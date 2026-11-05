@@ -108,6 +108,42 @@ class CliTokenizerTest {
     fun adjacentQuotedSpansJoinIntoOneToken() {
         assertEquals(listOf("a1b2"), tok("\"a1\"\"b2\""))
     }
+    /**
+     * 运算符**不要求两侧有空格**。
+     *
+     * 这条曾经是静默 bug：`uu l x.zip>out.txt` 被拆成一个参数 `x.zip>out.txt`，
+     * 重定向不发生、也不报错，用户以为写进了文件。shell 里 `a>b` 与 `a > b`
+     * 等价，用户不会想到要加空格。
+     */
+    @Test
+    fun operatorsNeedNoSurroundingSpaces() {
+        assertEquals(listOf("uu", "l", "x.zip", ">", "out.txt"), tok("uu l x.zip>out.txt"))
+        assertEquals(listOf("uu", "l", "x.zip", ">>", "out.txt"), tok("uu l x.zip>>out.txt"))
+        assertEquals(listOf("uu", "l", "a.zip", "|", "grep", "main"), tok("uu l a.zip|grep main"))
+        assertEquals(listOf("a", "&&", "b"), tok("a&&b"))
+        assertEquals(listOf("a", "||", "b"), tok("a||b"))
+        // 与加空格的写法必须**完全等价**，否则同一件事有两种拆法
+        assertEquals(tok("uu l x.zip > out.txt"), tok("uu l x.zip>out.txt"))
+    }
+
+    /** 引号里、转义后的运算符仍是**字面字符**（要的就是「一个字面的 `>`」）。 */
+    @Test
+    fun quotedOrEscapedOperatorsStayLiteral() {
+        assertEquals(listOf("uu", "sed", "s/a>b/c/"), tok("""uu sed 's/a>b/c/'"""))
+        assertEquals(listOf("uu", "grep", "a|b"), tok("""uu grep "a|b""""))
+        assertEquals(listOf("a>b"), tok("""a\>b"""))
+    }
+
+    /** 单个 `&` 不是运算符（`&&` 才是）；`;` 仍是普通字符。 */
+    @Test
+    fun singleAmpersandAndSemicolonStayLiteral() {
+        assertEquals(listOf("a&b"), tok("a&b"))
+        // `;` 是参数内容（sed 脚本、URL），不能拆
+        assertEquals(listOf("uu", "sed", "s/a/b/;s/c/d/"), tok("uu sed s/a/b/;s/c/d/"))
+        // 独立的 `;` 才分段，这一层由 splitSegments 处理，tokenizer 原样输出
+        assertEquals(listOf("a", ";", "b"), tok("a ; b"))
+    }
+
     // ── CliGlob 线性匹配（含病态模式不再指数回溯）──
 
     @Test

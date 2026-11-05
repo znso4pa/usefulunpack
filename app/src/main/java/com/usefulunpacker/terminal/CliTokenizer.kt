@@ -7,7 +7,15 @@ package com.usefulunpacker
  *  - 空白分隔
  *  - `"` 与 `'` 成对引号内不拆空白（`'` 在 Windows 习惯里也是引号，UI 输入里两种都会用到）
  *  - `\` 只在**引号外**转义下一个字符（引号内保持字面：反斜杠在 Android 上是合法文件名字符）
+ *  - 运算符 `|` `>` `>>` `&&` `||` **不要求两侧有空格**，单独成 token
+ *  - `;` 仍是**普通字符**，只有「独立的 `;` token」才分段（理由见下面的实现注释）
  *  - 引号未闭合 → 报错，不做「尽力而为」的猜测
+ *
+ * 运算符那条是后补的，起因是个**静默** bug：之前只在「运算符自己是一个 token」时
+ * 才认得出来，于是 `uu l x.zip>out.txt` 被拆成 `["uu","l","x.zip>out.txt"]` ——
+ * `>` 变成第三个**参数**，重定向不发生、也不报错，用户以为写进了文件。
+ * `a|b`、`a&&b` 同理。只有加了空格才工作，而 shell 里这两者等价，用户不会想到要加空格。
+ * 想表达字面的 `>` 就加引号或反斜杠（`\>`），两条路都保留。
  *
  * 为什么不用 `String.split("\\s+")`：它会把 `uu x "my game.zip"` 拆成
  * `["\"my", "game.zip\"]`，也就是带空格路径**无法表达**。UU 的归档路径带空格
@@ -60,6 +68,18 @@ internal class CliTokenizer {
                     }
                     if (!closed) return Out.Bad(Reason.UnclosedQuote(quote))
                     started = true    // `""` 是合法的空参数
+                }
+                // 运算符：不要求两侧有空格。先把攒着的 token 收口，运算符自己再成一个 token。
+                // `&` 只有连成 `&&` 才算运算符，单个 `&` 仍是普通字符。
+                //
+                // **`;` 刻意不在此列**：它确实是 shell 的分段符，但在 UU 里更常见的是
+                // **参数内容**（`uu sed s/a/b/;s/c/d/` 的 sed 脚本、带分号的 URL），
+                // 拆开会让那条命令收到三个参数而不是一个。分段照旧只认「独立的 `;` token」。
+                c == '|' || c == '>' ||
+                    (c == '&' && i + 1 < input.length && input[i + 1] == '&') -> {
+                    if (started) { tokens.add(cur.toString()); cur.setLength(0); started = false }
+                    val doubled = i + 1 < input.length && input[i + 1] == c
+                    if (doubled) { tokens.add("$c$c"); i += 2 } else { tokens.add(c.toString()); i++ }
                 }
                 else -> { cur.append(c); started = true; i++ }
             }

@@ -93,7 +93,15 @@ internal class TerminalPanel(private val act: MainActivity) {
         mount(cur)
     }
 
-    /** 为 [tabId] 挂一个全新视图，绑定它自己的会话（cwd/历史/输出）。 */
+    /**
+     * 为 [tabId] 挂一个全新视图，绑定它自己的会话（cwd/历史/输出）。
+     *
+     * `ClickableViewAccessibility` 在这里是**误报**：输出区的触摸监听只用来判断
+     * 「用户是不是在自己拖动」（`pinnedToBottom` 的判据），一律返回 `false`，
+     * 从不消费事件，也不承担点击语义 —— 点击由 `ScrollView` 自己处理。
+     * 补一个 `performClick()` 反而会凭空造出一次点击。
+     */
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
     private fun mount(tabId: Int) {
         sess = vm.session(tabId)
         ownerTabId = tabId
@@ -131,6 +139,33 @@ internal class TerminalPanel(private val act: MainActivity) {
         scroll.addView(outView)
         scroller = scroll
         out = outView
+
+        // ── 跟随底部的三个监听：**只在 mount 时挂一次** ─────────────────────
+        //
+        // ⚠️ 它们原先写在 `render()` 里，而 `render()` 每输出一段就跑一次。
+        // `setOnTouchListener` / `setOnScrollChangeListener` 是**替换**语义，重复调用
+        // 只是浪费；但 `addOnLayoutChangeListener` 是**累加**语义 —— 输出 1000 行就
+        // 挂了 1000 个监听器，之后每次布局变化（键盘开合、旋屏、甚至 setText 自己）
+        // 都会跑 1000 个回调、各自 post 一次 fullScroll。命令越啰嗦越卡，而且没有任何
+        // 报错。修法就是把注册挪出渲染热路径。
+        scroll.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> userScrolling = true
+                android.view.MotionEvent.ACTION_UP,
+                android.view.MotionEvent.ACTION_CANCEL -> {
+                    userScrolling = false
+                    scroll.post { recomputePinned(scroll) }
+                }
+            }
+            false
+        }
+        scroll.setOnScrollChangeListener { _, _, _, _, _ ->
+            if (userScrolling) recomputePinned(scroll)
+        }
+        // 布局变化（键盘开合/旋屏）：跟随时保持贴底
+        scroll.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+            if (pinnedToBottom) v.post { (v as ScrollView).fullScroll(View.FOCUS_DOWN) }
+        }
 
         // ── 顶部工具行：状态点 + 标题 + cwd 胶囊 + 动作 ───────────────────
         // 上一版把标题、cwd、三个动作全塞进一行、上下只有 6dp，动作之间没有间距，
@@ -419,32 +454,19 @@ internal class TerminalPanel(private val act: MainActivity) {
         cwdView?.text = sess.cwd.name.ifEmpty { "/" }
         if (pinnedToBottom) sv?.post { sv.fullScroll(View.FOCUS_DOWN) }
         else sv?.post { sv.scrollTo(0, scrollY) }
-        // 跟随状态**只由用户真实拖动改变**：键盘弹出/收起、setText、布局变化都会
-        // 触发 scroll-change，早期实现把它们当作用户上滑，一次误判就永久卡在
-        // 半空（真机反馈：输出继续走，视图不再跟底）。
-        fun recomputePinned() {
-            val h = sv?.getChildAt(0)?.height ?: 0
-            val range = h - (sv?.height ?: 0)
-            pinnedToBottom = range <= 0 || (sv?.scrollY ?: 0) >= range - 8
-        }
-        sv?.setOnTouchListener { _, e ->
-            when (e.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> userScrolling = true
-                android.view.MotionEvent.ACTION_UP,
-                android.view.MotionEvent.ACTION_CANCEL -> {
-                    userScrolling = false
-                    sv.post { recomputePinned() }
-                }
-            }
-            false
-        }
-        sv?.setOnScrollChangeListener { _, _, _, _, _ ->
-            if (userScrolling) recomputePinned()
-        }
-        // 布局变化（键盘开合/旋屏）：跟随时保持贴底
-        sv?.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
-            if (pinnedToBottom) v.post { sv.fullScroll(View.FOCUS_DOWN) }
-        }
+    }
+
+    /**
+     * 跟随状态**只由用户真实拖动改变**：键盘弹出/收起、setText、布局变化都会
+     * 触发 scroll-change，早期实现把它们当作用户上滑，一次误判就永久卡在
+     * 半空（真机反馈：输出继续走，视图不再跟底）。
+     *
+     * 监听器在 [`mount`] 里挂一次，不在 `render()` 里 —— 见那里的说明。
+     */
+    private fun recomputePinned(sv: ScrollView) {
+        val h = sv.getChildAt(0)?.height ?: 0
+        val range = h - sv.height
+        pinnedToBottom = range <= 0 || sv.scrollY >= range - 8
     }
 
     // ─── 执行 ────────────────────────────────────────────────────────────
@@ -623,9 +645,13 @@ internal class TerminalPanel(private val act: MainActivity) {
         }
         if (redir != null) {
             val f = UuText.resolve(ec.s.cwd, redir.first)
+            // 命令没有输出时写**空文件**（0 字节），不要只写一个换行 —— shell 里
+            // `cmd > f` 无输出就是 0 字节，多出来的那个 `\n` 会让 `wc -c` 之类
+            // 的后续处理看到 1，且 `>>` 会每次追加一行空白。
+            val payload = if (text.isEmpty()) "" else text + "\n"
             val ok = runCatching {
                 f.parentFile?.mkdirs()
-                if (redir.second) f.appendText(text + "\n") else f.writeText(text + "\n")
+                if (redir.second) f.appendText(payload) else f.writeText(payload)
                 true
             }.getOrDefault(false)
             ec.emit(

@@ -60,6 +60,148 @@ fn run_validator(sig: &validators::Sig, f: &mut File, offset: u64, file_len: u64
     (sig.validate)(f, offset, file_len)
 }
 
+/// 魔数匹配器 + 「第 N 个模式属于哪条签名 / 是哪个魔数」两张对照表。
+///
+/// 抽出来是为了让**递归扫描**复用同一套匹配器：Aho-Corasick 的构建成本随模式数
+/// 增长，每钻进一层条目就重建一次是浪费。
+struct Matcher {
+    ac: AhoCorasick,
+    sigs: Vec<&'static validators::Sig>,
+    magics: Vec<&'static [u8]>,
+    /// 最长魔数的字节数 —— 决定跨块重叠窗口的大小。
+    max_magic: usize,
+}
+
+impl Matcher {
+    fn new() -> Result<Self, aho_corasick::BuildError> {
+        let mut patterns: Vec<&'static [u8]> = Vec::new();
+        let mut sigs: Vec<&'static validators::Sig> = Vec::new();
+        let mut magics: Vec<&'static [u8]> = Vec::new();
+        for sig in validators::SIGNATURES {
+            for mg in sig.magics {
+                patterns.push(mg);
+                sigs.push(sig);
+                magics.push(mg);
+            }
+        }
+        let max_magic = magics.iter().map(|m| m.len()).max().unwrap_or(1).max(1);
+        Ok(Self { ac: AhoCorasick::new(patterns)?, sigs, magics, max_magic })
+    }
+}
+
+/// 递归扫描的最大层数（1 = 只钻进顶层归档一层）。
+///
+/// 再深就会开始「tar 里套 zip、zip 里套 tar、tar 里套 zip…」地翻垃圾 ——
+/// 而且每深一层，输出里就多一批「某个文件内部的某个文件内部的东西」，
+/// 对「这堆东西是什么」这个问题没有增量价值。
+const MAX_NEST_DEPTH: u32 = 2;
+
+/// 递归扫描总共最多追加多少条命中（防御畸形容器把结果刷爆）。
+const MAX_NEST_HITS: usize = 512;
+
+/// 递归扫描总共最多**重读**多少字节。
+///
+/// 递归是第二遍 IO：主循环已经把整文件读过一次，钻进条目里等于把容器的载荷再读
+/// 一遍。一个 4096 条 × 256 MiB 的畸形 zip 能把「扫一下」变成读 1 TiB —— 进度条
+/// 还停在 100%（`SCAN_BYTES` 只统计主循环），用户看到的就是「卡死」。
+const MAX_NEST_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// 在 `[start, end)` 这段**绝对区间**里跑一遍签名扫描，返回绝对偏移的命中。
+///
+/// 与主循环的差别只有「谁决定边界」：主循环自己按 1 MiB 步进并维护全局进度，
+/// 这里由调用方给定区间（一个嵌套条目的数据范围）。skip-past 语义保留 ——
+/// 不然一个大条目里每个魔数都要过一次校验器。
+fn scan_region(f: &mut File, m: &Matcher, start: u64, end: u64, file_len: u64) -> Vec<Hit> {
+    let mut out: Vec<Hit> = Vec::new();
+    if start >= end || SCAN_CANCEL.load(Ordering::SeqCst) {
+        return out;
+    }
+    let buf_size = 1usize << 20;
+    let mut buf = vec![0u8; buf_size];
+    let mut overlap: Vec<u8> = Vec::with_capacity(m.max_magic);
+    let mut window: Vec<u8> = Vec::with_capacity(buf_size + m.max_magic);
+    let mut pos = start;
+    while pos < end && !SCAN_CANCEL.load(Ordering::SeqCst) {
+        let want = ((end - pos) as usize).min(buf_size);
+        if f.seek(SeekFrom::Start(pos)).is_err() {
+            break;
+        }
+        let n = match f.read(&mut buf[..want]) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        let window_base = pos.saturating_sub(overlap.len() as u64);
+        let overlap_len = overlap.len() as u64;
+        window.clear();
+        window.extend_from_slice(&overlap);
+        window.extend_from_slice(&buf[..n]);
+
+        let mut skipped_past = false;
+        for mt in m.ac.find_overlapping_iter(&window) {
+            if SCAN_CANCEL.load(Ordering::SeqCst) {
+                break;
+            }
+            let off_in_win = mt.start() as u64;
+            let magic = m.magics[mt.pattern().as_usize()];
+            if off_in_win < overlap_len && off_in_win + magic.len() as u64 <= overlap_len {
+                continue;
+            }
+            let magic_offset = window_base + off_in_win;
+            let sig = m.sigs[mt.pattern().as_usize()];
+            let Some(info) = run_validator(sig, f, magic_offset, file_len) else {
+                continue;
+            };
+            // 命中必须落在区间内 —— 校验器是按整个文件读的，可能顺着读到条目外面去。
+            if magic_offset < start || magic_offset >= end {
+                continue;
+            }
+            // 大小**截到条目边界**，不因为「超出」就丢掉整条命中。
+            //
+            // 必须这么做：一批校验器的 size 语义就是「到文件末尾」（XP3 没有总长
+            // 字段，`validate_xp3` 直接返回 `file_len - off`）。放进条目里，这个
+            // 值必然越过条目末尾 —— 照原样丢掉的话，恰恰是「tar 里套 XP3」这种
+            // 最该被找到的情况一条都报不出来。
+            let size = match info.size {
+                Some(s) if s > 0 => s.min(end - magic_offset),
+                _ => end - magic_offset,
+            };
+            out.push(Hit {
+                offset: magic_offset,
+                label: sig.label,
+                size,
+                count: info.count,
+                confidence: sig.confidence,
+            });
+            if sig.confidence >= validators::CONFIDENCE_MEDIUM && size > 0 {
+                pos = magic_offset + size;
+                overlap.clear();
+                skipped_past = true;
+                break;
+            }
+        }
+        if skipped_past {
+            continue;
+        }
+        overlap.clear();
+        overlap.extend_from_slice(&window[window.len().saturating_sub(m.max_magic - 1)..]);
+        pos += n as u64;
+    }
+    out
+}
+
+/// 一个命中点能枚举出「条目数据区间」的容器 → 返回那些区间。
+///
+/// 只认两种：tar（数据原样存放，区间可直接扫）和 zip（只有 stored 条目能扫）。
+/// 别的格式要么压缩过、要么没有便宜的条目枚举路径，一律不递归。
+fn entry_ranges(f: &mut File, hit: &Hit, file_len: u64) -> Option<Vec<(u64, u64)>> {
+    match hit.label {
+        "POSIX tar archive" => Some(validators::tar_entry_ranges(f, hit.offset, file_len)),
+        "ZIP archive" => Some(validators::zip_stored_ranges(f, hit.offset, file_len)),
+        _ => None,
+    }
+}
+
 /// Scans [path] and returns the JSON hit list (dev / test convenience).
 #[doc(hidden)]
 pub fn scan_file_json(path: &str) -> Result<String, String> {
@@ -96,23 +238,9 @@ fn scan_file(path: &str) -> Result<Vec<Hit>, String> {
     }
 
     // Build the Aho-Corasick matcher over all magic patterns.
-    let mut patterns: Vec<&[u8]> = Vec::new();
-    let mut sig_for_pattern: Vec<&validators::Sig> = Vec::new();
-    let mut magic_for_pattern: Vec<&'static [u8]> = Vec::new();
-    for sig in validators::SIGNATURES {
-        for m in sig.magics {
-            patterns.push(m);
-            sig_for_pattern.push(sig);
-            magic_for_pattern.push(m);
-        }
-    }
-    let ac = AhoCorasick::new(patterns).map_err(|e| e.to_string())?;
-    let max_sig_len = validators::SIGNATURES
-        .iter()
-        .flat_map(|s| s.magics.iter())
-        .map(|m| m.len())
-        .max()
-        .unwrap_or(1);
+    let m = Matcher::new().map_err(|e| e.to_string())?;
+    let ac = &m.ac;
+    let max_sig_len = m.max_magic;
 
     let mut file_map: Vec<Hit> = Vec::new();
     let buf_size = 1usize << 20;
@@ -150,17 +278,17 @@ fn scan_file(path: &str) -> Result<Vec<Hit>, String> {
         // overlap tail were already reported by the previous chunk, so skip
         // them; matches straddling the boundary are only visible here.
         let mut skipped_past = false;
-        for m in ac.find_overlapping_iter(&window) {
+        for mt in ac.find_overlapping_iter(&window) {
             if SCAN_CANCEL.load(Ordering::SeqCst) {
                 break;
             }
-            let off_in_win = m.start() as u64;
-            let magic = magic_for_pattern[m.pattern().as_usize()];
+            let off_in_win = mt.start() as u64;
+            let magic = m.magics[mt.pattern().as_usize()];
             if off_in_win < overlap_len && off_in_win + magic.len() as u64 <= overlap_len {
                 continue; // already reported in the previous chunk
             }
             let magic_offset = window_base + off_in_win;
-            let sig = sig_for_pattern[m.pattern().as_usize()];
+            let sig = m.sigs[mt.pattern().as_usize()];
             if let Some(info) = run_validator(sig, &mut f, magic_offset, available_data) {
                 let size = info.size.unwrap_or(0);
                 // Sanity: signature must not extend beyond EOF.
@@ -246,12 +374,59 @@ fn scan_file(path: &str) -> Result<Vec<Hit>, String> {
         }
     }
 
-    // ── Pass 3: recursive scan of tar/zip entries ──
-    // For Gal game distributions, archives often contain other archives inside
-    // (e.g., tar containing XP3 files, zip containing YPF files).
-    // We scan the data regions of tar and zip hits to find nested formats.
-    // Skip recursive scan for now to avoid duplicate hits.
-    // TODO: Implement proper recursive scanning with deduplication
+    // ── Pass 3: 钻进 tar / zip 的条目里再扫一遍 ──
+    //
+    // 主循环对「可信 + 已知大小」的命中是**整段跳过**的（binwalk 语义），所以归档
+    // 内部从来没被扫过 —— 这正是「tar 里套 XP3、zip 里套 YPF」一直扫不出来的原因。
+    // 这里把那些被跳过的区间按条目切开重新扫。
+    //
+    // 三条约束：
+    //   * 只认能在**原地**定位数据的容器（tar 全部条目、zip 的 stored 条目）——
+    //     校验器全是 `&mut File` 的，解压出来的字节没有文件可 seek；
+    //   * 按 (offset, label) 去重：嵌套扫描用的是同一张签名表，同一个位置可能
+    //     已经被顶层报过；
+    //   * 深度与总条数都有上限，见 [`MAX_NEST_DEPTH`] / [`MAX_NEST_HITS`]。
+    if !SCAN_CANCEL.load(Ordering::SeqCst) {
+        let mut seen: Vec<(u64, &'static str)> =
+            file_map.iter().map(|h| (h.offset, h.label)).collect();
+        let mut nested: Vec<Hit> = Vec::new();
+        // 广度优先：顶层命中都是深度 1 的候选容器，扫出来的命中再入队。
+        let mut frontier: Vec<(Hit, u32)> = file_map.iter().map(|h| (*h, 1u32)).collect();
+        let mut fi = 0usize;
+        let mut budget = MAX_NEST_BYTES;
+        while fi < frontier.len() && nested.len() < MAX_NEST_HITS {
+            let (hit, depth) = frontier[fi];
+            fi += 1;
+            if depth > MAX_NEST_DEPTH {
+                continue;
+            }
+            let Some(ranges) = entry_ranges(&mut f, &hit, available_data) else {
+                continue;
+            };
+            for (s, e) in ranges {
+                if nested.len() >= MAX_NEST_HITS
+                    || budget == 0
+                    || SCAN_CANCEL.load(Ordering::SeqCst)
+                {
+                    break;
+                }
+                let span = e - s;
+                budget = budget.saturating_sub(span);
+                for inner in scan_region(&mut f, &m, s, e, available_data) {
+                    if seen.iter().any(|&(o, l)| o == inner.offset && l == inner.label) {
+                        continue;
+                    }
+                    seen.push((inner.offset, inner.label));
+                    nested.push(inner);
+                    frontier.push((inner, depth + 1));
+                }
+            }
+        }
+        if !nested.is_empty() {
+            file_map.extend(nested);
+            file_map.sort_by_key(|h| h.offset);
+        }
+    }
 
     Ok(file_map)
 }
@@ -519,6 +694,153 @@ mod tests {
         assert_eq!(zips.len(), 1, "zip should be reported once (size-skip): {hits:?}");
         assert_eq!(zips[0].count, Some(1));
         assert!(zips[0].size > 0 && zips[0].size <= 1000);
+    }
+
+    /// 递归扫描的主用例：tar 里第一个条目就是一个真 XP3。
+    ///
+    /// 主循环对 tar 是「可信 + 已知大小 → 整段跳过」，所以这个 XP3 在顶层从来
+    /// 扫不到 —— 修之前这条断言是红的（只有 tar 一条命中）。修好之后两条都要在，
+    /// 而且 XP3 的绝对偏移必须落在 tar 的区间里。
+    #[test]
+    fn tar_nested_archive_is_found() {
+        let _g = scan_lock();
+        let xp3: &[u8] = include_bytes!("../../vendor/xp3/sample.xp3");
+        let tar = validators::make_tar(&[
+            ("readme.txt", b"just text, not an archive" as &[u8]),
+            ("inner.xp3", xp3),
+        ]);
+        let p = tmp("nested.tar", &tar);
+        let hits = scan_file(&p).unwrap();
+        let tar_hit = hits
+            .iter()
+            .find(|h| h.label == "POSIX tar archive")
+            .unwrap_or_else(|| panic!("no tar hit: {hits:?}"));
+        let xp3_hit = hits
+            .iter()
+            .find(|h| h.label == "XP3 archive")
+            .unwrap_or_else(|| panic!("nested XP3 not found: {hits:?}"));
+        assert!(
+            xp3_hit.offset >= tar_hit.offset && xp3_hit.offset < tar_hit.offset + tar_hit.size,
+            "nested XP3 at {} must sit inside the tar [{}, +{}): {hits:?}",
+            xp3_hit.offset,
+            tar_hit.offset,
+            tar_hit.size
+        );
+        // 偏移要能直接用 —— 拿它去读文件，读出来的必须还是 XP3 的魔数。
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = File::open(&p).unwrap();
+        f.seek(SeekFrom::Start(xp3_hit.offset)).unwrap();
+        let mut magic = [0u8; 10];
+        f.read_exact(&mut magic).unwrap();
+        assert_eq!(&magic, b"XP3\r\n \n\x1a\x8b\x67");
+    }
+
+    /// zip 里 **stored**（method 0）的条目也要能钻进去。
+    ///
+    /// 只做 stored 是刻意的：deflate 的载荷不是明文，就地扫只能扫到压缩流。
+    /// 这条测试同时也把「本地头顺序走查」钉住 —— 走偏了就找不到那个条目。
+    #[test]
+    fn zip_stored_nested_archive_is_found() {
+        let _g = scan_lock();
+        let xp3: &[u8] = include_bytes!("../../vendor/xp3/sample.xp3");
+        let zip = validators::make_zip_stored("inner.xp3", xp3);
+        let p = tmp("nested.zip", &zip);
+        let hits = scan_file(&p).unwrap();
+        assert!(
+            hits.iter().any(|h| h.label == "ZIP archive"),
+            "zip itself must still be reported: {hits:?}"
+        );
+        assert!(
+            hits.iter().any(|h| h.label == "XP3 archive"),
+            "stored zip entry was not scanned: {hits:?}"
+        );
+    }
+
+    /// 没有条目可枚举的格式**不许**递归 —— 递归入口只认 tar / zip。
+    ///
+    /// 这条直接测 [`entry_ranges`]，不走整条扫描链：它才是「谁会被钻进去」的
+    /// 唯一判据，用假 PNG 包一段 tar 去间接验证只会被 PNG 校验器干扰。
+    #[test]
+    fn recursion_only_follows_containers() {
+        let _g = scan_lock();
+        let tar = validators::make_tar(&[("a.bin", b"payload" as &[u8])]);
+        let p = tmp("containers.tar", &tar);
+        let mut f = File::open(&p).unwrap();
+        let len = f.metadata().unwrap().len();
+        let probe = |label: &'static str| Hit {
+            offset: 257,
+            label,
+            size: len - 257,
+            count: None,
+            confidence: validators::CONFIDENCE_HIGH,
+        };
+        assert!(entry_ranges(&mut f, &probe("POSIX tar archive"), len).is_some());
+        assert!(
+            entry_ranges(&mut f, &probe("ZIP archive"), len).is_some(),
+            "zip must be walkable too (empty range is fine, None is not)"
+        );
+        for label in [
+            "PNG image",
+            "7-zip archive",
+            "RAR archive v5",
+            "gzip compressed data",
+            "XP3 archive",
+            "ISO media (MP4/MOV/HEIC/AVIF)",
+        ] {
+            assert!(
+                entry_ranges(&mut f, &probe(label), len).is_none(),
+                "{label} must not be recursed into"
+            );
+        }
+    }
+
+    /// 真 `tar` 命令产出的归档（本地产物，不入库）。
+    ///
+    /// 手搓的 [`validators::make_tar`] 覆盖不到真实写法：`./` 目录条目、
+    /// `./sub/` 这种带路径的名字、目录条目 size=0、以及 GNU tar 的字段填法。
+    /// 这份 fixture 里有两个 XP3（一个在顶层、一个在子目录），两个都得被钻出来。
+    #[test]
+    fn real_tar_nested_archives_are_found() {
+        let _g = scan_lock();
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata")
+            .join("nested-real.tar");
+        if !p.is_file() {
+            eprintln!("SKIP real tar: testdata/nested-real.tar not present (local fixture)");
+            return;
+        }
+        let hits = scan_file(p.to_str().unwrap()).unwrap();
+        let tars: Vec<_> = hits.iter().filter(|h| h.label == "POSIX tar archive").collect();
+        assert_eq!(tars.len(), 1, "the tar itself, reported exactly once: {hits:?}");
+        let xp3s: Vec<_> = hits.iter().filter(|h| h.label == "XP3 archive").collect();
+        assert_eq!(xp3s.len(), 2, "both nested XP3s must be found: {hits:?}");
+        for h in &xp3s {
+            assert!(
+                h.offset > tars[0].offset && h.offset < tars[0].offset + tars[0].size,
+                "nested XP3 at {} outside the tar: {hits:?}",
+                h.offset
+            );
+            assert!(h.size > 0, "nested hit must carry a size: {h:?}");
+        }
+    }
+
+    /// 深度上限：tar 套 tar 套 tar 只报到第二层，不会无限往下。
+    #[test]
+    fn recursion_stops_at_depth_limit() {
+        let _g = scan_lock();
+        let innermost = validators::make_tar(&[("x.xp3", b"deep payload, not an archive" as &[u8])]);
+        let mid = validators::make_tar(&[("mid.tar", &innermost)]);
+        let outer = validators::make_tar(&[("outer.tar", &mid)]);
+        let p = tmp("deep.tar", &outer);
+        let hits = scan_file(&p).unwrap();
+        let tars = hits.iter().filter(|h| h.label == "POSIX tar archive").count();
+        assert!(tars >= 2, "at least the outer and the first nested tar: {hits:?}");
+        assert!(
+            tars <= MAX_NEST_DEPTH as usize + 1,
+            "depth limit {} exceeded: {} tar hits {hits:?}",
+            MAX_NEST_DEPTH,
+            tars
+        );
     }
 
     #[test]

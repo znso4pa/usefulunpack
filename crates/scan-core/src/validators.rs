@@ -1345,6 +1345,116 @@ fn tar_octal_size(h: &[u8; 512]) -> u64 {
     v
 }
 
+/// 递归扫描用：一条嵌套条目的数据区间上限。
+///
+/// 超过这个数的条目直接不扫 —— 一个条目本身是个几百 MB 的归档时，扫它会把
+/// 一次「看一眼」变成一次全盘 IO。真需要的话那是「打开它」的活，不是扫描的活。
+pub const NEST_MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
+
+/// 递归扫描用：一个容器最多枚举多少条目（防御畸形头里的巨大计数）。
+pub const NEST_MAX_ENTRIES: usize = 4096;
+
+/// tar 归档里每个条目的**数据区间**（绝对偏移），供递归扫描用。
+///
+/// `magic_off` 是命中点（`ustar` 那 5 个字节），和 [`validate_tar`] 的入参同义。
+/// 只做结构走查，不解压 —— tar 的数据本来就是原样存放的，所以区间可以直接扫。
+pub fn tar_entry_ranges(f: &mut File, magic_off: u64, file_len: u64) -> Vec<(u64, u64)> {
+    const TAR_MAGIC_OFFSET: u64 = 257;
+    let mut out = Vec::new();
+    if magic_off < TAR_MAGIC_OFFSET {
+        return out;
+    }
+    let start = magic_off - TAR_MAGIC_OFFSET;
+    let mut h = [0u8; 512];
+    if !read_at(f, start, &mut h) {
+        return out;
+    }
+    if &h[257..262] != b"ustar" || !tar_header_checksum_ok(&h) {
+        return out;
+    }
+    // 第一个条目也要算进去 —— `validate_tar` 是「跳过它的数据继续走链条」，
+    // 但枚举条目时它就是第 0 条，漏了它就会漏掉「tar 里第一个文件就是嵌套归档」。
+    let mut pos = start;
+    let mut guard = 0u32;
+    while pos + 512 <= file_len && out.len() < NEST_MAX_ENTRIES {
+        guard += 1;
+        if guard > 10_000_000 {
+            break;
+        }
+        let mut hb = [0u8; 512];
+        if !read_at(f, pos, &mut hb) {
+            break;
+        }
+        if hb.iter().all(|&b| b == 0) || !tar_header_checksum_ok(&hb) {
+            break;
+        }
+        let size = tar_octal_size(&hb);
+        let data = pos + 512;
+        // typeflag（156）：`x` / `g` 是 PAX 头、`L` 是 GNU 长文件名，内容都是文本
+        // 元数据，扫它们只会浪费时间。
+        let typeflag = hb[156];
+        let is_meta = matches!(typeflag, b'x' | b'g' | b'L' | b'K');
+        if !is_meta && size > 0 && size <= NEST_MAX_ENTRY_BYTES && data + size <= file_len {
+            out.push((data, data + size));
+        }
+        let adv = ((size + 511) / 512) * 512;
+        if data + adv < data {
+            break; // 溢出（畸形 size）
+        }
+        pos = data + adv;
+    }
+    out
+}
+
+/// ZIP 里**能就地扫**的条目数据区间（绝对偏移）。
+///
+/// 只有 `method == 0`（stored）且大小写在本地头里的条目能扫：deflate 的数据不是
+/// 明文，就地扫只会扫到压缩流；`flag & 0x08`（大小在数据描述符里）时本地头的
+/// 大小字段是 0，连下一条目的位置都算不出来，直接停。
+///
+/// 顺序走本地文件头而不是中央目录：中央目录在归档末尾，可能离得很远，而且
+/// 解析它要多读一层结构。走偏了也不要紧 —— 区间只当「去哪儿找」的提示，
+/// 找到的东西还得过校验器。
+pub fn zip_stored_ranges(f: &mut File, off: u64, file_len: u64) -> Vec<(u64, u64)> {
+    const LFH: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
+    let mut out = Vec::new();
+    let mut pos = off;
+    let mut guard = 0usize;
+    while pos + 30 <= file_len && guard < NEST_MAX_ENTRIES {
+        guard += 1;
+        let mut lh = [0u8; 30];
+        if !read_at(f, pos, &mut lh) {
+            break;
+        }
+        if lh[0..4] != LFH {
+            break;
+        }
+        let flags = u16le(&lh, 6);
+        let method = u16le(&lh, 8);
+        let csize = u32le(&lh, 18) as u64;
+        let name_len = u16le(&lh, 26) as u64;
+        let extra_len = u16le(&lh, 28) as u64;
+        let data = pos + 30 + name_len + extra_len;
+        if data > file_len {
+            break;
+        }
+        if method == 0
+            && (flags & 0x08) == 0
+            && csize > 0
+            && csize <= NEST_MAX_ENTRY_BYTES
+            && data + csize <= file_len
+        {
+            out.push((data, data + csize));
+        }
+        // 大小在数据描述符里 → 算不出下一条目的位置，到此为止。
+        if flags & 0x08 != 0 {
+            break;
+        }
+        pos = data + csize;
+    }
+    out
+}
+
 /// CRC32 with precomputed 256-entry lookup table (~8x faster than bit-by-bit).
 fn crc32(data: &[u8], init: u32) -> u32 {
     const TABLE: [u32; 256] = {
@@ -1432,12 +1542,64 @@ pub fn make_min_zip() -> Vec<u8> {
     make_min_zip_with_pad(0)
 }
 
+/// Builds a POSIX tar with the given `(name, data)` entries, in memory.
+///
+/// Used by the recursive-scan tests: the point of nesting is that a tar's
+/// payload is stored verbatim, so the test has to produce a *real* tar whose
+/// entry data sits at a known absolute offset. Checksums are computed the way
+/// `validate_tar` verifies them (8 checksum bytes treated as spaces).
+#[cfg(test)]
+pub fn make_tar(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (name, data) in entries {
+        let mut h = [0u8; 512];
+        let nb = name.as_bytes();
+        let n = nb.len().min(99);
+        h[..n].copy_from_slice(&nb[..n]);
+        h[100..108].copy_from_slice(b"0000644\0"); // mode
+        h[108..116].copy_from_slice(b"0000000\0"); // uid
+        h[116..124].copy_from_slice(b"0000000\0"); // gid
+        // size: 11 octal digits + NUL
+        let oct = format!("{:011o}", data.len());
+        h[124..135].copy_from_slice(oct.as_bytes());
+        h[135] = 0;
+        h[136..148].copy_from_slice(b"00000000000\0"); // mtime
+        h[156] = b'0'; // typeflag: regular file
+        h[257..263].copy_from_slice(b"ustar\0");
+        h[263..265].copy_from_slice(b"00");
+        // checksum: computed with the checksum field itself as spaces
+        h[148..156].copy_from_slice(b"        ");
+        let sum: u32 = h.iter().map(|&b| b as u32).sum();
+        let cks = format!("{:06o}\0 ", sum);
+        h[148..156].copy_from_slice(cks.as_bytes());
+        out.extend_from_slice(&h);
+        out.extend_from_slice(data);
+        let pad = (512 - data.len() % 512) % 512;
+        out.extend(std::iter::repeat_n(0u8, pad));
+    }
+    out.extend(std::iter::repeat_n(0u8, 1024)); // two zero blocks = end of archive
+    out
+}
+
 /// make_min_zip with [pad] filler bytes between the file data and the central
 /// directory (used to move the EOCD to a specific offset).
 #[cfg(test)]
 pub fn make_min_zip_with_pad(pad: usize) -> Vec<u8> {
-    let name = b"a.txt";
-    let data = b"hello";
+    make_zip_stored_with_pad("a.txt", b"hello", pad)
+}
+
+/// 单条目、**stored**（method 0）的 ZIP，条目名与载荷由调用方给。
+///
+/// 递归扫描只能钻 stored 条目（deflate 的载荷不是明文），所以测试需要能把
+/// 「一个真归档」原样塞进 zip 里。
+#[cfg(test)]
+pub fn make_zip_stored(name: &str, data: &[u8]) -> Vec<u8> {
+    make_zip_stored_with_pad(name, data, 0)
+}
+
+#[cfg(test)]
+pub fn make_zip_stored_with_pad(name: &str, data: &[u8], pad: usize) -> Vec<u8> {
+    let name = name.as_bytes();
     let mut z = Vec::new();
     // Local file header (30 bytes): sig, ver, flags, method=0, time, date, crc, csize, usize, name len, extra len
     z.extend_from_slice(b"PK\x03\x04");

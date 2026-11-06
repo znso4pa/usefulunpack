@@ -11,7 +11,7 @@ Human-facing docs: [README](README.md) · [CONTRIBUTING](CONTRIBUTING.md) (中�
 bash build.sh                      # full build: ffmpeg static libs -> Rust cross-compile (arm64-v8a + armeabi-v7a) -> jniLibs -> assembleRelease -> ./UsefulUnpack.apk (needs NDK)
 ./gradlew :app:assembleRelease     # Kotlin-only changes (output lands in app/build/outputs/apk/release/ — NOT the root APK)
 cargo test --workspace             # Rust suite — must stay green
-./gradlew lintDebug                # baseline: 0 errors / 287 warnings — NEVER introduce new errors
+./gradlew lintDebug                # baseline: 0 errors / 293 warnings — NEVER introduce new errors
 ```
 
 > `build.sh` is the only script that refreshes the root `UsefulUnpack.apk`. A bare

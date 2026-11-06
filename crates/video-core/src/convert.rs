@@ -207,6 +207,15 @@ struct Ctx {
     a_src_rate: c_int,
     /// 同上，源声道数。可能被设备下混，所以以它**报出来的**为准。
     a_src_channels: c_int,
+    /// 已经排进 Opus 解码器的**时长**（µs），喂包时当 `presentationTimeUs`。
+    ///
+    /// 这个值不是给输出用的（音频时间轴由 [`Ctx::a_frames`] 独立累加），它只喂给
+    /// 解码器看，而解码器**只拿它判一件事**：`C2SoftOpusDec` 里
+    /// `if (work->input.ordinal.timestamp.peeku() == 0) mSamplesToDiscard = mCodecDelay;`
+    /// —— 时间戳为 0 就把「开头该丢的 pre-skip」重新武装一次。全传 0 的后果是
+    /// **每一帧都丢一遍 pre-skip**：20 ms 的 Opus 帧只剩 13.5 ms，整条音轨短一截、
+    /// 而且听感是持续丢样。真机上第一次修好 pre-skip 后就是这个症状。
+    a_dec_us: i64,
 
     mux: *mut ffi::AMediaMuxer,
     /// 持有 fd 的所有权：`AMediaMuxer` 只是借用这个 fd，文件不能提前关。
@@ -1144,6 +1153,56 @@ impl Ctx {
         self.a_src_rate = rate;
         self.a_src_channels = ch;
         self.has_audio = true;
+        // ⚠️ **C2SoftOpusDec 把前三个输入当配置吃掉，而且这三个都不出声**
+        // （`frameworks/av/media/codec2/components/opus/C2SoftOpusDec.cpp` 的
+        // `mInputBufferCount < 3` 那段）：
+        //
+        //   * 第 0 个 = CSD（OpusHead）—— 框架从 format 的 `csd-0` 转成一个
+        //     codec-config 输入缓冲自己送，**不用我们管**；
+        //   * 第 1、2 个 = 各 **8 字节**的 `int64`：CodecDelay 与 SeekPreRoll，
+        //     单位是**纳秒**（组件内部 `ns_to_samples` 换算成样本数，恒按 48 kHz
+        //     算，所以这里除的也是 48000，不是容器头写的那个值）。
+        //
+        // 不补这两个的后果不是报错，而是**整条音轨静音**：第一个真实音频包会被
+        // 当成 CodecDelay 读，前 8 字节当纳秒解出来的样本数是个天文数字，
+        // `mSamplesToDiscard` 于是变成巨值，之后**每一帧都被整帧丢弃**。症状是
+        // 「输入全收、输出一个都没有」—— 真机上第一次跑就是这个样子。
+        //
+        // 补不进去（队列 20 ms 都拿不到缓冲）时**整个放弃**，退回「只转视频」：
+        // 半配好的解码器交出去就是一整条静音音轨，那比没有音轨更难发现。
+        let delay_ns = if (*par).initial_padding > 0 {
+            (*par).initial_padding as i64 * 1_000_000_000 / 48_000
+        } else {
+            0
+        };
+        let preroll_ns = if (*par).seek_preroll > 0 {
+            (*par).seek_preroll as i64 * 1_000_000_000 / 48_000
+        } else {
+            0
+        };
+        for v in [delay_ns, preroll_ns] {
+            let idx = unsafe { ffi::AMediaCodec_dequeueInputBuffer(dec, 20_000) };
+            if idx < 0 {
+                self.adec_hw = std::ptr::null_mut();
+                self.has_audio = false;
+                unsafe { ffi::AMediaCodec_delete(dec) };
+                return false;
+            }
+            let mut cap: usize = 0;
+            let buf = unsafe { ffi::AMediaCodec_getInputBuffer(dec, idx as usize, &mut cap) };
+            if buf.is_null() || cap < 8 {
+                unsafe { ffi::AMediaCodec_queueInputBuffer(dec, idx as usize, 0, 0, 0, 0) };
+                self.adec_hw = std::ptr::null_mut();
+                self.has_audio = false;
+                unsafe { ffi::AMediaCodec_delete(dec) };
+                return false;
+            }
+            // 小端：ARM64 / ARMv7 都是 LE，组件那边是直接 `*(int64_t*)data`。
+            unsafe {
+                std::ptr::copy_nonoverlapping(v.to_le_bytes().as_ptr(), buf, 8);
+                ffi::AMediaCodec_queueInputBuffer(dec, idx as usize, 0, 8, 0, 0);
+            }
+        }
         true
     }
 
@@ -1178,10 +1237,29 @@ impl Ctx {
                 }
                 unsafe {
                     std::ptr::copy_nonoverlapping(pkt.data, buf, n);
-                    // PTS 传 0：音频时间轴完全由 `a_frames` 累加得出（见 `feed_audio`），
-                    // 设备解码器的输出时间戳一个都不用。
-                    ffi::AMediaCodec_queueInputBuffer(dec, idx as usize, 0, n, 0, 0);
+                    // PTS 给的是**解码器侧**的排队时长，不是输出时间轴（输出由
+                    // `a_frames` 独立累加，见 `feed_audio`）。这个值唯一的用处是
+                    // 别让它恒为 0 —— 见 [`Ctx::a_dec_us`] 那段：0 会让解码器
+                    // 每帧重新武装 pre-skip。
+                    let pts_us = self.a_dec_us;
+                    let _ = ffi::AMediaCodec_queueInputBuffer(
+                        dec,
+                        idx as usize,
+                        0,
+                        n,
+                        pts_us.max(0) as u64,
+                        0,
+                    );
                 }
+                // 排下一包的时间戳。`pkt.duration` 是流时间基下的时长，WebM/Matroska
+                // 的 Opus 一定给；给不出时按 20 ms（Opus 最常见的一档）兜底。
+                let tb = unsafe { (*self.stream(self.astream)).time_base };
+                let dur_us = if pkt.duration > 0 && tb.den > 0 {
+                    pkt.duration * 1_000_000 * tb.num as i64 / tb.den as i64
+                } else {
+                    20_000
+                };
+                self.a_dec_us += dur_us.max(1);
                 return self.drain_opus(0).map(|_| ());
             }
             // 没有空位：把已经解出来的收走，给它腾地方。
@@ -1440,6 +1518,7 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         q: VecDeque::new(),
         last_v_us: 0,
         a_frames: 0,
+        a_dec_us: 0,
         have_v_pts: false,
         v_base_us: 0,
         v_shift_us: 0,

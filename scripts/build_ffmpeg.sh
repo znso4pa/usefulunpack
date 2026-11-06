@@ -81,9 +81,19 @@ API=26
 #     而 demux.c:1413 在找不到 parser 时只打一条 verbose 日志、把包**原样**交出来 ——
 #     对我们正好够用。加 parser 反而会拖进 h264.h/h264data.h 那一大坨。
 #   * `aac` 与 `aac_fixed` **一样大**（后者是定点版，SBR/PS 一个不少），换不掉。
+#     **也别想着换纯 Rust 的**（11-07 实测过两条，都不成立）：
+#       - v2v 的 aac 缺 PNS，而 ffmpeg 的 `-c:a aac` 默认 `aac_pns 1` ——
+#         默认参数编的流 45 帧里只有 1 帧解得开，其余报「噪声码本暂不支持」；
+#       - `rusty_aac` 能力没问题（完整解码器），但拿空 cdylib 加它实测
+#         arm64 `.so` 460,848 → 914,096，**净增 443 KB**，比这里省的多得多。
+#     全家（含 `aac/` 子目录、`aactab`、`aacsbr`、`aacps*`）实测 **310 KB/ABI**。
+#   * `msmpeg4*.o` 一共 97 KB/ABI，但**只有 `msmpeg4dec.o`（25 KB）属于解码器**：
+#     `msmpeg4enc.o` 是 `ENCODERS="wmv2"` 要的，`msmpeg4data.o` 编解码共用。
+#     所以「删 msmpeg4 能省 97 KB」是错的，实际只能省 25 KB（`.so` 里约 12 KB）。
 #
-# 本轮花掉的 1.01 MB `.o` 明细（arm64，按大小）：AAC 全家 200 KB、MJPEG 82 KB、
-# AC-3/E-AC-3 67 KB、VP6 61 KB、MPEG-1/2 video 54 KB、解复用器 157 KB
+# 本轮花掉的 1.01 MB `.o` 明细（arm64，按大小）：AAC 全家 310 KB（6.3 当时记的 200 KB
+# 只数了顶层 `aac*.o`，漏了 `aac/` 子目录里的 129 KB）、MJPEG 82 KB、
+# AC-3/E-AC-3 67 KB、VP6 61 KB、MPEG-1/2 video 60 KB、解复用器 157 KB
 # （mpegts 66 + avidec 42 + flvdec 38 + isom 11）、PCM/ADPCM 35 KB。每一项都在出力，
 # 没有可以白扔的。要压回去只能砍覆盖：砍 `vp6,vp6a,vp6f` 省 62 KB（但 FLV 最常见的
 # 就是 VP6），砍 `mjpeg` 再省 85 KB。

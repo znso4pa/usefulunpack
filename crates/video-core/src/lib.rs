@@ -1,24 +1,31 @@
 //! WMV / ASF / AVI / FLV / MPEG / MP4 → MP4（H.264 + AAC）。
 //!
 //! 本仓其余格式都是「纯 Rust 解析器 + JNI」，视频这条路曾经多了一个 C 依赖 ——
-//! **ffmpeg**。现在正逐个编解码器换成 v2video 那套纯 Rust 解码器：第一个接的是
-//! VC-1 / WMV3（ffmpeg 里最大的一块，也是本 App 的主场景），见 [`v2v_dec`] 与
-//! feature `v2v`。
+//! **ffmpeg**。现在正逐个编解码器换成 v2video 那套纯 Rust 解码器：接了
+//! **VC-1 / WMV3** 与 **MS-MPEG-4 全家**（MP41/42/43、WMV1、WMV2），见 [`v2v_dec`]
+//! 与 feature `v2v`。
 //!
-//! ⚠️ **那条路默认关着**：v2v 的 VC-1 不做 B 帧（`PictType` 只有 I / P），而真实
-//! WMV3 里 B 帧不少见 —— 所以 ffmpeg 的 `vc1` 现在还不能删，两套同时编进包里
-//! 只会白涨体积。等 v2v 补上 B 帧再打开，那时才是净省。ffmpeg 仍在做**解封装**
-//! （9 种容器）和**其余解码器**（MPEG-1/2、MPEG-4、MP43、WMA、MP3、AC-3…）。
+//! ⚠️ **那条路默认关着**，两半的理由不同：
+//!
+//! - **MS-MPEG-4 已经换干净了** —— 这套没有 B 帧，主机上逐帧对过 ffmpeg
+//!   （WMV2 零差，其余最大 1 LSB）。卡它的是「真机还没验」：`build_ffmpeg.sh`
+//!   里那三个 `.o` 一旦删掉就没有兜底。
+//! - **VC-1 换不掉** —— v2v 的 `PictType` 只有 I / P，真实 WMV3 里 B 帧不少见，
+//!   所以 ffmpeg 的 `vc1` 必须留着。
+//!
+//! 两套同时编进包里只会白涨体积。等这两条各自成立再打开，那时才是净省。
+//! ffmpeg 仍在做**解封装**（9 种容器）和**其余解码器**（MPEG-1/2、MPEG-4、
+//! WMA、MP3、AC-3…）。
 //!
 //! ## 谁解、谁编
 //!
 //! ```text
-//!   WMV/ASF/AVI/… ──ffmpeg 解封装──┬─ VC-1/WMV3 ──v2v（纯 Rust）──► YUV ─┐
-//!                                  └─ 其余 ──ffmpeg 解码──► AVFrame ──────┤
-//!   MP4/MOV       ──ffmpeg 解封装──► AVC 样本 ──MediaCodec 硬解──► AImage ┤
-//!                                                                         ├─► 编码 ─► MP4
-//!                                                                         │  (H.264 + AAC)
-//!                                                                         └─► AMediaMuxer
+//!   WMV/ASF/AVI/… ──ffmpeg 解封装──┬─ VC-1/WMV3 / MS-MPEG-4 ──v2v（纯 Rust）──► YUV ─┐
+//!                                  └─ 其余 ──ffmpeg 解码──► AVFrame ────────────────┤
+//!   MP4/MOV       ──ffmpeg 解封装──► AVC 样本 ──MediaCodec 硬解──► AImage ──────────┤
+//!                                                                                   ├─► 编码 ─► MP4
+//!                                                                                   │  (H.264 + AAC)
+//!                                                                                   └─► AMediaMuxer
 //! ```
 //!
 //! * **体积**：ffmpeg 自带 mpeg4+aac 编码器的那套配置，两个 ABI 合计 6.07 MB，
@@ -38,7 +45,7 @@
 //! | [`ffi`] | `build.rs` 用 bindgen 现场生成的 ffmpeg + NDK media 绑定 |
 //! | [`h264`] | `avcC` 解析（取 SPS/PPS）+ AVCC → Annex-B（纯逻辑，主机可测） |
 //! | [`nv12`] | yuv420p → NV12（MediaCodec 的 `color-format 21` 要的排布；ffmpeg 与 v2v 共用一份补边逻辑，主机可测） |
-//! | [`v2v_dec`] | v2video 的纯 Rust 解码器适配（现在：VC-1 / WMV3；主机可测，逐帧对账过 ffmpeg） |
+//! | [`v2v_dec`] | v2video 的纯 Rust 解码器适配（VC-1 / MS-MPEG-4 全家；主机可测，逐帧对账过 ffmpeg） |
 //! | [`yuv`] | `AImage` 三平面 → NV12（硬解那条路；含行/像素跨度与缩放，主机可测） |
 //! | [`rotate`] | 显示矩阵角度：ffmpeg 的逆时针 → 容器要的顺时针（纯逻辑，主机可测） |
 //! | [`trunc`] | 「源短了一截」的判定：声明时长 vs 实解时长（纯逻辑，主机可测） |

@@ -8,21 +8,28 @@ build = "build.rs"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# 用 v2v（纯 Rust）顶掉 ffmpeg 的解码器。逐个编解码器迁移，现在只接了
-# **VC-1 / WMV3**（`v2v_dec.rs`）。
+# 用 v2v（纯 Rust）顶掉 ffmpeg 的解码器。逐个编解码器迁移，现在接了
+# **VC-1 / WMV3** 和 **MS-MPEG-4 全家**（MP41/42/43、WMV1、WMV2），见 `v2v_dec.rs`。
 #
-# ⚠️ **默认关，因为现在还换不掉**：v2v 的 VC-1 `PictType` 只有 I 和 P，B 帧直接
-# 返回 `Unsupported`（`crates/vc1/src/header.rs`），而真实 WMV3 里 B 帧不少见。
-# 所以 ffmpeg 那个 `vc1` 解码器**必须留着兜底** —— 两套同时在包里就是
-# **+266 KB（两 ABI）而不是省**，而功能一点没变。
+# ⚠️ **默认关**，但两半的理由不一样：
+#
+# - **MS-MPEG-4 已经换干净了**：这套没有 B 帧，覆盖率完整，主机上逐帧对过
+#   （MP42/MP43/WMV1 最大差 1 LSB，WMV2 零差）。卡它的是**别的东西** ——
+#   真机还没验过，而 `build_ffmpeg.sh` 里那三个 `.o` 一旦删掉就没有兜底了。
+#   所以现在两套都在，功能一点没变，只是多了 Rust 那点代码。
+# - **VC-1 换不掉**：v2v 的 `PictType` 只有 I 和 P，B 帧直接 `Unsupported`
+#   （`crates/vc1/src/header.rs`），而真实 WMV3 里 B 帧不少见 —— ffmpeg 的
+#   `vc1` 必须留着兜底。
+#
+# 于是「两套同时在包里」是 **+266 KB（两 ABI）而不是省**。什么时候翻正：
+#
+# 1. 真机验过 MS-MPEG-4 这条路 → 删 `build_ffmpeg.sh` 的 `msmpeg4*`，约 −60 KB/ABI；
+# 2. v2v 支持 VC-1 的 B 帧 → 再删 `vc1,wmv3` 与 `PARSERS` 的 `vc1`，约 −302 KB/ABI。
 #
 # 打开：`cargo build --features v2v`（或把下面这行改成 `default = ["v2v"]`）。
-# 什么时候值得打开：v2v 支持 B 帧之后 —— 那时才能删 `scripts/build_ffmpeg.sh`
-# 里的 `vc1,wmv3` 和 `PARSERS` 的 `vc1`，从「+266 KB」翻成「−300 KB/ABI」左右。
-#
 # 想现在就验这条路（不改体积）：`cargo test -p archive_video-core --features v2v`。
 default = []
-v2v = ["dep:vc1"]
+v2v = ["dep:vc1", "dep:msmpeg4"]
 
 [dependencies]
 archive_common = { path = "../common" }
@@ -36,6 +43,11 @@ jni = "0.21"
 # 提一个 rev 再 bump。代价是「单独 clone 本仓编不过」，和「没有 NDK / 没有
 # `.ffmpeg-cache` 也编不过」是同一类前置条件，`build.sh` 会先检查并给出人话。
 vc1 = { package = "v2v-vc1", path = "../../../../v2video/crates/vc1", optional = true }
+# MP43 / MP42 / MP41 / WMV1 / WMV2（MS-MPEG-4 全家）。这套**没有 B 帧**，所以
+# 覆盖率是完整的 —— 不像 VC-1 那样卡在 B 帧上。
+# MP41 只有代码、没有对账样本（ffmpeg 根本没有 MP41 编码器），其余四种都在
+# `v2v_dec.rs` 的测试里逐帧对过。
+msmpeg4 = { package = "v2v-msmpeg4", path = "../../../../v2video/crates/msmpeg4", optional = true }
 
 [build-dependencies]
 bindgen = "0.71"

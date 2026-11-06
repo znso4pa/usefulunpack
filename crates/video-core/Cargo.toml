@@ -7,9 +7,35 @@ build = "build.rs"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# 用 v2v（纯 Rust）顶掉 ffmpeg 的解码器。逐个编解码器迁移，现在只接了
+# **VC-1 / WMV3**（`v2v_dec.rs`）。
+#
+# ⚠️ **默认关，因为现在还换不掉**：v2v 的 VC-1 `PictType` 只有 I 和 P，B 帧直接
+# 返回 `Unsupported`（`crates/vc1/src/header.rs`），而真实 WMV3 里 B 帧不少见。
+# 所以 ffmpeg 那个 `vc1` 解码器**必须留着兜底** —— 两套同时在包里就是
+# **+266 KB（两 ABI）而不是省**，而功能一点没变。
+#
+# 打开：`cargo build --features v2v`（或把下面这行改成 `default = ["v2v"]`）。
+# 什么时候值得打开：v2v 支持 B 帧之后 —— 那时才能删 `scripts/build_ffmpeg.sh`
+# 里的 `vc1,wmv3` 和 `PARSERS` 的 `vc1`，从「+266 KB」翻成「−300 KB/ABI」左右。
+#
+# 想现在就验这条路（不改体积）：`cargo test -p archive_video-core --features v2v`。
+default = []
+v2v = ["dep:vc1"]
+
 [dependencies]
 archive_common = { path = "../common" }
 jni = "0.21"
+
+# v2video 仓的 VC-1 解码器（`LGPL-2.1-or-later`，和本 crate 已在用的 ffmpeg 同档）。
+#
+# ⚠️ **路径依赖**：要求 v2video 仓与本仓并排放在同一个父目录下
+# （`TheYouthfulMiracle/usefulunpack` ↔ `TheYouthfulMiracle/v2video`）。
+# 这是刻意的 —— 两个仓一起改的时候，path 依赖能立刻拿到对方的改动，不用每次
+# 提一个 rev 再 bump。代价是「单独 clone 本仓编不过」，和「没有 NDK / 没有
+# `.ffmpeg-cache` 也编不过」是同一类前置条件，`build.sh` 会先检查并给出人话。
+vc1 = { package = "v2v-vc1", path = "../../../../v2video/crates/vc1", optional = true }
 
 [build-dependencies]
 bindgen = "0.71"

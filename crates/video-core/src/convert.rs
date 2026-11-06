@@ -187,6 +187,13 @@ struct Ctx {
     astream: c_int,
     vdec: *mut ffi::AVCodecContext,
     adec: *mut ffi::AVCodecContext,
+    /// VC-1 / WMV3 走 v2v 的纯 Rust 解码器（feature `v2v`）。此时 [`Ctx::vdec`]
+    /// 是**空指针** —— 两个解码器不会同时存在。
+    ///
+    /// 为什么先换这一种：它是 ffmpeg 解码器里最大的一块（302 KB/ABI），又是本 App
+    /// 的主场景（`.wmv`）。边界与兜底见 `crate::v2v_dec`。
+    #[cfg(feature = "v2v")]
+    vc1: Option<crate::v2v_dec::Vc1>,
     /// 音轨走设备解码器（Opus）时的那个解码器；此时 [`Ctx::adec`] 是**空指针**。
     /// 为什么要多这一条、为什么不用 ffmpeg 的 Opus，见模块文档「Opus 音轨也走设备
     /// 解码器」。
@@ -514,6 +521,62 @@ impl Ctx {
     }
 
     /// ffmpeg 解出来的一帧 → NV12 → 编码器。
+    /// 视频帧是不是走 v2v 的纯 Rust 解码器（feature `v2v`）。
+    fn uses_v2v(&self) -> bool {
+        #[cfg(feature = "v2v")]
+        {
+            self.vc1.is_some()
+        }
+        #[cfg(not(feature = "v2v"))]
+        {
+            false
+        }
+    }
+
+    /// 一个容器样本 → v2v 解码 → NV12 → 编码器。
+    ///
+    /// 解码器**先 `take` 出来再放回**：`feed_nv12` 要 `&mut self`，而它的闭包要
+    /// 一个 `&Vc1` —— 只要解码器还挂在 `self` 上，这两个借用就打架。`Option::take`
+    /// 让解码器临时脱离 `self`，闭包借的是局部变量；收尾**出错也放回去**，否则
+    /// 下一次调用就没解码器了。
+    #[cfg(feature = "v2v")]
+    fn feed_v2v(&mut self, pkt: &ffi::AVPacket) -> R<()> {
+        let Some(mut dec) = self.vc1.take() else {
+            return Err(msg("v2v 的 VC-1 解码器不在"));
+        };
+        let r = self.feed_v2v_inner(&mut dec, pkt);
+        self.vc1 = Some(dec);
+        r
+    }
+
+    #[cfg(feature = "v2v")]
+    fn feed_v2v_inner(&mut self, dec: &mut crate::v2v_dec::Vc1, pkt: &ffi::AVPacket) -> R<()> {
+        let data: &[u8] = if pkt.data.is_null() || pkt.size <= 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(pkt.data, pkt.size as usize) }
+        };
+        dec.decode(data).map_err(msg)?;
+        // PTS 的口径必须和 `feed_video` 一模一样，否则两条解码路的时间轴会差一截。
+        let mut us = pkt.pts;
+        if us == ffi::AV_NOPTS_VALUE {
+            us = -1;
+        } else {
+            let tb = unsafe { (*self.stream(self.vstream)).time_base };
+            us = unsafe { ffi::av_rescale_q(us, tb, ffi::AVRational { num: 1, den: 1_000_000 }) };
+        }
+        let pts = self.video_pts(us);
+        let (vw, vh) = (self.vw as usize, self.vh as usize);
+        self.feed_nv12(pts, |dst| unsafe { dec.to_nv12(dst.as_mut_ptr(), vw, vh) })
+    }
+
+    /// 没编 `v2v` feature 时的占位。留着它是为了让主循环那段 `else if` 在两个
+    /// 构建下都过类型检查 —— `uses_v2v()` 恒 false，这里永远不会被调用。
+    #[cfg(not(feature = "v2v"))]
+    fn feed_v2v(&mut self, _pkt: &ffi::AVPacket) -> R<()> {
+        Err(msg("这个构建没有编进 v2v 解码器"))
+    }
+
     fn feed_video(&mut self, f: &ffi::AVFrame) -> R<()> {
         let mut us = f.best_effort_timestamp;
         if us == ffi::AV_NOPTS_VALUE {
@@ -1345,6 +1408,8 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         astream: -1,
         vdec: std::ptr::null_mut(),
         adec: std::ptr::null_mut(),
+        #[cfg(feature = "v2v")]
+        vc1: None,
         adec_hw: std::ptr::null_mut(),
         // 只有 Opus 那条路会用到这三个；ffmpeg 那条路一律从 `adec` 读。
         a_src_fmt: ffi::AVSampleFormat::AV_SAMPLE_FMT_S16,
@@ -1520,23 +1585,56 @@ pub fn convert(input: &str, output: &str) -> R<()> {
                 c.avc = avc;
                 c.use_hw = true;
             } else {
-                let dec = ffi::avcodec_find_decoder(codec_id);
-                if dec.is_null() {
-                    let name = std::ffi::CStr::from_ptr(ffi::avcodec_get_name(codec_id))
-                        .to_string_lossy()
-                        .into_owned();
-                    return Err(msg(format!("没有 {name} 的解码器")));
+                // ---- 先试 v2v 的纯 Rust 解码器（feature `v2v`）----
+                //
+                // 起不来就落到下面的 ffmpeg 分支。这条兜底是**刻意保留**的：
+                // v2v 的 VC-1 只做 Main / 渐进 / I-P，Advanced profile、B 帧、隔行
+                // 都会明确报错，而 ffmpeg 这些都能解。等真机验过、确认覆盖够用，
+                // 再把 `need_ffmpeg` 那半截和 `build_ffmpeg.sh` 里的 `vc1,wmv3`
+                // 一起删掉 —— 那才是真省下 302 KB/ABI 的时候。
+                #[cfg(feature = "v2v")]
+                if codec_id == ffi::AVCodecID::AV_CODEC_ID_WMV3 {
+                    let extra: &[u8] = if (*par).extradata.is_null() || (*par).extradata_size <= 0 {
+                        &[]
+                    } else {
+                        std::slice::from_raw_parts(
+                            (*par).extradata,
+                            (*par).extradata_size as usize,
+                        )
+                    };
+                    match crate::v2v_dec::Vc1::new(extra, (*par).width as u32, (*par).height as u32) {
+                        Ok(d) => {
+                            ffi::log_err(&format!("VC-1 走 v2v 解码（{}×{}）", d.width(), d.height()));
+                            c.vc1 = Some(d);
+                        }
+                        Err(e) => ffi::log_err(&format!("v2v 的 VC-1 起不来（{e}），退回 ffmpeg")),
+                    }
                 }
-                c.vdec = ffi::avcodec_alloc_context3(dec);
-                if c.vdec.is_null() {
-                    return Err(msg("视频解码器分配失败"));
-                }
-                if ffi::avcodec_parameters_to_context(c.vdec, par) < 0 {
-                    return Err(msg("视频解码参数拷贝失败"));
-                }
-                (*c.vdec).thread_count = 2;
-                if ffi::avcodec_open2(c.vdec, dec, std::ptr::null_mut()) < 0 {
-                    return Err(msg("视频解码器打不开"));
+
+                #[cfg(feature = "v2v")]
+                let need_ffmpeg = c.vc1.is_none();
+                #[cfg(not(feature = "v2v"))]
+                let need_ffmpeg = true;
+
+                if need_ffmpeg {
+                    let dec = ffi::avcodec_find_decoder(codec_id);
+                    if dec.is_null() {
+                        let name = std::ffi::CStr::from_ptr(ffi::avcodec_get_name(codec_id))
+                            .to_string_lossy()
+                            .into_owned();
+                        return Err(msg(format!("没有 {name} 的解码器")));
+                    }
+                    c.vdec = ffi::avcodec_alloc_context3(dec);
+                    if c.vdec.is_null() {
+                        return Err(msg("视频解码器分配失败"));
+                    }
+                    if ffi::avcodec_parameters_to_context(c.vdec, par) < 0 {
+                        return Err(msg("视频解码参数拷贝失败"));
+                    }
+                    (*c.vdec).thread_count = 2;
+                    if ffi::avcodec_open2(c.vdec, dec, std::ptr::null_mut()) < 0 {
+                        return Err(msg("视频解码器打不开"));
+                    }
                 }
             }
         }
@@ -1574,8 +1672,9 @@ pub fn convert(input: &str, output: &str) -> R<()> {
         }
 
         c.has_video = true;
-        // 硬解时没有 `vdec`，尺寸从 codecpar 取 —— 容器头里早就有宽高了。
-        if c.use_hw {
+        // 没有 ffmpeg 解码器时（硬解 / v2v 那条纯 Rust 路），尺寸从 codecpar 取 ——
+        // 容器头里早就有宽高了。
+        if c.vdec.is_null() {
             let par = (*c.stream(c.vstream)).codecpar;
             c.vw = ((*par).width + 1) & !1;
             c.vh = ((*par).height + 1) & !1;
@@ -1752,6 +1851,15 @@ pub fn convert(input: &str, output: &str) -> R<()> {
                         ffi::av_frame_free(&mut f);
                         return Err(e);
                     }
+                } else if c.uses_v2v() {
+                    // v2v 的纯 Rust 解码器：帧自己写进编码器缓冲（没有 `AVFrame`）。
+                    if let Err(e) = c.feed_v2v(&*pkt) {
+                        let mut p = pkt;
+                        let mut f = frame;
+                        ffi::av_packet_free(&mut p);
+                        ffi::av_frame_free(&mut f);
+                        return Err(e);
+                    }
                 } else if ffi::avcodec_send_packet(c.vdec, pkt) >= 0 {
                     while ffi::avcodec_receive_frame(c.vdec, frame) == 0 {
                         let r = c.feed_video(&*frame);
@@ -1802,7 +1910,9 @@ pub fn convert(input: &str, output: &str) -> R<()> {
 
         // ---- 收尾：把两个解码器/重采样器/编码器里的存货全部逼出来 ----
         // 硬解路径没有 ffmpeg 视频解码器，flush 走 `finish_hw`（见下）。
-        if !c.use_hw {
+        // v2v 那条路也不用 flush：它只做 I-P，`decode_frame` 返回时那一帧就已经
+        // 交出来了，内部没有 B 帧那种重排缓冲。
+        if !c.use_hw && !c.uses_v2v() {
             ffi::avcodec_send_packet(c.vdec, std::ptr::null());
             while ffi::avcodec_receive_frame(c.vdec, frame) == 0 {
                 let r = c.feed_video(&*frame);

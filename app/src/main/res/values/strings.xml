@@ -674,6 +674,7 @@
     <string name="cli_mv_done">Moved: %1$s → %2$s</string>
     <string name="cli_tree_truncated">… truncated at %1$s entries</string>
     <string name="cli_du_result">%1$s in %2$s files</string>
+    <string name="cli_du_scanning">scanning… %1$s files, %2$s</string>
     <string name="cli_stat_line">%1$s · %2$s · modified %3$s</string>
     <string name="cli_mkdir_done">Created %1$s folders</string>
     <string name="cli_cso_done">Converted: %1$s</string>

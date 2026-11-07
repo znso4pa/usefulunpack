@@ -667,6 +667,7 @@
     <string name="cli_mv_done">移動：%1$s → %2$s</string>
     <string name="cli_tree_truncated">… %1$s 件で切り詰め</string>
     <string name="cli_du_result">計 %1$s、%2$s ファイル</string>
+    <string name="cli_du_scanning">スキャン中… %1$s ファイル、%2$s</string>
     <string name="cli_stat_line">%1$s · %2$s · 更新 %3$s</string>
     <string name="cli_mkdir_done">%1$s 個のフォルダを作成</string>
     <string name="cli_cso_done">変換完了：%1$s</string>

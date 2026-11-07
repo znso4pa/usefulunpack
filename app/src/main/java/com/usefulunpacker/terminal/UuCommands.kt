@@ -110,7 +110,7 @@ internal object UuCommands {
         Cmd("rm",     Kind.RM,           "Delete (recycle bin by default; -f permanent)",  "uu rm <path...> [-f]"),
         Cmd("mkdir",  Kind.MKDIR,        "Create folders",                                 "uu mkdir <path...>"),
         Cmd("tree",   Kind.TREE,         "Recursive directory listing",                    "uu tree [dir] [depth]"),
-        Cmd("du",     Kind.DU,           "Show total sizes (sums when given several paths)",        "uu du <path>"),
+        Cmd("du",     Kind.DU,           "Disk usage — totals, per-folder breakdown (-d) or biggest files (-n)", "uu du <path...> [-d N] [-n N]"),
         Cmd("stat",   Kind.STAT,         "Show type / size / modified time",               "uu stat <path...>"),
         Cmd("x",      Kind.EXTRACT,      "Extract an archive, optionally selected entries", "uu x <archive> [-o outdir] [entry...] [-p pw] [--pre pipe]"),
         Cmd("c",      Kind.PACK,         "Pack files or folders (merge / separate)",                          "uu c <src...> [out] [-c|-s] [-f key] [-l level] [-b splitMB] [-e cxdec] [--post pipe] [-p pw]"),
@@ -268,8 +268,9 @@ internal object UuCommands {
             "-j            " to "raw entry JSON for scripts (uu l): n/s/d/e keys",
             "-t            " to "tree view (uu l)",
             "-S            " to "sort by size (uu l)",
-            "-n <N>        " to "compare only the first N bytes (uu cmp) · print at most N strings (uu strings)",
+            "-n <N>        " to "compare only the first N bytes (uu cmp) · print at most N strings (uu strings) · list the N biggest files (uu du)",
             "-q <1-100>    " to "image quality (uu img, jpg/webp)",
+            "-d <N>        " to "folder breakdown depth 1-6 (uu du): every subdirectory down to N levels, biggest first; add -n to also rank files",
             "-d            " to "decode instead of encode (uu b64)",
             "--bytes       " to "treat <from> / <to> as hex bytes; needs -i (uu sed)",
             "if= of=       " to "source / destination (uu dd); plus skip= count= seek= and -f",
@@ -292,7 +293,7 @@ internal object UuCommands {
         sb.append("  > >>          ").append("redirect output to a file (>> appends) — uu l a.zip > list.txt\n")
         sb.append("  && ; ||       ").append("chain: && runs on success, || runs on failure — uu l f0 || uu scan f0\n")
         sb.append("  uu run <file> ").append("run a UUT script: uu run [-k] file.uut [args...] — see below\n")
-        sb.append("  progress line ").append("tap to cancel a running uu x / c / set / cso operation\n")
+        sb.append("  progress line ").append("tap to cancel a running uu x / c / set / cso / du -d operation\n")
         sb.append("  ls pwd cd help").append(" builtins; anything else runs in the system shell\n")
         sb.append('\n')
         sb.append("UUT SCRIPT (uu run <file.uut>)\n")
@@ -1755,10 +1756,116 @@ internal object UuCommands {
         return Result(sb.toString().trimEnd('\n'))
     }
 
-    /** `uu du <path>` — 递归统计大小与文件数。 */
+    /**
+     * `uu du <path...> [-d N] [-n N]` — 递归统计占用。
+     *
+     * 不带旗标时保持老行为：总量 + 文件数，多路径时再加一行合计。
+     * 带旗标才是「空间去哪儿了」的视图（WizTree 那类功能的 CLI 形态）：
+     *
+     * - `-d N`：把深度 1..N 的每个子目录按**子树总量**列出来，大的在前；
+     * - `-n N`：列出最大的 N 个文件。
+     *
+     * 两者可以同时给。**为什么只走一趟**：先 `du` 一遍、再逐个 `du` 子目录的做法
+     * 在每一层都要重走整棵树，`/sdcard` 上几十万文件时是 N 倍 I/O。这里子树大小
+     * 在回溯时自然得到（`walk` 的返回值），顺便喂 top-N。
+     *
+     * **取消**：纯 Kotlin 长任务，**不走** `tryStartOperation`（那是 native 编解码器
+     * 的槽位，`fmtKey` 语义是「同格式串行」）。注册一个置位钩子，遍历里每
+     * [DU_PROGRESS_EVERY] 个文件查一次 —— 点进度行 → 确认 → 下一批就停。
+     */
     private fun du(args: List<String>, ctx: Ctx): Result {
-        rejectUnknownFlags(ctx, args)?.let { return it }
-        if (args.isEmpty()) return needFile(Picker.FILE_OR_FOLDER)
+        rejectUnknownFlags(ctx, args, listOf("-d", "-n"))?.let { return it }
+        val pa = splitFlags(args, listOf("-d", "-n"))
+        missingValueError(ctx, pa)?.let { return it }
+        if (pa.pos.isEmpty()) return needFile(Picker.FILE_OR_FOLDER)
+        val depth = pa.values["-d"]?.toIntOrNull()?.coerceIn(1, DU_MAX_DEPTH) ?: 0
+        val topN = pa.values["-n"]?.toIntOrNull()?.coerceIn(1, DU_MAX_TOP) ?: 0
+        // 分解视图只对一个根有意义；多路径仍走「各自求和」。
+        if ((depth > 0 || topN > 0) && pa.pos.size > 1) return Result(usageOf("du"), 2)
+        if (depth == 0 && topN == 0) return duTotals(pa.pos, ctx)
+
+        // `normalize()` 是纯词法操作（不做 I/O）：`File(cwd, ".")` 的 absolutePath
+        // 会留着末尾的 `/.`，不归一化的话下面 `rel()` 的 removePrefix 永远切不掉。
+        val root = UuText.resolve(ctx.cwd, pa.pos[0]).absoluteFile.normalize()
+        if (!root.exists()) return Result(UuText.notFound(ctx.str, pa.pos[0]), 1)
+        // 指向单个文件时没有「分解」可言，退回求和。
+        if (!root.isDirectory) return duTotals(pa.pos, ctx)
+
+        val cancelled = AtomicBoolean(false)
+        ctx.registerCancel?.invoke { cancelled.set(true) }
+
+        val dirBytes = HashMap<File, Long>()
+        // 小顶堆：堆顶是当前候选里最小的，比它大就换掉 —— 内存只占 N 个。
+        val top = java.util.PriorityQueue<Pair<Long, File>>(compareBy { it.first })
+        var files = 0
+        var bytes = 0L
+
+        fun walk(d: File, lvl: Int): Long {
+            if (cancelled.get()) return 0L
+            val kids = d.listFiles() ?: return 0L
+            var sum = 0L
+            for (f in kids) {
+                if (cancelled.get()) return sum
+                if (f.isDirectory) {
+                    val sub = walk(f, lvl + 1)
+                    sum += sub
+                    // 只登记到深度上限；更深的目录仍要遍历（总量与 -n 都要它）。
+                    if (lvl + 1 <= depth) dirBytes[f] = sub
+                } else {
+                    val sz = runCatching { f.length() }.getOrDefault(0L)
+                    sum += sz
+                    bytes += sz
+                    files++
+                    if (topN > 0) {
+                        if (top.size < topN) top.add(sz to f)
+                        else if (sz > (top.peek()?.first ?: 0L)) { top.poll(); top.add(sz to f) }
+                    }
+                    if (ctx.progress != null && files % DU_PROGRESS_EVERY == 0) {
+                        ctx.progress.invoke(ctx.text(R.string.cli_du_scanning, files.toString(), fmt(bytes)))
+                    }
+                }
+            }
+            return sum
+        }
+
+        val total = walk(root, 0)
+        // 遍历结束时把进度行定成最终数字（否则它停在最后一个整千数上）。
+        ctx.progress?.invoke(ctx.text(R.string.cli_du_scanning, files.toString(), fmt(total)))
+        if (cancelled.get()) return Result(UuText.extractCancelled(ctx.str), 1)
+
+        fun pct(b: Long): String =
+            if (total <= 0) "-" else "%.1f%%".format(b * 100.0 / total)
+
+        fun rel(f: File): String =
+            f.absolutePath.removePrefix(root.absolutePath).trimStart('/').ifEmpty { "." }
+
+        val sb = StringBuilder()
+        sb.append(root.absolutePath).append('\n')
+        sb.append(ctx.text(R.string.cli_du_result, fmt(total), files.toString())).append('\n')
+
+        if (dirBytes.isNotEmpty()) {
+            val rows = dirBytes.entries.sortedByDescending { it.value }
+            for ((i, e) in rows.withIndex()) {
+                if (i >= DU_MAX_LINES) {
+                    sb.append(ctx.text(R.string.cli_tree_truncated, DU_MAX_LINES.toString())).append('\n')
+                    break
+                }
+                sb.append(fmt(e.value).padStart(9)).append("  ")
+                    .append(pct(e.value).padStart(6)).append("  ")
+                    .append(rel(e.key)).append('\n')
+            }
+        }
+        if (top.isNotEmpty()) {
+            sb.append('\n')
+            for ((b, f) in top.sortedByDescending { it.first }) {
+                sb.append(fmt(b).padStart(9)).append("  ").append(rel(f)).append('\n')
+            }
+        }
+        return Result(sb.toString().trimEnd('\n'))
+    }
+
+    /** `uu du` 不带旗标的老行为：递归求和（多路径时再加一行合计）。 */
+    private fun duTotals(args: List<String>, ctx: Ctx): Result {
         fun sizeOf(f: File): Pair<Long, Int> {
             if (f.isFile) return f.length() to 1
             var bytes = 0L; var files = 0
@@ -3443,6 +3550,19 @@ internal object UuCommands {
 
     /** `uu tree` 最多打印 TREE_MAX 行。 */
     private const val TREE_MAX = 500
+
+    /**
+     * `uu du -d` / `-n` 的取值上限，以及分解视图最多打印的行数。
+     *
+     * 上限存在的理由不是性能而是**可读性**：终端输出区只有 200KB，一屏看不过来的
+     * 排行没有意义。`-d 6` 已经能到「游戏目录/子目录/资源包」这种粒度了。
+     */
+    private const val DU_MAX_DEPTH = 6
+    private const val DU_MAX_TOP = 50
+    private const val DU_MAX_LINES = 200
+
+    /** `uu du` 遍历时每多少个文件刷一次进度行（2000 次 stat 大约几十毫秒）。 */
+    private const val DU_PROGRESS_EVERY = 2000
 
     /** `uu grep`：单文件读取上限 / 打印字符上限。 */
     private const val GREP_MAX_FILE_BYTES = 5L * 1024 * 1024

@@ -359,6 +359,74 @@ class UuCommandsTest {
         assertTrue(r.text.contains("[150 B][2]"))  // 汇总行
     }
 
+    // ── du -d / -n（空间分析视图）──
+
+    @Test
+    fun duBreakdownListsSubdirectoriesBiggestFirst() {
+        val dir = tmp.root.resolve("dudepth").apply { mkdirs() }
+        File(dir, "big").mkdirs()
+        File(dir, "big/a.bin").writeBytes(ByteArray(4096))
+        File(dir, "small").mkdirs()
+        File(dir, "small/b.bin").writeBytes(ByteArray(1024))
+        File(dir, "loose.bin").writeBytes(ByteArray(16))
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("du", ".", "-d", "1"), c)
+        assertEquals(0, r.exitCode)
+        val lines = r.text.lines()
+        // 第 0 行是根路径，第 1 行是合计（5136 B）
+        assertEquals(dir.absolutePath, lines[0])
+        assertTrue(lines[1].contains("[5.0 KB][3]"))
+        // 深度 1 的两个子目录都在，且大的在前；根下的散文件不进分解
+        val iBig = lines.indexOfFirst { it.endsWith("big") }
+        val iSmall = lines.indexOfFirst { it.endsWith("small") }
+        assertTrue("big 应排在 small 之前", iBig in 2 until iSmall)
+        assertTrue(lines[iBig].contains("4.0 KB"))
+        assertFalse(lines.any { it.endsWith("loose.bin") })
+    }
+
+    @Test
+    fun duTopListsBiggestFilesOnly() {
+        val dir = tmp.root.resolve("dutop").apply { mkdirs() }
+        File(dir, "s1.bin").writeBytes(ByteArray(300))
+        File(dir, "s2.bin").writeBytes(ByteArray(200))
+        File(dir, "s3.bin").writeBytes(ByteArray(100))
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        val r = UuCommands.dispatch(listOf("du", ".", "-n", "2"), c)
+        assertEquals(0, r.exitCode)
+        val lines = r.text.lines()
+        assertTrue(lines.any { it.endsWith("s1.bin") })
+        assertTrue(lines.any { it.endsWith("s2.bin") })
+        assertFalse("最小的那个不该出现", lines.any { it.endsWith("s3.bin") })
+        assertTrue(
+            "大的在前",
+            lines.indexOfFirst { it.endsWith("s1.bin") } < lines.indexOfFirst { it.endsWith("s2.bin") }
+        )
+    }
+
+    @Test
+    fun duBreakdownRefusesMultipleRootsButTotalsStillAcceptThem() {
+        val dir = tmp.root.resolve("dumulti2").apply { mkdirs() }
+        File(dir, "a.bin").writeBytes(ByteArray(4))
+        File(dir, "b.bin").writeBytes(ByteArray(4))
+        val c = UuCommands.Ctx(prefs = null, cwd = dir)
+        // 分解视图只对一个根有意义 → 用法错误（exitCode 2），不是静默忽略旗标
+        assertEquals(2, UuCommands.dispatch(listOf("du", "a.bin", "b.bin", "-d", "1"), c).exitCode)
+        // 不带旗标的多路径求和照旧
+        assertEquals(0, UuCommands.dispatch(listOf("du", "a.bin", "b.bin"), c).exitCode)
+    }
+
+    @Test
+    fun duRejectsUnknownFlagAndFallsBackOnSingleFile() {
+        val dir = tmp.root.resolve("duflag").apply { mkdirs() }
+        File(dir, "a.bin").writeBytes(ByteArray(4))
+        val c = UuCommands.Ctx(prefs = null, cwd = dir, str = argStr())
+        assertEquals(1, UuCommands.dispatch(listOf("du", ".", "-z"), c).exitCode)
+        // 指向单个文件时没有「分解」可言，退回求和而不是输出空表
+        val r = UuCommands.dispatch(listOf("du", "a.bin", "-d", "2"), c)
+        assertEquals(0, r.exitCode)
+        assertTrue(r.text.contains("[4 B][1]"))
+    }
+
     @Test
     fun listConsumesDashPFlagInsteadOfTreatingItAsArchive() {
         val dir = tmp.root.resolve("listp").apply { mkdirs() }

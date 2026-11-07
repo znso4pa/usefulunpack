@@ -672,6 +672,7 @@
     <string name="cli_mv_done">已移动：%1$s → %2$s</string>
     <string name="cli_tree_truncated">… 已在 %1$s 条处截断</string>
     <string name="cli_du_result">共 %1$s，%2$s 个文件</string>
+    <string name="cli_du_scanning">扫描中… %1$s 个文件，%2$s</string>
     <string name="cli_stat_line">%1$s · %2$s · 修改于 %3$s</string>
     <string name="cli_mkdir_done">已创建 %1$s 个目录</string>
     <string name="cli_cso_done">已转换：%1$s</string>

@@ -821,6 +821,10 @@
     <string name="disk_up">Up one level</string>
     <string name="disk_pick_dir">Change folder</string>
     <string name="disk_empty">This folder is empty</string>
+    <string name="disk_dirs">Folders</string>
+    <string name="disk_big_files">Largest files</string>
+    <string name="disk_no_subdirs">No subfolders</string>
+    <string name="disk_no_files">No files here</string>
     <string name="home_disk">Disk usage</string>
     <string name="home_disk_sub">%1$s of %2$s used</string>
 </resources>

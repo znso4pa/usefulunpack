@@ -813,6 +813,10 @@
     <string name="disk_up">上一層</string>
     <string name="disk_pick_dir">換目錄</string>
     <string name="disk_empty">這個目錄是空的</string>
+    <string name="disk_dirs">子目錄</string>
+    <string name="disk_big_files">最大檔案</string>
+    <string name="disk_no_subdirs">沒有子目錄</string>
+    <string name="disk_no_files">這裡沒有檔案</string>
     <string name="home_disk">磁碟佔用</string>
     <string name="home_disk_sub">已用 %1$s，共 %2$s</string>
 </resources>

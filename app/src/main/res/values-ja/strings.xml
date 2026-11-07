@@ -813,6 +813,10 @@
     <string name="disk_up">上の階層へ</string>
     <string name="disk_pick_dir">フォルダ変更</string>
     <string name="disk_empty">このフォルダは空です</string>
+    <string name="disk_dirs">サブフォルダ</string>
+    <string name="disk_big_files">大きいファイル</string>
+    <string name="disk_no_subdirs">サブフォルダなし</string>
+    <string name="disk_no_files">ファイルなし</string>
     <string name="home_disk">ディスク使用量</string>
     <string name="home_disk_sub">%2$s 中 %1$s 使用</string>
 </resources>

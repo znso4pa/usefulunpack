@@ -141,6 +141,13 @@ private sealed class DiskRow {
 
 private class DiskRowAdapter(
     private val act: MainActivity,
+    /**
+     * 紧凑行（宽屏双栏用）：目录行只报大小、不报文件数。
+     *
+     * 双栏里每栏只有 ~240dp，右边那条「共 36.4 GB，42 个文件」会吃掉一半宽度、
+     * 把名字挤成三四个字。比例关系已经由上面的容量条负责，这里只留最要紧的数字。
+     */
+    private val compact: Boolean,
     private val onDir: (DiskNode) -> Unit,
 ) : BaseAdapter() {
 
@@ -172,7 +179,8 @@ private class DiskRowAdapter(
             is DiskRow.Dir -> {
                 name = row.node.dir.name.ifEmpty { row.node.dir.absolutePath }
                 bytes = row.node.bytes
-                sub = act.getString(R.string.cli_du_result, fmt(bytes), row.node.files.toString())
+                sub = if (compact) fmt(bytes) else
+                    act.getString(R.string.cli_du_result, fmt(bytes), row.node.files.toString())
             }
             is DiskRow.FileRow -> {
                 name = row.file.name
@@ -184,7 +192,8 @@ private class DiskRowAdapter(
 
         val box = LinearLayout(act).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(px(14), px(9), px(14), px(10))
+            if (compact) setPadding(px(12), px(7), px(12), px(8))
+            else setPadding(px(14), px(9), px(14), px(10))
         }
         val line = LinearLayout(act).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -237,9 +246,27 @@ private class DiskRowAdapter(
     }
 }
 
+/** 宽屏双栏里的一栏：小标题 + 列表（列表吃满剩余高度）。 */
+private fun diskColumn(act: MainActivity, title: String, pane: View): LinearLayout {
+    val density = act.resources.displayMetrics.density
+    fun px(v: Int) = (v * density).toInt()
+    return LinearLayout(act).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(
+            textView(act, title, 11f, C["tertiary"]!!).apply { letterSpacing = 0.12f },
+            LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(px(14), px(8), px(14), px(6)) },
+        )
+        addView(pane, LinearLayout.LayoutParams(MATCH, 0, 1f))
+    }
+}
+
 private fun showDiskResult(act: MainActivity, scan: DiskScan) {
     val density = act.resources.displayMetrics.density
     fun px(v: Int) = (v * density).toInt()
+
+    // 横竖两套骨架，判据与主页**同一个**（`isRoomy`）：两处不一致就会出现
+    // 「主页是宽屏骨架、点开对话框却是竖屏骨架」的错位。
+    val wide = isRoomy(act)
 
     /** 钻取栈：栈顶就是当前看的目录。用栈而不是给节点存 parent —— 扫描器不必为 UI 记账。 */
     val stack = ArrayDeque<DiskNode>().apply { addLast(scan.root) }
@@ -276,34 +303,71 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
 
     val header = LinearLayout(act).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(px(14), px(12), px(14), px(10))
+        setPadding(px(14), px(if (wide) 10 else 12), px(14), px(if (wide) 8 else 10))
         addView(pathRow, LinearLayout.LayoutParams(MATCH, WRAP))
-        addView(tvTotal, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = px(5) })
-        addView(barFrame, LinearLayout.LayoutParams(MATCH, px(9)).apply { topMargin = px(8) })
+        if (wide) {
+            // 宽屏：容量条和总量挤进同一行。横屏那张卡是 480dp × 可用高，比竖屏的贴底
+            // 大窗矮一截，竖向能省一行就省一行 —— 省下来的正好多显示一行目录。
+            val row = LinearLayout(act).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            row.addView(barFrame, LinearLayout.LayoutParams(0, px(7), 1f))
+            row.addView(tvTotal, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = px(12) })
+            addView(row, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = px(8) })
+        } else {
+            addView(tvTotal, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = px(5) })
+            addView(barFrame, LinearLayout.LayoutParams(MATCH, px(9)).apply { topMargin = px(8) })
+        }
     }
 
-    val tvEmpty = TextView(act).apply {
-        text = act.getString(R.string.disk_empty)
-        setTextColor(C["hint"]!!)
-        textSize = 12f
-        gravity = Gravity.CENTER
-        visibility = View.GONE
-    }
-    val listView = ListView(act).apply {
-        divider = ColorDrawable(C["hairline"]!!)
-        dividerHeight = px(1)
-        setPadding(0, 0, 0, 0)
-        clipToPadding = false
-    }
     // 点击回调要能在 `render` 定义之后才填（局部函数不能先引用后声明）——
     // 用一个可变的 lambda 做中转，adapter 里读它。
     var onDirClick: (DiskNode) -> Unit = {}
-    val adapter = DiskRowAdapter(act) { node -> onDirClick(node) }
-    listView.adapter = adapter
+    // 竖屏：**一个**列表，目录在前、本目录的文件在后 —— 一条道滚到底，符合竖屏的阅读习惯。
+    // 宽屏：**两个**列表并排。横屏的毛病是「把一屏目录滚完才见到文件」，而横屏本来就
+    // 横向富裕，分成两栏才用得着那份宽度。
+    val dirAdapter = DiskRowAdapter(act, compact = wide) { node -> onDirClick(node) }
+    val fileAdapter = DiskRowAdapter(act, compact = true) { }
 
-    val listFrame = FrameLayout(act).apply {
-        addView(listView, FrameLayout.LayoutParams(MATCH, MATCH))
-        addView(tvEmpty, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.CENTER))
+    /** 列表 + 空态叠一层（互斥显示）。 */
+    fun makePane(): Triple<FrameLayout, ListView, TextView> {
+        val tv = TextView(act).apply {
+            setTextColor(C["hint"]!!)
+            textSize = 12f
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+        val lv = ListView(act).apply {
+            divider = ColorDrawable(C["hairline"]!!)
+            dividerHeight = px(1)
+            setPadding(0, 0, 0, 0)
+            clipToPadding = false
+        }
+        val frame = FrameLayout(act).apply {
+            addView(lv, FrameLayout.LayoutParams(MATCH, MATCH))
+            addView(tv, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.CENTER))
+        }
+        return Triple(frame, lv, tv)
+    }
+
+    val dirPane = makePane().also { it.second.adapter = dirAdapter }
+    val filePane = makePane().also { it.second.adapter = fileAdapter }
+
+    val body: View = if (wide) {
+        LinearLayout(act).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(
+                diskColumn(act, act.getString(R.string.disk_dirs), dirPane.first),
+                LinearLayout.LayoutParams(0, MATCH, 1.6f).apply { marginEnd = px(8) },
+            )
+            addView(
+                diskColumn(act, act.getString(R.string.disk_big_files), filePane.first),
+                LinearLayout.LayoutParams(0, MATCH, 1f),
+            )
+        }
+    } else {
+        dirPane.first
     }
 
     val root = LinearLayout(act).apply {
@@ -313,10 +377,25 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
             View(act).apply { setBackgroundColor(C["hairline"]!!) },
             LinearLayout.LayoutParams(MATCH, px(1)),
         )
-        addView(listFrame, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        addView(body, LinearLayout.LayoutParams(MATCH, 0, 1f))
     }
 
     var dlg: AlertDialog? = null
+
+    /** 把一栏喂满：换行、切空态、切列表可见性。 */
+    fun fill(
+        adapter: DiskRowAdapter,
+        rows: List<DiskRow>,
+        maxBytes: Long,
+        pane: Triple<FrameLayout, ListView, TextView>,
+        emptyRes: Int,
+    ) {
+        adapter.submit(rows, maxBytes)
+        adapter.notifyDataSetChanged()
+        pane.third.text = act.getString(emptyRes)
+        pane.third.visibility = if (rows.isEmpty()) View.VISIBLE else View.GONE
+        pane.second.visibility = if (rows.isEmpty()) View.GONE else View.VISIBLE
+    }
 
     fun render(node: DiskNode) {
         tvPath.text = node.dir.absolutePath
@@ -341,18 +420,28 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
             )
         }
 
-        // ── 列表：子目录（已按大小降序）+ 本目录直接含有的最大文件 ──
-        val rows = ArrayList<DiskRow>(node.dirs.size + node.topFiles.size)
-        node.dirs.forEach { rows.add(DiskRow.Dir(it)) }
-        node.topFiles.forEach { rows.add(DiskRow.FileRow(it.first, it.second)) }
-        val maxB = maxOf(
-            node.dirs.firstOrNull()?.bytes ?: 0L,
-            node.topFiles.firstOrNull()?.first ?: 0L,
-        )
-        adapter.submit(rows, maxB)
-        adapter.notifyDataSetChanged()
-        tvEmpty.visibility = if (rows.isEmpty()) View.VISIBLE else View.GONE
-        listView.visibility = if (rows.isEmpty()) View.GONE else View.VISIBLE
+        // ── 列表 ──
+        val dirRows = node.dirs.map { DiskRow.Dir(it) }
+        val fileRows = node.topFiles.map { DiskRow.FileRow(it.first, it.second) }
+        if (wide) {
+            // 两栏各自按**本栏最大**归一：跨栏比大小没意义（左边是目录总量，右边是单文件）。
+            fill(
+                dirAdapter, dirRows, dirRows.maxOfOrNull { it.node.bytes } ?: 0L,
+                dirPane, R.string.disk_no_subdirs,
+            )
+            fill(
+                fileAdapter, fileRows, fileRows.maxOfOrNull { it.size } ?: 0L,
+                filePane, R.string.disk_no_files,
+            )
+        } else {
+            // 竖屏一个列表：两类行共用同一把尺子（同层最大），条形才可比。
+            val all = dirRows + fileRows
+            val maxB = maxOf(
+                dirRows.maxOfOrNull { it.node.bytes } ?: 0L,
+                fileRows.maxOfOrNull { it.size } ?: 0L,
+            )
+            fill(dirAdapter, all, maxB, dirPane, R.string.disk_empty)
+        }
         dlg?.getButton(AlertDialog.BUTTON_NEUTRAL)?.isEnabled = stack.size > 1
     }
 

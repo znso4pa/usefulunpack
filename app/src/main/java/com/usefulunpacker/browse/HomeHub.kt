@@ -125,8 +125,12 @@ internal fun MainActivity.enterBrowserAt(tab: TabState, dir: File) {
  * （812dp）会被判成宽屏，竖屏就变成横屏那个骨架 —— 用户明确否掉过（「竖屏不是按照你之前
  * 给的 html 走的吗」）。手机横屏宽度通常 640–900dp，所以仍要保留宽度这一条，不然手机横屏
  * 会被判成窄屏、双栏被压成上下堆叠（`is_wide`/`sw600dp` 那个老判据就是这个毛病）。
+ *
+ * ⚠️ **磁盘查询对话框用的是同一个判据**（`ui/DiskUsageDialog.kt`）：两处一旦不一致，
+ * 就会出现「主页是宽屏骨架、点开对话框却是竖屏骨架」的错位。所以它是 `internal` 而不是
+ * `private`，别再复制一份。
  */
-private fun isRoomy(act: MainActivity): Boolean {
+internal fun isRoomy(act: MainActivity): Boolean {
     val cfg = act.resources.configuration
     return cfg.screenWidthDp >= 600 &&
         cfg.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
@@ -396,12 +400,12 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
 // ── 磁盘占用横条 ─────────────────────────────────────────────────────
 
 /**
- * 主页的「磁盘占用」入口：**单行** —— 图标 + 标题 + 「已用 / 共」+ 箭头。
+ * 主页的「磁盘占用」入口。**横竖两套**（判据同 [isRoomy]）：
  *
- * 为什么是单行而不是和 [miniCard] 一样的卡：竖屏整列是按 [PW_DISK] 的权重定高的，
- * 40 权重在 412dp 画布上约 37dp 实高，两行文字（标题 + 说明）会溢出被裁。单行
- * 刚好装得下，而且信息一点没少 —— 那条「已用 96.2 GB，共 128 GB」就是 WizTree
- * 打开第一眼看的数字，放在这里等于把结果提前给了一半。
+ * | | 骨架 | 为什么 |
+ * |---|---|---|
+ * | **竖屏**（含平板竖屏） | 单行：图标 + 标题 + 「已用 / 共」+ 箭头 | 高度由 [PW_DISK] 权重给定（412dp 画布上约 37dp），两行文字会溢出被裁；这条横条只有一行的余地 |
+ * | **横屏宽屏** | 图标 + 标题 + **内嵌容量条** + 「已用 / 共」+ 箭头，条本身 50dp 高 | 横向空间富裕、纵向反而不必省；容量条把「还剩多少」画出来，扫一眼就知道 |
  *
  * 数字来自 [externalStorageUsage]（StatFs，系统调用、微秒级），不是扫描结果 ——
  * 扫描要一分钟，主界面不该等它。真正的分解在点进去之后。
@@ -416,19 +420,34 @@ private fun diskUsageBar(act: MainActivity, roomy: Boolean): View {
     val line = LinearLayout(act).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
+        // 横屏靠纵向 padding 撑到 ~50dp（父容器是 WRAP）；竖屏高度由权重给定，不要再加 padding。
         setPadding(
-            act.dp(if (roomy) 16 else 12), 0,
-            act.dp(if (roomy) 16 else 12), 0,
+            act.dp(if (roomy) 18 else 12),
+            act.dp(if (roomy) 15 else 0),
+            act.dp(if (roomy) 16 else 12),
+            act.dp(if (roomy) 15 else 0),
         )
     }
-    line.addView(iconView(act, R.drawable.ic_disk, act.dp(if (roomy) 18 else 16), C["accent"]!!))
-    line.addView(primaryText(act, act.getString(R.string.home_disk), if (roomy) 14f else 13f, bold = true).apply {
+    line.addView(iconView(act, R.drawable.ic_disk, act.dp(if (roomy) 20 else 16), C["accent"]!!))
+    line.addView(primaryText(act, act.getString(R.string.home_disk), if (roomy) 14.5f else 13f, bold = true).apply {
         setSingleLine(true)
-    }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = act.dp(9) })
-    line.addView(textView(act, sub, if (roomy) 11.5f else 11f, C["tertiary"]!!).apply {
+    }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = act.dp(if (roomy) 12 else 9) })
+
+    if (roomy && total > 0) {
+        // 横屏专有：把「已用 / 共」画成一条双段条。竖屏没有这个余地（整条才 ~37dp 高），
+        // 而且窄屏上一条被压到 100dp 出头的比例条也读不出比例，不如只给数字。
+        line.addView(
+            capacityStrip(act, used, total),
+            LinearLayout.LayoutParams(0, act.dp(7), 1f)
+                .apply { marginStart = act.dp(20); marginEnd = act.dp(20) },
+        )
+    }
+
+    line.addView(textView(act, sub, if (roomy) 12f else 11f, C["tertiary"]!!).apply {
         setSingleLine(true)
         ellipsize = android.text.TextUtils.TruncateAt.END
-    }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = act.dp(10) })
+    }, LinearLayout.LayoutParams(if (roomy) WRAP else 0, WRAP, if (roomy) 0f else 1f)
+        .apply { marginStart = act.dp(if (roomy) 0 else 10) })
     line.addView(iconView(act, R.drawable.ic_chevron_right, act.dp(14), C["tertiary"]!!))
 
     return FrameLayout(act).apply {
@@ -441,6 +460,27 @@ private fun diskUsageBar(act: MainActivity, roomy: Boolean): View {
         setOnClickListener { act.showDiskUsage() }
     }
 }
+
+/**
+ * 「已用 / 共」的双段细条（横屏专有）：左段主色 = 已用，右段深底 = 剩余。
+ *
+ * 两段都用 `weight` 分配，所以比例天然正确；`coerceAtLeast(1f)` 是防 0 权重 ——
+ * 一个 0 宽的子项会让另一段吃掉全部宽度，看着像「已经满了」。
+ */
+private fun capacityStrip(act: MainActivity, used: Long, total: Long): LinearLayout =
+    LinearLayout(act).apply {
+        orientation = LinearLayout.HORIZONTAL
+        background = roundedBg(act.dp(4), C["surface_dark"]!!)
+        clipToOutline = true
+        addView(
+            View(act).apply { setBackgroundColor(C["accent"]!!) },
+            LinearLayout.LayoutParams(0, MATCH, used.coerceAtLeast(1L).toFloat()),
+        )
+        addView(
+            View(act),
+            LinearLayout.LayoutParams(0, MATCH, (total - used).coerceAtLeast(1L).toFloat()),
+        )
+    }
 
 // ── 区块：最近打开的归档 ─────────────────────────────────────────────
 

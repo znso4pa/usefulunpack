@@ -487,6 +487,18 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
     dlg = dialog
     // 中性按钮默认点完就关窗；「上一级」要的是就地重画，所以自己接管。
     dialog.setOnShowListener {
+        // 面板整体补一层不透明底。竖屏贴底窗的窗口背景是 scrim（`0x99000000`，见
+        // `applyDialogGeometry`），而 AlertController 把标题栏 / 内容 / 按钮栏装成三个
+        // 兄弟 —— 只给 `root` 补底的话标题那一条仍是半透明，真机上主页搜索框会透上来
+        // 与「磁盘查询」叠字。三者共同的父就是 `android.R.id.content` 的第一层子。
+        //
+        // 用 `surface_dim`（#252525）而不是更深的 `surface_dark`：横屏浮动卡的窗口背景
+        // 正是这个色（`dialog_bg_rounded` → `bg_surface_dim`），圆角也取同一个 14dp，
+        // 于是标题栏上下不会出现比自身更深的缺口。**转屏不重建视图树**，所以不能按当前
+        // 方向二选一 —— 一套背景要同时满足两边。
+        val panel = (dialog.findViewById<View>(android.R.id.content) as? ViewGroup)
+            ?.getChildAt(0) as? View
+        (panel ?: root).background = roundedBg(px(14), C["surface_dim"]!!)
         dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
             if (stack.size > 1) {
                 stack.removeLast()
@@ -494,7 +506,34 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
             }
         }
     }
-    dialog.belowTabs(fitContent = false, rootToTab = false)
+    // ⚠️ **转屏必须重拼内容**：单栏 / 双栏是上面按 `wide` 拼死的，而清单声明了
+    // `configChanges` —— Activity 不重建，`reapplyDialogPlacements` 只重算几何、不重拼
+    // 视图树。真机：横屏开着的结果页转竖屏后仍是双栏 + 480dp 浮动卡（与 hub 当年
+    // 「竖屏显示横屏骨架」同一个坑）。方向一变就关掉重开 —— 扫描结果还在内存里，不重扫。
+    val skeletonWatch = object : android.content.ComponentCallbacks {
+        override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+            // ⚠️ 判断必须推迟到下一帧：这个回调到达时 Activity 的 `resources` 还是**旧方向**
+            // 的配置（实测转竖屏时 `isRoomy(act)` 仍返回 true），在这里判会直接 return、
+            // 骨架永远不重拼。post 之后 resources 已经换好。
+            act.window?.decorView?.post {
+                if (isRoomy(act) == wide) return@post
+                if (dlg?.isShowing == true) dlg?.dismiss()
+                // 再等一帧才开新窗口：`belowTabs` 的 `applySize` 读的是 Activity 根视图
+                // 的**当前高度**，而转屏这一帧它还是旧方向的值 —— 读早了会开出一个只占
+                // 半屏的窗口（真机：竖屏单栏骨架对了，但窗口只有上半屏高）。
+                act.window?.decorView?.post { showDiskResult(act, scan) }
+            }
+        }
+
+        override fun onLowMemory() {}
+    }
+    act.application.registerComponentCallbacks(skeletonWatch)
+    dialog.belowTabs(
+        fitContent = false,
+        rootToTab = false,
+        // 方向监听的生命周期跟着对话框走：窗口没了就没人再需要它。
+        also = { act.application.unregisterComponentCallbacks(skeletonWatch) },
+    )
     dialog.show()
     render(scan.root)
 }

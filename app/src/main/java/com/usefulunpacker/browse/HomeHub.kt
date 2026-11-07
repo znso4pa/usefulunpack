@@ -144,7 +144,8 @@ internal fun isRoomy(act: MainActivity): Boolean {
 }
 
 /**
- * 列表窗口（最近归档 / 书签）在**宽屏下的固定高度**（dp）—— 约 4 行书签（行高 ~42dp）。
+ * 列表窗口（最近归档 / 书签）在**宽屏下的固定高度**（dp）—— 约 2.8 行书签（行高 ~42dp），
+ * 底下那半行用 [FadeCard] 的渐隐收住。
  *
  * ⚠️ 宽屏这两个窗口是**定高**的，**不随剩余空间延伸**：窗口大小固定、条目多了在窗口内部
  * 滚动。曾经用 `weight=1` 让它们吃满剩余高度，结果窗口一直长到屏幕底部、条目反而被切掉
@@ -161,6 +162,9 @@ internal fun isRoomy(act: MainActivity): Boolean {
  * 以后再往这一列加块，先问一句「这笔高度谁来付」。
  */
 private const val LIST_CARD_H = 118
+
+/** 列表卡底部渐隐的高度（dp）。半行文字的高度 —— 够把「被切的那一行」收进暗部。 */
+private const val LIST_FADE_H = 22
 
 /*
  * ── 手机竖屏：整列按设计稿的**硬编码比例**分高度 ──────────────────────────
@@ -195,7 +199,7 @@ private const val PW_CAP = 20f        // 「最近打开的归档」/「书签�
  * 第一次加磁盘条时没动这里，总权重从 681 涨到 721，hero 也跟着缩了 5.5%（真机可见）。
  * 现在两张卡各让 20，总权重回到 681，其余各块与加磁盘条之前**逐像素一致**。
  */
-private const val PW_CARD = 134f      // 列表卡（设计稿 753 − 固定块 → 每张 ~153dp）
+private const val PW_CARD = 134f      // 列表卡（设计稿 ~153dp，让 20 给磁盘条 → 134）
 private const val PW_FOOTER = 29f     // 页脚 15 + hub 底部内边距 14（纵向内边距不能靠容器 padding）
 
 /** 无壁纸时的页面实底 #303030（= `homeRoot` 的 XML 底 `bg_file_list`，同色所以不闪）。 */
@@ -387,7 +391,7 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         cols.addView(col(bmsCap, bmsCard), LinearLayout.LayoutParams(0, WRAP, 1f))
         container.addView(cols, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = act.dp(22) })
     } else {
-        // 手机竖屏：标题 20 / 卡片 154（设计稿比例），间距走各自的 topMargin（权重子项的
+        // 手机竖屏：标题 20 / 卡片 134（设计稿比例，已让出 20 给磁盘条），间距走各自的 topMargin（权重子项的
         // `marginTop` 计入 `mTotalLength`）。左右 2dp 是 sectionCap 原有的微调，覆盖时要带上。
         container.addView(recentsCap, LinearLayout.LayoutParams(MATCH, 0, PW_CAP).apply {
             setMargins(act.dp(2), act.dp(14), act.dp(2), 0)
@@ -526,7 +530,7 @@ private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, room
     // 装不下时在卡片内滚动 —— 窗口尺寸不随内容/剩余空间变（行若用 weight 平分：1 条时
     // 被拉成巨行、10 条时被压扁）。高度由调用处给。
     val radius = act.dp(if (roomy) 16 else 14)
-    val card = FadeCard(act, act.dp(22), radius).apply {
+    val card = FadeCard(act, act.dp(LIST_FADE_H), radius).apply {
         background = roundedBg(radius, cardBg, act.dp(1), C["hairline"]!!)
         clipToOutline = true
     }
@@ -561,7 +565,7 @@ private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, room
         })
         list.addView(homeRecentRow(act, tab, e, roomy))
     }
-    attachBottomFade(card, scroll, act)
+    attachBottomFade(act, card, scroll)
     return cap to card
 }
 
@@ -621,7 +625,7 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
     // 与「最近」同一套：卡片定高（宽屏 [LIST_CARD_H] / 竖屏 [PW_CARD]）、行高固定、
     // 装不下时在卡片内滚动。高度由调用处给。
     val radius = act.dp(if (roomy) 16 else 14)
-    val card = FadeCard(act, act.dp(22), radius).apply {
+    val card = FadeCard(act, act.dp(LIST_FADE_H), radius).apply {
         background = roundedBg(radius, cardBg, act.dp(1), C["hairline"]!!)
         clipToOutline = true
     }
@@ -668,7 +672,7 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
             mergeIntoA11yNode(File(path).name.ifEmpty { path })
         })
     }
-    attachBottomFade(card, scroll, act)
+    attachBottomFade(act, card, scroll)
     return cap to card
 }
 
@@ -729,7 +733,7 @@ private class FadeCard(
 }
 
 /** 内容溢出、且还没滚到底 → 渐隐开着；否则关掉（否则「滚到底」时最后一行会被压暗）。 */
-private fun attachBottomFade(card: FadeCard, scroll: ScrollView, act: MainActivity) {
+private fun attachBottomFade(act: MainActivity, card: FadeCard, scroll: ScrollView) {
     fun sync() {
         val content = scroll.getChildAt(0) ?: return
         val overflow = content.height - scroll.height

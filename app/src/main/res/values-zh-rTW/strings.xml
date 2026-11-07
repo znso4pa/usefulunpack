@@ -817,6 +817,7 @@
     <string name="disk_big_files">最大檔案</string>
     <string name="disk_no_subdirs">沒有子目錄</string>
     <string name="disk_no_files">這裡沒有檔案</string>
+    <string name="disk_denied">%1$d 個目錄無法讀取，未計入（如 Android/data）</string>
     <string name="home_disk">磁碟佔用</string>
     <string name="home_disk_sub">已用 %1$s，共 %2$s</string>
 </resources>

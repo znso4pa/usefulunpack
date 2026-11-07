@@ -825,6 +825,7 @@
     <string name="disk_big_files">Largest files</string>
     <string name="disk_no_subdirs">No subfolders</string>
     <string name="disk_no_files">No files here</string>
+    <string name="disk_denied">%1$d folders could not be read and are excluded (e.g. Android/data)</string>
     <string name="home_disk">Disk usage</string>
     <string name="home_disk_sub">%1$s of %2$s used</string>
 </resources>

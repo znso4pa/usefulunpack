@@ -48,6 +48,8 @@ class DiskUsageTest {
         assertEquals(4000L, scan.root.dirs[0].bytes)
         assertEquals(listOf("sub"), scan.root.dirs[0].dirs.map { it.dir.name })
         assertEquals(1000L, scan.root.dirs[0].dirs[0].bytes)
+        // 全都读得了 → 不该有「未计入」的提示（结果页据此决定要不要显示那一行）。
+        assertEquals(0, scan.deniedDirs)
     }
 
     @Test
@@ -123,5 +125,8 @@ class DiskUsageTest {
         assertNotNull(scan)
         assertEquals(0L, scan!!.bytes)
         assertEquals(0, scan.files)
+        // 同时必须记一笔 —— 否则真机上「扫出 85 GB、实际已用 189 GB」就无从解释
+        // （`Android/data` 对 App 不可读，见 DiskScan.deniedDirs）。
+        assertEquals(1, scan.deniedDirs)
     }
 }

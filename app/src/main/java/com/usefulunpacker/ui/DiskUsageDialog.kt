@@ -301,6 +301,13 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
         addView(barHolder, FrameLayout.LayoutParams(MATCH, MATCH))
     }
 
+    // 「有 N 个目录没算进去」的提示（默认隐藏，见 render）。**只在扫描根上出现**：钻进去之后
+    // 这句话与当前这一栏的数字无关，留着只是噪音。没有读不了的目录时它根本不占位置。
+    val tvDenied = textView(act, "", 10.5f, C["hint"]!!).apply {
+        visibility = View.GONE
+        setPadding(0, px(6), 0, 0)
+    }
+
     val header = LinearLayout(act).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(px(14), px(if (wide) 10 else 12), px(14), px(if (wide) 8 else 10))
@@ -319,6 +326,7 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
             addView(tvTotal, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = px(5) })
             addView(barFrame, LinearLayout.LayoutParams(MATCH, px(9)).apply { topMargin = px(8) })
         }
+        addView(tvDenied, LinearLayout.LayoutParams(MATCH, WRAP))
     }
 
     // 点击回调要能在 `render` 定义之后才填（局部函数不能先引用后声明）——
@@ -400,6 +408,10 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
     fun render(node: DiskNode) {
         tvPath.text = node.dir.absolutePath
         tvTotal.text = act.getString(R.string.cli_du_result, fmt(node.bytes), node.files.toString())
+        // 「少算了多少」只在扫描根上交代一次（见 [tvDenied] 的声明处）。
+        val showDenied = node === scan.root && scan.deniedDirs > 0
+        tvDenied.visibility = if (showDenied) View.VISIBLE else View.GONE
+        if (showDenied) tvDenied.text = act.getString(R.string.disk_denied, scan.deniedDirs)
 
         // ── 容量条：前 DISK_SEGMENTS 个子目录按比例分段，剩下的归「其他」 ──
         barHolder.removeAllViews()

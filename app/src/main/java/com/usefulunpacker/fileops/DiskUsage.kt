@@ -61,6 +61,15 @@ internal class DiskScan(
     val bytes: Long,
     /** 因深度上限只统计了大小、没有建节点的目录数。 */
     val truncatedDirs: Int,
+    /**
+     * `listFiles()` 失败的目录数（权限 / scoped storage / 拔卡）。
+     *
+     * ⚠️ **不记这个数，总量就是「静默少算」**：真机上 `/storage/emulated/0` 扫出 85.59 GB，
+     * 而同一块卷已用 189.67 GB —— 差额里最大的一块是 `Android/data`（55 GB），它在 Android 11+
+     * 对**任何** App 都不可读（连 `MANAGE_EXTERNAL_STORAGE` 也不行），`listFiles()` 直接返回
+     * null。结果页必须把「有 N 个目录没算进去」明写出来，否则用户只会觉得这个功能算错了。
+     */
+    val deniedDirs: Int,
 )
 
 /**
@@ -78,6 +87,7 @@ internal class DiskScanner(
     private var files = 0
     private var bytes = 0L
     private var truncated = 0
+    private var denied = 0
 
     /** 小顶堆：堆顶是当前候选里最小的，比它大就换掉 —— 内存只占 N 个。 */
     private val top = PriorityQueue<Pair<Long, File>>(compareBy { it.first })
@@ -85,7 +95,7 @@ internal class DiskScanner(
     /** 扫描 [root]。被取消时返回 null（调用方据此区分「取消」与「空目录」）。 */
     fun scan(root: File): DiskScan? {
         val node = walk(root, 0) ?: return null
-        return DiskScan(node, top.sortedByDescending { it.first }, files, bytes, truncated)
+        return DiskScan(node, top.sortedByDescending { it.first }, files, bytes, truncated, denied)
     }
 
     /**
@@ -99,7 +109,10 @@ internal class DiskScanner(
         val node = DiskNode(dir)
         // listFiles() 会抛（权限 / 拔卡 / IO 错），一个读不了的目录不该让整次扫描失败。
         val kids = runCatching { dir.listFiles() }.getOrNull()
-        if (kids != null) {
+        if (kids == null) {
+            // 读不了 → 记一笔，让结果页能说「有 N 个目录没算进去」（见 [DiskScan.deniedDirs]）。
+            denied++
+        } else {
             for (f in kids) {
                 if (isCancelled()) return null
                 if (f.isDirectory) {
@@ -134,7 +147,11 @@ internal class DiskScanner(
         while (stack.isNotEmpty()) {
             if (isCancelled()) break
             val d = stack.removeLast()
-            val kids = runCatching { d.listFiles() }.getOrNull() ?: continue
+            val kids = runCatching { d.listFiles() }.getOrNull()
+            if (kids == null) {
+                denied++
+                continue
+            }
             for (f in kids) {
                 if (f.isDirectory) {
                     stack.addLast(f)

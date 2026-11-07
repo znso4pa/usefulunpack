@@ -817,6 +817,7 @@
     <string name="disk_big_files">大きいファイル</string>
     <string name="disk_no_subdirs">サブフォルダなし</string>
     <string name="disk_no_files">ファイルなし</string>
+    <string name="disk_denied">%1$d 個のフォルダを読み取れず、集計外です（例: Android/data）</string>
     <string name="home_disk">ディスク使用量</string>
     <string name="home_disk_sub">%2$s 中 %1$s 使用</string>
 </resources>

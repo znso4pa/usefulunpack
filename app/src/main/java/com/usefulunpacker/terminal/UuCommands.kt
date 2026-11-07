@@ -1852,7 +1852,9 @@ internal object UuCommands {
                 }
                 sb.append(fmt(e.value).padStart(9)).append("  ")
                     .append(pct(e.value).padStart(6)).append("  ")
-                    .append(rel(e.key)).append('\n')
+                    // 尾随 `/` 是 Unix 惯例，也让「目录行」和「文件行」一眼分开 ——
+                    // 比再加两条分段标题省事，也不用再维护四份文案。
+                    .append(rel(e.key)).append('/').append('\n')
             }
         }
         if (top.isNotEmpty()) {

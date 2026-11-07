@@ -376,9 +376,9 @@ class UuCommandsTest {
         // 第 0 行是根路径，第 1 行是合计（5136 B）
         assertEquals(dir.absolutePath, lines[0])
         assertTrue(lines[1].contains("[5.0 KB][3]"))
-        // 深度 1 的两个子目录都在，且大的在前；根下的散文件不进分解
-        val iBig = lines.indexOfFirst { it.endsWith("big") }
-        val iSmall = lines.indexOfFirst { it.endsWith("small") }
+        // 深度 1 的两个子目录都在，且大的在前；目录行带尾随 `/`；根下的散文件不进分解
+        val iBig = lines.indexOfFirst { it.endsWith("big/") }
+        val iSmall = lines.indexOfFirst { it.endsWith("small/") }
         assertTrue("big 应排在 small 之前", iBig in 2 until iSmall)
         assertTrue(lines[iBig].contains("4.0 KB"))
         assertFalse(lines.any { it.endsWith("loose.bin") })

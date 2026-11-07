@@ -164,6 +164,7 @@ private const val LIST_CARD_H = 184
 private const val PW_PALETTE = 44f    // 命令面板
 private const val PW_HERO = 72f       // 一张 hero 卡
 private const val PW_QUICK = 58f      // 快捷入口一行（2×2 的其中一行）
+private const val PW_DISK = 40f       // 磁盘占用横条（单行：图标 + 标题 + 已用/共）
 private const val PW_CAP = 20f        // 「最近打开的归档」/「书签」标题
 private const val PW_CARD = 154f      // 列表卡（设计稿 753 − 固定块 → 每张 ~153dp）
 private const val PW_FOOTER = 29f     // 页脚 15 + hub 底部内边距 14（纵向内边距不能靠容器 padding）
@@ -325,6 +326,17 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         miniRow(minis.subList(2, 4), 9)
     }
 
+    // ── 磁盘占用横条 ─────────────────────────────────────────────
+    // 快捷入口是 2×2（竖屏）/ 1×4（宽屏），加第 5 张要么破坏对称、要么把每张压到
+    // 装不下标题的宽度。改成**单独一条横条**：形状不同，也不跟那四格抢位置。
+    // 顺带把「已用 / 共」直接写在条上 —— 这正是 WizTree 顶部那两个数，点进去之前
+    // 就知道值不值得点。
+    container.addView(
+        diskUsageBar(act, roomy),
+        LinearLayout.LayoutParams(MATCH, if (roomy) WRAP else 0, if (roomy) 0f else PW_DISK)
+            .apply { topMargin = act.dp(if (roomy) 16 else 12) },
+    )
+
     // ── 最近打开的归档 │ 书签 ───────────────────────────────────
     // 宽屏：双栏并排，两个窗口**定高**（[LIST_CARD_H]）。
     // 手机竖屏：各占一整行，**标题与卡片各自按设计稿比例定高**（[PW_CAP] / [PW_CARD]），
@@ -379,6 +391,55 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
             topMargin = act.dp(if (roomy) 16 else 12)
         }
     })
+}
+
+// ── 磁盘占用横条 ─────────────────────────────────────────────────────
+
+/**
+ * 主页的「磁盘占用」入口：**单行** —— 图标 + 标题 + 「已用 / 共」+ 箭头。
+ *
+ * 为什么是单行而不是和 [miniCard] 一样的卡：竖屏整列是按 [PW_DISK] 的权重定高的，
+ * 40 权重在 412dp 画布上约 37dp 实高，两行文字（标题 + 说明）会溢出被裁。单行
+ * 刚好装得下，而且信息一点没少 —— 那条「已用 96.2 GB，共 128 GB」就是 WizTree
+ * 打开第一眼看的数字，放在这里等于把结果提前给了一半。
+ *
+ * 数字来自 [externalStorageUsage]（StatFs，系统调用、微秒级），不是扫描结果 ——
+ * 扫描要一分钟，主界面不该等它。真正的分解在点进去之后。
+ */
+private fun diskUsageBar(act: MainActivity, roomy: Boolean): View {
+    val (used, total) = externalStorageUsage()
+    val sub = if (total > 0) {
+        act.getString(R.string.home_disk_sub, fmt(used), fmt(total))
+    } else {
+        ""
+    }
+    val line = LinearLayout(act).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(
+            act.dp(if (roomy) 16 else 12), 0,
+            act.dp(if (roomy) 16 else 12), 0,
+        )
+    }
+    line.addView(iconView(act, R.drawable.ic_disk, act.dp(if (roomy) 18 else 16), C["accent"]!!))
+    line.addView(primaryText(act, act.getString(R.string.home_disk), if (roomy) 14f else 13f, bold = true).apply {
+        setSingleLine(true)
+    }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = act.dp(9) })
+    line.addView(textView(act, sub, if (roomy) 11.5f else 11f, C["tertiary"]!!).apply {
+        setSingleLine(true)
+        ellipsize = android.text.TextUtils.TruncateAt.END
+    }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = act.dp(10) })
+    line.addView(iconView(act, R.drawable.ic_chevron_right, act.dp(14), C["tertiary"]!!))
+
+    return FrameLayout(act).apply {
+        background = roundedBg(act.dp(if (roomy) 16 else 14), C["surface_dim"]!!, act.dp(1), C["hairline"]!!)
+        foreground = ripple(C["ripple"]!!)
+        isClickable = true
+        isFocusable = true
+        addView(line, FrameLayout.LayoutParams(MATCH, MATCH))
+        mergeIntoA11yNode(if (sub.isEmpty()) act.getString(R.string.home_disk) else "${act.getString(R.string.home_disk)}，$sub")
+        setOnClickListener { act.showDiskUsage() }
+    }
 }
 
 // ── 区块：最近打开的归档 ─────────────────────────────────────────────

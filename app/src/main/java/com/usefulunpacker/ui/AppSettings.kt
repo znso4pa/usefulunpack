@@ -368,15 +368,20 @@ internal fun MainActivity.settings() {
             .setTitle(getString(R.string.settings))
             .setItems(arrayOf(
                 getString(R.string.settings_ui), getString(R.string.settings_general), getString(R.string.settings_compress),
+                getString(R.string.disk_usage),
                 getString(R.string.settings_other), getString(R.string.settings_help), getString(R.string.settings_disclaimer)
             )) { _, which ->
                 when (which) {
                     0 -> showUISettings()
                     1 -> showGeneralSettings()
                     2 -> showCompressionSettings()
-                    3 -> showOtherSettings()
-                    4 -> showHelpDialog()
-                    5 -> showDisclaimer(fromSettings = true)
+                    // 从设置进来先问扫哪儿；主页那条横条才是「一键扫存储根」。
+                    3 -> showFolderPicker(this, android.os.Environment.getExternalStorageDirectory()) { picked ->
+                        showDiskUsage(picked)
+                    }
+                    4 -> showOtherSettings()
+                    5 -> showHelpDialog()
+                    6 -> showDisclaimer(fromSettings = true)
                 }
             }
             .setNegativeButton(getString(R.string.action_close), null)

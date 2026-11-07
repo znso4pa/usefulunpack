@@ -813,4 +813,14 @@
     <string name="home_foot_fmt">%1$d archive formats supported</string>
     <string name="home_foot_local">Everything stays on this device</string>
     <string name="action_home">Back to home</string>
+
+    <!-- 磁盘查询（WizTree 那类空间分析）：设置菜单项 + 主页横条 + 对话框 -->
+    <string name="disk_usage">💾 Disk usage</string>
+    <string name="disk_scanning">Scanning… %1$s files, %2$s</string>
+    <string name="disk_cancelled">Scan cancelled</string>
+    <string name="disk_up">Up one level</string>
+    <string name="disk_pick_dir">Change folder</string>
+    <string name="disk_empty">This folder is empty</string>
+    <string name="home_disk">Disk usage</string>
+    <string name="home_disk_sub">%1$s of %2$s used</string>
 </resources>

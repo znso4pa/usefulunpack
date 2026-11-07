@@ -810,4 +810,14 @@
     <string name="home_foot_fmt">支持 %1$d 种归档格式</string>
     <string name="home_foot_local">全部本地处理，不上传</string>
     <string name="action_home">回到主界面</string>
+
+    <!-- 磁盘查询（WizTree 那类空间分析）：设置菜单项 + 主页横条 + 对话框 -->
+    <string name="disk_usage">💾 磁盘查询</string>
+    <string name="disk_scanning">扫描中… %1$s 个文件，%2$s</string>
+    <string name="disk_cancelled">已取消扫描</string>
+    <string name="disk_up">上一级</string>
+    <string name="disk_pick_dir">换目录</string>
+    <string name="disk_empty">这个目录是空的</string>
+    <string name="home_disk">磁盘占用</string>
+    <string name="home_disk_sub">已用 %1$s，共 %2$s</string>
 </resources>

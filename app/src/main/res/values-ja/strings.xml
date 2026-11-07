@@ -805,4 +805,14 @@
     <string name="home_foot_fmt">%1$d 種類のアーカイブ形式に対応</string>
     <string name="home_foot_local">すべて端末内で処理、アップロードなし</string>
     <string name="action_home">ホームに戻る</string>
+
+    <!-- ディスク使用量（WizTree 相当の容量分析）：設定メニュー + ホームの帯 + ダイアログ -->
+    <string name="disk_usage">💾 ディスク使用量</string>
+    <string name="disk_scanning">スキャン中… %1$s ファイル、%2$s</string>
+    <string name="disk_cancelled">スキャンを中止しました</string>
+    <string name="disk_up">上の階層へ</string>
+    <string name="disk_pick_dir">フォルダ変更</string>
+    <string name="disk_empty">このフォルダは空です</string>
+    <string name="home_disk">ディスク使用量</string>
+    <string name="home_disk_sub">%2$s 中 %1$s 使用</string>
 </resources>

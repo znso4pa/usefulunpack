@@ -805,4 +805,14 @@
     <string name="home_foot_fmt">支援 %1$d 種封存格式</string>
     <string name="home_foot_local">全部本機處理，不上傳</string>
     <string name="action_home">回到主介面</string>
+
+    <!-- 磁碟查詢（WizTree 那類空間分析）：設定選單項 + 主頁橫條 + 對話框 -->
+    <string name="disk_usage">💾 磁碟查詢</string>
+    <string name="disk_scanning">掃描中… %1$s 個檔案，%2$s</string>
+    <string name="disk_cancelled">已取消掃描</string>
+    <string name="disk_up">上一層</string>
+    <string name="disk_pick_dir">換目錄</string>
+    <string name="disk_empty">這個目錄是空的</string>
+    <string name="home_disk">磁碟佔用</string>
+    <string name="home_disk_sub">已用 %1$s，共 %2$s</string>
 </resources>

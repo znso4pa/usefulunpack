@@ -91,6 +91,40 @@ class DiskUsageTest {
         assertNull(DiskScanner(isCancelled = { true }).scan(root))
     }
 
+    /**
+     * **在任何一个检查点取消，都不能拿到「扫了一半」的结果。**
+     *
+     * 盯的是 `weigh()`（超深目录那段）那条路径：它遇到取消只是 `break` 出循环、返回部分结果，
+     * 不经过 `walk` 的返回值 —— 被取消的目录如果正好是最后一个子项，`walk` 会一路正常回溯，
+     * 调用方就会拿到一份残缺数据（用户点了取消，却看到结果页）。
+     *
+     * 不写死「第几次检查」，先跑一遍数出总检查次数，再对每个点逐一取消 —— 实现怎么改都不会假红。
+     */
+    @Test
+    fun cancelAtAnyCheckpointNeverYieldsPartialResult() {
+        val root = tmp.newFolder("sweep")
+        // 比 MAX_DEPTH 深两层 → 一定会走到 weigh()。
+        var cur = root
+        repeat(DiskScanner.MAX_DEPTH + 2) { i ->
+            cur = File(cur, "l$i").apply { mkdirs() }
+        }
+        mk(cur, "leaf.bin", 512)
+        // ⚠️ 根下**不放**兄弟节点：放在这里的话，深链走完后 root 的循环还会再查一次取消，
+        // 把「weigh 里取消留下的半截结果」又变回 null，这条测试就抓不到那个 bug 了
+        // （实测：加一个 top.bin 之后，去掉兜底也能全绿）。
+
+        var total = 0
+        DiskScanner(isCancelled = { total++; false }).scan(root)
+        assertTrue("这棵树应当有若干个检查点，实际 $total", total > 4)
+
+        // 取到 total-1：最后一个检查点正好在 weigh 里，必须被覆盖到。
+        for (n in 1 until total) {
+            var calls = 0
+            val scan = DiskScanner(isCancelled = { ++calls > n }).scan(root)
+            assertNull("第 $n 个检查点取消后仍返回了结果", scan)
+        }
+    }
+
     @Test
     fun tooDeepDirsAreSummedWithoutNodes() {
         val root = tmp.newFolder("deep")

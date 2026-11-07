@@ -93,10 +93,17 @@ internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternal
         val scan = scanner.scan(startDir)
         act.runOnUiThread {
             if (act.isFinishing || act.isDestroyed) return@runOnUiThread
+            if (scan == null) {
+                // 取消：negative button 默认就把窗口关了，所以**不能**拿 `dlg.isShowing`
+                // 当判据 —— 那样这句提示永远到不了（弹窗已经不在，代码直接 return）。
+                // 补一句确认，否则用户只看到窗口消失，不知道是停了还是出错。
+                act.toast(getString(R.string.disk_cancelled))
+                return@runOnUiThread
+            }
+            // 扫完了、但用户已经把扫描窗口关掉 → 结果丢弃，别硬弹一个新窗口。
             if (!dlg.isShowing) return@runOnUiThread
             dlg.dismiss()
-            if (scan == null) act.toast(getString(R.string.disk_cancelled))
-            else showDiskResult(act, scan)
+            showDiskResult(act, scan)
         }
     }
 }
@@ -239,8 +246,9 @@ private class DiskRowAdapter(
             box.mergeIntoA11yNode("$name，$sub")
         } else {
             // 文件行点了没有下一步（打开 / 定位不在这一版范围里），不做成可点。
-            box.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-            box.contentDescription = "$name，${fmt(bytes)}"
+            // ⚠️ 必须走 `mergeIntoA11yNode`：只设 `contentDescription` 不会把子 TextView 标成
+            // `NO`，TalkBack 会先读这句、再逐个子视图重读一遍（文件名 + 大小各一遍）。
+            box.mergeIntoA11yNode("$name，${fmt(bytes)}")
         }
         return box
     }

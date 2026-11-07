@@ -95,6 +95,11 @@ internal class DiskScanner(
     /** 扫描 [root]。被取消时返回 null（调用方据此区分「取消」与「空目录」）。 */
     fun scan(root: File): DiskScan? {
         val node = walk(root, 0) ?: return null
+        // ⚠️ 还要再查一次：[weigh]（超深目录那段）里遇到取消只是 `break` 出循环、返回**部分**
+        // 结果，不经过 [walk] 的返回值。被取消的那个目录如果正好是最后一个子项，[walk] 会
+        // 一路正常回溯，这里就会拿到一份「扫了一半」的结果 —— 用户点了取消却看到残缺数据。
+        // 宁可当取消处理。
+        if (isCancelled()) return null
         return DiskScan(node, top.sortedByDescending { it.first }, files, bytes, truncated, denied)
     }
 

@@ -45,7 +45,9 @@ API=26
 # ---- 编解码清单（6.3 扩过一次，改之前先读完这段）----
 #
 # 起点是 WMV 世代：真样本实测出现过的 wmv3 / wmv2 / msmpeg4v3 / mpeg4 + wmav2，
-# 再带上同族近亲（vc1、wmv1、msmpeg4v1/v2、wmapro/wmavoice、mp3）。
+# 再带上同族近亲（vc1、wmv1、msmpeg4v1/v2、mp3）。
+# **`wmapro` / `wmavoice` 6.5 删了**（见下面 AUDIO_DECODERS 那段）：它们当初是
+# 按「同族近亲」加的，真样本里从来没出现过，实测 135 KB/ABI。
 # 6.3 把源容器从「只有 ASF」扩到「老视频容器」——AVI / FLV / MPEG-PS / MPEG-TS。
 #
 # ⚠️ 体积只能按**最终 .so** 量。`-ffunction-sections` + `--gc-sections` 之后，
@@ -115,7 +117,12 @@ mpeg1video,mpeg2video,h263,flv,mjpeg,vp6,vp6a,vp6f"
 # `AMediaCodec` 解，只有 API 26~28 上没有这个解码器（那种机器退回「只转视频」）。
 # 真要加回来：实测加完 .so 只涨约 0.28 MB 而不是 141.7 KB×2 —— 因为 gc-sections
 # 会砍掉一部分，别拿 .o 的总和当最终增量。
-AUDIO_DECODERS="wmav1,wmav2,wmapro,wmavoice,mp3,mp2,aac,ac3,eac3,vorbis,\
+# ⚠️ **`wmapro` / `wmavoice` 刻意不在下面这张表里**（6.5 删的）。它们当初是跟着
+# 「同族近亲」一起加的，真样本里**从来没出现过**（出现的只有 `wmav2`）。实测
+# `wmaprodec.o` 53 KB + `wmavoice.o` 82 KB = **135 KB/ABI**，`.so` 里约 68 KB/ABI。
+# 代价是：真遇到 WMA Pro / WMA Voice 音轨，解码器注册表里没有它，转出来是
+# **只有视频**（不报错）。要加回来只需把两个名字放回 AUDIO_DECODERS。
+AUDIO_DECODERS="wmav1,wmav2,mp3,mp2,aac,ac3,eac3,vorbis,\
 pcm_s16le,pcm_s16be,pcm_u8,pcm_s24le,pcm_f32le,pcm_mulaw,pcm_alaw,\
 adpcm_ms,adpcm_ima_wav,adpcm_ima_qt"
 PARSERS="vc1,mpeg4video,mpegvideo,h263,mjpeg,aac,ac3,mpegaudio"

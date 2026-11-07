@@ -1,5 +1,12 @@
 package com.usefulunpacker
 
+import android.annotation.SuppressLint
+import android.graphics.Canvas
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.drawable.GradientDrawable
 import android.os.Environment
 import android.view.Gravity
@@ -518,9 +525,22 @@ private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, room
     // 卡片**定高**（宽屏 [LIST_CARD_H]、竖屏按设计稿比例 [PW_CARD]）、**行高固定**，
     // 装不下时在卡片内滚动 —— 窗口尺寸不随内容/剩余空间变（行若用 weight 平分：1 条时
     // 被拉成巨行、10 条时被压扁）。高度由调用处给。
-    val card = FrameLayout(act).apply {
-        background = roundedBg(act.dp(if (roomy) 16 else 14), cardBg, act.dp(1), C["hairline"]!!)
+    val radius = act.dp(if (roomy) 16 else 14)
+    val card = FadeCard(act, act.dp(22), radius).apply {
+        background = roundedBg(radius, cardBg, act.dp(1), C["hairline"]!!)
         clipToOutline = true
+    }
+    // 空态**直接在卡片里居中**，不进 ScrollView —— 塞进 ScrollView 的话它是「内容的第一行」，
+    // 只会贴着卡片上沿（真机反馈：「还没有打开过归档」不在正中心）。空态也没有可滚的东西。
+    if (entries.isEmpty()) {
+        card.fadeEnabled = false
+        card.addView(
+            textView(act, act.getString(R.string.home_recents_empty), 12f, C["tertiary"]!!).apply {
+                gravity = Gravity.CENTER
+            },
+            FrameLayout.LayoutParams(MATCH, MATCH),
+        )
+        return cap to card
     }
     val scroll = ScrollView(act).apply {
         // Honor/EMUI ROM：自定义 ScrollView 一开原生滚动条就会在 onDrawScrollBars 里 NPE。
@@ -530,24 +550,18 @@ private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, room
     card.addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
     val list = LinearLayout(act).apply { orientation = LinearLayout.VERTICAL }
     scroll.addView(list)
-    if (entries.isEmpty()) {
-        list.addView(textView(act, act.getString(R.string.home_recents_empty), 12f, C["tertiary"]!!).apply {
-            gravity = Gravity.CENTER
-            setPadding(0, act.dp(20), 0, act.dp(20))
+    entries.forEachIndexed { i, e ->
+        if (i > 0) list.addView(View(act).apply {
+            layoutParams = LinearLayout.LayoutParams(MATCH, act.dp(1)).apply {
+                marginStart = act.dp(14); marginEnd = act.dp(14)
+            }
+            setBackgroundColor(C["hairline"]!!)
+            // 纯装饰的分隔线，别让 TalkBack 停在它上面。
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         })
-    } else {
-        entries.forEachIndexed { i, e ->
-            if (i > 0) list.addView(View(act).apply {
-                layoutParams = LinearLayout.LayoutParams(MATCH, act.dp(1)).apply {
-                    marginStart = act.dp(14); marginEnd = act.dp(14)
-                }
-                setBackgroundColor(C["hairline"]!!)
-                // 纯装饰的分隔线，别让 TalkBack 停在它上面。
-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            })
-            list.addView(homeRecentRow(act, tab, e, roomy))
-        }
+        list.addView(homeRecentRow(act, tab, e, roomy))
     }
+    attachBottomFade(card, scroll, act)
     return cap to card
 }
 
@@ -606,9 +620,21 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
         if (roomy) 11.5f else 10.5f, if (roomy) 12f else 11f)
     // 与「最近」同一套：卡片定高（宽屏 [LIST_CARD_H] / 竖屏 [PW_CARD]）、行高固定、
     // 装不下时在卡片内滚动。高度由调用处给。
-    val card = FrameLayout(act).apply {
-        background = roundedBg(act.dp(if (roomy) 16 else 14), cardBg, act.dp(1), C["hairline"]!!)
+    val radius = act.dp(if (roomy) 16 else 14)
+    val card = FadeCard(act, act.dp(22), radius).apply {
+        background = roundedBg(radius, cardBg, act.dp(1), C["hairline"]!!)
         clipToOutline = true
+    }
+    // 空态与「最近」同一套：直接铺满卡片居中，不进 ScrollView（理由见 homeRecentsParts）。
+    if (bookmarks.isEmpty()) {
+        card.fadeEnabled = false
+        card.addView(
+            textView(act, act.getString(R.string.home_bookmarks_empty), 12f, C["tertiary"]!!).apply {
+                gravity = Gravity.CENTER
+            },
+            FrameLayout.LayoutParams(MATCH, MATCH),
+        )
+        return cap to card
     }
     val scroll = ScrollView(act).apply {
         isVerticalScrollBarEnabled = false
@@ -620,34 +646,99 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
         setPadding(act.dp(6), act.dp(6), act.dp(6), act.dp(6))
     }
     scroll.addView(box)
-    if (bookmarks.isEmpty()) {
-        box.addView(textView(act, act.getString(R.string.home_bookmarks_empty), 12f, C["tertiary"]!!).apply {
-            gravity = Gravity.CENTER
-            setPadding(0, act.dp(16), 0, act.dp(16))
-        })
-    } else {
-        bookmarks.forEach { path ->
-            box.addView(LinearLayout(act).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(
-                    act.dp(if (roomy) 14 else 11), act.dp(if (roomy) 12 else 10),
-                    act.dp(if (roomy) 14 else 11), act.dp(if (roomy) 12 else 10),
-                )
-                foreground = ripple(C["ripple"]!!)
-                isClickable = true
-                isFocusable = true
-                setOnClickListener { act.enterBrowserAt(tab, File(path)) }
-                addView(iconView(act, R.drawable.ic_folder, act.dp(if (roomy) 17 else 15), C["accent"]!!))
-                addView(textView(act, File(path).name.ifEmpty { path },
-                    if (roomy) 13.5f else 12.5f, C["secondary"]!!).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = act.dp(if (roomy) 12 else 10) }
-                    setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
-                })
-                // 整行 = 一个 a11y 单元（文件夹图标 / 名字合成一句）。
-                mergeIntoA11yNode(File(path).name.ifEmpty { path })
+    bookmarks.forEach { path ->
+        box.addView(LinearLayout(act).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(
+                act.dp(if (roomy) 14 else 11), act.dp(if (roomy) 12 else 10),
+                act.dp(if (roomy) 14 else 11), act.dp(if (roomy) 12 else 10),
+            )
+            foreground = ripple(C["ripple"]!!)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { act.enterBrowserAt(tab, File(path)) }
+            addView(iconView(act, R.drawable.ic_folder, act.dp(if (roomy) 17 else 15), C["accent"]!!))
+            addView(textView(act, File(path).name.ifEmpty { path },
+                if (roomy) 13.5f else 12.5f, C["secondary"]!!).apply {
+                layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = act.dp(if (roomy) 12 else 10) }
+                setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
             })
-        }
+            // 整行 = 一个 a11y 单元（文件夹图标 / 名字合成一句）。
+            mergeIntoA11yNode(File(path).name.ifEmpty { path })
+        })
     }
+    attachBottomFade(card, scroll, act)
     return cap to card
+}
+
+/**
+ * 定高列表卡：**在所有子视图画完之后**再盖一层底部渐隐（透明黑）。
+ *
+ * 为什么需要它：卡片是定高的，内容比它高时最后一行会被切在卡片边缘上 ——
+ * 真机反馈「书签里第三栏跑出了栏目」，量下来那一行的文字正好压在卡片的 1dp 描边上
+ * （卡片底边 y=1812，文字 1783–1812），看着像跑到框外去了。渐隐把切口收进暗部里，
+ * 顺带暗示「还能往下滚」；滚到底时自动关掉。
+ *
+ * ⚠️ **为什么不用「往卡片里再 add 一个渐变 View」**：试过，真机上那层渐变把卡片底色压暗了、
+ * 却压不暗列表里的文字（看起来像「文字浮在一块暗色上面」）—— 子视图的合成顺序不可控。
+ * 走 `dispatchDraw` 的 `super` 之后画，顺序是确定的。
+ *
+ * ⚠️ **用透明黑而不是卡片底色**（用户指定）：卡片底色本身是深灰，拿它做渐变等于把同一个
+ * 颜色再刷一遍，只有压在文字上才看得出一点点（实测第三行文字平均亮度只从 88.5 降到 81.5，
+ * 等于没做）。透明黑是「压暗」不是「覆盖」，对任何卡片配色都成立。
+ */
+// 只在代码里 new，从不 XML 填充 —— 不需要 (Context, AttributeSet) 那套构造函数。
+@SuppressLint("ViewConstructor")
+private class FadeCard(
+    act: MainActivity,
+    private val fadePx: Int,
+    private val radiusPx: Int,
+) : FrameLayout(act) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val path = Path()
+    private val rect = RectF()
+    private var shaderForHeight = -1
+
+    /** 内容没超出 / 已经滚到底时关掉 —— 由 [attachBottomFade] 维护。 */
+    var fadeEnabled = true
+
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        if (!fadeEnabled) return
+        val h = height
+        val w = width
+        if (h <= 0 || w <= 0) return
+        if (shaderForHeight != h) {
+            shaderForHeight = h
+            val top = (h - fadePx).coerceAtLeast(0).toFloat()
+            paint.shader = LinearGradient(
+                0f, top, 0f, h.toFloat(),
+                intArrayOf(0x00000000, 0x99000000.toInt()), null, Shader.TileMode.CLAMP,
+            )
+        }
+        canvas.save()
+        // 卡片是圆角的，不裁一下会在两个下角外面糊出方角。
+        rect.set(0f, 0f, w.toFloat(), h.toFloat())
+        path.reset()
+        path.addRoundRect(rect, radiusPx.toFloat(), radiusPx.toFloat(), Path.Direction.CW)
+        canvas.clipPath(path)
+        canvas.drawRect(0f, (h - fadePx).coerceAtLeast(0).toFloat(), w.toFloat(), h.toFloat(), paint)
+        canvas.restore()
+    }
+}
+
+/** 内容溢出、且还没滚到底 → 渐隐开着；否则关掉（否则「滚到底」时最后一行会被压暗）。 */
+private fun attachBottomFade(card: FadeCard, scroll: ScrollView, act: MainActivity) {
+    fun sync() {
+        val content = scroll.getChildAt(0) ?: return
+        val overflow = content.height - scroll.height
+        card.fadeEnabled = overflow > 0 && scroll.scrollY < overflow - act.dp(1)
+        card.invalidate()
+    }
+    scroll.setOnScrollChangeListener { _, _, _, _, _ -> sync() }
+    // 高度要等测量完才知道。**不能用 `ViewTreeObserver.addOnGlobalLayoutListener`**：
+    // 视图还没 attach 时拿到的是一个游离的 observer，实测首帧那次回调根本没来。
+    // 布局回调每次布局都会来，转屏 / 重建也覆盖得到。
+    card.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> sync() }
 }

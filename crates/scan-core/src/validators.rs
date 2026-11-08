@@ -1398,10 +1398,14 @@ pub fn tar_entry_ranges(f: &mut File, magic_off: u64, file_len: u64) -> Vec<(u64
             out.push((data, data + size));
         }
         let adv = ((size + 511) / 512) * 512;
-        if data + adv < data {
+        // 判溢出不能用 `data + adv < data`：debug 构建开了 overflow-checks，
+        // 加法自己就先 panic，比较永远轮不到（clippy `panicking_overflow_checks`
+        // 从 1.99 起是 deny）。`size` 来自头里的八进制数，上限约 8.6e9，所以
+        // 会越界的只有 `data`，用 checked_add 把这件事写清楚。
+        let Some(next) = data.checked_add(adv) else {
             break; // 溢出（畸形 size）
-        }
-        pos = data + adv;
+        };
+        pos = next;
     }
     out
 }

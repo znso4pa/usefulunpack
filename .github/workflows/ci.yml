@@ -27,8 +27,14 @@ jobs:
           git clone --depth 1 https://github.com/znso4pa/v2videos.git "$target"
           echo "sibling at $target @ $(git -C "$target" rev-parse --short HEAD)"
 
+      # Pinned to the 1.99 branch on purpose: clippy ships new deny-by-default
+      # lints in every minor release, so `@stable` turns an upstream bump into a
+      # red CI nobody asked for (already happened once — `panicking_overflow_checks`
+      # in 1.99). Patch releases only carry fixes, so tracking `1.99` is safe;
+      # bump the minor deliberately, together with a local
+      # `cargo +<ver> clippy --workspace --all-targets`.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99
 
       - name: Cache cargo registry
         uses: actions/cache@v4

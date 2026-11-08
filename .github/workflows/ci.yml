@@ -15,6 +15,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `crates/video-core` path-depends on the sibling v2video repo
+      # (`../../../../v2video/crates/vc1` from the crate directory), which
+      # resolves to `<runner work>/v2video` — one level above this repo's
+      # checkout. Cargo resolves optional path deps even when the `v2v`
+      # feature is off, so a lone checkout of this repo cannot load the
+      # workspace at all. Clone the sibling into exactly that spot.
+      - name: Check out sibling v2video repo
+        run: |
+          target="$(dirname "$(dirname "$GITHUB_WORKSPACE")")/v2video"
+          git clone --depth 1 https://github.com/znso4pa/v2videos.git "$target"
+          echo "sibling at $target @ $(git -C "$target" rev-parse --short HEAD)"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

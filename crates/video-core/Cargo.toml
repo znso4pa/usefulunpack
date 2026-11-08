@@ -42,6 +42,9 @@ jni = "0.21"
 # 这是刻意的 —— 两个仓一起改的时候，path 依赖能立刻拿到对方的改动，不用每次
 # 提一个 rev 再 bump。代价是「单独 clone 本仓编不过」，和「没有 NDK / 没有
 # `.ffmpeg-cache` 也编不过」是同一类前置条件，`build.sh` 会先检查并给出人话。
+# CI 没有并排目录，由 `.github/workflows/ci.yml` 把兄弟仓克隆到
+# `$GITHUB_WORKSPACE/../..`（正好是这里 `../../../../v2video` 解析到的位置）。
+# Cargo 即使 `v2v` 特性关着也要读这两个 manifest，所以这一步是必需的。
 vc1 = { package = "v2v-vc1", path = "../../../../v2video/crates/vc1", optional = true }
 # MP43 / MP42 / MP41 / WMV1 / WMV2（MS-MPEG-4 全家）。这套**没有 B 帧**，所以
 # 覆盖率是完整的 —— 不像 VC-1 那样卡在 B 帧上。

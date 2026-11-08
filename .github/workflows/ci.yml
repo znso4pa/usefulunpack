@@ -35,6 +35,12 @@ jobs:
       # `cargo +<ver> clippy --workspace --all-targets`.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.99
+        with:
+          # The action installs `--profile minimal` unless components are named,
+          # and a pinned toolchain is not the preinstalled one, so clippy has to
+          # be requested explicitly. (It only worked before by accident: the
+          # hosted image ships stable+clippy, and `@stable` reused it.)
+          components: clippy
 
       - name: Cache cargo registry
         uses: actions/cache@v4

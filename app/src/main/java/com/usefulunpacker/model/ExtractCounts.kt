@@ -7,11 +7,16 @@ data class ExtractCounts(val total: Int, val success: Int, val error: Int) {
 
     companion object {
         fun fromJson(json: String?): ExtractCounts {
-            if (json == null) return ExtractCounts(0, 0, 1)
             return try {
+                require(json != null) { "Native extraction returned no result" }
                 val obj = JSONObject(json)
-                ExtractCounts(obj.optInt("total", 0), obj.optInt("success", 0), obj.optInt("error", 0))
-            } catch (_: Exception) { ExtractCounts(0, 0, 1) }
+                val counts = ExtractCounts(obj.getInt("total"), obj.getInt("success"), obj.getInt("error"))
+                require(counts.total >= 0 && counts.success >= 0 && counts.error >= 0) { "Negative extraction counts" }
+                counts
+            } catch (e: Exception) {
+                AppDiagnostics.failure("native-extract-result", e)
+                ExtractCounts(0, 0, 1)
+            }
         }
     }
 }
@@ -19,4 +24,4 @@ data class ExtractCounts(val total: Int, val success: Int, val error: Int) {
 /** Per-operation extract result: counts + the raw error message (if any).
  * Replaces the old process-global `lastExtractResult`/`lastExtractError` so no
  * cross-thread shared mutable state leaks between operations. */
-data class ExtractOutcome(val counts: ExtractCounts, val error: String?)
+data class ExtractOutcome(val counts: ExtractCounts, val error: String?, val failure: AppFailure? = null)

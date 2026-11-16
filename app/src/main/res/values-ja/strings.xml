@@ -820,4 +820,23 @@
     <string name="disk_denied">%1$d 個のフォルダを読み取れず、集計外です（例: Android/data）</string>
     <string name="home_disk">ディスク使用量</string>
     <string name="home_disk_sub">%2$s 中 %1$s 使用</string>
+
+    <!-- Shared controls and persistent diagnostics -->
+    <string name="diagnostics_title">ログと診断</string>
+    <string name="diagnostics_empty">診断記録はありません</string>
+    <string name="diagnostics_failure">操作中に問題が発生しました。診断の詳細を確認してください。</string>
+    <string name="diagnostics_view">ログを表示</string>
+    <string name="diagnostics_share">ログを共有</string>
+    <string name="diagnostics_storage_failed">ログを保存できませんでした。メモリ上の記録を表示します。</string>
+    <string name="components_title">共通コンポーネント</string>
+    <string name="components_primary">主要操作</string>
+    <string name="components_secondary">補助操作</string>
+    <string name="components_danger">危険な操作</string>
+    <string name="components_disabled">使用不可</string>
+    <string name="components_input">入力</string>
+    <string name="components_switch">スイッチ</string>
+    <string name="components_navigation">ナビゲーション項目</string>
+    <string name="components_action">操作項目</string>
+    <string name="diagnostics_cleanup_failed">クリーンアップに失敗しました。ファイルが残っている可能性があります。</string>
+    <string name="diagnostics_multiple_failures">%1$d 件のタスクで問題が発生しました。診断を確認してください。</string>
 </resources>

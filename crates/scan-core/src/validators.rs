@@ -2983,7 +2983,7 @@ mod tests {
     use super::*;
 
     fn tmp(path: &str, bytes: &[u8]) -> String {
-        let dir = std::env::temp_dir().join(format!("uu_scan_valid_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("uu_scan_valid_{}_{:?}", std::process::id(), std::thread::current().id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(path);
         std::fs::write(&p, bytes).unwrap();
@@ -3094,7 +3094,7 @@ mod tests {
         let mut f2 = File::open(&p).unwrap();
         let info = validate_rar5_hp(&mut f2, 0, hp.len() as u64).expect("-hp fallback must report");
         assert_eq!(info.size, Some(hp.len() as u64), "whole-file region");
-        std::fs::remove_dir_all(&std::env::temp_dir().join(format!("uu_scan_valid_{}", std::process::id()))).ok();
+        std::fs::remove_dir_all(&std::env::temp_dir().join(format!("uu_scan_valid_{}_{:?}", std::process::id(), std::thread::current().id()))).ok();
     }
 
     /// Builds a structurally realistic RAR4 archive: sig + arbitrary HEAD_CRC

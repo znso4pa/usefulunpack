@@ -14,7 +14,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.usefulunpacker.archive.OpScheduler
 import com.usefulunpacker.archive.etaLabel
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 class ProgressAccessors(
     val getCount: () -> Long,
@@ -190,6 +190,10 @@ object OpOverlay {
         }
         LayoutInflater.from(activity).inflate(R.layout.dialog_progress_dual, inner, true)
         val msg = inner.findViewById<TextView>(R.id.progress_msg)
+        inner.findViewById<TextView>(R.id.progress_chain).apply {
+            text = AppDiagnostics.currentTrace()?.id.orEmpty()
+            visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
+        }
         msg.text = title
         val cancelBtn = inner.findViewById<Button>(R.id.progress_cancel)
         if (cancelLabel != null) {
@@ -223,10 +227,10 @@ object OpOverlay {
      * their cancel affordance can't become unreachable.
      */
     fun onActiveTabChanged(activity: AppCompatActivity, activeTabId: Int, liveTabIds: Set<Int>) {
-        activity.runOnUiThread {
-            val host = activity.findViewById<ViewGroup>(R.id.op_overlay_host) ?: return@runOnUiThread
-            val scrim = host.getChildAt(1) as? FrameLayout ?: return@runOnUiThread
-            val cards = scrim.findViewById<LinearLayout>(R.id.op_overlay_cards) ?: return@runOnUiThread
+        activity.runFeatureOnUiThread { if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread;
+            val host = activity.findViewById<ViewGroup>(R.id.op_overlay_host) ?: return@runFeatureOnUiThread
+            val scrim = host.getChildAt(1) as? FrameLayout ?: return@runFeatureOnUiThread
+            val cards = scrim.findViewById<LinearLayout>(R.id.op_overlay_cards) ?: return@runFeatureOnUiThread
             for (i in 0 until cards.childCount) {
                 val child = cards.getChildAt(i)
                 val owner = child.tag as? Int
@@ -278,9 +282,9 @@ class PollingProgressDialog(
 
     /** Routes a UI update onto the card (no-op when headless/gone). */
     private fun postUi(update: (OpOverlay.Card) -> Unit) {
-        activity.runOnUiThread {
-            if (stopped) return@runOnUiThread
-            val c = card ?: return@runOnUiThread
+        activity.runFeatureOnUiThread { if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread;
+            if (stopped) return@runFeatureOnUiThread
+            val c = card ?: return@runFeatureOnUiThread
             update(c)
         }
     }
@@ -361,7 +365,7 @@ class PollingProgressDialog(
         val wasRunning = q.isRunning
         q.requestCancel() // no-op once running; dequeues while queued
         // Promotion may land between the read and the dequeue attempt.
-        if (wasRunning || q.isRunning) onCancel()
+        if (wasRunning || q.isRunning) { q.markCancelRequested(); onCancel() }
     }
 
     /** "⏳ 排队中 第N位" (+ ETA when duration history exists for this format). */

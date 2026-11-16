@@ -825,4 +825,23 @@
     <string name="disk_denied">%1$d 个目录无法读取，未计入（如 Android/data）</string>
     <string name="home_disk">磁盘占用</string>
     <string name="home_disk_sub">已用 %1$s，共 %2$s</string>
+
+    <!-- Shared controls and persistent diagnostics -->
+    <string name="diagnostics_title">日志与诊断</string>
+    <string name="diagnostics_empty">暂无诊断记录</string>
+    <string name="diagnostics_failure">操作遇到问题，请查看诊断详情。</string>
+    <string name="diagnostics_view">查看日志</string>
+    <string name="diagnostics_share">分享日志</string>
+    <string name="diagnostics_storage_failed">日志保存失败，当前显示内存记录。</string>
+    <string name="components_title">通用组件</string>
+    <string name="components_primary">主要操作</string>
+    <string name="components_secondary">次要操作</string>
+    <string name="components_danger">危险操作</string>
+    <string name="components_disabled">不可用操作</string>
+    <string name="components_input">输入</string>
+    <string name="components_switch">开关</string>
+    <string name="components_navigation">导航条目</string>
+    <string name="components_action">动作条目</string>
+    <string name="diagnostics_cleanup_failed">清理失败，可能有文件残留。</string>
+    <string name="diagnostics_multiple_failures">%1$d 条任务链遇到问题，请查看诊断详情。</string>
 </resources>

@@ -1,6 +1,5 @@
 package com.usefulunpacker.archive
 
-import android.os.SystemClock
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -10,6 +9,8 @@ import java.util.concurrent.atomic.AtomicLong
  * for archive extract/compress/convert/merge/zip-edit/search flows):
  *
  *  - Up to [MAX_SLOTS] operations run truly in parallel (Semaphore semantics).
+ *  - Operations reserve all their native-library resource keys atomically.
+ *    Composite operations consume one slot and cannot overlap either library.
  *  - Operations with the SAME format key serialize: the Rust side keeps one
  *    global progress/CANCEL slot per format library (crates/common progress_store!)
  *    so two concurrent same-format runs would trample each other's progress and
@@ -37,10 +38,14 @@ object OpScheduler {
 
     private val ewmaDurationMs = ConcurrentHashMap<String, Double>()
 
-    class OpHandle internal constructor(val fmt: String, internal val id: Long) {
+    class OpHandle internal constructor(val fmt: String, internal val id: Long, val resources: Set<String>) {
         internal enum class S { QUEUED, RUNNING, DONE, CANCELLED }
         @Volatile internal var state = S.QUEUED
         @Volatile internal var interruptAbort = false
+        @Volatile var cancelRequested = false
+            private set
+        private val chainTrace = com.usefulunpacker.AppDiagnostics.currentTrace()
+        fun markCancelRequested() { cancelRequested = true; chainTrace?.cancelled() }
         internal var runStartedAt = 0L
         internal val gate = Object()
         @Volatile internal var lastPosition = 0   // cached for UI polls
@@ -66,13 +71,13 @@ object OpScheduler {
                     // 唤醒时可能已被提升为 RUNNING（promotion 在 wait 返回前完成）。
                     // 此时照常开跑：返回 false 会让 worker 静默放弃，而槽位 +
                     // 格式锁只有 release() 能释放——永久泄漏。
-                    if (state == S.RUNNING) return true
+                    if (state == S.RUNNING) return@synchronized true
                     interruptAbort = true
                     return false
                 }
             }
             state == S.RUNNING
-        }
+        }.also { started -> if (started) com.usefulunpacker.AppDiagnostics.bindCancellation { cancelRequested } }
 
         /** Queue-only cancel. No-op once RUNNING (use the progress accessors'
          *  cancel() for that, as before). Safe from any thread. */
@@ -80,6 +85,7 @@ object OpScheduler {
             synchronized(schedLock) {
                 if (state != S.QUEUED) return
                 queue.remove(this)
+                markCancelRequested()
                 state = S.CANCELLED
                 recomputePositionsLocked()
             }
@@ -89,13 +95,14 @@ object OpScheduler {
         /** Token release — pairs with a successful [await]. Idempotent-ish:
          *  releasing a non-RUNNING handle is a no-op (defensive). */
         fun release() {
+            com.usefulunpacker.AppDiagnostics.bindCancellation(null)
             var promotedAny = false
             synchronized(schedLock) {
                 if (state != S.RUNNING) return
                 runningSlots--
-                lockedFmts.remove(fmt)
+                lockedFmts.removeAll(resources)
                 state = S.DONE
-                val durMs = SystemClock.elapsedRealtime() - runStartedAt
+                val durMs = (System.nanoTime() / 1_000_000) - runStartedAt
                 if (durMs > 500) {
                     ewmaDurationMs.merge(fmt, durMs.toDouble()) { old, v -> old * 0.7 + v * 0.3 }
                 }
@@ -119,8 +126,9 @@ object OpScheduler {
 
     /** Fast path + slow path in one: returns a RUNNING handle immediately when
      *  resources allow, otherwise registers a QUEUED handle (never refuses). */
-    fun obtain(fmt: String): OpHandle {
-        val h = OpHandle(fmt, idGen.incrementAndGet())
+    fun obtain(fmt: String, resources: Set<String> = setOf(fmt)): OpHandle {
+        require(resources.isNotEmpty())
+        val h = OpHandle(fmt, idGen.incrementAndGet(), resources.toSet())
         synchronized(schedLock) {
             if (!tryStartLocked(h)) {
                 queue.addLast(h)
@@ -134,10 +142,11 @@ object OpScheduler {
 
     private fun tryStartLocked(h: OpHandle): Boolean {
         if (runningSlots >= MAX_SLOTS) return false
-        if (!lockedFmts.add(h.fmt)) return false
+        if (h.resources.any { it in lockedFmts }) return false
+        lockedFmts.addAll(h.resources)
         runningSlots++
         h.state = OpHandle.S.RUNNING
-        h.runStartedAt = SystemClock.elapsedRealtime()
+        h.runStartedAt = (System.nanoTime() / 1_000_000)
         return true
     }
 
@@ -145,10 +154,10 @@ object OpScheduler {
      *  blocking is skipped so other formats can proceed; entries aborted by a
      *  worker interrupt are dropped instead of started. */
     private fun promoteLocked(): Boolean {
-        queue.removeAll { it.interruptAbort }
+        queue.removeAll { if (it.interruptAbort) { it.state = OpHandle.S.CANCELLED; true } else false }
         var moved = false
         while (runningSlots < MAX_SLOTS) {
-            val next = queue.firstOrNull { !lockedFmts.contains(it.fmt) } ?: break
+            val next = queue.firstOrNull { it.resources.none { key -> key in lockedFmts } } ?: break
             queue.remove(next)
             if (!tryStartLocked(next)) { queue.addFirst(next); break }
             moved = true
@@ -191,7 +200,7 @@ object OpScheduler {
                         ewmaDurationMs[h.fmt]?.let { ms += it }
                     }
                 }
-                h.lastEtaSec = if (aheadSameFmt == 0 && seen == 0) 0
+                h.lastEtaSec = if (aheadSameFmt == 0 && seen == 0) -1
                                else if (ms > 0) (ms / 1000.0).toInt().coerceAtLeast(1)
                                else -1
             }

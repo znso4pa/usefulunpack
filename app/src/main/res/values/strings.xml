@@ -828,4 +828,23 @@
     <string name="disk_denied">%1$d folders could not be read and are excluded (e.g. Android/data)</string>
     <string name="home_disk">Disk usage</string>
     <string name="home_disk_sub">%1$s of %2$s used</string>
+
+    <!-- Shared controls and persistent diagnostics -->
+    <string name="diagnostics_title">Logs and diagnostics</string>
+    <string name="diagnostics_empty">No diagnostic records yet</string>
+    <string name="diagnostics_failure">An operation encountered a problem. Open diagnostics for details.</string>
+    <string name="diagnostics_view">View log</string>
+    <string name="diagnostics_share">Share log</string>
+    <string name="diagnostics_storage_failed">The log could not be saved. Showing the memory copy.</string>
+    <string name="components_title">UI components</string>
+    <string name="components_primary">Primary action</string>
+    <string name="components_secondary">Secondary action</string>
+    <string name="components_danger">Dangerous action</string>
+    <string name="components_disabled">Disabled action</string>
+    <string name="components_input">Input</string>
+    <string name="components_switch">Switch</string>
+    <string name="components_navigation">Navigation item</string>
+    <string name="components_action">Action item</string>
+    <string name="diagnostics_cleanup_failed">Cleanup failed; some output may remain.</string>
+    <string name="diagnostics_multiple_failures">%1$d tasks encountered problems. Open diagnostics for details.</string>
 </resources>

@@ -5,7 +5,7 @@ import android.content.SharedPreferences
 import android.widget.EditText
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 import java.io.File
 import com.usefulunpacker.archive.OpScheduler
 
@@ -63,6 +63,10 @@ fun schedulerKeyOf(fmtKey: String): String = when (fmtKey) {
  *  the legacy OperationLock (see OpScheduler docs). */
 fun tryStartOperation(activity: AppCompatActivity, fmtKey: String): OpScheduler.OpHandle =
     OpScheduler.obtain(schedulerKeyOf(fmtKey))
+
+/** Atomically reserves every native library used by a composite flow, using one global slot. */
+fun tryStartCompositeOperation(vararg formats: String): OpScheduler.OpHandle =
+    OpScheduler.obtain("merge", formats.map(::schedulerKeyOf).toSet() + "merge")
 
 /** Maps the raw JNI error message to a user-facing string. */
 fun friendlyExtractError(activity: AppCompatActivity, error: String?): String {
@@ -200,7 +204,7 @@ private fun xp3ExtractDispatch(src: String, out: String, selected: String): Stri
         val json = try {
             if (selected.isEmpty()) Xp3Core.xp3CxdecExtract("", gameDir, src, out)
             else Xp3Core.xp3CxdecExtractSelected("", gameDir, src, out, selected)
-        } catch (e: Exception) {
+        } catch (e: Exception) { AppDiagnostics.failure("ArchiveExtractor", e);
             null // probe failed / not actually cxdec — fall through to plain
         }
         if (json != null) return json
@@ -219,7 +223,7 @@ private fun xp3ExtractDispatch(src: String, out: String, selected: String): Stri
         val json = try {
             if (selected.isEmpty()) Xp3Core.xp3CryptExtract("", src, out, scheme)
             else Xp3Core.xp3CryptExtractSelected("", src, out, scheme, selected)
-        } catch (e: Exception) {
+        } catch (e: Exception) { AppDiagnostics.failure("ArchiveExtractor", e);
             null
         }
         if (json != null) return json
@@ -251,7 +255,7 @@ fun xp3SchemeToken(fmt: String, src: File): String {
     if (fmt != "xp3") return ""
     return try {
         Xp3Core.xp3ProbeScheme(src.absolutePath) ?: ""
-    } catch (_: Exception) {
+    } catch (caughtFailure: Exception) { AppDiagnostics.failure("ArchiveExtractor", caughtFailure);
         ""
     }
 }
@@ -309,7 +313,9 @@ fun extractByFormat(
     format: String, src: String, out: String, selected: String,
     prefs: SharedPreferences, password: String = ""
 ): ExtractOutcome {
-    return try {
+    val trace = AppDiagnostics.begin("extract:$format", listOf(password))
+    trace.note("input=$src output=$out")
+    return AppDiagnostics.withTrace(trace) { try {
         val json = when (format) {
             "xp3" -> xp3ExtractDispatch(src, out, selected)
             "pfs" -> if (selected.isEmpty()) PfsCore.pfsExtract("", src, out)
@@ -349,9 +355,17 @@ fun extractByFormat(
                      else TarCore.tarExtractSelected("", src, out, selected)
             else -> null
         }
-        ExtractOutcome(ExtractCounts.fromJson(json), null)
+        val counts = ExtractCounts.fromJson(json)
+        trace.note("total=${counts.total} success=${counts.success} errors=${counts.error}")
+        val failure = if (counts.ok) { trace.success(); null }
+            else trace.fail(if (counts.success > 0) FailureCode.PARTIAL_FAILURE else FailureCode.INVALID_RESULT, "Extraction returned unsuccessful counts")
+        ExtractOutcome(counts, failure?.detail, failure)
+    } catch (e: java.util.concurrent.CancellationException) {
+        trace.cancelled(); throw e
     } catch (e: Exception) {
-        ExtractOutcome(ExtractCounts(0, 0, 0), e.message)
+        val failure = trace.fail(FailureCode.IO, e.message ?: e.javaClass.simpleName, e)
+        ExtractOutcome(ExtractCounts(0, 0, 1), failure.detail, failure)
+    }
     }
 }
 
@@ -364,26 +378,26 @@ fun extractByFormat(
 fun promptPasswordSync(activity: AppCompatActivity, message: String = ""): String? {
     val latch = java.util.concurrent.CountDownLatch(1)
     val holder = arrayOf<String?>(null)
-    activity.runOnUiThread {
+    activity.runFeatureOnUiThread {
         // The activity may be finishing (e.g. rotation/back): showing a
         // dialog on a dead window throws BadTokenException and would leave
         // the caller blocked forever — count down and bail out instead.
         if (activity.isFinishing || activity.isDestroyed) {
             latch.countDown()
-            return@runOnUiThread
+            return@runFeatureOnUiThread
         }
         try {
-            val inp = EditText(activity).apply {
+            val inp = com.usefulunpacker.UuTextField(activity).apply {
                 hint = activity.getString(R.string.prompt_password)
                 setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
                 setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
                 inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
             }
-            val dlg = AlertDialog.Builder(activity)
+            val dlg = com.usefulunpacker.UuDialogBuilder(activity)
                 .setTitle(activity.getString(R.string.title_password))
                 .setView(inp)
                 .setPositiveButton(activity.getString(R.string.action_confirm)) { _, _ -> holder[0] = inp.text.toString(); latch.countDown() }
-                .setNegativeButton(activity.getString(R.string.action_cancel)) { _, _ -> latch.countDown() }
+                .setNegativeButton(R.string.action_cancel) { _, _ -> latch.countDown() }
                 .create()
             if (message.isNotEmpty()) dlg.setMessage(message)
             dlg.show()
@@ -421,13 +435,13 @@ fun showPasswordDialog(
     onResult: (ExtractOutcome) -> Unit,
     ownerTab: TabState? = null
 ) {
-    val inp = EditText(activity).apply {
+    val inp = com.usefulunpacker.UuTextField(activity).apply {
         hint = activity.getString(R.string.prompt_password)
         setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
         setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
         inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
     }
-    AlertDialog.Builder(activity)
+    com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(activity.getString(R.string.title_password))
         .setView(inp)
         .setPositiveButton(activity.getString(R.string.retry)) { _, _ ->
@@ -453,18 +467,10 @@ fun showPasswordDialog(
                 // while queued aborts silently (nothing was started).
                 if (!opH.await()) return@thread
                 try {
-                    var err: String? = null
-                    val json = runCatching {
-                        when (fmt) {
-                            "zip" -> zipExtractDispatch(src, out, sel, pwd)
-                            "7z" -> szExtractDispatch(src, out, sel, pwd)
-                            "rar" -> rarExtractDispatch(src, out, sel, pwd)
-                            else -> null
-                        }
-                    }.onFailure { err = it.message }.getOrNull()
-                    val outcome = ExtractOutcome(ExtractCounts.fromJson(json), err)
-                    activity.runOnUiThread {
-                        if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                    val outcome = extractByFormat(fmt, src, out, sel,
+                        activity.getSharedPreferences("bm", android.content.Context.MODE_PRIVATE), pwd)
+                    activity.runFeatureOnUiThread {
+                        if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
                         prog?.dismiss()
                         if (cancelled) onCancel()
                         else onResult(outcome)
@@ -474,7 +480,7 @@ fun showPasswordDialog(
                 }
             }
         }
-        .setNegativeButton(activity.getString(R.string.action_cancel), null)
+        .setNegativeButton(R.string.action_cancel, null)
         .show().also { it.keepTabsTappable() }
 }
 
@@ -505,21 +511,7 @@ fun tryExtractWithPassword(
     ) else null
     prog?.start()
 
-    fun doExtract(pwd: String = ""): ExtractOutcome {
-        return runCatching {
-            when (fmt) {
-                "zip" -> ExtractOutcome(ExtractCounts.fromJson(zipExtractDispatch(src, out, sel, pwd)), null)
-                // `sel` must be forwarded here too, exactly as in the
-                // password-retry branch below. Dropping it (as this once did)
-                // silently turns a selective extract of an unencrypted 7z/rar
-                // into a FULL extract — the user's selection would be ignored
-                // with no error at all.
-                "7z" -> ExtractOutcome(ExtractCounts.fromJson(szExtractDispatch(src, out, sel, pwd)), null)
-                "rar" -> ExtractOutcome(ExtractCounts.fromJson(rarExtractDispatch(src, out, sel, pwd)), null)
-                else -> extractByFormat(fmt, src, out, sel, prefs)
-            }
-        }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
-    }
+    fun doExtract(pwd: String = ""): ExtractOutcome = extractByFormat(fmt, src, out, sel, prefs, pwd)
     thread {
         // The handle is released on EVERY exit below — including the password
         // retry dialog, which is shown AFTER release so the retry can enqueue
@@ -528,39 +520,30 @@ fun tryExtractWithPassword(
         if (!opH.await()) return@thread
         var result: ExtractOutcome? = null
         try {
-            result = if (fmt in setOf("zip", "7z", "rar") && sel.isNotEmpty()) {
-                runCatching {
-                    when (fmt) {
-                        "zip" -> ExtractOutcome(ExtractCounts.fromJson(zipExtractDispatch(src, out, sel, initialPassword)), null)
-                        "7z" -> ExtractOutcome(ExtractCounts.fromJson(szExtractDispatch(src, out, sel, initialPassword)), null)
-                        "rar" -> ExtractOutcome(ExtractCounts.fromJson(rarExtractDispatch(src, out, sel, initialPassword)), null)
-                        else -> ExtractOutcome(ExtractCounts(0, 0, 0), null)
-                    }
-                }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
-            } else doExtract(initialPassword)
+            result = doExtract(initialPassword)
         } finally {
             opH.release()
         }
         val finalResult = result
-        activity.runOnUiThread {
+        activity.runFeatureOnUiThread {
             // Activity died while the extraction ran (rotate/back) — showing
             // dialogs on a dead window token would crash (BadTokenException).
             // Guard FIRST, dismiss after (project invariant).
-            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
             prog?.dismiss()
-            if (cancelled) { onCancel(); return@runOnUiThread }
+            if (cancelled) { onCancel(); return@runFeatureOnUiThread }
             val ok = finalResult?.counts?.ok ?: false
             if (ok) { onResult(finalResult!!) }
             else if (fmt in setOf("zip", "7z", "rar")) {
                 // The lock is free now — the retry acquires it like any fresh
                 // operation, so it can never report "operation in progress".
-                val inp = EditText(activity).apply {
+                val inp = com.usefulunpacker.UuTextField(activity).apply {
                     hint = activity.getString(R.string.prompt_password)
                     setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
                     setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
                     inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
                 }
-                AlertDialog.Builder(activity)
+                com.usefulunpacker.UuDialogBuilder(activity)
                     .setTitle(activity.getString(R.string.title_password))
                     .setView(inp)
                     .setPositiveButton(activity.getString(R.string.retry)) { _, _ ->
@@ -582,16 +565,9 @@ fun tryExtractWithPassword(
                         thread {
                             if (!opH2.await()) return@thread
                             try {
-                                val outcome2 = runCatching {
-                                    when (fmt) {
-                                        "zip" -> ExtractOutcome(ExtractCounts.fromJson(zipExtractDispatch(src, out, sel, pwd)), null)
-                                        "7z" -> ExtractOutcome(ExtractCounts.fromJson(szExtractDispatch(src, out, sel, pwd)), null)
-                                        "rar" -> ExtractOutcome(ExtractCounts.fromJson(rarExtractDispatch(src, out, sel, pwd)), null)
-                                        else -> ExtractOutcome(ExtractCounts(0, 0, 0), null)
-                                    }
-                                }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
-                                activity.runOnUiThread {
-                                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                                val outcome2 = doExtract(pwd)
+                                activity.runFeatureOnUiThread {
+                                    if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
                                     prog2?.dismiss()
                                     if (cancelled2) onCancel()
                                     else onResult(outcome2)
@@ -601,7 +577,7 @@ fun tryExtractWithPassword(
                             }
                         }
                     }
-                    .setNegativeButton(activity.getString(R.string.action_cancel), null)
+                    .setNegativeButton(R.string.action_cancel, null)
                     .show().also { it.keepTabsTappable() }
             } else { onResult(finalResult!!) }
         }

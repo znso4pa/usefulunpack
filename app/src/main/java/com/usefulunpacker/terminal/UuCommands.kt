@@ -4,7 +4,7 @@ import android.content.SharedPreferences
 import com.usefulunpacker.fileops.RecycleBin
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /**
  * uu 命令集。
@@ -64,6 +64,7 @@ internal object UuCommands {
          * 命令层自己不弹窗：它可能在没有 Activity 的环境里跑（单测）。
          */
         val picker: Picker? = null,
+        val failure: AppFailure? = null,
     )
 
     /** 要用户补一个路径。[FILE] 允许选文件，[FOLDER] 只收目录，
@@ -147,6 +148,26 @@ internal object UuCommands {
 
     /** @param argv 已切分的参数（含命令名本身）。 */
     fun dispatch(argv: List<String>, ctx: Ctx): Result {
+        val secrets = listOfNotNull(ctx.password) + argv.windowed(2).filter { it[0] in setOf("-p", "--password", "-k", "--key") }.map { it[1] }
+        val name = argv.firstOrNull()?.takeIf { token -> table.any { it.name == token } } ?: "unknown"
+        val _intentScope = AppDiagnostics.enterIntent("uu_$name", secrets)
+        try {
+        val trace = AppDiagnostics.begin("command", secrets)
+        val result = AppDiagnostics.withTrace(trace) { dispatchCommand(argv, ctx) }
+        // A missing interactive argument requests a picker; comparisons/no matches use exit 1 normally.
+        val failure = if (result.exitCode != 0 && result.picker == null && !(result.exitCode == 1 && name in setOf("cmp", "diff", "grep")))
+            trace.fail(FailureCode.COMMAND, "Command exit=${result.exitCode}") else null
+        trace.note("exit=${result.exitCode}")
+        return Result(result.text, result.exitCode, result.picker, failure)
+        } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { AppDiagnostics.leaveIntent(_intentScope) }
+    }
+
+    private fun dispatchCommand(argv: List<String>, ctx: Ctx): Result {
         val name = argv.firstOrNull() ?: return Result("", 0)
         val cmd = table.firstOrNull { it.name == name }
             ?: return Result(UuText.unknownCommand(ctx.str, name), 1)
@@ -193,8 +214,13 @@ internal object UuCommands {
                 Kind.FD -> fd(args, ctx)
                 Kind.B64 -> b64(args, ctx)
             }
+        } catch (e: java.util.concurrent.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            // 命令层不各自 catch：统一转成一行错误，避免把堆栈写进终端输出区
+            // UI retains the actionable message; diagnostics avoid echoed argv/payloads.
+            val fault = AppDiagnostics.begin("command_exception")
+            fault.note(e.stackTrace.joinToString("\n"))
+            fault.fail(FailureCode.UNEXPECTED, e.javaClass.simpleName)
             Result(UuText.failed(ctx.str, e.message ?: e.javaClass.simpleName), 1)
         }
     }
@@ -872,7 +898,7 @@ internal object UuCommands {
                 ctx.registerCancel?.invoke {
                     val running = opH?.isRunning == true
                     opH?.requestCancel()
-                    if (running) { cancelled.set(true); accessors.cancel() }
+                    if (running) { opH?.markCancelRequested(); cancelled.set(true); accessors.cancel() }
                 }
                 val done = AtomicBoolean(false)
                 val poller = if (ctx.progress != null) thread {
@@ -904,7 +930,7 @@ internal object UuCommands {
                 // CalledFromWrongThreadException（"Main thread (tid 2), calling
                 // thread (tid 29)"——之前被 dispatch 的 catch 包成失败文本，
                 // 看起来像解压失败，其实产物是好的）。
-                act?.runOnUiThread {
+                act?.runFeatureOnUiThread {
                     if (!act.isFinishing && !act.isDestroyed) act.refreshTab(act.activeTab)
                 }
                 val missNote = if (selMisses.isEmpty()) "" else
@@ -1031,7 +1057,7 @@ internal object UuCommands {
                 ctx.registerCancel?.invoke {
                     val running = opH?.isRunning == true
                     opH?.requestCancel()
-                    if (running) { cancelled.set(true); accessors.cancel() }
+                    if (running) { opH?.markCancelRequested(); cancelled.set(true); accessors.cancel() }
                 }
                 val done = AtomicBoolean(false)
                 val poller = if (ctx.progress != null) thread {
@@ -1174,7 +1200,7 @@ internal object UuCommands {
             ctx.registerCancel?.invoke {
                 val running = opH?.isRunning == true
                 opH?.requestCancel()
-                if (running) { cancelled.set(true); accessors.cancel() }
+                if (running) { opH?.markCancelRequested(); cancelled.set(true); accessors.cancel() }
             }
             val done = AtomicBoolean(false)
             val poller = if (ctx.progress != null) thread {
@@ -1208,7 +1234,7 @@ internal object UuCommands {
             }
 
             if (cancelled.get()) {
-                outFile.delete()
+                com.usefulunpacker.deleteOutputChecked(outFile)
                 return Result(UuText.extractCancelled(ctx.str), 1)
             }
             if (!ok) {
@@ -1255,7 +1281,7 @@ internal object UuCommands {
      */
     private fun preTransform(host: File, pipeline: TrPipeline, ctx: Ctx): PreResult {
         val cache = ctx.cacheDir ?: return PreResult.Err(Result(UuText.needsActivity(ctx.str), 2))
-        val avail = runCatching { host.length() }.getOrDefault(0L)
+        val avail = com.usefulunpacker.observedAttempt("UuCommands") { host.length() }.getOrDefault(0L)
         val outLen = avail - pipeline.skip
         if (outLen <= 0) {
             return PreResult.Err(Result(ctx.text(R.string.cli_pre_empty, pipeline.text()), 1))
@@ -1633,9 +1659,9 @@ internal object UuCommands {
                 // 用户显式点名的文件不设白名单（shell 的 `grep pat file` 语义）
                 if (!explicitFile && tempDir == null && f.extension.lowercase() !in TEXT_SEARCH_EXTS) return@forEach
                 if (f.length() > GREP_MAX_FILE_BYTES) return@forEach
-                val bytes = runCatching { readPrefix(f, GREP_MAX_FILE_BYTES) }.getOrNull() ?: return@forEach
+                val bytes = com.usefulunpacker.observedAttempt("UuCommands") { readPrefix(f, GREP_MAX_FILE_BYTES) }.getOrNull() ?: return@forEach
                 val enc = textEncodingOf(bytes) ?: return@forEach
-                val text = runCatching { decodeTextStrict(bytes, enc) }.getOrNull() ?: return@forEach
+                val text = com.usefulunpacker.observedAttempt("UuCommands") { decodeTextStrict(bytes, enc) }.getOrNull() ?: return@forEach
                 var hit = false
                 var lineNo = 0
                 for (line in text.lineSequence()) {
@@ -1675,8 +1701,8 @@ internal object UuCommands {
         for (p in pos) {
             val f = UuText.resolve(ctx.cwd, p)
             if (!f.exists()) { fail++; continue }
-            val done = if (hard) runCatching { f.deleteRecursively() }.getOrDefault(false)
-                       else runCatching { RecycleBin.moveToRecycleBin(act!!, f) }.getOrDefault(false)
+            val done = if (hard) com.usefulunpacker.observedAttempt("UuCommands") { f.deleteRecursively() }.getOrDefault(false)
+                       else com.usefulunpacker.observedAttempt("UuCommands") { RecycleBin.moveToRecycleBin(act!!, f) }.getOrDefault(false)
             if (done) ok++ else fail++
         }
         val msg = ctx.text(if (hard) R.string.cli_rm_deleted else R.string.cli_rm_recycled, ok.toString())
@@ -1812,7 +1838,7 @@ internal object UuCommands {
                     // 只登记到深度上限；更深的目录仍要遍历（总量与 -n 都要它）。
                     if (lvl + 1 <= depth) dirBytes[f] = sub
                 } else {
-                    val sz = runCatching { f.length() }.getOrDefault(0L)
+                    val sz = com.usefulunpacker.observedAttempt("UuCommands") { f.length() }.getOrDefault(0L)
                     sum += sz
                     bytes += sz
                     files++
@@ -1871,7 +1897,7 @@ internal object UuCommands {
         fun sizeOf(f: File): Pair<Long, Int> {
             if (f.isFile) return f.length() to 1
             var bytes = 0L; var files = 0
-            f.walkTopDown().forEach { if (it.isFile) { bytes += runCatching { it.length() }.getOrDefault(0L); files++ } }
+            f.walkTopDown().forEach { if (it.isFile) { bytes += com.usefulunpacker.observedAttempt("UuCommands") { it.length() }.getOrDefault(0L); files++ } }
             return bytes to files
         }
         val multi = args.size > 1
@@ -2317,7 +2343,7 @@ internal object UuCommands {
         if (f.length() > ENC_MAX_BYTES) {
             return Result(ctx.text(R.string.cli_enc_too_big, fmt(f.length())), 1)
         }
-        val bytes = runCatching { f.readBytes() }.getOrNull()
+        val bytes = com.usefulunpacker.observedAttempt("UuCommands") { f.readBytes() }.getOrNull()
             ?: return Result(UuText.failed(ctx.str, f.name), 1)
         // Deliberately NOT `textEncodingOf`: `uu enc` is an explicit conversion
         // request, so a file that merely "looks binary" still gets converted
@@ -2346,7 +2372,7 @@ internal object UuCommands {
         for (p in pa.pos) {
             val f = UuText.resolve(ctx.cwd, p)
             if (!f.isFile) { fail++; continue }
-            val o = runCatching {
+            val o = com.usefulunpacker.observedAttempt("UuCommands") {
                 extractByFormat("rpgmv", f.path, outDir.path, "", ctx.prefs
                     ?: throw IllegalStateException("prefs required"), "")
             }.getOrNull()
@@ -2374,7 +2400,7 @@ internal object UuCommands {
             if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
             val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
             val tmp = File(parent, "${archive.nameWithoutExtension}.edit.zip")
-            val ok = runCatching { ZipCore.zipModify("", archive.path, tmp.path, ops, pw) }
+            val ok = com.usefulunpacker.observedAttempt("UuCommands") { ZipCore.zipModify("", archive.path, tmp.path, ops, pw) }
                 .getOrDefault(false)
             if (!ok) {
                 tmp.delete()
@@ -2567,7 +2593,7 @@ internal object UuCommands {
             if (src.length() > B64_MAX_BYTES) {
                 return Result(ctx.text(R.string.cli_b64_too_big, fmt(src.length()), fmt(B64_MAX_BYTES)), 1)
             }
-            val bytes = runCatching { src.readBytes() }.getOrNull()
+            val bytes = com.usefulunpacker.observedAttempt("UuCommands") { src.readBytes() }.getOrNull()
                 ?: return Result(UuText.failed(ctx.str, src.name), 1)
             if (!decode) {
                 val text = java.util.Base64.getEncoder().encodeToString(bytes)
@@ -2575,7 +2601,7 @@ internal object UuCommands {
                 if (dest != null) {
                     if (dest.exists()) return Result(ctx.text(R.string.cli_exists, dest.path), 1)
                     dest.parentFile?.mkdirs()
-                    val ok = runCatching { dest.writeText(text + "\n"); true }.getOrDefault(false)
+                    val ok = com.usefulunpacker.observedAttempt("UuCommands") { dest.writeText(text + "\n"); true }.getOrDefault(false)
                     return if (ok) Result(ctx.text(R.string.cli_b64_saved, dest.absolutePath))
                            else Result(UuText.failed(ctx.str, dest.name), 1)
                 }
@@ -2584,7 +2610,7 @@ internal object UuCommands {
             }
             // 解码：**字节不进 String**（默认字符集转换会把 >=0x80 的字节变成 U+FFFD，
             // 实测 round-trip 出来"bytes differ"）。Base64 解码本身允许换行（MIME 解码器）。
-            val raw = runCatching {
+            val raw = com.usefulunpacker.observedAttempt("UuCommands") {
                 java.util.Base64.getMimeDecoder().decode(bytes.toString(Charsets.ISO_8859_1))
             }.getOrElse { return Result(ctx.text(R.string.cli_b64_bad, spec), 1) }
             val defaultName = src.name.removeSuffix(".b64").removeSuffix(".txt")
@@ -2593,7 +2619,7 @@ internal object UuCommands {
                 ?: uniqueFile(ctx.cwd, defaultName)
             if (dest.exists()) return Result(ctx.text(R.string.cli_exists, dest.path), 1)
             dest.parentFile?.mkdirs()
-            val ok = runCatching { dest.writeBytes(raw); true }.getOrDefault(false)
+            val ok = com.usefulunpacker.observedAttempt("UuCommands") { dest.writeBytes(raw); true }.getOrDefault(false)
             return if (ok) Result(ctx.text(R.string.cli_b64_saved, dest.absolutePath))
                    else Result(UuText.failed(ctx.str, dest.name), 1)
         } finally {
@@ -2760,7 +2786,7 @@ internal object UuCommands {
                 if (!dst.deleteRecursively()) return Result(UuText.failed(ctx.str, dst.path), 1)
             }
             dst.parentFile?.mkdirs()
-            val ok = runCatching { carveToFile(host, base + skip, n, dst, report); true }
+            val ok = com.usefulunpacker.observedAttempt("UuCommands") { carveToFile(host, base + skip, n, dst, report); true }
                 .getOrDefault(false)
             if (!ok) {
                 dst.delete()   // 半成品不留：失败后留个截断文件比直接报错更坏
@@ -2771,7 +2797,7 @@ internal object UuCommands {
 
         // seek>0：就地改写已有文件的 [seek, seek+n)
         if (!dst.isFile) return Result(ctx.text(R.string.cli_dd_seek_needs_file, dst.path), 1)
-        val ok = runCatching {
+        val ok = com.usefulunpacker.observedAttempt("UuCommands") {
             java.io.RandomAccessFile(dst, "rw").use { raf ->
                 raf.seek(seek)
                 carveTo(host, base + skip, n, report) { b, len -> raf.write(b, 0, len) }
@@ -3064,7 +3090,7 @@ internal object UuCommands {
                     out.append(ctx.text(R.string.cli_sed_too_big, src.name, fmt(SED_MAX_BYTES))).append('\n')
                     continue
                 }
-                val raw = runCatching { src.readBytes() }.getOrNull()
+                val raw = com.usefulunpacker.observedAttempt("UuCommands") { src.readBytes() }.getOrNull()
                 if (raw == null) {
                     fail++; out.append(UuText.failed(ctx.str, src.name)).append('\n'); continue
                 }
@@ -3141,7 +3167,7 @@ internal object UuCommands {
             )
             true
         } catch (_: Exception) {
-            runCatching { tmp.delete() }   // 失败/中断不留临时文件
+            com.usefulunpacker.observedAttempt("UuCommands") { tmp.delete() }   // 失败/中断不留临时文件
             false
         }
     }
@@ -3260,7 +3286,7 @@ internal object UuCommands {
 
         // 变换完必报「变成了什么」；识别不出也要说，并给前几字节便于排查
         val head = ByteArray(MAGIC_PROBE)
-        val hn = runCatching { java.io.FileInputStream(dst).use { readFully(it, head) } }.getOrDefault(0)
+        val hn = com.usefulunpacker.observedAttempt("UuCommands") { java.io.FileInputStream(dst).use { readFully(it, head) } }.getOrDefault(0)
         val sig = head.copyOf(hn)
         val what = detectFormatByMagic(sig)
         val line = if (what != null) ctx.text(R.string.cli_tr_recognised, what)
@@ -3306,7 +3332,7 @@ internal object UuCommands {
         val want = minOf(avail, TrGuesser.HEAD_PROBE.toLong()).toInt()
         if (want <= 0) return Result(ctx.text(R.string.cli_guess_none, spec))
         val head = ByteArray(want)
-        val n = runCatching {
+        val n = com.usefulunpacker.observedAttempt("UuCommands") {
             java.io.RandomAccessFile(host, "r").use { raf ->
                 raf.seek(base)
                 var off = 0

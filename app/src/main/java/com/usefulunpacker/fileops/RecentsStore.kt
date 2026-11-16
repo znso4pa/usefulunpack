@@ -48,7 +48,7 @@ object RecentsStore {
                 val p = o.optString("p")
                 if (p.isEmpty()) null else Entry(p, o.optLong("t"))
             }
-        } catch (_: Exception) {
+        } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("RecentsStore", failureCause);
             emptyList()
         }
     }

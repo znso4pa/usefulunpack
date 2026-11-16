@@ -1,7 +1,7 @@
 package com.usefulunpacker
 
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /**
  * 把一个视频源转成 [target]：`mp4`（H.264 + AAC，走 Android 编/封）或
@@ -20,6 +20,8 @@ internal fun MainActivity.convertVideo(
     opts: String = "",
     ownerTab: TabState = activeTab,
 ) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("video_convert", newChain = true)
+    try {
     val parent = src.parentFile ?: return
     val outExt = if (target == "wmv") "wmv" else "mp4"
     val outFile = uniqueFile(parent, "${src.nameWithoutExtension}.$outExt")
@@ -47,11 +49,13 @@ internal fun MainActivity.convertVideo(
             val ok = VideoCore.videoConvert("", src.path, outFile.path, target, opts)
             // 必须在工作线程上读：这是 C 侧的全局槽，进 UI 线程之前取好快照。
             val short = if (ok) VideoCore.videoDecodedPercent() else 0
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            if (!ok || opH.cancelRequested) deleteOutputChecked(outFile)
+            if (!ok && !opH.cancelRequested) AppDiagnostics.begin("VideoConvert").fail(FailureCode.INVALID_RESULT, "Conversion returned false: ${src.path}")
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 prog.dismiss()
                 if (cancelled) {
-                    outFile.delete()
+                    com.usefulunpacker.deleteOutputChecked(outFile)
                     toast(getString(R.string.msg_cancelled))
                 } else if (ok) {
                     // 截断的源会「成功但很短」：片留着（能解出来的部分是好的），
@@ -65,25 +69,31 @@ internal fun MainActivity.convertVideo(
                     // 用户切窗后结果要出现在发起它的那个 tab 里。
                     refreshTab(ownerTab)
                 } else {
-                    outFile.delete()
-                    toast(getString(R.string.title_convert_failed))
+                    com.usefulunpacker.deleteOutputChecked(outFile)
+                    failureNotice(getString(R.string.title_convert_failed))
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("VideoConvert", e);
             // 引擎的真原因在异常消息里（C 侧抛的是 `IOException("video: …")`）。
             // 只报一句「转换失败」等于把唯一的诊断信息扔掉。
-            outFile.delete()
+            com.usefulunpacker.deleteOutputChecked(outFile)
             val why = e.message ?: e.javaClass.simpleName
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 prog.dismiss()
                 // 取消也会走到这里（C 侧抛 `video: cancelled`）。取消是用户自己按的，
                 // 再弹一句「转换失败」等于把一次正常操作报成故障。
                 if (cancelled) toast(getString(R.string.msg_cancelled))
-                else toast(getString(R.string.msg_convert_failed_why, why))
+                else failureNotice(getString(R.string.msg_convert_failed_why, why))
             }
         } finally {
             opH.release()
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }

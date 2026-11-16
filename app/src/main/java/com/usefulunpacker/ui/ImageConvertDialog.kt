@@ -5,7 +5,7 @@ import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /** Conversion working-resolution cap (longest side). Balances quality vs OOM. */
 private const val IMG_CONVERT_MAX_PX = 4096
@@ -19,16 +19,24 @@ private const val IMG_CONVERT_MAX_PX = 4096
  * is intentionally out of scope here.
  */
 fun showImageConvert(activity: AppCompatActivity, file: File) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("image_convert", newChain = true)
+    try {
     val labels = arrayOf("JPG", "PNG", "WEBP")
     val fmts = arrayOf("jpg", "png", "webp")
-    AlertDialog.Builder(activity)
+    com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(activity.getString(R.string.img_convert_choose))
         .setItems(labels) { _, w ->
             convertImage(activity, file, fmts[w])
         }
-        .setNegativeButton(activity.getString(R.string.action_cancel), null)
+        .setNegativeButton(R.string.action_cancel, null)
         .show()
         .also { it.keepTabsTappable() }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 /** 支持的转换目标（`uu img` 与对话框共用同一份）。 */
@@ -43,8 +51,8 @@ internal val IMG_TARGET_FORMATS = setOf("jpg", "png", "webp")
  */
 internal fun encodeImageTo(
     src: File, targetFmt: String, out: File, quality: Int = 90, maxPx: Int = IMG_CONVERT_MAX_PX,
-): Boolean = runCatching {
-    var bmp = decodeBitmapCapped(src, maxPx) ?: return@runCatching false
+): Boolean = com.usefulunpacker.observedAttempt("ImageConvertDialog") {
+    var bmp = decodeBitmapCapped(src, maxPx) ?: return@observedAttempt false
     // JPEG has no alpha: composite onto white so transparent PNG/WebP
     // areas don't turn black in the converted copy.
     if (targetFmt == "jpg" && bmp.hasAlpha()) {
@@ -73,34 +81,34 @@ internal fun encodeImageTo(
 }.getOrDefault(false)
 
 private fun convertImage(activity: AppCompatActivity, file: File, targetFmt: String) {
-    val pd = android.app.ProgressDialog(activity)
+    val pd = com.usefulunpacker.UuProgressDialog(activity)
     pd.setMessage(activity.getString(R.string.msg_loading)); pd.setCancelable(false); pd.show()
     pd.keepTabsTappable(blockBehind = false)
     thread {
         // 先在后台把成品压到缓存临时文件：目录选择可能被取消——此前取消时
         // 解码出的位图(≤64MB)会一直滞留等 GC。现在选完目录只是搬移成品。
-        val temp: File? = runCatching {
+        val temp: File? = com.usefulunpacker.observedAttempt("ImageConvertDialog") {
             val tmp = File(activity.cacheDir, "img_convert_${file.nameWithoutExtension}_${System.currentTimeMillis()}.$targetFmt")
             if (encodeImageTo(file, targetFmt, tmp, if (targetFmt == "jpg") 90 else 100)) tmp else null
         }.getOrNull()
-        activity.runOnUiThread {
-            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+        activity.runFeatureOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
             pd.dismiss()
             if (temp == null) {
-                Toast.makeText(activity, activity.getString(R.string.msg_cannot_decode), Toast.LENGTH_SHORT).show()
-                return@runOnUiThread
+                com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.msg_cannot_decode), Toast.LENGTH_SHORT).show()
+                return@runFeatureOnUiThread
             }
             showFolderPicker(activity, file.parentFile ?: activity.cacheDir, false) { dir ->
                 val outF = uniqueFile(dir, "${file.nameWithoutExtension}.$targetFmt")
                 thread {
-                    val ok = runCatching {
+                    val ok = com.usefulunpacker.observedAttempt("ImageConvertDialog") {
                         java.nio.file.Files.move(temp.toPath(), outF.toPath())
                         true
                     }.getOrDefault(false).also { if (!it) temp.delete() }
-                    activity.runOnUiThread {
-                        if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
-                        if (ok) Toast.makeText(activity, activity.getString(R.string.img_edit_saved, outF.name), Toast.LENGTH_LONG).show()
-                        else Toast.makeText(activity, activity.getString(R.string.img_edit_failed), Toast.LENGTH_SHORT).show()
+                    activity.runFeatureOnUiThread {
+                        if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
+                        if (ok) com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.img_edit_saved, outF.name), Toast.LENGTH_LONG).show()
+                        else com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.img_edit_failed), Toast.LENGTH_SHORT).show()
                     }
                 }
             }

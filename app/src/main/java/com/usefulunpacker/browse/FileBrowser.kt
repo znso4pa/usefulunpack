@@ -11,7 +11,7 @@ import androidx.core.content.FileProvider
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import java.io.File
 import java.io.FileInputStream
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /** Shares a file with another app via ACTION_SEND + FileProvider (no network
  *  permission needed — the receiving app handles any transfer). Delivers the
@@ -142,11 +142,11 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
                 }
             }
             val adapter = FileAdapter(this, files, bookmarks, { path -> if (bookmarks.contains(path)) bookmarks.remove(path) else bookmarks.add(0, path); saveBookmarks() }, df)
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 // Stale-navigation guard: if the user navigated this tab to another
                 // dir while the background scan was running, don't overwrite.
-                if (tab.currentDir != dir) return@runOnUiThread
+                if (tab.currentDir != dir) return@runFeatureOnUiThread
                 tab.tvCount.text = getString(R.string.selected_count, files.size)
                 if (files.isEmpty()) {
                     tab.tvEmpty.text = if (raw == null) getString(R.string.no_permission) else getString(R.string.empty_folder)
@@ -186,8 +186,8 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
             if (archives.isNotEmpty()) {
                 val pw = archives.filter { isPasswordProtected(it) }.map { it.absolutePath }.toSet()
                 if (pw.isNotEmpty()) {
-                    runOnUiThread {
-                        if (isFinishing || isDestroyed) return@runOnUiThread
+                    runFeatureOnUiThread {
+                        if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                         if (tab.listFiles.adapter === adapter) {
                             adapter.passwordProtected = pw
                             adapter.notifyDataSetChanged()
@@ -206,7 +206,7 @@ internal fun MainActivity.extract(tab: TabState) {
         // Accept magic-detected archives too — the manual format picker must
         // be reachable for extensionless / mislabeled files.
         if (ext !in ARCHIVE_EXTS && isVolumeFile(src) == null && detectFormatByMagic(src) == null && src.isDirectory.not()) {
-            AlertDialog.Builder(this)
+            com.usefulunpacker.UuDialogBuilder(this)
                 .setTitle(getString(R.string.title_extract_failed))
                                 .setMessage(getString(R.string.err_not_archive))
                 .setPositiveButton(getString(R.string.action_confirm), null)
@@ -299,14 +299,14 @@ internal fun MainActivity.select(tab: TabState, f: File) {
             // and act on the old file — reset the selection state.
             tab.selectedFile = null
             tab.fabExtract.visibility = View.GONE
-            AlertDialog.Builder(this)
+            com.usefulunpacker.UuDialogBuilder(this)
                 .setTitle(f.name)
                 .setItems(arrayOf(getString(R.string.preview), getString(R.string.action_file_info))) { _, w ->
                     when (w) {
                         0 -> previewLocalFile(this, f)
                         1 -> showFileInfoDialog(f)
                     }
-                }.setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+                }.setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
             return
         }
 
@@ -316,7 +316,7 @@ internal fun MainActivity.select(tab: TabState, f: File) {
         if (ext in VIDEO_SOURCE_EXTS && ext !in PREVIEW_EXTS) {
             tab.selectedFile = null
             tab.fabExtract.visibility = View.GONE
-            AlertDialog.Builder(this)
+            com.usefulunpacker.UuDialogBuilder(this)
                 .setTitle(f.name)
                 .setMessage(getString(R.string.media_no_preview_ext, ext.uppercase()))
                 .setPositiveButton(android.R.string.ok, null)
@@ -336,7 +336,7 @@ internal fun MainActivity.showExtractOptions(src: File, format: String) {
 
         val items = mutableListOf(getString(R.string.action_preview), getString(R.string.action_extract))
         if (format == "iso") items.add(getString(R.string.action_convert_cso))
-        AlertDialog.Builder(this)
+        com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.title_preview_archive, src.name, format.uppercase()))
             .setItems(items.toTypedArray()) { _, w ->
                 when (w) {
@@ -344,11 +344,11 @@ internal fun MainActivity.showExtractOptions(src: File, format: String) {
                     1 -> showDirectExtractDialog(src, format, parent, outDir)
                     2 -> convertIso(src, toCso = true)
                 }
-            }.setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+            }.setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
     }
 
 internal fun MainActivity.showDirectExtractDialog(src: File, format: String, parent: File, outDir: File) {
-        AlertDialog.Builder(this)
+        com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.title_extract_to))
             .setItems(arrayOf(getString(R.string.extract_new_folder, getString(R.string.title_new_folder), outDir.name), getString(R.string.action_extract), getString(R.string.action_choose_dir))) { _, w ->
                 when (w) {
@@ -358,7 +358,7 @@ internal fun MainActivity.showDirectExtractDialog(src: File, format: String, par
                         extractAll(picked, src, format)
                     }
                 }
-            }.setNegativeButton(getString(R.string.action_cancel), null)
+            }.setNegativeButton(R.string.action_cancel, null)
             .show().also { it.keepTabsTappable() }
     }
 
@@ -376,13 +376,9 @@ internal fun MainActivity.installApk(f: File) {
     // Options live in a custom view body instead of setItems / positive+neutral
     // buttons: on some EMUI builds those get hidden and only the negative
     // (cancel) button stays visible.
-    fun optionRow(text: String, color: Int, onClick: () -> Unit) = TextView(this).apply {
-        this.text = text
+    fun optionRow(text: String, color: Int, onClick: () -> Unit) = UuActionRow(this).apply {
+        bind(text, onClick = onClick)
         setTextColor(color)
-        textSize = 15f
-        setPadding(24, 16, 24, 16)
-        background = android.graphics.drawable.ColorDrawable(0x00000000)
-        setOnClickListener { onClick() }
     }
     val body = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -400,10 +396,10 @@ internal fun MainActivity.installApk(f: File) {
         })
         addView(optionRow(getString(R.string.install_now), C["primary"]!!) { doInstallApk(f, keepCopy = false) })
     }
-    AlertDialog.Builder(this)
+    com.usefulunpacker.UuDialogBuilder(this)
         .setTitle(f.name)
         .setView(body)
-        .setNegativeButton(getString(R.string.action_cancel), null)
+        .setNegativeButton(R.string.action_cancel, null)
         .show().also { it.keepTabsTappable(rootToTab = false) }
 }
 
@@ -419,7 +415,7 @@ private fun MainActivity.doInstallApk(f: File, keepCopy: Boolean) {
             try {
                 f.copyTo(b, overwrite = false)
                 backup = b
-            } catch (_: Exception) { backup = null }
+            } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileBrowser", failureCause); backup = null }
         }
     }
     toast(getString(R.string.msg_installing))
@@ -433,7 +429,7 @@ private fun MainActivity.doInstallApk(f: File, keepCopy: Boolean) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         })
         true
-    } catch (_: Exception) {
+    } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileBrowser", failureCause);
         false
     }
     if (backup != null) toast(getString(R.string.install_backup_done, backup.path))
@@ -444,7 +440,7 @@ private fun MainActivity.doInstallApk(f: File, keepCopy: Boolean) {
  *  ROM ACTION_VIEW handler needed. The byte copy runs on a worker thread so a
  *  large APK can't ANR the UI thread. */
 private fun MainActivity.installViaPackageInstaller(f: File) {
-    val pd = ProgressDialog(this).apply {
+    val pd = com.usefulunpacker.UuProgressDialog(this).apply {
         setTitle(getString(R.string.msg_installing))
         setProgressStyle(ProgressDialog.STYLE_SPINNER)
         setCancelable(false)
@@ -472,32 +468,32 @@ private fun MainActivity.installViaPackageInstaller(f: File) {
             } finally {
                 session.close()
             }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 pd.dismiss()
             }
         } catch (e: SecurityException) {
             // REQUEST_INSTALL_PACKAGES not granted — guide the user to settings.
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 pd.dismiss()
-                AlertDialog.Builder(this)
+                com.usefulunpacker.UuDialogBuilder(this)
                     .setTitle(getString(R.string.title_install_failed))
                     .setMessage(getString(R.string.msg_install_unknown))
                     .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                         try {
                             startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                                 android.net.Uri.parse("package:$packageName")))
-                        } catch (e: Exception) { android.util.Log.e("FileBrowser", "APK backup failed", e) }
+                        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileBrowser", e); android.util.Log.e("FileBrowser", "APK backup failed", e) }
                     }
-                    .setNegativeButton(getString(R.string.action_cancel), null)
+                    .setNegativeButton(R.string.action_cancel, null)
                     .show().also { it.keepTabsTappable(rootToTab = false) }
             }
-        } catch (e: Exception) {
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileBrowser", e);
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 pd.dismiss()
-                AlertDialog.Builder(this)
+                com.usefulunpacker.UuDialogBuilder(this)
                     .setTitle(getString(R.string.title_install_failed))
                     .setMessage(getString(R.string.err_install_apk, e.message ?: ""))
                     .setPositiveButton(getString(R.string.action_confirm), null)

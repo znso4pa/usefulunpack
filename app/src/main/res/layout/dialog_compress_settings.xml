@@ -28,7 +28,7 @@
                 android:textSize="14sp"
                 android:textColor="@color/text_secondary" />
 
-            <androidx.appcompat.widget.SwitchCompat
+            <com.usefulunpacker.UuSwitch
                 android:id="@+id/switchMode"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content" />
@@ -64,7 +64,7 @@
                 android:textSize="14sp"
                 android:textColor="@color/text_secondary" />
 
-            <androidx.appcompat.widget.SwitchCompat
+            <com.usefulunpacker.UuSwitch
                 android:id="@+id/switchPwd"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content" />
@@ -87,7 +87,7 @@
                 android:orientation="horizontal"
                 android:gravity="center_vertical">
 
-                <EditText
+                <com.usefulunpacker.UuTextField
                     android:id="@+id/etPassword"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
@@ -101,10 +101,10 @@
                     android:textColor="@color/text_primary"
                     android:textColorHint="@color/text_hint" />
 
-                <ImageButton
+                <com.usefulunpacker.UuIconButton
                     android:id="@+id/btnEye"
                     android:layout_width="40dp"
-                    android:layout_height="40dp"
+                    android:layout_height="@dimen/touch_target"
                     android:src="@drawable/ic_eye"
                     app:tint="@color/accent"
                     android:background="?attr/selectableItemBackgroundBorderless"

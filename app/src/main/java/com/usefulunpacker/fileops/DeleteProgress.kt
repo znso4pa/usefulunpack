@@ -7,7 +7,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.usefulunpacker.fileops.RecycleBin
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /**
  * Moves targets to the recycle bin (or deletes them) with a dual-bar style
@@ -27,24 +27,26 @@ fun deleteWithProgress(
     prefs: SharedPreferences,
     onDone: (deleted: Int, failed: Int) -> Unit
 ) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("file_delete", newChain = true)
+    try {
     val recycleEnabled = RecycleBin.isEnabled(prefs)
     val title = activity.getString(if (recycleEnabled) R.string.msg_move_to_recycle else R.string.msg_delete_progress)
     // Card belongs to the window that started the deletion.
     val ownerTabId = (activity as? MainActivity)?.activeTab?.tabId
     val card = OpOverlay.addCard(activity, title, cancelLabel = null, onCancelClick = { }, ownerTabId = ownerTabId)
     fun setMessage(text: String) {
-        activity.runOnUiThread {
-            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+        activity.runFeatureOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
             card?.msg?.text = text
         }
     }
 
     thread {
         if (!OperationLock.acquire()) {
-            activity.runOnUiThread {
-                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            activity.runFeatureOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
                 card?.let { OpOverlay.removeCard(activity, it) }
-                Toast.makeText(activity, activity.getString(R.string.msg_op_in_progress), Toast.LENGTH_SHORT).show()
+                com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.msg_op_in_progress), Toast.LENGTH_SHORT).show()
             }
             return@thread
         }
@@ -55,9 +57,9 @@ fun deleteWithProgress(
             // many tiny files would crawl while gigabytes stream past; the file
             // count still rides along in the label, which is what users read.
             val moveCb = RecycleBin.MoveProgress { st ->
-                activity.runOnUiThread {
-                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
-                    val c = card ?: return@runOnUiThread
+                activity.runFeatureOnUiThread {
+                    if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
+                    val c = card ?: return@runFeatureOnUiThread
                     when {
                         // Byte progress available: volume-accurate bar.
                         st.barTotal > 0 -> {
@@ -108,9 +110,9 @@ fun deleteWithProgress(
             var processed = 0
             for ((idx, t) in targets.withIndex()) {
                 setMessage("[${idx + 1}/${targets.size}] ${t.name.takeLast(40)}")
-                activity.runOnUiThread {
-                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
-                    val c = card ?: return@runOnUiThread
+                activity.runFeatureOnUiThread {
+                    if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
+                    val c = card ?: return@runFeatureOnUiThread
                     c.overallBar.isIndeterminate = true
                     c.overallBar.progress = 0
                     // Derived, never stored: the previous target's byte text would
@@ -120,19 +122,20 @@ fun deleteWithProgress(
                 }
                 if (!t.exists()) { failed++; processed++; continue }
                 if (recycleEnabled) {
-                    val ok = runCatching { RecycleBin.moveToRecycleBin(activity, t, moveCb) }.getOrDefault(false)
+                    val ok = com.usefulunpacker.observedAttempt("DeleteProgress") { RecycleBin.moveToRecycleBin(activity, t, moveCb) }.getOrDefault(false)
                     if (ok) deleted++ else failed++
                     processed++
                 } else {
                     // Direct delete: count per FILE (historical onDone units).
-                    runCatching {
+                    com.usefulunpacker.observedAttempt("DeleteProgress") {
                         t.walkBottomUp().forEach { f -> if (f.delete()) deleted++ else failed++ }
                     }
                     processed++
                 }
             }
-            activity.runOnUiThread {
-                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            if (failed > 0) AppDiagnostics.begin("delete").fail(FailureCode.PARTIAL_FAILURE, "$failed targets could not be deleted; $deleted deleted")
+            activity.runFeatureOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
                 card?.let { OpOverlay.removeCard(activity, it) }
                 onDone(deleted, failed)
             }
@@ -140,4 +143,10 @@ fun deleteWithProgress(
             OperationLock.release()
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }

@@ -87,7 +87,7 @@ thread {
 ```
 
 - `fmtKey` = the format string (`"zip"`, `"xp3"`, …). Same-key ops serialize; different keys share the 3 global slots.
-- Composite flows that drive TWO formats use pseudo-keys: `"merge"` (merge-into-archive), zip entry edits use `"zip"`.
+- Composite flows use `tryStartCompositeOperation(sourceFmt, targetFmt)` to reserve both native-library keys atomically plus `"merge"` while consuming one global slot. ZIP edits use `"zip"`.
 - **Password prompts happen BEFORE `tryStartOperation`** — a modal can block ~30 s and must never hold a slot or a format lock.
 - Cancellation: the progress card's explicit ✕ calls `cancelQueuedThenNotify()` — a merely-QUEUED op is dequeued without touching the Rust CANCEL flag (setting it would kill an unrelated running same-format op in another window). Only RUNNING cancellations fire `accessors.cancel()`.
 - Deliberate exceptions: delete/recycle (pure FS work) and signature scan (Rust `SCAN_LOCK` already serializes it) stay on the legacy `OperationLock`. Don't migrate them without revisiting that rationale.

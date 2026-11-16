@@ -162,7 +162,7 @@ internal fun showMediaConvertDialog(activity: MainActivity, file: File) {
                 formatCell(activity, t.label, columns = 1, density = density, available = t.available) {
                     // 不可用的目标只是「还没接」：提示一下就留着面板，让用户能改选。
                     if (!t.available) {
-                        Toast.makeText(activity, activity.getString(R.string.media_soon), Toast.LENGTH_SHORT).show()
+                        com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.media_soon), Toast.LENGTH_SHORT).show()
                         return@formatCell
                     }
                     dialogRef?.dismiss()
@@ -239,5 +239,5 @@ internal fun convertMedia(activity: MainActivity, file: File, targetFmt: String)
         activity.convertVideo(file, targetFmt)
         return
     }
-    Toast.makeText(activity, activity.getString(R.string.media_engine_pending), Toast.LENGTH_SHORT).show()
+    com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.media_engine_pending), Toast.LENGTH_SHORT).show()
 }

@@ -3,7 +3,7 @@ package com.usefulunpacker
 import android.content.SharedPreferences
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 import java.io.File
 
 fun showCompressFormatPicker(
@@ -15,18 +15,18 @@ fun showCompressFormatPicker(
         onPick = { fmt ->
             // 单文件压缩格式不能压缩文件夹
             if (dir.isDirectory && fmt in SINGLE_FILE_COMPRESS) {
-                Toast.makeText(activity, activity.getString(R.string.msg_single_file_compress), Toast.LENGTH_SHORT).show()
+                com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.msg_single_file_compress), Toast.LENGTH_SHORT).show()
                 return@showFormatPicker
             }
             // KSD 打包只接受 .txt 文本文件
             if (fmt == "ksd" && !dir.name.lowercase().endsWith(".txt")) {
-                Toast.makeText(activity, activity.getString(R.string.msg_ksd_need_txt), Toast.LENGTH_SHORT).show()
+                com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.msg_ksd_need_txt), Toast.LENGTH_SHORT).show()
                 return@showFormatPicker
             }
             // MV/MZ 封包按扩展名定类型：引擎只认 .rpgmvp/.rpgmvo/.rpgmvm，
             // 装错类型（比如 jpg→rpgmvp）会产出一个游戏能加载但显示不出来的文件。
             if (mvExtMismatch(dir, fmt)) {
-                Toast.makeText(activity, activity.getString(R.string.msg_mv_ext_mismatch, mvRequiredExt(fmt)), Toast.LENGTH_SHORT).show()
+                com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.msg_mv_ext_mismatch, mvRequiredExt(fmt)), Toast.LENGTH_SHORT).show()
                 return@showFormatPicker
             }
             showCompressOptionsDialog(activity, prefs, fmt) { level, split, artemisNaming, gameNaming, mvKey, xp3Enc ->
@@ -62,6 +62,7 @@ fun showCompressOptionsDialog(
     fmt: String,
     onResolved: (level: Int, splitBytes: Long, pfsArtemisNaming: Boolean, gameNaming: Boolean, mvKey: String, xp3Enc: String) -> Boolean
 ) {
+
     val isZip = fmt == "zip"
     val isSz = fmt == "7z"
     val levelVals = when {
@@ -135,14 +136,14 @@ fun showCompressOptionsDialog(
     fun showCustomSplitDialog() {
         var unitIdx = if (chosenSplit > 0 && chosenSplit % (1024L * 1024 * 1024) == 0L) 1 else 0
         val unitLabels = arrayOf(activity.getString(R.string.unit_mb), activity.getString(R.string.unit_gb))
-        val inp = android.widget.EditText(activity).apply {
+        val inp = com.usefulunpacker.UuTextField(activity).apply {
             setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
             setBackgroundColor(C["surface_dark"]!!); setPadding(12, 8, 12, 8); textSize = 14f
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
             setText(if (chosenSplit > 0) (chosenSplit / (if (unitIdx == 1) 1024L * 1024 * 1024 else 1024L * 1024)).toString() else "")
             hint = "64"
         }
-        val btnUnit = android.widget.TextView(activity).apply {
+        val btnUnit = com.usefulunpacker.UuButton(activity).apply {
             text = unitLabels[unitIdx]; setTextColor(C["accent"]!!); textSize = 15f
             setPadding(12, 8, 4, 8)
             setOnClickListener { unitIdx = (unitIdx + 1) % 2; text = unitLabels[unitIdx] }
@@ -152,7 +153,7 @@ fun showCompressOptionsDialog(
             addView(inp, android.widget.LinearLayout.LayoutParams(0, WRAP, 1f))
             addView(btnUnit)
         }
-        android.app.AlertDialog.Builder(activity)
+        com.usefulunpacker.UuDialogBuilder(activity)
             .setTitle(activity.getString(R.string.split_custom))
             .setMessage(activity.getString(R.string.split_min_note))
             .setView(unitRow)
@@ -162,31 +163,27 @@ fun showCompressOptionsDialog(
                 if (n != null && n >= 1 && n <= 2048) {
                     chosenSplit = n * factor
                     splitRow?.text = splitRowLabel(chosenSplit)
-                } else Toast.makeText(activity, activity.getString(R.string.split_invalid), Toast.LENGTH_SHORT).show()
+                } else com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.split_invalid), Toast.LENGTH_SHORT).show()
             }
-            .setNegativeButton(activity.getString(R.string.action_cancel), null)
+            .setNegativeButton(R.string.action_cancel, null)
             .show().also { it.keepTabsTappable() }
     }
 
-    fun row(text: String, onClick: () -> Unit) = android.widget.TextView(activity).apply {
-        this.text = text
-        setTextColor(C["accent"]!!)
-        textSize = 15f
-        setPadding(24, 16, 24, 16)
-        setOnClickListener { onClick() }
+    fun row(text: String, onClick: () -> Unit) = UuActionRow(activity).apply {
+        bind(text, onClick = onClick)
     }
     val body = android.widget.LinearLayout(activity).apply {
         orientation = android.widget.LinearLayout.VERTICAL
         setBackgroundColor(C["surface"]!!)
         levelRow = row("${activity.getString(R.string.title_level)}: ${levelLabels[level]}") {
-            android.app.AlertDialog.Builder(activity)
+            com.usefulunpacker.UuDialogBuilder(activity)
                 .setTitle(activity.getString(R.string.title_level))
                 .setSingleChoiceItems(levelLabels, level) { d, w ->
                     level = w
                     levelRow?.text = "${activity.getString(R.string.title_level)}: ${levelLabels[level]}"
                     d.dismiss()
                 }
-                .setNegativeButton(activity.getString(R.string.action_cancel), null)
+                .setNegativeButton(R.string.action_cancel, null)
                 .show().also { it.keepTabsTappable() }
         }
         addView(levelRow)
@@ -219,14 +216,14 @@ fun showCompressOptionsDialog(
             encRow = row("${activity.getString(R.string.title_encryption)}: ${encLabel(xp3Enc)}") {
                 val labels = encChoices.map { it.second }.toTypedArray()
                 val checked = encChoices.indexOfFirst { it.first == xp3Enc }.coerceAtLeast(0)
-                android.app.AlertDialog.Builder(activity)
+                com.usefulunpacker.UuDialogBuilder(activity)
                     .setTitle(activity.getString(R.string.title_encryption))
                     .setSingleChoiceItems(labels, checked) { d, w ->
                         xp3Enc = encChoices[w].first
                         encRow?.text = "${activity.getString(R.string.title_encryption)}: ${encLabel(xp3Enc)}"
                         d.dismiss()
                     }
-                    .setNegativeButton(activity.getString(R.string.action_cancel), null)
+                    .setNegativeButton(R.string.action_cancel, null)
                     .show().also { it.keepTabsTappable() }
             }
             addView(encRow)
@@ -255,7 +252,7 @@ fun showCompressOptionsDialog(
                     1024L * 1024 * 1024 -> 3
                     else -> 4
                 }
-                android.app.AlertDialog.Builder(activity)
+                com.usefulunpacker.UuDialogBuilder(activity)
                     .setTitle(activity.getString(R.string.split_title))
                     .setSingleChoiceItems(splitLabels, checked) { d, w ->
                         when (w) {
@@ -266,7 +263,7 @@ fun showCompressOptionsDialog(
                         splitRow?.text = splitRowLabel(chosenSplit)
                         d.dismiss()
                     }
-                    .setNegativeButton(activity.getString(R.string.action_cancel), null)
+                    .setNegativeButton(R.string.action_cancel, null)
                     .show().also { it.keepTabsTappable() }
             }
             addView(splitRow)
@@ -278,7 +275,7 @@ fun showCompressOptionsDialog(
             })
         }
         if (isPfs) {
-            addView(androidx.appcompat.widget.SwitchCompat(activity).apply {
+            addView(com.usefulunpacker.UuSwitch(activity).apply {
                 isChecked = artemisNaming
                 text = activity.getString(R.string.pfs_artemis_naming)
                 setTextColor(C["primary"]!!)
@@ -290,7 +287,7 @@ fun showCompressOptionsDialog(
             })
         }
         if (isRgss) {
-            addView(androidx.appcompat.widget.SwitchCompat(activity).apply {
+            addView(com.usefulunpacker.UuSwitch(activity).apply {
                 isChecked = gameNaming
                 text = activity.getString(R.string.rgss_game_naming)
                 setTextColor(C["primary"]!!)
@@ -308,7 +305,7 @@ fun showCompressOptionsDialog(
                 setTextSize(12f)
                 setPadding(24, 4, 24, 4)
             })
-            mvKeyField = android.widget.EditText(activity).apply {
+            mvKeyField = com.usefulunpacker.UuTextField(activity).apply {
                 setSingleLine(true)
                 inputType = android.text.InputType.TYPE_CLASS_TEXT
                 setText(mvKey)
@@ -320,7 +317,7 @@ fun showCompressOptionsDialog(
             addView(mvKeyField)
         }
     }
-    android.app.AlertDialog.Builder(activity)
+    com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(activity.getString(R.string.title_compress_options))
         .setView(body)
         .setPositiveButton(activity.getString(R.string.action_confirm)) { _, _ ->
@@ -333,7 +330,7 @@ fun showCompressOptionsDialog(
             }
             if (!onResolved(levelVals[level], chosenSplit, artemisNaming, gameNaming, mvKey, xp3Enc)) return@setPositiveButton
         }
-        .setNegativeButton(activity.getString(R.string.action_cancel), null)
+        .setNegativeButton(R.string.action_cancel, null)
         .show().also { it.keepTabsTappable() }
 }
 
@@ -343,6 +340,8 @@ private fun runCompress(
     ownerTab: TabState? = null, artemisNaming: Boolean = false,
     gameNaming: Boolean = false, mvKey: String = "", xp3Enc: String = ""
 ) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("compress", newChain = true)
+    try {
     val ext = COMPRESS_EXT[fmt] ?: fmt
     // 产物名的三种规则：
     //  - MV/MZ：替换扩展名（hero.png → hero.rpgmvp）——RPG Maker 只按 .rpgm* 找
@@ -398,10 +397,11 @@ private fun runCompress(
                 }?.forEach { it.delete() }
                 var deleted = false; for (i in 0..10) { deleted = finalFile.delete(); if (deleted) break else Thread.sleep(200) }
             }
-            activity.runOnUiThread {
-                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            val packError = PackErrors.last
+            activity.runFeatureOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
                 prog.dismiss()
-                if (cancelled) { Toast.makeText(activity, activity.getString(R.string.msg_cancelled), Toast.LENGTH_SHORT).show() }
+                if (cancelled) { com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.msg_cancelled), Toast.LENGTH_SHORT).show() }
                 else if (ok) {
                     val shown = if (splitEnabled) "${finalFile.name}.001" else finalFile.name
                     val label = if (renamed) {
@@ -409,20 +409,26 @@ private fun runCompress(
                             activity.getString(R.string.rgss_game_naming_note)
                     } else "${activity.getString(R.string.msg_extract_complete)} $shown"
                     val full = if (encNote.isEmpty()) label else "$label $encNote"
-                    Toast.makeText(activity, full, if (renamed || encNote.isNotEmpty()) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+                    com.usefulunpacker.UuNotice.makeText(activity, full, if (renamed || encNote.isNotEmpty()) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
                     onComplete()
                 }
                 else {
-                    val why = PackErrors.last
+                    val why = packError
                     val msg = activity.getString(R.string.title_compress_failed) +
                         if (why.isEmpty()) "" else "\n$why"
-                    Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
+                    com.usefulunpacker.UuNotice.makeText(activity, msg, Toast.LENGTH_LONG).show()
                 }
             }
         } finally {
             opH.release()
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 /** 通用压缩派发：任何来源（单文件/目录/临时合并目录）→ 指定格式，供单文件、批量合并、批量分别共用。 */
@@ -437,7 +443,7 @@ private fun runCompress(
  * source to name and reports the scheme itself instead.
  */
 fun encNoteText(str: StrFn): String {
-    val json = try { Xp3Core.xp3LastEncNote() } catch (_: Exception) { null }
+    val json = try { Xp3Core.xp3LastEncNote() } catch (caughtFailure: Exception) { AppDiagnostics.failure("CompressionDialogs", caughtFailure); null }
     if (json.isNullOrEmpty()) return ""
     return try {
         val o = org.json.JSONObject(json)
@@ -449,7 +455,7 @@ fun encNoteText(str: StrFn): String {
             o.optBoolean("verified", false) -> str(R.string.enc_note_verified, arrayOf(source))
             else -> str(R.string.enc_note_unverified, arrayOf(source))
         }
-    } catch (_: Exception) {
+    } catch (caughtFailure: Exception) { AppDiagnostics.failure("CompressionDialogs", caughtFailure);
         ""
     }
 }
@@ -462,16 +468,21 @@ fun encNoteText(str: StrFn): String {
  * whole operation, so no two packs of the same format run at once.
  */
 object PackErrors {
-    @Volatile var last: String = ""
+    private val errors = ThreadLocal.withInitial { "" }
+    var last: String
+        get() = errors.get()
+        set(value) = errors.set(value)
 }
 
 fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password: String, prefs: SharedPreferences, splitOverride: Long? = null, enc: String = ""): Boolean {
     PackErrors.last = ""
+    val trace = AppDiagnostics.begin("pack:$fmt", listOf(password))
+    trace.note("input=${src.path} output=${outFile.path}")
     // 分卷大小（字节），仅 zip/7z 支持；0 = 不分卷。inline 压缩选项可传显式值。
     val split = splitOverride ?: prefs.getLong("compress_split_size", 0L)
     val splitStr = if (split > 0 && fmt in setOf("zip", "7z")) split.toString() else "0"
-    return try {
-        when (fmt) {
+    return AppDiagnostics.withTrace(trace) { try {
+        val ok = when (fmt) {
             // enc: "" = plain, "cxdec" = cxdec-encrypted (the scheme is resolved
             // from the folder at pack time — an existing encrypted archive, else
             // the game's own xp3filter.tjs), "crypt:<Name>" = a keyless scheme
@@ -509,8 +520,17 @@ fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password
             "br" -> BrotliCore.brotliCompress("", src.path, outFile.path, level.toString())
             else -> false
         }
+        if (ok) trace.success() else {
+            PackErrors.last = "Packing returned no successful result ($fmt)"
+            trace.fail(FailureCode.INVALID_RESULT, PackErrors.last)
+        }
+        ok
+    } catch (e: java.util.concurrent.CancellationException) {
+        trace.cancelled(); throw e
     } catch (e: Exception) {
-        PackErrors.last = e.message ?: ""
+        PackErrors.last = e.message ?: e.javaClass.simpleName
+        trace.fail(FailureCode.IO, PackErrors.last, e)
         false
+    }
     }
 }

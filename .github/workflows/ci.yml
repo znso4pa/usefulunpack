@@ -15,6 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Shared UI and diagnostics boundaries
+        run: python3 scripts/check_ui_components.py
+
       # `crates/video-core` path-depends on the sibling v2video repo
       # (`../../../../v2video/crates/vc1` from the crate directory), which
       # resolves to `<runner work>/v2video` — one level above this repo's

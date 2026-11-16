@@ -12,7 +12,7 @@ import android.widget.TextView
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.TimeUnit
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /**
  * 全屏终端层。
@@ -209,7 +209,7 @@ internal class TerminalPanel(private val act: MainActivity) {
         }
 
         // ── 底部输入行：提示符 + 输入框 + 运行 ────────────────────────────
-        val inp = EditText(act).apply {
+        val inp = com.usefulunpacker.UuTextField(act).apply {
             setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
             setBackgroundColor(android.graphics.Color.TRANSPARENT)
             textSize = 13f
@@ -246,7 +246,8 @@ internal class TerminalPanel(private val act: MainActivity) {
             ).apply { marginEnd = dp(7) })
             addView(inp, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
-        val runBtn = TextView(act).apply {
+        val runBtn = com.usefulunpacker.UuButton(act).apply {
+            actionStyle = ActionStyle.PRIMARY
             text = act.getString(R.string.terminal_run)
             setTextColor(C["accent_on"]!!)
             textSize = 13f
@@ -299,7 +300,7 @@ internal class TerminalPanel(private val act: MainActivity) {
                 // 点进度行 = 取消当前操作（排队中=出队,运行中=点火 cancel）
                 setOnClickListener {
                     val thunk = cancelThunk ?: return@setOnClickListener
-                    android.app.AlertDialog.Builder(act)
+                    com.usefulunpacker.UuDialogBuilder(act)
                         .setTitle(R.string.cli_cancel_op)
                         .setPositiveButton(R.string.action_confirm) { _, _ ->
                             thunk()
@@ -359,7 +360,8 @@ internal class TerminalPanel(private val act: MainActivity) {
         scroller = null; out = null; input = null; cwdView = null
     }
 
-    private fun action(resId: Int, onClick: () -> Unit) = TextView(act).apply {
+    private fun action(resId: Int, onClick: () -> Unit) = UuButton(act).apply {
+        actionStyle = ActionStyle.TEXT
         text = act.getString(resId)
         setTextColor(C["secondary"]!!); textSize = 12.5f
         val pad = (11 * act.resources.displayMetrics.density).toInt()
@@ -478,26 +480,39 @@ internal class TerminalPanel(private val act: MainActivity) {
      * 落盘，外部读取结果即完成闭环。owner=-1 / pv=null：不碰任何视图。
      */
     fun runExternal(path: String) {
+        val _intentScope = AppDiagnostics.enterIntent("uut_script", newChain = true)
+        try {
         val s = vm.session(act.activeTab.tabId)
         // 与会话首次挂载同一套初始化（cwd 是衍生状态，不能留成 File("/")）
         if (!s.cwdInitialized) {
             s.cwd = act.currentDir
             s.cwdInitialized = true
         }
-        // 同时落一份 `<脚本>.log`：外部驱动者读它拿结果（adb pull/cat 即可），
-        // 会话缓冲也收到同样内容（用户打开终端能看到刚才跑了什么）。
+        // The automatic sidecar is an execution receipt. Payload output remains in
+        // the terminal or an explicitly requested redirection, never in diagnostic logs.
         val log = File(UuText.resolve(s.cwd, path).absolutePath + ".log")
         thread {
-            runCatching { log.parentFile?.mkdirs(); log.writeText("") }
-            runScript(listOf(path), ExecCtx(s, null, -1, sink = { line ->
-                postOut(line, s)
-                runCatching { log.appendText(line + "\n") }
-            }, echo = true), 0)
-            runCatching { log.appendText("[exit]\n") }
+            com.usefulunpacker.observedAttempt("script_receipt") {
+                log.parentFile?.let { if (!it.isDirectory && !it.mkdirs()) throw java.io.IOException("Cannot create receipt directory") }
+                log.writeText("chain=${_intentScope.trace.id}\nfeature=uut_script\n")
+            }
+            val code = runScript(listOf(path), ExecCtx(s, null, -1, sink = { line -> postOut(line, s) }, echo = false), 0)
+            val state = if (AppDiagnostics.isCancellationRequested()) "CANCELLED" else if (code == 0) "SUCCESS" else "FAILED"
+            com.usefulunpacker.observedAttempt("script_receipt") {
+                log.appendText("state=$state\nexit=$code\n[exit]\n")
+            }
         }
+        } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { AppDiagnostics.leaveIntent(_intentScope) }
     }
 
     private fun run0() {
+        val _intentScope = AppDiagnostics.enterIntent("terminal_command", newChain = true)
+        try {
         val line = input?.text?.toString()?.trim().orEmpty()
         if (line.isEmpty()) return
         input?.setText("")
@@ -523,6 +538,12 @@ internal class TerminalPanel(private val act: MainActivity) {
         val owner = ownerTabId
         append(PROMPT + line)
         thread { runTokens(line, tokens, ExecCtx(s, pv, owner)) }
+        } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { AppDiagnostics.leaveIntent(_intentScope) }
     }
 
     /** 一行命令的产出：要么是文本，要么是「缺路径，请用户选一个」。 */
@@ -546,7 +567,7 @@ internal class TerminalPanel(private val act: MainActivity) {
         val pv: TextView?,
         val owner: Int,
         val sink: ((String) -> Unit)? = null,
-        /** 是否回显脚本行。外部运行也回显（落日志便于事后排查）。 */
+        /** 是否在终端/显式输出中回显脚本行；自动诊断不记录脚本原文。 */
         val echo: Boolean = sink == null,
         /**
          * 每**段**执行完的回调（`&&`/`;` 串联里逐段触发）。UUT 用它维护 `$?`：
@@ -583,8 +604,8 @@ internal class TerminalPanel(private val act: MainActivity) {
                 }
                 is SegAsk -> {
                     hideProgressView(ec.pv, ec.owner)
-                    act.runOnUiThread {
-                        if (act.isFinishing || act.isDestroyed) return@runOnUiThread
+                    act.runFeatureOnUiThread {
+                        if (act.isFinishing || act.isDestroyed) return@runFeatureOnUiThread
                         askPath(line, r.cmd, r.kind, ec.s, ec.pv, ec.owner)
                     }
                     return exit
@@ -597,8 +618,8 @@ internal class TerminalPanel(private val act: MainActivity) {
 
     private fun hideProgressView(pv: TextView?, owner: Int) {
         cancelThunk = null
-        act.runOnUiThread {
-            if (act.isFinishing || act.isDestroyed) return@runOnUiThread
+        act.runFeatureOnUiThread {
+            if (act.isFinishing || act.isDestroyed) return@runFeatureOnUiThread
             if (ownerTabId == owner) pv?.visibility = View.GONE
         }
     }
@@ -649,7 +670,7 @@ internal class TerminalPanel(private val act: MainActivity) {
             // `cmd > f` 无输出就是 0 字节，多出来的那个 `\n` 会让 `wc -c` 之类
             // 的后续处理看到 1，且 `>>` 会每次追加一行空白。
             val payload = if (text.isEmpty()) "" else text + "\n"
-            val ok = runCatching {
+            val ok = com.usefulunpacker.observedAttempt("TerminalPanel") {
                 f.parentFile?.mkdirs()
                 if (redir.second) f.appendText(payload) else f.writeText(payload)
                 true
@@ -716,6 +737,15 @@ internal class TerminalPanel(private val act: MainActivity) {
      * `$argc`、`$args`），所以带 `-` 的实参不会被误当标志。
      */
     private fun runScript(args: List<String>, ec: ExecCtx, depth: Int): Int {
+        val trace = AppDiagnostics.begin("run_uut")
+        return AppDiagnostics.withTrace(trace) {
+            val code = runScriptBody(args, ec, depth)
+            if (code == 0) trace.success() else trace.fail(FailureCode.COMMAND, "UUT exit=$code")
+            code
+        }
+    }
+
+    private fun runScriptBody(args: List<String>, ec: ExecCtx, depth: Int): Int {
         if (depth >= SCRIPT_MAX_DEPTH) {
             ec.emit(str(R.string.cli_run_stopped, "0", "1", "depth>${SCRIPT_MAX_DEPTH - 1}"))
             return 1
@@ -743,12 +773,14 @@ internal class TerminalPanel(private val act: MainActivity) {
             ec.emit(str(R.string.cli_not_found, path))
             return 1
         }
-        val bytes = runCatching { readPrefix(f, SCRIPT_MAX_BYTES) }.getOrNull() ?: return 1
+        val bytes = com.usefulunpacker.observedAttempt("TerminalPanel") { readPrefix(f, SCRIPT_MAX_BYTES) }.getOrNull() ?: return 1
         val enc = detectBestEncoding(bytes)
         val text = if (enc != null) decodeTextStrict(bytes, enc) else String(bytes, Charsets.UTF_8)
+        val parseTrace = AppDiagnostics.begin("parse_uut")
         val ast = try {
-            UutParser.parse(text)
+            UutParser.parse(text).also { parseTrace.success() }
         } catch (e: UutParseException) {
+            parseTrace.fail(FailureCode.INVALID_RESULT, "UUT_PARSE_ERROR line=${e.line}")
             ec.emit(str(R.string.cli_uut_parse, e.reason, e.line.toString()))
             return 2
         }
@@ -1040,8 +1072,8 @@ internal class TerminalPanel(private val act: MainActivity) {
     }
 
     /** 结果进捕获的会话；仅当终端仍显示该会话时才刷新视图。 */
-    private fun postOut(text: String, s: TerminalViewModel.Session) = act.runOnUiThread {
-        if (act.isFinishing || act.isDestroyed) return@runOnUiThread
+    private fun postOut(text: String, s: TerminalViewModel.Session) = act.runFeatureOnUiThread {
+        if (act.isFinishing || act.isDestroyed) return@runFeatureOnUiThread
         s.append(text)
         refreshIfCurrent(s)
     }
@@ -1069,8 +1101,8 @@ internal class TerminalPanel(private val act: MainActivity) {
         // 长命令（x/c）的进度：只刷独立单行视图，**不弹对话框**也不重排大输出区
         //（产品要求：进度只写在 CLI 窗口内；整块 setText 5 次/秒会抽帧）。
         progress = { line ->
-            act.runOnUiThread {
-                if (act.isFinishing || act.isDestroyed) return@runOnUiThread
+            act.runFeatureOnUiThread {
+                if (act.isFinishing || act.isDestroyed) return@runFeatureOnUiThread
                 // 只写发起时刻的进度视图；切 tab 后（owner 变了）静默丢弃，
                 // 不污染别的 tab 的终端。
                 if (ownerTabId == owner) pv?.apply {
@@ -1082,7 +1114,15 @@ internal class TerminalPanel(private val act: MainActivity) {
         // x/c 不加路径时的默认输出位置（单独路径，产品要求）
         defaultOutDir = File(android.os.Environment.getExternalStorageDirectory(), "uu_cli"),
         // 命令侧拿到 opH/accessors 后注册取消（进度行可点）
-        registerCancel = { thunk -> cancelThunk = thunk },
+        registerCancel = { thunk ->
+            val ownerTrace = AppDiagnostics.currentTrace()
+            cancelThunk = {
+                if (ownerTrace?.chain?.isEnded() != true) {
+                    ownerTrace?.cancelled()
+                    AppDiagnostics.invokeCallback(ownerTrace) { thunk() }
+                }
+            }
+        },
     )
 
     private fun runUu(rest: List<String>, c: UuCommands.Ctx): Outcome {
@@ -1190,7 +1230,7 @@ internal class TerminalPanel(private val act: MainActivity) {
 
         // tab 栏保持可点（ed4d9b3 起的统一机制）；不按 tab 扎根 —— 终端层自己
         // 已经是 tab 作用域，选择框跟着活跃 tab 走即可。
-        dlg = android.app.AlertDialog.Builder(act)
+        dlg = com.usefulunpacker.UuDialogBuilder(act)
             .setTitle(title)
             .setView(body)
             .setNegativeButton(R.string.action_cancel, null)
@@ -1308,8 +1348,8 @@ internal class TerminalPanel(private val act: MainActivity) {
         if (owner >= 0) {
             val ownerTab = act.tabs.firstOrNull { it.tabId == owner }
                 ?: return str(R.string.terminal_not_found, "$target (${owner})") to 1
-            act.runOnUiThread {
-                if (act.isFinishing || act.isDestroyed) return@runOnUiThread
+            act.runFeatureOnUiThread {
+                if (act.isFinishing || act.isDestroyed) return@runFeatureOnUiThread
                 // enterBrowserAt 而不是 navTab：终端可以从主界面（hub）的 hero 卡直接打开，
                 // 那时 hub 还盖着 —— 只调 navTab 的话 cd 完了退出终端，看到的还是主界面。
                 act.enterBrowserAt(ownerTab, norm)
@@ -1324,16 +1364,23 @@ internal class TerminalPanel(private val act: MainActivity) {
      * 含 `"` / `$` / 反引号时会拆坏命令，且是注入面）。用 `directory()` 设工作目录。
      * 管道排空是必须的：waitFor 先阻塞的话子进程写满 ~64KB 管道就永远等不到退出。
      */
-    private fun runShell(cmdLine: String, cwd: File): Pair<String, Int> = runCatching {
+    private fun runShell(cmdLine: String, cwd: File): Pair<String, Int> {
+        val trace = AppDiagnostics.begin("shell")
+        val result = runShellBody(cmdLine, cwd)
+        if (result.second == 0) trace.success() else trace.fail(FailureCode.COMMAND, "Shell exit=${result.second}")
+        return result
+    }
+
+    private fun runShellBody(cmdLine: String, cwd: File): Pair<String, Int> = com.usefulunpacker.observedAttempt("TerminalPanel") {
         val p = ProcessBuilder("/system/bin/sh", "-c", cmdLine)
             .directory(cwd)
             .redirectErrorStream(true)
             .start()
         val buf = ByteArrayOutputStream()
-        val pump = thread { runCatching { p.inputStream.copyTo(buf) } }
+        val pump = thread { com.usefulunpacker.observedAttempt("TerminalPanel") { p.inputStream.copyTo(buf) } }
         if (p.waitFor(SHELL_TIMEOUT_SEC, TimeUnit.SECONDS)) {
             pump.join(2000)
-            buf.toString().trimEnd('\n') to runCatching { p.exitValue() }.getOrDefault(0)
+            buf.toString().trimEnd('\n') to com.usefulunpacker.observedAttempt("TerminalPanel") { p.exitValue() }.getOrDefault(0)
         } else {
             p.destroyForcibly()
             str(R.string.terminal_exec_timeout) to 124

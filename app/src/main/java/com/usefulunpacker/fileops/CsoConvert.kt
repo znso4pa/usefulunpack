@@ -2,7 +2,7 @@ package com.usefulunpacker
 
 import android.content.SharedPreferences
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /**
  * Converts an ISO image to PSP CISO (CSO) or back. Both directions stream
@@ -10,6 +10,8 @@ import kotlin.concurrent.thread
  * dialog. The result is written alongside the source with a de-duplicated name.
  */
 internal fun MainActivity.convertIso(src: File, toCso: Boolean, ownerTab: TabState = activeTab) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("iso_convert", newChain = true)
+    try {
     val parent = src.parentFile ?: return
     val outName = if (toCso) "${src.nameWithoutExtension}.cso" else "${src.nameWithoutExtension}.iso"
     val outFile = uniqueFile(parent, outName)
@@ -36,11 +38,11 @@ internal fun MainActivity.convertIso(src: File, toCso: Boolean, ownerTab: TabSta
         try {
             val ok = if (toCso) CsoCore.isoToCso("", src.path, outFile.path, "2048")
                      else CsoCore.csoToIso("", src.path, outFile.path)
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 prog.dismiss()
                 if (cancelled) {
-                    outFile.delete()
+                    com.usefulunpacker.deleteOutputChecked(outFile)
                     toast(getString(R.string.msg_cancelled))
                 } else if (ok) {
                     toast(getString(R.string.msg_convert_done, outFile.name))
@@ -48,20 +50,26 @@ internal fun MainActivity.convertIso(src: File, toCso: Boolean, ownerTab: TabSta
                     // 用户切窗后结果要出现在发起它的那个 tab 里。
                     refreshTab(ownerTab)
                 } else {
-                    outFile.delete()
-                    toast(getString(R.string.title_convert_failed))
+                    com.usefulunpacker.deleteOutputChecked(outFile)
+                    failureNotice(getString(R.string.title_convert_failed))
                 }
             }
-        } catch (e: Exception) {
-            outFile.delete()
+        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("CsoConvert", e);
+            com.usefulunpacker.deleteOutputChecked(outFile)
             val why = e.message ?: e.javaClass.simpleName
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 prog.dismiss()
-                toast(getString(R.string.msg_convert_failed_why, why))
+                failureNotice(getString(R.string.msg_convert_failed_why, why))
             }
         } finally {
             opH.release()
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }

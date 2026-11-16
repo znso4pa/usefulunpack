@@ -40,7 +40,7 @@
             android:singleLine="true"
             android:ellipsize="start" />
 
-        <Button
+        <com.usefulunpacker.UuButton
             android:id="@+id/btnChangeDir"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -80,7 +80,7 @@
             android:background="@drawable/bg_segment_track"
             android:padding="3dp">
 
-            <Button
+            <com.usefulunpacker.UuButton
                 android:id="@+id/btnFilename"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
@@ -94,7 +94,7 @@
                 android:paddingBottom="9dp"
                 android:letterSpacing="0.02" />
 
-            <Button
+            <com.usefulunpacker.UuButton
                 android:id="@+id/btnContent"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
@@ -135,7 +135,7 @@
                     app:tint="@color/text_hint"
                     android:importantForAccessibility="no" />
 
-                <EditText
+                <com.usefulunpacker.UuTextField
                     android:id="@+id/etQuery"
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
@@ -149,27 +149,27 @@
                     android:textColor="@color/text_primary"
                     android:textColorHint="@color/text_hint" />
 
-                <ImageButton
+                <com.usefulunpacker.UuIconButton
                     android:id="@+id/btnClear"
                     android:layout_width="36dp"
-                    android:layout_height="36dp"
+                    android:layout_height="@dimen/touch_target"
                     android:src="@drawable/ic_clear"
                     app:tint="@color/text_hint"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:importantForAccessibility="no" />
             </LinearLayout>
 
-            <Button
+            <com.usefulunpacker.UuButton app:uuActionStyle="primary"
                 android:id="@+id/btnSearch"
                 android:layout_width="wrap_content"
-                android:layout_height="46dp"
+                android:layout_height="wrap_content" android:minHeight="@dimen/touch_target"
                 android:layout_marginStart="8dp"
                 android:textSize="14sp"
                 android:textColor="@color/accent_on"
                 android:background="@drawable/bg_btn_accent"
                 android:stateListAnimator="@null"
                 android:minWidth="0dp"
-                android:minHeight="0dp"
+
                 android:paddingStart="22dp"
                 android:paddingEnd="22dp"
                 android:letterSpacing="0.04" />
@@ -192,7 +192,7 @@
                 android:gravity="center_vertical"
                 android:layout_marginTop="6dp">
 
-                <CheckBox
+                <com.usefulunpacker.UuCheckBox
                     android:id="@+id/cbRegex"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
@@ -201,7 +201,7 @@
                     android:textSize="12sp"
                     android:textColor="@color/text_secondary" />
 
-                <CheckBox
+                <com.usefulunpacker.UuCheckBox
                     android:id="@+id/cbCaseSensitive"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
@@ -219,7 +219,7 @@
                 android:layout_marginBottom="10dp"
                 android:background="@color/hairline" />
 
-            <EditText
+            <com.usefulunpacker.UuTextField
                 android:id="@+id/etFileFilter"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -304,7 +304,7 @@
                 android:textSize="12sp"
                 android:textColor="@color/text_tertiary" />
 
-            <Button
+            <com.usefulunpacker.UuButton
                 android:id="@+id/btnContinue"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -317,7 +317,7 @@
                 android:minHeight="0dp"
                 android:padding="11dp" />
 
-            <Button
+            <com.usefulunpacker.UuButton
                 android:id="@+id/btnClose"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

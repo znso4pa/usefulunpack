@@ -95,7 +95,7 @@ internal fun MainActivity.showHelpDialog() {
         isHorizontalScrollBarEnabled = false
     }
 
-    val dlg = AlertDialog.Builder(this)
+    val dlg = com.usefulunpacker.UuDialogBuilder(this)
         .setTitle(getString(R.string.settings_help))
         .setView(scroller)
         .setNegativeButton(getString(R.string.action_close), null)

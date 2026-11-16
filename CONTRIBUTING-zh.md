@@ -87,7 +87,7 @@ thread {
 ```
 
 - `fmtKey` 即格式字符串（`"zip"`、`"xp3"`…）。同键串行；不同键共享 3 个全局槽位。
-- 同时驱动两种格式的复合流程用伪键：合并走 `"merge"`，ZIP 条目编辑走 `"zip"`。
+- 合并用 `tryStartCompositeOperation(sourceFmt, targetFmt)`，在一个全局槽中原子预留两种格式的真实原生库资源及 `"merge"`；单独的伪键不能保护共享 CANCEL/进度。格式先经 `schedulerKeyOf()` 折叠，ZIP 条目编辑使用 `"zip"`。
 - **密码弹窗必须发生在 `tryStartOperation` 之前**——模态框可能阻塞 ~30 秒，绝不能占着槽位或格式锁。
 - 取消语义：进度卡上的显式 ✕ 走 `cancelQueuedThenNotify()`——排队中的操作直接出队、**不触碰 Rust CANCEL 标志**（否则会误杀另一窗口正在运行的同格式操作）；只有运行中的取消才触发 `accessors.cancel()`。
 - 刻意例外：删除/回收站（纯文件操作）与签名扫描（Rust `SCAN_LOCK` 已串行化）保留旧 `OperationLock`，迁移前先复核这条理由。

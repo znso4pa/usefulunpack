@@ -12,8 +12,12 @@ internal fun MainActivity.loadBookmarks() {
         val items = bookmarks.map { "📌 " + getString(R.string.bookmark_item, File(it).name) }
         listBookmarks.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, items) {
             override fun getView(pos: Int, v: View?, p: ViewGroup): View {
-                val view = super.getView(pos, v, p)
-                (view.findViewById<TextView>(android.R.id.text1)).apply { setTextColor(C["primary"]!!); textSize = 13f }
+                val view = (v as? UuActionRow) ?: UuActionRow(this@loadBookmarks)
+                view.bind(items[pos])
+                // ListView owns click and long-click dispatch; the row only supplies geometry.
+                view.isEnabled = true
+                view.isClickable = false
+                view.isFocusable = false
                 return view
             }
         }

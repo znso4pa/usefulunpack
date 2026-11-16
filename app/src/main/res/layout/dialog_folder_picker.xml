@@ -33,10 +33,10 @@
             android:singleLine="true"
             android:ellipsize="start" />
 
-        <ImageButton
+        <com.usefulunpacker.UuIconButton
             android:id="@+id/btnFolderUp"
             android:layout_width="40dp"
-            android:layout_height="40dp"
+            android:layout_height="@dimen/touch_target"
             android:src="@drawable/ic_back"
             app:tint="@color/text_primary"
             android:background="?attr/selectableItemBackgroundBorderless"

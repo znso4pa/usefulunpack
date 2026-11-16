@@ -7,15 +7,17 @@ import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 fun showRenameDialog(activity: AppCompatActivity, f: File, currentDir: File, bookmarks: MutableList<String>, onSaved: () -> Unit) {
-    val inp = EditText(activity).apply {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("file_rename", newChain = true)
+    try {
+    val inp = com.usefulunpacker.UuTextField(activity).apply {
         setText(f.name); selectAll()
         setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
         setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
     }
-    AlertDialog.Builder(activity)
+    com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(activity.getString(R.string.action_rename))
         .setView(inp)
         .setPositiveButton(activity.getString(R.string.action_confirm)) { _, _ ->
@@ -24,31 +26,39 @@ fun showRenameDialog(activity: AppCompatActivity, f: File, currentDir: File, boo
             // Reject path separators / ".." so a rename can't escape the folder
             // or descend into a subdirectory (unpredictable / unsafe paths).
             if (newName.contains('/') || newName.contains('\\') || newName == ".." || newName.contains("..")) {
-                Toast.makeText(activity, activity.getString(R.string.err_file_error), Toast.LENGTH_SHORT).show()
+                com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.err_file_error), Toast.LENGTH_SHORT).show()
                 return@setPositiveButton
             }
             val dst = File(f.parentFile ?: return@setPositiveButton, newName)
             // renameTo can fail (cross-device, permission, race) — never fake success.
             if (!dst.exists()) {
                 val ok = f.renameTo(dst)
-                Toast.makeText(activity, activity.getString(if (ok) R.string.action_rename else R.string.err_file_error), Toast.LENGTH_SHORT).show()
+                com.usefulunpacker.UuNotice.makeText(activity, activity.getString(if (ok) R.string.action_rename else R.string.err_file_error), Toast.LENGTH_SHORT).show()
                 if (ok) onSaved()
                 return@setPositiveButton
             }
-            AlertDialog.Builder(activity)
+            com.usefulunpacker.UuDialogBuilder(activity)
                 .setTitle(activity.getString(R.string.msg_target_exists))
                 .setItems(arrayOf(activity.getString(R.string.action_replace), activity.getString(R.string.action_keep_both), activity.getString(R.string.action_compare))) { _, which ->
                     when (which) {
-                        0 -> { dst.delete(); val ok = f.renameTo(dst); Toast.makeText(activity, activity.getString(if (ok) R.string.action_rename else R.string.err_file_error), Toast.LENGTH_SHORT).show(); if (ok) onSaved() }
-                        1 -> { val u = uniqueFile(f.parentFile!!, newName); val ok = f.renameTo(u); Toast.makeText(activity, if (ok) activity.getString(R.string.msg_renamed_to, u.name) else activity.getString(R.string.err_file_error), Toast.LENGTH_SHORT).show(); if (ok) onSaved() }
+                        0 -> { dst.delete(); val ok = f.renameTo(dst); com.usefulunpacker.UuNotice.makeText(activity, activity.getString(if (ok) R.string.action_rename else R.string.err_file_error), Toast.LENGTH_SHORT).show(); if (ok) onSaved() }
+                        1 -> { val u = uniqueFile(f.parentFile!!, newName); val ok = f.renameTo(u); com.usefulunpacker.UuNotice.makeText(activity, if (ok) activity.getString(R.string.msg_renamed_to, u.name) else activity.getString(R.string.err_file_error), Toast.LENGTH_SHORT).show(); if (ok) onSaved() }
                         2 -> { compareFiles(activity, f, dst, bookmarks, currentDir, onSaved) }
                     }
-                }.setNegativeButton(activity.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+                }.setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
         }
-        .setNegativeButton(activity.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+        .setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 fun compareFiles(activity: AppCompatActivity, a: File, b: File, bookmarks: MutableList<String>, currentDir: File, onSaved: () -> Unit) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("file_compare", newChain = true)
+    try {
     val df = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     val info = "${a.name}\n${activity.getString(R.string.label_size, fmt(fileSize(a)))}\n${activity.getString(R.string.label_time, df.format(Date(a.lastModified())))}\n\n" +
         "${b.name}\n${activity.getString(R.string.label_size, fmt(fileSize(b)))}\n${activity.getString(R.string.label_time, df.format(Date(b.lastModified())))}\n\n"
@@ -56,17 +66,25 @@ fun compareFiles(activity: AppCompatActivity, a: File, b: File, bookmarks: Mutab
     val extB = b.name.lowercase().substringAfterLast('.')
     val previewable = setOf("jpg","jpeg","png","txt","json","ini","ks","lua","py","js","html","css","xml","cfg","log","md")
     val canPreview = extA in previewable && extB in previewable
-    AlertDialog.Builder(activity)
+    com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(activity.getString(R.string.title_compare))
         .setMessage(info + if (canPreview) activity.getString(R.string.msg_both_files_previewable) else activity.getString(R.string.msg_same_size, (fileSize(a) == fileSize(b)).toString()))
         .setPositiveButton(if (canPreview) activity.getString(R.string.preview_both) else activity.getString(R.string.action_confirm)) { _, _ ->
             if (canPreview) { previewLocalFile(activity, a); previewLocalFile(activity, b) }
         }
-        .setNegativeButton(activity.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+        .setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 fun calcDirSize(activity: AppCompatActivity, dir: File) {
-    val pd = ProgressDialog(activity).apply {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("directory_size", newChain = true)
+    try {
+    val pd = com.usefulunpacker.UuProgressDialog(activity).apply {
         setTitle(activity.getString(R.string.msg_calculating))
         setMessage(dir.name)
         setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
@@ -79,20 +97,26 @@ fun calcDirSize(activity: AppCompatActivity, dir: File) {
         var total = 0L
         var processed = 0
         dir.walkTopDown().forEach { f ->
-            if (f.isFile) total += runCatching { f.length() }.getOrDefault(0L)
+            if (f.isFile) total += com.usefulunpacker.observedAttempt("FileOperations") { f.length() }.getOrDefault(0L)
             processed++
             if (processed % 50 == 0) {
-                activity.runOnUiThread { pd.setMessage(activity.getString(R.string.msg_calc_counting, processed)) }
+                activity.runFeatureOnUiThread { if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread; pd.setMessage(activity.getString(R.string.msg_calc_counting, processed)) }
             }
         }
-        activity.runOnUiThread {
-            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+        activity.runFeatureOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
             pd.dismiss()
-            AlertDialog.Builder(activity)
+            com.usefulunpacker.UuDialogBuilder(activity)
                 .setTitle(dir.name)
                 .setMessage(activity.getString(R.string.msg_calc_result, fmt(total), processed))
                 .setPositiveButton(activity.getString(R.string.action_confirm), null)
                 .show().also { it.keepTabsTappable() }
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }

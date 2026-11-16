@@ -6,43 +6,37 @@ import android.graphics.drawable.ColorDrawable
 import android.view.View
 import android.widget.*
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 internal fun MainActivity.extractAll(destFile: File, src: File, format: String, initialPwd: String = "", ownerTab: TabState = activeTab) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("extract_all", newChain = true)
+    try {
         // Remember whether the output folder pre-existed so a cancelled extract
         // into a fresh folder can be cleaned up entirely.
         val existedBefore = destFile.exists()
         var cancelled = false
         val accessors = extractAccessors(format)
-        // Built once a scheduler handle exists (see runOnUiThread below) so it
+        // Built once a scheduler handle exists (see runFeatureOnUiThread below) so it
         // can render the queued state.
         lateinit var prog: PollingProgressDialog
 
-        fun doExtract(pwd: String = ""): ExtractOutcome {
-            return runCatching {
-                when (format) {
-                    "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); ExtractOutcome(ExtractCounts.fromJson(zipExtractDispatch(src.path, destFile.path, "", pwd)), null) }
-                    "7z" -> ExtractOutcome(ExtractCounts.fromJson(szExtractDispatch(src.path, destFile.path, "", pwd)), null)
-                    "rar" -> ExtractOutcome(ExtractCounts.fromJson(rarExtractDispatch(src.path, destFile.path, "", pwd)), null)
-                    else -> extractByFormat(format, src.path, destFile.path, "", prefs)
-                }
-            }.getOrElse { e -> ExtractOutcome(ExtractCounts(0, 0, 0), e.message) }
-        }
+        fun doExtract(pwd: String = ""): ExtractOutcome =
+            extractByFormat(format, src.path, destFile.path, "", prefs, pwd)
         thread {
             // The password is resolved BEFORE the operation lock is taken: the
             // modal prompt blocks up to 30s, and holding the lock through it
             // made every other window's operation report a bogus "busy".
             var pwd = initialPwd
             if (format in setOf("zip", "7z", "rar") && pwd.isEmpty() &&
-                runCatching { isPasswordProtected(src) }.getOrDefault(false)) {
+                com.usefulunpacker.observedAttempt("ExtractAll") { isPasswordProtected(src) }.getOrDefault(false)) {
                 pwd = promptPasswordSync(this) ?: ""
                 if (pwd.isEmpty()) {
-                    runOnUiThread { toast(getString(R.string.msg_cancelled)) }
+                    runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; toast(getString(R.string.msg_cancelled)) }
                     return@thread
                 }
             }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 // Acquire a scheduler slot BEFORE showing the progress dialog —
                 // a queued op surfaces position/ETA in that dialog instead of
                 // being refused.
@@ -67,26 +61,26 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                         opH.release()
                     }
                     val finalResult = result
-                    runOnUiThread {
-                        if (isFinishing || isDestroyed) return@runOnUiThread
+                    runFeatureOnUiThread {
+                        if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                         prog.dismiss()
                         if (cancelled) {
                             cleanupCancelledOutput(destFile, existedBefore)
                             toast(getString(R.string.msg_cancelled))
-                            return@runOnUiThread
+                            return@runFeatureOnUiThread
                         }
                         if (finalResult != null && finalResult.counts.ok) { showExtractSuccess(src.name, destFile.name, finalResult.counts); navTab(ownerTab, ownerTab.currentDir) }
                         else if (format in setOf("zip", "7z", "rar")) {
                             cleanupCancelledOutput(destFile, existedBefore)
                             // The lock is free now — the retry acquires it like any
                             // fresh operation.
-                            val inp = EditText(this).apply {
+                            val inp = com.usefulunpacker.UuTextField(this).apply {
                                 hint = getString(R.string.prompt_password)
                                 setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
                                 setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
                                 inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
                             }
-                            AlertDialog.Builder(this)
+                            com.usefulunpacker.UuDialogBuilder(this)
                                 .setTitle(getString(R.string.title_password))
                                 .setMessage(getString(R.string.retry))
                                 .setView(inp)
@@ -110,8 +104,8 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                                         if (!opH2.await()) return@thread
                                         try {
                                             val result2 = doExtract(pwd2)
-                                            runOnUiThread {
-                                                if (isFinishing || isDestroyed) return@runOnUiThread
+                                            runFeatureOnUiThread {
+                                                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                                                 prog2.dismiss()
                                                 if (cancelled2) {
                                                     cleanupCancelledOutput(destFile, existedBefore)
@@ -124,13 +118,19 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                                         }
                                     }
                                 }
-                                .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> cleanupCancelledOutput(destFile, existedBefore) }
+                                .setNegativeButton(R.string.action_cancel) { _, _ -> cleanupCancelledOutput(destFile, existedBefore) }
                                 .show().also { it.keepTabsTappable() }
                         } else toast(friendlyExtractError(this, finalResult?.error ?: ""))
                     }
                 }
             }
         }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
     }
 
 internal fun MainActivity.showExtractSuccess(srcName: String, outName: String, c: ExtractCounts) {
@@ -146,7 +146,7 @@ internal fun MainActivity.showExtractSuccess(srcName: String, outName: String, c
             setPadding(24, 0, 24, 8)
         }
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(tv); addView(tvCounts) }
-        AlertDialog.Builder(this)
+        com.usefulunpacker.UuDialogBuilder(this, keepChainOpen = false)
             .setTitle("✓ ${getString(R.string.msg_extract_complete)}")
             .setView(layout)
             .setPositiveButton(getString(R.string.action_confirm), null)

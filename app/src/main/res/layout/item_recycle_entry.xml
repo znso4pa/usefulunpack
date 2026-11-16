@@ -80,7 +80,7 @@
 
     <!-- 动作：还原 = 主色胶囊；彻底删除 = 纯文字（危险色）。两边都留文字 ——
          图标化会被读成「关闭」。 -->
-    <Button
+    <com.usefulunpacker.UuButton
         android:id="@+id/btnRestore"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -97,7 +97,7 @@
         android:paddingTop="7dp"
         android:paddingBottom="7dp" />
 
-    <Button
+    <com.usefulunpacker.UuButton
         android:id="@+id/btnPermanentDelete"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

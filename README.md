@@ -12,6 +12,7 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 
 | Feature | Description |
 |---------|-------------|
+| **Diagnostics and shared controls** | Settings → Logs and diagnostics / UI components. Operations share a short chain ID across UI and local logs; cancellation and cleanup failures remain visible. Logs are shared only on request. |
 | 📁 **XP3** | Pack & unpack Kirikiri `.xp3` archives; **cxdec content filter** (classic) detected, shown (preview title / scan / `uu l`) and written back — repacking a cxdec game keeps its encryption |
 | 📦 **PFS** | Pack & unpack Artemis `.pfs` / `.pf6` / `.pf8` archives |
 | 📜 **NSA/SAR** | Unpack NScripter `.nsa` / `.sar` archives (LZSS + SPB), **pack** (stored / LZSS) |
@@ -52,7 +53,7 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 🗂 **File Browser** | ZArchiver-style UI with path breadcrumb, fast scroll, folder ⭐ bookmarks |
 | 🪟 **Multi-Window Tabs** | Up to 3 independent windows (ViewPager2 swipe, add/close). Each window keeps its own path, selected file, multi-select state, batch bar and paste/move state — fully isolated. **Long-press a tab label to rename it**; Chrome-style top tab bar (active tab highlighted with a rounded pill) |
 | 📦 **In-Window Archive Preview** | FAB preview renders INSIDE the current window (no modal), so **you can swipe between windows while previewing**; bottom bar has Extract all / Extract selected / Merge (the merge button greys out when no merge target exists, so you never hit a dead end), top bar has Search + a **⋮ overflow menu** (Edit / ZIP-manage / ISO-convert, shown per format, toast when not applicable). Entering global search from a preview returns to the preview when closed |
-| 🔀 **Cross-Archive Merge** | In a preview, select entries → "Merge" → pick a target from **this folder or an archive another window has open** (grouped list, annotated with the window name) → the source's selected entries are unpacked, the target is unpacked over the same staging dir (so matching paths are overwritten by the source), and the result is repacked into a `target-cn.ext` copy next to the target. The target is only ever read and the original is never touched, so merging into an archive another window is previewing is safe. The button is greyed out when there is nothing to merge into |
+| 🔀 **Cross-Archive Merge** | In a preview, select entries → "Merge" → pick a target from **this folder or an archive another window has open** (grouped list, annotated with the window name) → the target is unpacked first, then the source's selected entries are unpacked over the same staging dir (so matching paths are overwritten by the source), and the result is repacked into a `target-cn.ext` copy next to the target. The target is only ever read and the original is never touched, so merging into an archive another window is previewing is safe. The button is greyed out when there is nothing to merge into |
 | 📍 **Path/File Picker Mode** | General settings toggle: "Open path picker dialog" (default) or "Pick in a new window" — the latter opens a new window to browse and pick, then closes it and returns to the origin window (applies to search scope / extract target / ZIP add / compress target) |
 | 📌 **Bookmarks** | Quick-access paths via star button on folders or slide-out drawer |
 | 🏠 **Root Navigation** | One-tap home button to jump to `/storage/emulated/0` |
@@ -85,7 +86,7 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 
 **1. Can three windows extract at once and risk an OOM?**
 
-No — currently only one extract/compress runs at a time. A global single lock (`OperationLock`) serializes operations, so the 2nd/3rd extract is rejected with a "busy" toast. Memory pressure stays identical to a single-window extract, so OOM risk is very low. The real memory source is *within* a single archive's parallel decode (RAR non-solid ≤4 threads, ZIP entry-level ≤32 MiB batches); members >64 MB stream without whole-buffer buffering. Note the "parallel decode threads" setting is global, not per-window — 4/8 threads on one window already uses the full memory budget.
+Archive work uses three global slots. Operations sharing a native library queue behind the same resource lock; different libraries may overlap. A merge atomically reserves both libraries in one slot. Cancelling a queued job does not cancel a running job. Parallel decoder settings still apply within each archive, so concurrent work can increase memory use.
 
 **2. If two windows open the same file, does a change in window 1 sync instantly to the others?**
 

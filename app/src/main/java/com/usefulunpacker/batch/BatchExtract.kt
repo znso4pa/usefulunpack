@@ -6,7 +6,7 @@ import android.graphics.drawable.ColorDrawable
 import android.view.View
 import android.widget.*
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 private fun MainActivity.dp(id: Int) = resources.getDimensionPixelSize(id)
 private fun MainActivity.spx(id: Int) = resources.getDimension(id) / resources.displayMetrics.scaledDensity
@@ -27,14 +27,14 @@ internal fun MainActivity.resolveBatchPath(mergedPath: String): Pair<File, Strin
 internal fun MainActivity.startBatchExtract() {
         val archives = batchArchives(); if (archives.isEmpty()) { toast(getString(R.string.no_archives)); return }
         showFormatPicker(this, getString(R.string.title_select_format)) { fmt ->
-            AlertDialog.Builder(this)
+            com.usefulunpacker.UuDialogBuilder(this)
                 .setTitle(getString(R.string.title_batch_archives_fmt, archives.size, fmt.uppercase()))
                 .setItems(arrayOf(getString(R.string.action_preview), getString(R.string.action_extract))) { _, w ->
                     when (w) {
                         0 -> batchPreview(archives, fmt)
                         1 -> batchDirectExtract(archives, fmt)
                     }
-                }.setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+                }.setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
         }
     }
 
@@ -55,11 +55,13 @@ internal fun MainActivity.startBatchPreviewOnly() {
     }
 
 internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("batch_extract")
+    try {
         val parent = archives[0].parentFile ?: currentDir
         // Pre-compute unique output dirs
         val outDirs = archives.map { src -> uniqueFile(parent, src.nameWithoutExtension) }
         val labels = arrayOf(getString(R.string.extract_separate_dirs, outDirs.map { it.name }.joinToString(", ")), getString(R.string.action_extract))
-        AlertDialog.Builder(this).setTitle(getString(R.string.title_extract_to))
+        com.usefulunpacker.UuDialogBuilder(this).setTitle(getString(R.string.title_extract_to))
             .setItems(labels) { _, w ->
                 thread {
                     // Resolve the password BEFORE taking a scheduler slot — the
@@ -68,12 +70,12 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
                     if (archives.any { isPasswordProtected(it) }) {
                         pwd = promptPasswordSync(this)
                         if (pwd == null) {
-                            runOnUiThread { toast(getString(R.string.msg_cancelled)); exitAllMultiSelect(); nav(currentDir) }
+                            runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; toast(getString(R.string.msg_cancelled)); exitAllMultiSelect(); nav(currentDir) }
                             return@thread
                         }
                     }
-                    runOnUiThread {
-                        if (isFinishing || isDestroyed) return@runOnUiThread
+                    runFeatureOnUiThread {
+                        if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                         // Lock first, then the progress dialog (see extractAll).
                         val opH = tryStartOperation(this, fmt)
                         var cancelled = false
@@ -101,8 +103,8 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
                                     ok = o.counts.ok; if (!ok) { err = o.error; break }
                                     if (w == 0) doneUntil = i + 1
                                 }
-                                runOnUiThread {
-                                    if (isFinishing || isDestroyed) return@runOnUiThread
+                                runFeatureOnUiThread {
+                                    if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                                     prog.dismiss()
                                     if (cancelled) {
                                         // 清掉本次新建的部分输出目录（uniqueFile 预计算的
@@ -115,18 +117,26 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
                                     else toast(friendlyExtractError(this, err))
                                     exitAllMultiSelect(); nav(currentDir)
                                 }
-                            } catch (e: Exception) {
-                                runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                            } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("BatchExtract", e);
+                                runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; prog.dismiss(); failureNotice(getString(R.string.err_extract_io, e.message ?: "")) }
                             } finally {
                                 opH.release()
                             }
                         }
                     }
                 }
-            }.setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+            }.setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
     }
 
 internal fun MainActivity.batchPreview(archives: List<File>, fmt: String) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("batch_preview")
+    try {
         // Same-archive mutex: drop archives already open in another window
         // (volume sets count as one archive), so a preview can't race an open
         // copy elsewhere.
@@ -140,7 +150,7 @@ internal fun MainActivity.batchPreview(archives: List<File>, fmt: String) {
             toast(getString(R.string.msg_archive_open_skipped, conflictNames.size))
             return
         }
-        val pd = ProgressDialog(this).apply { setTitle(getString(R.string.reading)); setMessage(getString(R.string.reading_archives, filtered.size)); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
+        val pd = com.usefulunpacker.UuProgressDialog(this).apply { setTitle(getString(R.string.reading)); setMessage(getString(R.string.reading_archives, filtered.size)); setProgressStyle(ProgressDialog.STYLE_SPINNER); setCancelable(false); show() }
         pd.keepTabsTappable(blockBehind = false)
         thread {
             // Shared password state: asked once for all archives; a cancel stops
@@ -173,11 +183,17 @@ internal fun MainActivity.batchPreview(archives: List<File>, fmt: String) {
                 if (json != null) all.add(src to parseEntries(json))
                 if (pwdCancelled) break
             }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                pd.dismiss(); if (all.isEmpty()) toast(getString(R.string.msg_cannot_read)); else { if (conflictNames.isNotEmpty()) toast(getString(R.string.msg_archive_open_skipped, conflictNames.size)); showBatchPreviewDialog(all, fmt, batchPwd, pwdCancelled) }
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
+                pd.dismiss(); if (all.isEmpty()) failureNotice(getString(R.string.msg_cannot_read)); else { if (conflictNames.isNotEmpty()) toast(getString(R.string.msg_archive_open_skipped, conflictNames.size)); showBatchPreviewDialog(all, fmt, batchPwd, pwdCancelled) }
             }
         }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
     }
 
 internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<ArchiveEntry>>>, fmt: String, initialPwd: String? = null, pwdCancelled: Boolean = false) {
@@ -236,8 +252,8 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                 // modal can block ~30s and must not hog a slot + format lock.
                 val p0 = resolveBatchPwd(arc)
                 if (p0 == null) return@thread // cancelled; batchPwdCancelled gates later attempts
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
+                runFeatureOnUiThread {
+                    if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                     // Lock first, then the dual progress dialog (see extractAll).
                     val opH = tryStartOperation(this, fmt)
                     var cancelled = false
@@ -256,15 +272,15 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                         if (!opH.await()) return@thread
                         try {
                             val o = extractByFormat(fmt, arc.path, cacheDir.path, origPath, prefs, p0)
-                            runOnUiThread {
-                                if (isFinishing || isDestroyed) return@runOnUiThread
+                            runFeatureOnUiThread {
+                                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                                 prog.dismiss()
                                 if (cancelled) toast(getString(R.string.msg_cancelled))
                                 else if (o.counts.ok) previewLocalFile(this@showBatchPreviewDialog, File(cacheDir, origPath))
                                 else toast(friendlyExtractError(this@showBatchPreviewDialog, o.error))
                             }
-                        } catch (e: Exception) {
-                            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("BatchExtract", e);
+                            runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; prog.dismiss(); failureNotice(getString(R.string.err_extract_io, e.message ?: "")) }
                         } finally {
                             opH.release()
                         }
@@ -290,7 +306,7 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
             text = getString(R.string.batch_preview_title, all.map{it.first.name}.joinToString(", ").take(40)); setTextColor(C["primary"]!!); textSize = spx(R.dimen.text_title)
             layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
         })
-        val btnSearchTitle = ImageButton(this).apply {
+        val btnSearchTitle = com.usefulunpacker.UuIconButton(this).apply {
             setImageResource(R.drawable.ic_search); setBackgroundColor(C["surface"]!!); setPadding(dp(R.dimen.space_xs), dp(R.dimen.space_xs), dp(R.dimen.space_xs), dp(R.dimen.space_xs))
             scaleType = ImageView.ScaleType.FIT_XY; layoutParams = LinearLayout.LayoutParams(52, 40)
             setOnClickListener {
@@ -302,13 +318,13 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                     val pwds = HashMap<File, String>()
                     for ((src, _) in all) {
                         val p = resolveBatchPwd(src) ?: run {
-                            runOnUiThread { toast(getString(R.string.msg_cancelled)) }
+                            runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; toast(getString(R.string.msg_cancelled)) }
                             return@thread
                         }
                         pwds[src] = p
                     }
-                    runOnUiThread {
-                        if (isFinishing || isDestroyed) return@runOnUiThread
+                    runFeatureOnUiThread {
+                        if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                         // Lock first, then the dual progress dialog (the text-extraction
                         // phase reports byte progress); the work dir is cleared INSIDE
                         // the lock so a queued second search can't nuke a running one.
@@ -355,17 +371,17 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                         resolver[keyRel] = SearchExtractSource(src, archiveRel, sub, pwd)
                                         // Phase 1: touch placeholder files for ALL entries (filename search).
                                         ph.parentFile?.mkdirs()
-                                        try { ph.createNewFile() } catch (_: Exception) {}
+                                        try { ph.createNewFile() } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("BatchExtract", failureCause);}
                                         // Phase 2: extract only text files (overwrites placeholder).
                                         if (e.name.substringAfterLast('.').lowercase() in textExts) {
                                             extractByFormat(fmt, src.path, sub.path, archiveRel, prefs, pwd)
                                         }
                                     }
                                 }
-                                runOnUiThread {
-                                    if (isFinishing || isDestroyed) return@runOnUiThread
+                                runFeatureOnUiThread {
+                                    if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                                     prog.dismiss()
-                                    if (cancelled) { toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
+                                    if (cancelled) { toast(getString(R.string.msg_cancelled)); return@runFeatureOnUiThread }
                                     // searchSource* 全局只在成功路径赋值：取消/失败时
                                     // 不能把全局搜索的解析器指向半成品缓存。
                                     searchSourceArchive = null; searchSourceFormat = fmt; searchSourceCacheBase = cacheDir
@@ -374,8 +390,8 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                     dlg.dismiss()
                                     globalSearch(cacheDir, tempDir = cacheDir)
                                 }
-                            } catch (e: Exception) {
-                                runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; prog.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                            } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("BatchExtract", e);
+                                runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; prog.dismiss(); failureNotice(getString(R.string.err_extract_io, e.message ?: "")) }
                             } finally {
                                 opH.release()
                             }
@@ -386,7 +402,7 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
         }
         titleBar.addView(btnSearchTitle)
 
-        dlg = AlertDialog.Builder(this).setCustomTitle(titleBar).setView(layout)
+        dlg = com.usefulunpacker.UuDialogBuilder(this).setCustomTitle(titleBar).setView(layout)
             .setPositiveButton(getString(R.string.extract_selected)) { _, _ ->
                 val sel = selectedPaths.filter { p -> selectedPaths.none { o -> o != p && o.startsWith(p + "/") } }
                 if (sel.isEmpty()) { toast(getString(R.string.msg_select_one)); return@setPositiveButton }
@@ -405,10 +421,10 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                         if (p == null) { pwdCancelled2 = true; break }
                         pwds[src] = p
                     }
-                    runOnUiThread {
+                    runFeatureOnUiThread {
                         if (isFinishing || isDestroyed || pwdCancelled2) {
                             if (pwdCancelled2 && !(isFinishing || isDestroyed)) toast(getString(R.string.msg_cancelled))
-                            return@runOnUiThread
+                            return@runFeatureOnUiThread
                         }
                         // Lock first, then the spinner dialog (see extractAll).
                         val opH = tryStartOperation(this, fmt)
@@ -435,8 +451,8 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                     val o = extractByFormat(fmt, src.path, uniqueFile(src.parentFile ?: currentDir, src.nameWithoutExtension).path, paths.joinToString("\n"), prefs, pwd)
                                     if (!o.counts.ok) { ok2 = false; err = o.error; break }
                                 }
-                                runOnUiThread {
-                                    if (isFinishing || isDestroyed) return@runOnUiThread
+                                runFeatureOnUiThread {
+                                    if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                                     pd2.dismiss()
                                     when {
                                         // 取消不算成功：不能弹「批量完成」，也保留选中
@@ -446,8 +462,8 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                         else -> toast(friendlyExtractError(this, err))
                                     }
                                 }
-                            } catch (e: Exception) {
-                                runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd2.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                            } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("BatchExtract", e);
+                                runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; pd2.dismiss(); failureNotice(getString(R.string.err_extract_io, e.message ?: "")) }
                             } finally {
                                 opH.release()
                             }
@@ -455,7 +471,7 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                     }
                 }
             }
-            .setNegativeButton(getString(R.string.action_cancel), null).create()
+            .setNegativeButton(R.string.action_cancel, null).create()
         // Keep the tab strip tappable while batch preview is open (bottom-anchor
         // below toolbar + tab bar), so the user can still switch windows.
         belowTabBar(dlg)

@@ -7,7 +7,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import java.io.File
 import java.util.Date
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 internal fun MainActivity.showFileInfoDialog(f: File) {
         val tvName = TextView(this).apply {
@@ -32,7 +32,7 @@ internal fun MainActivity.showFileInfoDialog(f: File) {
             setPadding(24, 0, 8, 0); setSingleLine(true)
             ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; typeface = android.graphics.Typeface.MONOSPACE
         }
-        val btnMd5 = Button(this).apply { text = "📋"; setTextColor(C["accent"]!!); background = null; textSize = 12f; setPadding(0, 0, 24, 0); isEnabled = false }
+        val btnMd5 = com.usefulunpacker.UuButton(this).apply { text = "📋"; setTextColor(C["accent"]!!); background = null; textSize = 12f; setPadding(0, 0, 24, 0); isEnabled = false }
         val rowMd5 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; addView(tvMd5Val, LinearLayout.LayoutParams(0, WRAP, 1f)); addView(btnMd5) }
         val tvShaLabel = TextView(this).apply { text = "SHA-256"; setTextColor(C["primary"]!!); textSize = 12f; setPadding(24, 6, 24, 0); setTypeface(null, android.graphics.Typeface.BOLD) }
         val tvShaVal = TextView(this).apply {
@@ -40,7 +40,7 @@ internal fun MainActivity.showFileInfoDialog(f: File) {
             setPadding(24, 0, 8, 0); setSingleLine(true)
             ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; typeface = android.graphics.Typeface.MONOSPACE
         }
-        val btnSha = Button(this).apply { text = "📋"; setTextColor(C["accent"]!!); background = null; textSize = 12f; setPadding(0, 0, 24, 0); isEnabled = false }
+        val btnSha = com.usefulunpacker.UuButton(this).apply { text = "📋"; setTextColor(C["accent"]!!); background = null; textSize = 12f; setPadding(0, 0, 24, 0); isEnabled = false }
         val rowSha = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; addView(tvShaVal, LinearLayout.LayoutParams(0, WRAP, 1f)); addView(btnSha) }
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -49,7 +49,7 @@ internal fun MainActivity.showFileInfoDialog(f: File) {
             addView(tvMd5Label); addView(rowMd5)
             addView(tvShaLabel); addView(rowSha)
         }
-        val dlg = AlertDialog.Builder(this)
+        val dlg = com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.action_file_info))
             .setView(layout)
             // 转换入口不在这儿 —— 它在长按菜单里自己占一行（长按 → 文件转换）。
@@ -63,16 +63,16 @@ internal fun MainActivity.showFileInfoDialog(f: File) {
             try {
                 val md5 = hashFile(f, "MD5")
                 val sha = hashFile(f, "SHA-256")
-                runOnUiThread {
-                    if (isFinishing || !dlg.isShowing) return@runOnUiThread
+                runFeatureOnUiThread {
+                    if (isFinishing || !dlg.isShowing) return@runFeatureOnUiThread
                     tvMd5Val.text = md5; btnMd5.isEnabled = true
                     btnMd5.setOnClickListener { copyToClipboard(this, md5); toast(getString(R.string.msg_hash_copied)) }
                     tvShaVal.text = sha; btnSha.isEnabled = true
                     btnSha.setOnClickListener { copyToClipboard(this, sha); toast(getString(R.string.msg_hash_copied)) }
                 }
-            } catch (_: Exception) {
-                runOnUiThread {
-                    if (isFinishing || !dlg.isShowing) return@runOnUiThread
+            } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileInfo", failureCause);
+                runFeatureOnUiThread {
+                    if (isFinishing || !dlg.isShowing) return@runFeatureOnUiThread
                     tvMd5Val.text = getString(R.string.calc_failed); tvShaVal.text = getString(R.string.calc_failed)
                 }
             }

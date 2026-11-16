@@ -10,7 +10,7 @@
     android:paddingEnd="@dimen/space_md"
     android:background="?attr/selectableItemBackground">
 
-    <CheckBox
+    <com.usefulunpacker.UuCheckBox
         android:id="@+id/checkbox"
         android:layout_width="32dp"
         android:layout_height="32dp"

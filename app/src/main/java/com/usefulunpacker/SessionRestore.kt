@@ -4,7 +4,7 @@ import android.os.Environment
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 private const val SESSION_PREF = "session_json"
 
@@ -47,7 +47,7 @@ private class PendingPreview(val src: File, val fmt: String, val pwd: String)
 internal fun MainActivity.restoreSession() {
     if (!prefs.getBoolean("restore_session", false)) { addTab(); return }
     val raw = prefs.getString(SESSION_PREF, null) ?: run { addTab(); return }
-    val root = runCatching { JSONObject(raw) }.getOrNull() ?: run { addTab(); return }
+    val root = com.usefulunpacker.observedAttempt("SessionRestore") { JSONObject(raw) }.getOrNull() ?: run { addTab(); return }
     val savedTabs = root.optJSONArray("tabs") ?: run { addTab(); return }
     if (savedTabs.length() == 0) { addTab(); return }
 
@@ -131,10 +131,10 @@ private fun MainActivity.restorePreviews(previews: Array<PendingPreview?>) {
             // cheaper than storing a value that could go stale if the game
             // folder changes between launches.
             val encNote = xp3SchemeToken(pending.fmt, pending.src)
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                if (entries.isNullOrEmpty()) return@runOnUiThread
-                if (tab.previewActive) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
+                if (entries.isNullOrEmpty()) return@runFeatureOnUiThread
+                if (tab.previewActive) return@runFeatureOnUiThread
                 val openKey = archiveKey(pending.src)
                 // Force-takeover: the dying activity's tab may still own the
                 // key during the rotation window; the restoring tab wins.

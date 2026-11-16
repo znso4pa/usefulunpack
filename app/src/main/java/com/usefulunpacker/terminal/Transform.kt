@@ -291,7 +291,7 @@ internal fun runTransform(
             }
         }
         TrResult.Ok(written, Thread.currentThread().isInterrupted)
-    } catch (_: Exception) {
+    } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("Transform", failureCause);
         TrResult.Failed
     }
 }

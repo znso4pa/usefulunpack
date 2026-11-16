@@ -132,7 +132,7 @@ internal class FdTable {
     fun checkFresh(e: Entry): Rejected? {
         if (!e.host.isFile) return Rejected.Stale(e.host.name, e.fd)
         val now = e.host.lastModified()
-        val len = try { e.host.length() } catch (_: Exception) { return Rejected.Stale(e.host.name, e.fd) }
+        val len = try { e.host.length() } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("FdTable", failureCause); return Rejected.Stale(e.host.name, e.fd) }
         if (now != e.hostMtime || len != e.hostSize) return Rejected.Stale(e.host.name, e.fd)
         return null
     }

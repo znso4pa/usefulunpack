@@ -65,7 +65,7 @@ private fun decodeReplace(bytes: ByteArray, cs: Charset): String {
  *  content (the Rust side cleans the in-progress file). */
 fun cleanupCancelledOutput(out: File, existedBefore: Boolean) {
     if (!out.exists()) return
-    if (!existedBefore) out.deleteRecursively()
+    if (!existedBefore) deleteOutputChecked(out, recursive = true)
 }
 
 /** Encodes [text] back to [encoding], symmetric with [decodeTextStrict]:
@@ -233,7 +233,7 @@ fun textEncodingOf(data: ByteArray): String? =
 /** [looksLikeText] on the file's first [maxBytes] — never reads it whole, and
  *  never throws (an unreadable file simply isn't text). */
 fun looksLikeTextFile(f: File, maxBytes: Int = 64 * 1024): Boolean =
-    runCatching { readPrefix(f, maxBytes.toLong()) }.getOrNull()?.let { looksLikeText(it) } ?: false
+    com.usefulunpacker.observedAttempt("FileUtils") { readPrefix(f, maxBytes.toLong()) }.getOrNull()?.let { looksLikeText(it) } ?: false
 
 /** Reads at most [maxBytes] from [file] — for preview/search of potentially
  *  huge files (a .log/.csv can be hundreds of MB) without loading it whole. */fun readPrefix(file: File, maxBytes: Long): ByteArray {
@@ -308,8 +308,8 @@ fun looksLikeUtf8(data: ByteArray): Boolean {
 
 fun fileSize(f: File): Long = try {
     android.system.Os.stat(f.absolutePath).st_size
-} catch (e: Exception) {
-    runCatching {
+} catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileUtils", e);
+    com.usefulunpacker.observedAttempt("FileUtils") {
         ProcessBuilder("stat", "-c%s", f.absolutePath).redirectErrorStream(true).start()
             .let { p -> val result = String(p.inputStream.readBytes()).trim().toLongOrNull() ?: 0L; p.waitFor(); result }
     }.getOrDefault(0L)
@@ -440,7 +440,7 @@ fun startsWithZipMagic(f: File): Boolean = try {
     val sig = ByteArray(4)
     FileInputStream(f).use { it.read(sig) }
     sig[0] == PK_MAGIC[0] && sig[1] == PK_MAGIC[1]
-} catch (_: Exception) { false }
+} catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileUtils", failureCause); false }
 
 /**
  * Returns "rar"/"7z"/"zip" when the file is a volume part (by name + the
@@ -468,7 +468,7 @@ fun startsWith7zMagic(f: File): Boolean = try {
     val sig = ByteArray(6)
     FileInputStream(f).use { it.read(sig) }
     sig.contentEquals(SZ_MAGIC)
-} catch (_: Exception) { false }
+} catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileUtils", failureCause); false }
 
 /**
  * Resolves the complete volume set for a RAR archive (any part works).
@@ -623,7 +623,7 @@ fun isPasswordProtected(f: File): Boolean {
             "7z" -> szVolumesNeedsPassword(f.path)
             else -> zipVolumesNeedsPassword(f.path)
         }
-    } catch (_: Exception) { false }
+    } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileUtils", failureCause); false }
 }
 
 /**
@@ -647,7 +647,7 @@ fun detectFormatByMagic(f: File): String? {
         val buf = ByteArray(MAGIC_PROBE)
         val n = FileInputStream(f).use { it.read(buf) }
         if (n <= 0) return null else buf.copyOf(n)
-    } catch (_: Exception) { return null }
+    } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileUtils", failureCause); return null }
     return detectFormatByMagic(sig)
 }
 

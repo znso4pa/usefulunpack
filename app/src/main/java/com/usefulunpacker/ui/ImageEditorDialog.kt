@@ -13,7 +13,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 import java.io.FileOutputStream
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /** Editor working-resolution cap (longest side). Prevents OOM on huge CG. */
 private const val IMG_EDIT_MAX_PX = 2048
@@ -25,22 +25,24 @@ private const val IMG_EDIT_MAX_PX = 2048
  * dialog recreation can offer to restore unsaved edits.
  */
 fun showImageEditor(activity: AppCompatActivity, file: File) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("image_edit", newChain = true)
+    try {
     val tempDir = File(activity.cacheDir, "imgedit"); tempDir.mkdirs()
     val tempFile = File(tempDir, "${file.name.hashCode().toString(16)}.png")
 
     fun open() {
         val editorView = ImageEditorView(activity)
-        val pd = android.app.ProgressDialog(activity)
+        val pd = com.usefulunpacker.UuProgressDialog(activity)
         pd.setMessage(activity.getString(R.string.msg_loading)); pd.setCancelable(false); pd.show()
         pd.keepTabsTappable(blockBehind = false)
         thread {
             val bmp = decodeBitmapCapped(file, IMG_EDIT_MAX_PX)
-            activity.runOnUiThread {
-                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            activity.runFeatureOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
                 pd.dismiss()
                 if (bmp == null) {
-                    Toast.makeText(activity, activity.getString(R.string.msg_cannot_decode), Toast.LENGTH_SHORT).show()
-                    return@runOnUiThread
+                    com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.msg_cannot_decode), Toast.LENGTH_SHORT).show()
+                    return@runFeatureOnUiThread
                 }
                 // A newer autosave wins (rotation happened mid-edit).
                 if (tempFile.exists() && tempFile.lastModified() > file.lastModified()) {
@@ -55,20 +57,27 @@ fun showImageEditor(activity: AppCompatActivity, file: File) {
     }
 
     if (tempFile.exists() && tempFile.lastModified() > file.lastModified()) {
-        AlertDialog.Builder(activity)
+        com.usefulunpacker.UuDialogBuilder(activity)
             .setTitle(activity.getString(R.string.img_edit_restore_title))
             .setMessage(activity.getString(R.string.img_edit_restore_msg))
             .setPositiveButton(activity.getString(R.string.editor_restore)) { _, _ -> open() }
             .setNegativeButton(activity.getString(R.string.editor_discard)) { _, _ -> tempFile.delete(); open() }
             .show().also { it.keepTabsTappable() }
     } else open()
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView: ImageEditorView, tempFile: File) {
     val act = activity
 
-    fun toolBtn(text: String, onClick: () -> Unit) = Button(act).apply {
+    fun toolBtn(text: String, style: ActionStyle = ActionStyle.TEXT, onClick: () -> Unit) = com.usefulunpacker.UuButton(act).apply {
         this.text = text
+        actionStyle = style
         isAllCaps = false
         setTextColor(C["accent"]!!)
         background = null
@@ -140,7 +149,7 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
         eyedropRow.text = "$hex  RGB($r,$g,$b)  —  ${act.getString(R.string.img_edit_tap_copy)}"
         eyedropRow.setOnClickListener {
             copyToClipboard(act, hex)
-            Toast.makeText(act, act.getString(R.string.color_copied, hex), Toast.LENGTH_SHORT).show()
+            com.usefulunpacker.UuNotice.makeText(act, act.getString(R.string.color_copied, hex), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -159,13 +168,13 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
                 editorView.tool = EditorTool.BRUSH
                 brushRow.visibility = android.view.View.VISIBLE
             } else {
-                Toast.makeText(act, act.getString(R.string.img_edit_crop_hint), Toast.LENGTH_SHORT).show()
+                com.usefulunpacker.UuNotice.makeText(act, act.getString(R.string.img_edit_crop_hint), Toast.LENGTH_SHORT).show()
             }
         } else {
             editorView.resetView() // keep the rect mapping 1:1 at fit zoom
             editorView.tool = EditorTool.CROP
             brushRow.visibility = android.view.View.GONE
-            Toast.makeText(act, act.getString(R.string.img_edit_crop_hint), Toast.LENGTH_SHORT).show()
+            com.usefulunpacker.UuNotice.makeText(act, act.getString(R.string.img_edit_crop_hint), Toast.LENGTH_SHORT).show()
         }
     }
     val btnEyedrop = toolBtn(act.getString(R.string.img_edit_eyedrop)) {
@@ -175,7 +184,7 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
     val btnUndo = toolBtn(act.getString(R.string.img_edit_undo)) { editorView.undo() }
     val btnReset = toolBtn(act.getString(R.string.img_edit_reset)) { editorView.clearEdits() }
     lateinit var dlg: AlertDialog
-    val btnSave = toolBtn(act.getString(R.string.img_edit_save)) {
+    val btnSave = toolBtn(act.getString(R.string.img_edit_save), ActionStyle.PRIMARY) {
         saveEdited(act, file, editorView, tempFile) { dlg.dismiss() }
     }
 
@@ -237,7 +246,7 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
         addView(toolRow)
     }
 
-    dlg = AlertDialog.Builder(act)
+    dlg = com.usefulunpacker.UuDialogBuilder(act)
         .setTitle("${act.getString(R.string.img_edit_title)} — ${file.name}")
         .setView(container)
         .setNegativeButton(act.getString(R.string.action_close), null)
@@ -251,7 +260,7 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
         autosaveExecutor.execute {
             val bmp = editorView.composeResult()
             if (bmp != null) {
-                runCatching { FileOutputStream(tempFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+                com.usefulunpacker.observedAttempt("ImageEditorDialog") { FileOutputStream(tempFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) } }
                 bmp.recycle()
             }
         }
@@ -267,20 +276,20 @@ private fun saveEdited(act: AppCompatActivity, file: File, view: ImageEditorView
         val outF = uniqueFile(dir, "${file.nameWithoutExtension}-edit.png")
         thread {
             val bmp = view.composeResult()
-            val ok = bmp != null && runCatching {
+            val ok = bmp != null && com.usefulunpacker.observedAttempt("ImageEditorDialog") {
                 FileOutputStream(outF).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
                 true
             }.getOrDefault(false)
             bmp?.recycle()
-            act.runOnUiThread {
-                if (act.isFinishing || act.isDestroyed) return@runOnUiThread
+            act.runFeatureOnUiThread {
+                if (act.isFinishing || act.isDestroyed) return@runFeatureOnUiThread
                 if (ok) {
                     // Only drop the recovery copy once we actually saved — a
                     // failed save keeps it so rotation can still offer restore.
-                    tempFile.delete()
-                    Toast.makeText(act, act.getString(R.string.img_edit_saved, outF.name), Toast.LENGTH_LONG).show()
+                    com.usefulunpacker.deleteOutputChecked(tempFile)
+                    com.usefulunpacker.UuNotice.makeText(act, act.getString(R.string.img_edit_saved, outF.name), Toast.LENGTH_LONG).show()
                 } else {
-                    Toast.makeText(act, act.getString(R.string.img_edit_failed), Toast.LENGTH_SHORT).show()
+                    com.usefulunpacker.UuNotice.failure(act, act.getString(R.string.img_edit_failed), Toast.LENGTH_SHORT).show()
                 }
                 onDone()
             }

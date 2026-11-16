@@ -113,7 +113,7 @@ internal class DiskScanner(
         if (isCancelled()) return null
         val node = DiskNode(dir)
         // listFiles() 会抛（权限 / 拔卡 / IO 错），一个读不了的目录不该让整次扫描失败。
-        val kids = runCatching { dir.listFiles() }.getOrNull()
+        val kids = com.usefulunpacker.observedAttempt("DiskUsage") { dir.listFiles() }.getOrNull()
         if (kids == null) {
             // 读不了 → 记一笔，让结果页能说「有 N 个目录没算进去」（见 [DiskScan.deniedDirs]）。
             denied++
@@ -152,7 +152,7 @@ internal class DiskScanner(
         while (stack.isNotEmpty()) {
             if (isCancelled()) break
             val d = stack.removeLast()
-            val kids = runCatching { d.listFiles() }.getOrNull()
+            val kids = com.usefulunpacker.observedAttempt("DiskUsage") { d.listFiles() }.getOrNull()
             if (kids == null) {
                 denied++
                 continue
@@ -171,7 +171,7 @@ internal class DiskScanner(
 
     /** 记一个文件：全局计数 / 全局 top-N / 所属目录的 top-3。返回它的大小。 */
     private fun count(f: File, owner: DiskNode?): Long {
-        val sz = runCatching { f.length() }.getOrDefault(0L)
+        val sz = com.usefulunpacker.observedAttempt("DiskUsage") { f.length() }.getOrDefault(0L)
         files++
         bytes += sz
         if (topN > 0) {

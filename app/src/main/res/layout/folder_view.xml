@@ -13,7 +13,8 @@
     <LinearLayout
         android:id="@+id/pathBar"
         android:layout_width="0dp"
-        android:layout_height="40dp"
+        android:layout_height="wrap_content"
+        android:minHeight="@dimen/bar_height"
         android:orientation="horizontal"
         android:gravity="center_vertical"
         android:background="@color/bg_pathbar"
@@ -23,10 +24,10 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
-        <ImageButton
+        <com.usefulunpacker.UuIconButton
             android:id="@+id/btnUp"
             android:layout_width="32dp"
-            android:layout_height="32dp"
+            android:layout_height="@dimen/touch_target"
             android:src="@drawable/ic_back"
             android:background="?attr/selectableItemBackgroundBorderless"
             app:tint="@color/ui_icon_tint"
@@ -54,11 +55,11 @@
 
         <!-- Picker mode: confirm the current directory (shown only when this
              tab runs as a path picker without file mode). -->
-        <Button
+        <com.usefulunpacker.UuButton app:uuActionStyle="primary"
             android:id="@+id/btnPickDir"
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
-            android:text="✓ 选择此目录"
+            android:layout_height="wrap_content" android:minHeight="@dimen/touch_target"
+            android:text="@string/pick_this_dir"
             android:textSize="11sp"
             android:minWidth="0dp"
             android:backgroundTint="@color/accent"
@@ -106,7 +107,8 @@
         <LinearLayout
             android:id="@+id/bottomBar"
             android:layout_width="0dp"
-            android:layout_height="@dimen/bar_height"
+            android:layout_height="wrap_content"
+            android:minHeight="@dimen/bar_height"
             android:orientation="horizontal"
             android:gravity="center_vertical"
             android:background="@color/bg_surface_raised"
@@ -133,7 +135,7 @@
             android:visibility="gone"
             android:layout_marginEnd="8dp" />
 
-        <Button
+        <com.usefulunpacker.UuButton app:uuActionStyle="primary"
             android:id="@+id/btnExtract"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -184,7 +186,7 @@
             android:paddingStart="@dimen/space_xs"
             android:paddingEnd="@dimen/space_sm">
 
-            <ImageButton
+            <com.usefulunpacker.UuIconButton
                 android:id="@+id/btnPreviewBack"
                 android:layout_width="@dimen/icon_action"
                 android:layout_height="@dimen/icon_action"
@@ -206,7 +208,7 @@
                 android:paddingStart="@dimen/space_sm" />
 
             <!-- Actions: search (icon) + overflow (编辑/条目/转换为CSO) -->
-            <ImageButton
+            <com.usefulunpacker.UuIconButton
                 android:id="@+id/btnPreviewSearch"
                 android:layout_width="@dimen/icon_action"
                 android:layout_height="@dimen/icon_action"
@@ -215,7 +217,7 @@
                 app:tint="@color/accent"
                 android:contentDescription="搜索" />
 
-            <ImageButton
+            <com.usefulunpacker.UuIconButton
                 android:id="@+id/btnPreviewOverflow"
                 android:layout_width="@dimen/icon_action"
                 android:layout_height="@dimen/icon_action"
@@ -267,7 +269,7 @@
                 android:paddingStart="@dimen/space_sm"
                 android:paddingEnd="@dimen/space_sm">
 
-                <Button
+                <com.usefulunpacker.UuButton
                     android:id="@+id/btnPreviewExtractAll"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
@@ -279,7 +281,7 @@
                     android:minWidth="0dp"
                     android:background="?attr/selectableItemBackgroundBorderless" />
 
-                <Button
+                <com.usefulunpacker.UuButton
                     android:id="@+id/btnPreviewExtract"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
@@ -292,7 +294,7 @@
                     android:minWidth="0dp"
                     android:background="?attr/selectableItemBackgroundBorderless" />
 
-                <Button
+                <com.usefulunpacker.UuButton
                     android:id="@+id/btnPreviewMerge"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"

@@ -6,7 +6,7 @@ import android.content.SharedPreferences
 import android.graphics.drawable.ColorDrawable
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 import java.io.File
 
 fun parseEntries(json: String): List<ArchiveEntry> {

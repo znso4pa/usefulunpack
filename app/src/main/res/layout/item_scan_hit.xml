@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Signature scan hit row: offset/hex/format + "Extract" and "Carve" (dd) buttons -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:app="http://schemas.android.com/apk/res-auto" xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
@@ -27,7 +27,7 @@
         android:paddingEnd="@dimen/space_xs"
         android:paddingBottom="@dimen/space_xs">
 
-        <Button
+        <com.usefulunpacker.UuButton app:uuActionStyle="primary"
             android:id="@+id/btnExtract"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -41,7 +41,7 @@
             android:minHeight="0dp"
             android:padding="@dimen/space_sm" />
 
-        <Button
+        <com.usefulunpacker.UuButton
             android:id="@+id/btnCarve"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

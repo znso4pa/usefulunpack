@@ -31,7 +31,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 import com.usefulunpacker.fileops.showRecycleBinDialog
 
 /**
@@ -184,8 +184,8 @@ class MainActivity : AppCompatActivity() {
                 // 降级到无 URI 的通用 action，再不行就只提示。
                 val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
                 intent.data = android.net.Uri.parse("package:$packageName")
-                val launched = try { startActivity(intent); true } catch (e: Exception) {
-                    try { startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)); true } catch (_: Exception) { false }
+                val launched = try { startActivity(intent); true } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("MainActivity", e);
+                    try { startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)); true } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("MainActivity", failureCause); false }
                 }
                 toast(getString(R.string.msg_permission_storage))
                 if (!launched) return
@@ -221,14 +221,14 @@ class MainActivity : AppCompatActivity() {
             androidx.activity.result.contract.ActivityResultContracts.GetContent()
         ) { uri ->
             if (uri != null) {
-                try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
+                try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("MainActivity", failureCause);}
                 prefs.edit().putString("bg_image_uri", uri.toString()).apply()
-                applyBackgroundImage(uri)
+                userIntent("wallpaper") { applyBackgroundImage(uri) }
             }
         }
         // Restore saved background
         prefs.getString("bg_image_uri", null)?.let { uriStr ->
-            try { applyBackgroundImage(Uri.parse(uriStr)) } catch (_: Exception) {}
+            try { applyBackgroundImage(Uri.parse(uriStr)) } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("MainActivity", failureCause);}
         }
         listBookmarks = findViewById(R.id.listBookmarks)
 
@@ -296,7 +296,7 @@ class MainActivity : AppCompatActivity() {
         // Initial btnCLI setup (dropdown arrow)
         updatePasteButton()
         // Bottom-left circular "add folder" button
-        val btnAddFolder = ImageButton(this).apply {
+        val btnAddFolder = com.usefulunpacker.UuIconButton(this).apply {
             setImageResource(R.drawable.ic_add_folder)
             setColorFilter(0xFF000000.toInt())
             background = android.graphics.drawable.GradientDrawable().apply {
@@ -310,14 +310,14 @@ class MainActivity : AppCompatActivity() {
                 startToStart = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
                 setMargins(24, 0, 0, 72)
             }
-            setOnClickListener {
-                val inp = EditText(this@MainActivity).apply {
+            onUserIntent("create_directory") {
+                val inp = com.usefulunpacker.UuTextField(this@MainActivity).apply {
                     setText(getString(R.string.default_new_folder_name))
                     selectAll()
                     setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
                     setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
                 }
-                AlertDialog.Builder(this@MainActivity)
+                com.usefulunpacker.UuDialogBuilder(this@MainActivity)
                     .setTitle(getString(R.string.title_new_folder))
                     .setView(inp)
                     .setPositiveButton(getString(R.string.action_new_folder)) { _, _ ->
@@ -332,9 +332,9 @@ class MainActivity : AppCompatActivity() {
                             n++
                         }
                         if (dir.mkdir()) { toast(getString(R.string.msg_created)); nav(currentDir) }
-                        else toast(getString(R.string.title_compress_failed))
+                        else failureNotice(getString(R.string.title_compress_failed))
                     }
-                    .setNegativeButton(getString(R.string.action_cancel), null)
+                    .setNegativeButton(R.string.action_cancel, null)
                     .show().also { it.keepTabsTappable() }
             }
         }
@@ -385,10 +385,13 @@ class MainActivity : AppCompatActivity() {
         window.decorView.post { terminalPanel.runExternal(path) }
     }
 
+    private val diagnosticsUi by lazy { DiagnosticsUi(this) }
+
     override fun onPause() {
+        diagnosticsUi.pause()
         super.onPause()
         saveSession()
-        try { currentMediaPlayer?.release() } catch (_: Exception) {}
+        try { currentMediaPlayer?.release() } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("MainActivity", failureCause);}
         currentMediaPlayer = null
         tabs.forEach {
             it.dirObserver?.stopWatching()
@@ -401,6 +404,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        diagnosticsUi.resume()
         // Restart each tab's observer; skip background tabs whose fragment views
         // aren't attached yet (their onCreateView re-registers the observer).
         tabs.forEach { restartDirObserverFor(it) }
@@ -496,7 +500,7 @@ class MainActivity : AppCompatActivity() {
             override fun run() {
                 memPollScheduled = false
                 if (memBadge == null || isFinishing || isDestroyed) return
-                try { updateMemBadgeText() } catch (_: Exception) {}
+                try { updateMemBadgeText() } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("MainActivity", failureCause);}
                 scheduleMemPoll()
             }
         }, 1000)
@@ -528,7 +532,7 @@ class MainActivity : AppCompatActivity() {
         if (bytes < GIB_F) "${(bytes / MIB_F).toInt()}m" else giB(bytes)
 
     override fun onDestroy() {
-        try { currentMediaPlayer?.release() } catch (_: Exception) {}
+        try { currentMediaPlayer?.release() } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("MainActivity", failureCause);}
         currentMediaPlayer = null
         // 清理编辑临时文件
         try {
@@ -537,7 +541,7 @@ class MainActivity : AppCompatActivity() {
                 editDir.listFiles()?.forEach { it.delete() }
                 editDir.delete()
             }
-        } catch (_: Exception) {}
+        } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("MainActivity", failureCause);}
         tabs.forEach { it.stopObserver() }
         // Only drop archive registrations owned by THIS instance's tabs — on
         // rotation the new activity may have already re-registered its previews,
@@ -579,7 +583,7 @@ class MainActivity : AppCompatActivity() {
             cli.setImageResource(if (hasFile) R.drawable.ic_clipboard else R.drawable.ic_overflow)
             cli.setColorFilter(if (hasFile) C["accent"]!! else C["tertiary"]!!)
             cli.setOnClickListener { v ->
-                if (hasFile) {
+                if (hasFile) { userIntent("file_move") {
                     if (multiFiles.size > 1) {
                         var ok = 0; var fail = 0
                         for (src in multiFiles) {
@@ -587,15 +591,16 @@ class MainActivity : AppCompatActivity() {
                             if (dst.exists()) { fail++; continue }
                             if (src.renameTo(dst)) ok++ else fail++
                         }
-                                                toast(getString(R.string.msg_move_result, ok, fail)); fileToMove = null; multiFiles = listOf(); updatePasteButton(); nav(currentDir)
+                        if (fail > 0) AppDiagnostics.begin("move").fail(FailureCode.PARTIAL_FAILURE, "$fail items could not be moved")
+                        toast(getString(R.string.msg_move_result, ok, fail)); fileToMove = null; multiFiles = listOf(); updatePasteButton(); nav(currentDir)
                     } else {
                         val src = fileToMove ?: return@setOnClickListener
                         val dst = File(currentDir, src.name)
                         if (dst.exists()) { toast(getString(R.string.msg_target_exists)); return@setOnClickListener }
                         if (src.renameTo(dst)) { toast(getString(R.string.msg_moved_to, dst.path)); fileToMove = null; multiFiles = listOf(); updatePasteButton(); nav(currentDir) }
-                        else toast(getString(R.string.msg_move_failed))
+                        else failureNotice(getString(R.string.msg_move_failed))
                     }
-                } else {
+                } } else {
                     val popup = PopupMenu(this@MainActivity, v)
                     popup.menu.add(0, 0, 0, getString(R.string.action_terminal))
                     popup.menu.add(0, 1, 1, getString(R.string.msg_search_global))
@@ -614,7 +619,8 @@ class MainActivity : AppCompatActivity() {
         val oldCancel = toolbar?.findViewWithTag<TextView>("cancel_move")
         if (fileToMove != null) {
             if (oldCancel == null) {
-                val btnCancel = TextView(this@MainActivity).apply {
+                val btnCancel = com.usefulunpacker.UuButton(this@MainActivity).apply {
+                    actionStyle = ActionStyle.TEXT
                     text = "✕"
                     textSize = 16f; setTextColor(C["error"]!!)
                     gravity = Gravity.CENTER; setPadding(4, 0, 8, 0)
@@ -669,7 +675,7 @@ class MainActivity : AppCompatActivity() {
      *  Names are hard-capped at 8 characters — the strip is a shared horizontal
      *  bar and an unbounded name would push every other tab off-screen. */
     internal fun showTabRenameDialog(tab: TabState) {
-        val inp = EditText(this).apply {
+        val inp = com.usefulunpacker.UuTextField(this).apply {
             setText(tab.title)
             selectAll()
             filters = arrayOf(android.text.InputFilter.LengthFilter(8))
@@ -677,14 +683,14 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
             hint = getString(R.string.tab_rename_prompt)
         }
-        AlertDialog.Builder(this)
+        com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.tab_rename))
             .setView(inp)
             .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                 tab.title = inp.text.toString().trim()
                 tabAdapter.notifyDataSetChanged()
             }
-            .setNegativeButton(getString(R.string.action_cancel), null)
+            .setNegativeButton(R.string.action_cancel, null)
             .show().also { it.keepTabsTappable() }
     }
 
@@ -732,13 +738,13 @@ class MainActivity : AppCompatActivity() {
         // 下次同一归档开工作区直接复用）。删除放后台线程——大目录同步删会卡 UI。
         val ws = tab.wsDir
         if (ws != null) {
-            AlertDialog.Builder(this)
+            com.usefulunpacker.UuDialogBuilder(this)
                 .setTitle(getString(R.string.ws_cleanup_prompt))
                 .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                     thread { ws.deleteRecursively() }
                     closeTabNow(tab)
                 }
-                .setNegativeButton(getString(R.string.action_cancel)) { _, _ -> closeTabNow(tab) }
+                .setNegativeButton(R.string.action_cancel) { _, _ -> closeTabNow(tab) }
                 .show().also { it.keepTabsTappable() }
             return
         }
@@ -797,22 +803,22 @@ class MainActivity : AppCompatActivity() {
 
     internal fun confirmDeleteSingle(tab: TabState, f: File) {
         val recycleEnabled = com.usefulunpacker.fileops.RecycleBin.isEnabled(prefs)
-        AlertDialog.Builder(this)
+        com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.title_delete))
             .setMessage(getString(if (recycleEnabled) R.string.confirm_recycle_file_msg else R.string.confirm_delete_file_msg, f.name))
-            .setPositiveButton(getString(R.string.action_delete)) { _, _ ->
+            .setPositiveButton(R.string.action_delete) { _, _ ->
                 deleteWithProgress(this, listOf(f), prefs) { del, fail ->
                     if (fail > 0) toast(getString(R.string.msg_delete_result, del, fail)) else toast(getString(if (recycleEnabled) R.string.msg_moved_to_recycle else R.string.msg_deleted))
                     pruneBookmarksForDeleted(listOf(f))
                     refreshTab(tab)
                 }
             }
-            .setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+            .setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
     }
 
     internal fun showDisclaimer(fromSettings: Boolean = false) {
         if (!fromSettings && prefs.getBoolean("disclaimer_accepted_v2", false)) return
-        val dlg = AlertDialog.Builder(this)
+        val dlg = com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.title_disclaimer))
             .setMessage(getString(R.string.disclaimer_body))
             .setPositiveButton(getString(R.string.msg_disclaimer_agree)) { _, _ ->
@@ -840,7 +846,14 @@ class MainActivity : AppCompatActivity() {
     internal var bgLastW: Int = -1
     internal var bgLastH: Int = -1
 
-    internal fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
+    internal fun toast(m: String) {
+        if (isFinishing || isDestroyed) return
+        com.usefulunpacker.UuNotice.makeText(this, m, Toast.LENGTH_SHORT).show()
+    }
+    internal fun failureNotice(message: String) {
+        if (isFinishing || isDestroyed) return
+        UuNotice.failure(this, message, Toast.LENGTH_LONG).show()
+    }
 
     // ── 弹窗框架（触摸护盾 / 按 tab 扎根 / 两种停靠）搬到了 `ui/DialogHost.kt` ──
     // 只有两个**按实例**的状态留在这儿（Kotlin 的扩展属性没有背后字段）。其余都在那边。

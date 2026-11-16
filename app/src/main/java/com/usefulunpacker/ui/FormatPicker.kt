@@ -97,10 +97,10 @@ fun showFormatPicker(
  * 双栏的音视频选择器与分组网格共用这一套 —— 两处各写一份必然漂移。
  */
 internal fun AppCompatActivity.buildFormatPickerDialog(title: String, content: View): AlertDialog {
-    val dialog = AlertDialog.Builder(this)
+    val dialog = com.usefulunpacker.UuDialogBuilder(this)
         .setTitle(title)
         .setView(content)
-        .setNegativeButton(getString(R.string.action_cancel), null)
+        .setNegativeButton(R.string.action_cancel, null)
         .create()
     dialog.belowTabs(fitContent = true)
     androidx.appcompat.content.res.AppCompatResources

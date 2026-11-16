@@ -48,15 +48,15 @@ internal fun showFolderPickerDialog(activity: AppCompatActivity, startDir: File,
         val dir = current
         val gen = ++renderGen
         // listFiles() blocks on huge/networked folders — list off-thread.
-        kotlin.concurrent.thread(start = true) {
+        com.usefulunpacker.featureThread(start = true) {
             val loaded = dir.listFiles()?.let { fs ->
                 fs.filter { it.isDirectory || allowFiles }
                     .sortedBy { !it.isDirectory } // dirs first, then files
                     .sortedBy { it.name.lowercase() }
             } ?: emptyList()
-            activity.runOnUiThread {
-                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
-                if (gen != renderGen) return@runOnUiThread
+            activity.runFeatureOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
+                if (gen != renderGen) return@runFeatureOnUiThread
                 dirs = loaded
                 list.adapter = object : BaseAdapter() {
                     override fun getCount() = dirs.size + 1
@@ -96,19 +96,18 @@ internal fun showFolderPickerDialog(activity: AppCompatActivity, startDir: File,
     }
     btnUp.setOnClickListener { current.parentFile?.let { current = it; render() } }
 
-    val dlg = AlertDialog.Builder(activity)
+    val dlg = com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(activity.getString(R.string.title_search_dir))
         .setView(view)
         .setPositiveButton(activity.getString(R.string.pick_this_dir)) { _, _ ->
             val picked = selectedFile ?: if (allowFiles) null else current
             if (allowFiles && picked == null) {
-                android.widget.Toast.makeText(activity,
-                    activity.getString(R.string.zip_add_pick), android.widget.Toast.LENGTH_SHORT).show()
+                com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.zip_add_pick), android.widget.Toast.LENGTH_SHORT).show()
             } else if (picked != null) {
                 onPick(picked)
             }
         }
-        .setNegativeButton(activity.getString(R.string.action_cancel), null)
+        .setNegativeButton(R.string.action_cancel, null)
         .create()
     // Size the window BEFORE show so the first layout is already the final
     // size (resizing in onShow causes a visible jump/flash during the enter

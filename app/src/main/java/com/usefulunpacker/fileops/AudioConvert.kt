@@ -1,7 +1,7 @@
 package com.usefulunpacker
 
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /**
  * 把一个音频文件转成 [targetFmt]（mp3 / ogg / wav）。
@@ -20,6 +20,8 @@ internal fun MainActivity.convertAudio(
     opts: AudioConvertOptions,
     ownerTab: TabState = activeTab,
 ) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("audio_convert", newChain = true)
+    try {
     val parent = src.parentFile ?: return
     val outFile = uniqueFile(parent, "${src.nameWithoutExtension}.$targetFmt")
     val opH = tryStartOperation(this, "audio")
@@ -44,11 +46,13 @@ internal fun MainActivity.convertAudio(
         if (!opH.await()) return@thread
         try {
             val ok = AudioCore.audioConvert("", src.path, outFile.path, targetFmt, opts.toJni())
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            if (!ok || opH.cancelRequested) deleteOutputChecked(outFile)
+            if (!ok && !opH.cancelRequested) AppDiagnostics.begin("AudioConvert").fail(FailureCode.INVALID_RESULT, "Conversion returned false: ${src.path}")
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 prog.dismiss()
                 if (cancelled) {
-                    outFile.delete()
+                    com.usefulunpacker.deleteOutputChecked(outFile)
                     toast(getString(R.string.msg_cancelled))
                 } else if (ok) {
                     toast(getString(R.string.msg_convert_done, outFile.name))
@@ -56,23 +60,29 @@ internal fun MainActivity.convertAudio(
                     // 用户切窗后结果要出现在发起它的那个 tab 里。
                     refreshTab(ownerTab)
                 } else {
-                    outFile.delete()
-                    toast(getString(R.string.title_convert_failed))
+                    com.usefulunpacker.deleteOutputChecked(outFile)
+                    failureNotice(getString(R.string.title_convert_failed))
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("AudioConvert", e);
             // 引擎的真原因在异常消息里（Rust 侧抛的是 `IOException("audio: …")`）。
             // 只报一句「转换失败」等于把唯一的诊断信息扔掉 —— 真机排障时
             // 用户能看到的就只有这一个 Toast。
-            outFile.delete()
+            com.usefulunpacker.deleteOutputChecked(outFile)
             val why = e.message ?: e.javaClass.simpleName
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 prog.dismiss()
-                toast(getString(R.string.msg_convert_failed_why, why))
+                failureNotice(getString(R.string.msg_convert_failed_why, why))
             }
         } finally {
             opH.release()
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }

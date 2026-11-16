@@ -10,6 +10,16 @@
     android:paddingBottom="8dp">
 
     <TextView
+        android:id="@+id/progress_chain"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="@dimen/text_sm"
+        android:textColor="@color/text_secondary"
+        android:fontFamily="monospace"
+        android:textIsSelectable="true"
+        android:visibility="gone" />
+
+    <TextView
         android:id="@+id/progress_msg"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -55,7 +65,7 @@
         android:layout_marginTop="2dp"
         android:visibility="gone" />
 
-    <Button
+    <com.usefulunpacker.UuButton
         android:id="@+id/progress_cancel"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

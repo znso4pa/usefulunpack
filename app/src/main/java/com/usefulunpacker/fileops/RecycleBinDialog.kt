@@ -1,5 +1,9 @@
 package com.usefulunpacker.fileops
 
+import com.usefulunpacker.onUserIntent
+
+import com.usefulunpacker.runFeatureOnUiThread
+
 import android.app.AlertDialog
 import android.graphics.drawable.ColorDrawable
 import android.view.Gravity
@@ -26,7 +30,7 @@ import com.usefulunpacker.nav
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 private class RecycleEntryAdapter(
     private val activity: MainActivity,
@@ -73,22 +77,22 @@ private class RecycleEntryAdapter(
         view.findViewById<TextView>(R.id.recycle_date).text = dateFormat.format(Date(entry.deletedAt))
         view.findViewById<TextView>(R.id.recycle_size).text = fmt(entry.size)
 
-        view.findViewById<Button>(R.id.btnRestore).setOnClickListener {
+        view.findViewById<Button>(R.id.btnRestore).onUserIntent("recycle_restore") {
             thread {
                 val success = RecycleBin.restore(activity, entry.id)
                 // Re-listing reads every _meta.json — do it on the worker, not
                 // the UI thread; then guard the follow-up UI against a dead
                 // activity (empty-bin dialog would crash with BadTokenException).
                 val updatedEntries = RecycleBin.listEntries(activity)
-                activity.runOnUiThread {
-                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                activity.runFeatureOnUiThread {
+                    if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
                     if (success) {
-                        Toast.makeText(activity, activity.getString(R.string.action_restore), Toast.LENGTH_SHORT).show()
+                        com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.action_restore), Toast.LENGTH_SHORT).show()
                         // enterBrowserAt 而不是 nav()：回收站是全局弹窗，从主界面（hub）
                         // 也能打开 —— nav() 只会在 hub 底下刷新列表，用户还看着主界面。
                         activity.enterBrowserAt(activity.activeTab, activity.currentDir)
                     } else {
-                        Toast.makeText(activity, activity.getString(R.string.msg_restore_failed, 1), Toast.LENGTH_SHORT).show()
+                        com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.msg_restore_failed, 1), Toast.LENGTH_SHORT).show()
                     }
                     updateEntries(updatedEntries)
                     if (updatedEntries.isEmpty()) showEmptyBinDialog(activity)
@@ -96,24 +100,24 @@ private class RecycleEntryAdapter(
             }
         }
 
-        view.findViewById<Button>(R.id.btnPermanentDelete).setOnClickListener {
-            AlertDialog.Builder(activity)
+        view.findViewById<Button>(R.id.btnPermanentDelete).onUserIntent("recycle_delete") {
+            com.usefulunpacker.UuDialogBuilder(activity)
                 .setTitle(activity.getString(R.string.recycle_permanent_delete))
                 .setMessage(entry.originalName)
-                .setPositiveButton(activity.getString(R.string.action_delete)) { _, _ ->
+                .setPositiveButton(R.string.action_delete) { _, _ ->
                     thread {
                         val dir = RecycleBin.recycleDir(activity)
                         java.io.File(dir, entry.id).deleteRecursively()
                         RecycleBin.removeFromManifest(activity, entry.id)
                         val updatedEntries = RecycleBin.listEntries(activity)
-                        activity.runOnUiThread {
-                            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                        activity.runFeatureOnUiThread {
+                            if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
                             updateEntries(updatedEntries)
                             if (updatedEntries.isEmpty()) showEmptyBinDialog(activity)
                         }
                     }
                 }
-                .setNegativeButton(activity.getString(R.string.action_cancel), null)
+                .setNegativeButton(R.string.action_cancel, null)
                 .show().also { it.keepTabsTappable(rootToTab = false) }
         }
 
@@ -155,17 +159,19 @@ private fun showEmptyBinDialog(activity: MainActivity) {
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(8) })
     }
-    AlertDialog.Builder(activity)
+    com.usefulunpacker.UuDialogBuilder(activity)
         .setView(body)
         .setPositiveButton(activity.getString(R.string.action_confirm), null)
         .show().also { it.belowTabs(fitContent = true) }
 }
 
 fun showRecycleBinDialog(activity: MainActivity) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("recycle_bin")
+    try {
     val recycleEnabled = RecycleBin.isEnabled(activity.getSharedPreferences("bm", 0))
 
     if (!recycleEnabled) {
-        AlertDialog.Builder(activity)
+        com.usefulunpacker.UuDialogBuilder(activity)
             .setTitle(activity.getString(R.string.title_recycle_bin))
             .setMessage(activity.getString(R.string.recycle_disabled_message))
             .setPositiveButton(activity.getString(R.string.action_confirm), null)
@@ -175,7 +181,7 @@ fun showRecycleBinDialog(activity: MainActivity) {
 
     // Loading dialog while the recycle index is read on a worker thread — a
     // large bin (hundreds of entries) must not freeze the UI with no feedback.
-    val pd = android.app.ProgressDialog(activity).apply {
+    val pd = com.usefulunpacker.UuProgressDialog(activity).apply {
         setTitle(activity.getString(R.string.title_recycle_bin))
         setMessage(activity.getString(R.string.recycle_loading))
         setProgressStyle(android.app.ProgressDialog.STYLE_SPINNER)
@@ -185,12 +191,12 @@ fun showRecycleBinDialog(activity: MainActivity) {
     pd.keepTabsTappable(rootToTab = false, blockBehind = false)
     thread {
         val entries = RecycleBin.listEntries(activity)
-        activity.runOnUiThread {
-            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+        activity.runFeatureOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
             pd.dismiss()
             if (entries.isEmpty()) {
                 showEmptyBinDialog(activity)
-                return@runOnUiThread
+                return@runFeatureOnUiThread
             }
 
             val d = activity.resources.displayMetrics.density
@@ -249,30 +255,36 @@ fun showRecycleBinDialog(activity: MainActivity) {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
 
-            dialog = AlertDialog.Builder(activity)
+            dialog = com.usefulunpacker.UuDialogBuilder(activity)
                 .setTitle(activity.getString(R.string.title_recycle_bin))
                 .setView(card)
-                .setPositiveButton(activity.getString(R.string.recycle_empty_now)) { _, _ ->
-                    AlertDialog.Builder(activity)
+                .setPositiveButton(R.string.recycle_empty_now) { _, _ ->
+                    com.usefulunpacker.UuDialogBuilder(activity)
                         .setTitle(activity.getString(R.string.recycle_empty_now))
                         .setMessage(activity.getString(R.string.recycle_empty_confirm))
-                        .setPositiveButton(activity.getString(R.string.action_delete)) { _, _ ->
+                        .setPositiveButton(R.string.action_delete) { _, _ ->
                             thread {
                                 RecycleBin.emptyRecycleBin(activity)
-                                activity.runOnUiThread {
-                                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
-                                    Toast.makeText(activity, activity.getString(R.string.recycle_empty), Toast.LENGTH_SHORT).show()
+                                activity.runFeatureOnUiThread {
+                                    if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
+                                    com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.recycle_empty), Toast.LENGTH_SHORT).show()
                                     dialog?.dismiss()
                                     // 同 restore：走 enterBrowserAt，hub 盖着时也能真的看到列表
                                     activity.enterBrowserAt(activity.activeTab, activity.currentDir)
                                 }
                             }
                         }
-                        .setNegativeButton(activity.getString(R.string.action_cancel), null)
+                        .setNegativeButton(R.string.action_cancel, null)
                         .show().also { it.keepTabsTappable(rootToTab = false) }
                 }
                 .setNegativeButton(activity.getString(R.string.action_close), null)
                 .show().also { it.belowTabs(fitContent = true) }
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }

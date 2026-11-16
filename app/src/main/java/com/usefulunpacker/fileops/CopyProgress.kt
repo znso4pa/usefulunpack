@@ -4,7 +4,7 @@ import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 import java.io.IOException
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /**
  * Copies [targets] into [targetDir] with a dual-bar card on the shared
@@ -41,6 +41,8 @@ fun MainActivity.copyWithProgress(
     /** Invoked on the **UI thread** after the card is gone. */
     onDone: (copied: Int, failed: Int, cancelled: Boolean) -> Unit = { _, _, _ -> }
 ) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("file_copy", newChain = true)
+    try {
     if (targets.isEmpty()) return
     if (!OperationLock.acquire()) {
         toast(getString(R.string.msg_op_in_progress))
@@ -54,7 +56,7 @@ fun MainActivity.copyWithProgress(
     // The card belongs to the window that started the copy.
     val card = OpOverlay.addCard(
         this, getString(R.string.msg_copying), getString(R.string.action_cancel),
-        { state.cancelled = true }, ownerTabId
+        { _intentScope.trace.cancelled(); state.cancelled = true }, ownerTabId
     )
 
     thread {
@@ -62,8 +64,8 @@ fun MainActivity.copyWithProgress(
             val r = copyInto(targets, targetDir, card, state)
             // Callers touch views (refreshTab → navTab), so hop to the UI thread
             // here rather than making every call site remember to.
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 onDone(r.copied, r.failed, r.cancelled)
             }
         } finally {
@@ -72,6 +74,12 @@ fun MainActivity.copyWithProgress(
             OperationLock.release()
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 private class CopyState {
@@ -134,11 +142,12 @@ private fun MainActivity.copyInto(
                 // source is untouched, so nothing the user cared about is lost.
                 // Its bytes are NOT counted — the copy is being thrown away, and
                 // counting them would move the bar backwards on cancel.
-                plan.dest.deleteRecursively()
+                com.usefulunpacker.deleteOutputChecked(plan.dest, recursive = true)
                 break
             }
             CopyOutcome.Failed -> {
-                plan.dest.deleteRecursively()
+                AppDiagnostics.begin("copy").fail(FailureCode.IO, "Cannot copy ${plan.src.path} to ${plan.dest.path}")
+                com.usefulunpacker.deleteOutputChecked(plan.dest, recursive = true)
                 failed++
                 doneBytes += plan.bytes
             }
@@ -156,8 +165,8 @@ private fun MainActivity.copyInto(
     // copyInto runs on a worker thread; the guard goes FIRST and every UI touch
     // after it, per the project invariant (a dismissed Activity throws
     // BadTokenException, which has been hit twice).
-    runOnUiThread {
-        if (isFinishing || isDestroyed) return@runOnUiThread
+    runFeatureOnUiThread {
+        if (isFinishing || isDestroyed) return@runFeatureOnUiThread
         card?.let { OpOverlay.removeCard(this, it) }
         toast(
             when {
@@ -193,13 +202,13 @@ private class CopyPlan(val src: File, val dest: File, val bytes: Long)
  * [OperationLock] and every later file operation would report "busy".
  */
 private fun scanTreeBytes(file: File, state: CopyState): Long {
-    if (file.isFile) return runCatching { file.length() }.getOrDefault(0L)
+    if (file.isFile) return com.usefulunpacker.observedAttempt("CopyProgress") { file.length() }.getOrDefault(0L)
     if (!file.isDirectory) return 0L
     var size = 0L
-    runCatching {
+    com.usefulunpacker.observedAttempt("CopyProgress") {
         file.walkBottomUp().forEach { f ->
             if (state.cancelled) return@forEach
-            if (f.isFile) size += runCatching { f.length() }.getOrDefault(0L)
+            if (f.isFile) size += com.usefulunpacker.observedAttempt("CopyProgress") { f.length() }.getOrDefault(0L)
         }
     }
     return size
@@ -244,7 +253,7 @@ private fun copyOneTarget(
             if (c.isDirectory) {
                 stack.addLast(childRel)
             } else {
-                val total = runCatching { c.length() }.getOrDefault(0L)
+                val total = com.usefulunpacker.observedAttempt("CopyProgress") { c.length() }.getOrDefault(0L)
                 val (r, written) = copyOneFile(c, File(plan.dest, childRel), childRel, total, state, onFile, acc)
                 acc += written
                 if (r != CopyOutcome.Done) return r
@@ -288,7 +297,7 @@ private fun copyOneFile(
         // not be reported as done — and must not be left on disk.
         if (size > 0 && dest.length() != size) return CopyOutcome.Failed to written
         return CopyOutcome.Done to written
-    } catch (e: Exception) {
+    } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("CopyProgress", e);
         return CopyOutcome.Failed to written
     }
 }
@@ -297,7 +306,7 @@ private fun copyOneFile(
  * Posts the per-file bar, **at most once per whole percent**.
  *
  * The copy loop reports every 256 KB chunk. Without this throttle a 1 GB file
- * would queue ~8000 `runOnUiThread` posts and the UI thread — which also has to
+ * would queue ~8000 `runFeatureOnUiThread` posts and the UI thread — which also has to
  * service the very touch handling that lets the user cancel — becomes the
  * bottleneck, i.e. the progress display would slow the copy down.
  */
@@ -310,8 +319,8 @@ private fun MainActivity.pushFileProgress(
     if (pct == state.filePct) return
     state.filePct = pct
     val c = card
-    runOnUiThread {
-        if (c.root.parent == null) return@runOnUiThread
+    runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread;
+        if (c.root.parent == null) return@runFeatureOnUiThread
         c.fileBar.visibility = View.VISIBLE
         c.fileText.visibility = View.VISIBLE
         c.fileBar.isIndeterminate = false
@@ -331,8 +340,8 @@ private fun MainActivity.pushOverallProgress(
     if (pct == state.overallPct && done < total) return
     state.overallPct = pct
     val c = card
-    runOnUiThread {
-        if (c.root.parent == null) return@runOnUiThread
+    runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread;
+        if (c.root.parent == null) return@runFeatureOnUiThread
         c.overallBar.isIndeterminate = false
         c.overallBar.max = 100
         c.overallBar.progress = pct

@@ -11,7 +11,7 @@ import android.view.Gravity
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /** Decodes an image as a static Bitmap capped to [maxPx] on the longest side
  *  (sampled), safe for very large files. GIF/WebP yield their first frame.
@@ -30,7 +30,7 @@ fun decodeBitmapCapped(file: File, maxPx: Int): Bitmap? {
                 val m = maxOf(info.size.width, info.size.height)
                 if (m > maxPx) decoder.setTargetSampleSize(m / maxPx + 1)
             }
-        } catch (_: Exception) {
+        } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("PreviewDialogs", failureCause);
             decodeBitmapSampled(file, maxPx)
         }
     } else decodeBitmapSampled(file, maxPx)
@@ -45,7 +45,7 @@ private fun decodeBitmapSampled(file: File, maxPx: Int): Bitmap? {
         while (bounds.outWidth / (s * 2) >= maxPx && bounds.outHeight / (s * 2) >= maxPx) s *= 2
         val opt = BitmapFactory.Options().apply { inSampleSize = s }
         BitmapFactory.decodeFile(file.path, opt)?.let { exifRotate(file, it) }
-    } catch (_: Exception) { null }
+    } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("PreviewDialogs", failureCause); null }
 }
 
 /** Pre-API-28 BitmapFactory ignores EXIF orientation, so photos shot in
@@ -62,12 +62,12 @@ private fun exifRotate(file: File, bmp: Bitmap): Bitmap {
             androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
             else -> 0f
         }
-    } catch (_: Exception) { return bmp }
+    } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("PreviewDialogs", failureCause); return bmp }
     if (degrees == 0f) return bmp
     return try {
         val m = android.graphics.Matrix().apply { postRotate(degrees) }
         Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
-    } catch (_: Exception) { bmp }
+    } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("PreviewDialogs", failureCause); bmp }
 }
 
 fun previewLocalFile(activity: AppCompatActivity, f: File) {
@@ -82,6 +82,8 @@ fun previewLocalFile(activity: AppCompatActivity, f: File) {
 }
 
 fun showImagePreview(activity: AppCompatActivity, file: File) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("image_preview")
+    try {
     // Decode OFF the UI thread with a target sample size — a huge PNG/JPG
     // decoded at full size on the main thread ANRs and can OOM.
     val metrics = activity.resources.displayMetrics
@@ -107,19 +109,19 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
                 android.graphics.ImageDecoder.decodeDrawable(src) { decoder, info, _ ->
                     decoder.setTargetSampleSize(sampleFor(info.size.width, info.size.height))
                 }.also { (it as? android.graphics.drawable.AnimatedImageDrawable)?.start() }
-            } catch (_: Exception) {
+            } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("PreviewDialogs", failureCause);
                 decodeSampled()
             }
         } else {
             decodeSampled()
         }
-        activity.runOnUiThread {
+        activity.runFeatureOnUiThread {
             // Large images can take seconds to decode — the activity may be
             // gone by the time this runs (BadTokenException otherwise).
-            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
             if (drawable == null) {
-                Toast.makeText(activity, activity.getString(R.string.msg_cannot_decode), Toast.LENGTH_SHORT).show()
-                return@runOnUiThread
+                com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.msg_cannot_decode), Toast.LENGTH_SHORT).show()
+                return@runFeatureOnUiThread
             }
             val iv = ImageView(activity).apply {
                 setImageDrawable(drawable)
@@ -139,7 +141,7 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
 
             // Top bar: filename + overflow menu (编辑 / 转换为其他格式) — keeps
             // the bottom of the preview clean (only Close).
-            val overflowBtn = ImageButton(activity).apply {
+            val overflowBtn = com.usefulunpacker.UuIconButton(activity).apply {
                 setImageResource(R.drawable.ic_overflow)
                 setBackgroundColor(0x00000000)
                 setColorFilter(C["accent"]!!)
@@ -172,7 +174,7 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
                 addView(topBar)
                 addView(scroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
             }
-            d = AlertDialog.Builder(activity)
+            d = com.usefulunpacker.UuDialogBuilder(activity)
                 .setView(root)
                 .setPositiveButton(activity.getString(R.string.action_close), null)
                 .create()
@@ -181,35 +183,49 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
             d.show()
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int = 0, highlightQuery: String = "", showEdit: Boolean = true, onEdited: (() -> Unit)? = null) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("text_preview")
+    try {
     // Prefix read + encoding sniffing hit slow storage (1 MiB cap + double
     // decode) — do them off the main thread behind a loading dialog, then
     // build the preview UI on main. A finished activity just drops the result.
-    val pd = android.app.ProgressDialog(activity).apply {
+    val pd = com.usefulunpacker.UuProgressDialog(activity).apply {
         setMessage(activity.getString(R.string.msg_loading)); setCancelable(false); show()
     }
     pd.keepTabsTappable(blockBehind = false)
     thread {
         val prefs = (activity as? MainActivity)?.prefs
-        val data = runCatching { readPrefix(file, 1 shl 20) }.getOrNull()
-        activity.runOnUiThread {
-            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+        val data = com.usefulunpacker.observedAttempt("PreviewDialogs") { readPrefix(file, 1 shl 20) }.getOrNull()
+        activity.runFeatureOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
             pd.dismiss()
             if (data == null) {
-                Toast.makeText(activity, activity.getString(R.string.cannot_read_file, ""), Toast.LENGTH_SHORT).show()
-                return@runOnUiThread
+                com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.cannot_read_file, ""), Toast.LENGTH_SHORT).show()
+                return@runFeatureOnUiThread
             }
             // Compiled TJS2 scripts are binary bytecode, not text — a clear message
             // beats a garbled preview.
             if (isTjsBytecode(data)) {
-                Toast.makeText(activity, activity.getString(R.string.msg_tjs_compiled), Toast.LENGTH_LONG).show()
-                return@runOnUiThread
+                com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.msg_tjs_compiled), Toast.LENGTH_LONG).show()
+                return@runFeatureOnUiThread
             }
             showTextPreviewLoaded(activity, file, data, highlightLine, highlightQuery, showEdit, onEdited)
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 /** Main-thread UI half of [showTextPreview], invoked once the bytes are in. */
@@ -226,7 +242,7 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
         activity.getString(R.string.encoding_utf8), activity.getString(R.string.encoding_sjis),
         activity.getString(R.string.encoding_gbk), activity.getString(R.string.encoding_utf16))
 
-    fun decode(): String = runCatching { decodeTextStrict(data, curEncoding) }
+    fun decode(): String = com.usefulunpacker.observedAttempt("PreviewDialogs") { decodeTextStrict(data, curEncoding) }
         .getOrElse { activity.getString(R.string.cannot_read_file, it.message ?: "") }
 
     // Markdown/RTF rich rendering toggle (md/markdown/rtf only). Default on:
@@ -251,7 +267,7 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
         setBackgroundColor(C["surface_raised"]!!)
         isClickable = true
         setOnClickListener {
-            AlertDialog.Builder(activity)
+            com.usefulunpacker.UuDialogBuilder(activity)
                 .setTitle(activity.getString(R.string.settings_text_encoding))
                 .setSingleChoiceItems(encLabels, TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)) { d, w ->
                     curEncoding = TEXT_ENCODINGS[w]
@@ -260,7 +276,7 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
                     d.dismiss()
                     refreshContent()
                 }
-                .setNegativeButton(activity.getString(R.string.action_cancel), null)
+                .setNegativeButton(R.string.action_cancel, null)
                 .show().also { it.keepTabsTappable() }
         }
     }
@@ -374,14 +390,14 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
                 setBackgroundColor(C["nav_bg"]!!); setPadding(0, 6, 0, 6)
             }
-            val btnPrev = Button(activity).apply {
+            val btnPrev = com.usefulunpacker.UuButton(activity).apply {
                 text = activity.getString(R.string.search_prev); textSize = 12f; isAllCaps = false
                 setTextColor(C["accent"]!!); background = null; setPadding(12, 4, 12, 4)
             }
             val tvCounter = TextView(activity).apply {
                 gravity = Gravity.CENTER; textSize = 12f; setTextColor(C["tertiary_light"]!!); setPadding(20, 4, 20, 4)
             }
-            val btnNext = Button(activity).apply {
+            val btnNext = com.usefulunpacker.UuButton(activity).apply {
                 text = activity.getString(R.string.search_next); textSize = 12f; isAllCaps = false
                 setTextColor(C["accent"]!!); background = null; setPadding(12, 4, 12, 4)
             }
@@ -411,9 +427,9 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
     // Wrong-encoding detection on the initial render.
     val initialRaw = decode()
     if (textLooksGarbled(initialRaw)) {
-        Toast.makeText(activity, activity.getString(R.string.preview_encoding_hint, curEncoding), Toast.LENGTH_LONG).show()
+        com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.preview_encoding_hint, curEncoding), Toast.LENGTH_LONG).show()
     } else if (curEncoding != "UTF-8" && looksLikeUtf8(data)) {
-        Toast.makeText(activity, activity.getString(R.string.preview_looks_utf8_hint), Toast.LENGTH_LONG).show()
+        com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.preview_looks_utf8_hint), Toast.LENGTH_LONG).show()
     }
 
     contentRoot = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
@@ -452,7 +468,7 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
     }
 
     val title = if (highlightLine > 0) activity.getString(R.string.file_line_title, file.name, highlightLine) else file.name
-    val builder = AlertDialog.Builder(activity)
+    val builder = com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(title)
         .setView(root)
         .setPositiveButton(activity.getString(R.string.action_close), null)
@@ -470,10 +486,12 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
  *  the global text encoding + the 编辑/localization workflow). Preserves the
  *  original BOM state so a round-trip is byte-faithful when encoding unchanged. */
 fun showTextEditor(activity: AppCompatActivity, file: File, onSaved: (() -> Unit)? = null) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("text_edit")
+    try {
     // Bounded read (2 MiB) — reading a huge file whole on the main thread is
     // an ANR; scripts are tiny, so anything larger is rejected up front.
     if (file.length() > 2L shl 20) {
-        Toast.makeText(activity, activity.getString(R.string.msg_editor_too_large), Toast.LENGTH_LONG).show()
+        com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.msg_editor_too_large), Toast.LENGTH_LONG).show()
         return
     }
     
@@ -488,14 +506,14 @@ fun showTextEditor(activity: AppCompatActivity, file: File, onSaved: (() -> Unit
                            tempFile.length() > 0
     
     if (shouldAskRestore) {
-        AlertDialog.Builder(activity)
+        com.usefulunpacker.UuDialogBuilder(activity)
             .setTitle(activity.getString(R.string.editor_unsaved_changes))
             .setMessage(activity.getString(R.string.editor_restore_prompt))
             .setPositiveButton(activity.getString(R.string.editor_restore)) { _, _ ->
                 loadAndOpenEditor(activity, file, tempFile, onSaved, useTempContent = true)
             }
             .setNegativeButton(activity.getString(R.string.editor_discard)) { _, _ ->
-                tempFile.delete()
+                com.usefulunpacker.deleteOutputChecked(tempFile)
                 loadAndOpenEditor(activity, file, tempFile, onSaved, useTempContent = false)
             }
             .setNeutralButton(activity.getString(R.string.action_cancel), null)
@@ -503,35 +521,41 @@ fun showTextEditor(activity: AppCompatActivity, file: File, onSaved: (() -> Unit
     } else {
         loadAndOpenEditor(activity, file, tempFile, onSaved, useTempContent = false)
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 /** Shared loader for [showTextEditor]: reads the source (and optionally the
  *  autosave copy) off the main thread behind a loading dialog, then opens the
  *  editor on main. Keeps the per-branch semantics of the old inline code. */
 private fun loadAndOpenEditor(activity: AppCompatActivity, file: File, tempFile: File, onSaved: (() -> Unit)?, useTempContent: Boolean) {
-    val pd = android.app.ProgressDialog(activity).apply {
+    val pd = com.usefulunpacker.UuProgressDialog(activity).apply {
         setMessage(activity.getString(R.string.msg_loading)); setCancelable(false); show()
     }
     pd.keepTabsTappable(blockBehind = false)
     thread {
-        val data = runCatching { file.readBytes() }.getOrNull()
-        val tempContent = if (useTempContent) runCatching { tempFile.readText() }.getOrNull() else null
-        activity.runOnUiThread {
-            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+        val data = com.usefulunpacker.observedAttempt("PreviewDialogs") { file.readBytes() }.getOrNull()
+        val tempContent = if (useTempContent) com.usefulunpacker.observedAttempt("PreviewDialogs") { tempFile.readText() }.getOrNull() else null
+        activity.runFeatureOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
             pd.dismiss()
             if (useTempContent && tempContent != null) {
                 val encoding = if (data != null) detectBestEncoding(data) ?: "UTF-8" else "UTF-8"
                 val bom = if (data != null) hasBom(data) else false
                 openEditorWithContent(activity, tempContent, file, tempFile, onSaved, data ?: tempContent.toByteArray(), encoding, bom)
-                return@runOnUiThread
+                return@runFeatureOnUiThread
             }
             if (data == null) {
-                Toast.makeText(activity, activity.getString(R.string.cannot_read_file, ""), Toast.LENGTH_SHORT).show()
-                return@runOnUiThread
+                com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.cannot_read_file, ""), Toast.LENGTH_SHORT).show()
+                return@runFeatureOnUiThread
             }
             if (!useTempContent && isTjsBytecode(data)) {
-                Toast.makeText(activity, activity.getString(R.string.msg_tjs_compiled), Toast.LENGTH_LONG).show()
-                return@runOnUiThread
+                com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.msg_tjs_compiled), Toast.LENGTH_LONG).show()
+                return@runFeatureOnUiThread
             }
             val encoding = detectBestEncoding(data)
                 ?: (activity as? MainActivity)?.prefs?.getString("text_encoding", "UTF-8") ?: "UTF-8"
@@ -562,7 +586,7 @@ private fun openEditorWithContent(
     // 用于抑制程序化setText触发的TextWatcher
     var suppressWatcher = false
     
-    val et = EditText(activity).apply {
+    val et = com.usefulunpacker.UuTextField(activity).apply {
         setText(content)
         setTextColor(C["primary"]!!)
         setHintTextColor(C["hint"]!!)
@@ -611,7 +635,7 @@ private fun openEditorWithContent(
                 val gen = autosaveGen
                 val snapshot = currentText
                 val r = Runnable {
-                    thread { try { if (gen == autosaveGen) tempFile.writeText(snapshot) } catch (_: Exception) {} }
+                    thread { try { if (gen == autosaveGen) tempFile.writeText(snapshot) } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("PreviewDialogs", failureCause);} }
                 }
                 autosavePending = r
                 autosaveHandler.postDelayed(r, 500)
@@ -628,14 +652,14 @@ private fun openEditorWithContent(
         setBackgroundColor(C["surface_raised"]!!)
         isClickable = true
         setOnClickListener {
-            AlertDialog.Builder(activity)
+            com.usefulunpacker.UuDialogBuilder(activity)
                 .setTitle(activity.getString(R.string.settings_text_encoding))
                 .setSingleChoiceItems(encLabels, TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)) { d, w ->
                     curEncoding = TEXT_ENCODINGS[w]
                     encRow.text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[w] + "  ▾"
                     d.dismiss()
                 }
-                .setNegativeButton(activity.getString(R.string.action_cancel), null)
+                .setNegativeButton(R.string.action_cancel, null)
                 .show().also { it.keepTabsTappable() }
         }
     }
@@ -646,14 +670,14 @@ private fun openEditorWithContent(
         setPadding(16, 8, 16, 8)
         setBackgroundColor(C["surface"]!!)
     }
-    val btnUndo = Button(activity).apply {
+    val btnUndo = com.usefulunpacker.UuButton(activity).apply {
         text = activity.getString(R.string.editor_undo)
         setTextColor(C["accent"]!!)
         background = null
         textSize = 12f
         isEnabled = false
     }
-    val btnRedo = Button(activity).apply {
+    val btnRedo = com.usefulunpacker.UuButton(activity).apply {
         text = activity.getString(R.string.editor_redo)
         setTextColor(C["accent"]!!)
         background = null
@@ -698,7 +722,7 @@ private fun openEditorWithContent(
         addView(frame, LinearLayout.LayoutParams(MATCH, 0, 1f))
     }
     
-    val dlg = AlertDialog.Builder(activity)
+    val dlg = com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(activity.getString(R.string.title_text_editor))
         .setView(body)
         .setPositiveButton(activity.getString(R.string.action_save)) { _, _ ->
@@ -708,12 +732,12 @@ private fun openEditorWithContent(
                 autosaveGen++  // 使在途的自动保存写失效，防止复活刚删的临时文件
                 cancelPendingAutosave()
                 tempFile.delete()  // 正常保存，删除临时文件
-                Toast.makeText(activity, activity.getString(R.string.msg_saved), Toast.LENGTH_SHORT).show()
+                com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.msg_saved), Toast.LENGTH_SHORT).show()
                 onSaved?.invoke()
-            } catch (e: Exception) {
+            } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("PreviewDialogs", e);
                 // 保存失败时 KEEP 临时文件 — 它是自动保存的恢复副本；删掉会丢掉
                 // 用户的所有未保存编辑，使其无法恢复。
-                Toast.makeText(activity, activity.getString(R.string.err_extract_io, e.message ?: ""), Toast.LENGTH_LONG).show()
+                com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.err_extract_io, e.message ?: ""), Toast.LENGTH_LONG).show()
             }
         }
         .setNegativeButton(activity.getString(R.string.editor_no_save)) { _, _ ->
@@ -730,14 +754,16 @@ private fun openEditorWithContent(
 }
 
 fun playAudio(activity: AppCompatActivity, file: File) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("audio_preview")
+    try {
     val m = activity as? MainActivity
     // 释放之前的MediaPlayer，并关掉它的对话框（否则旧对话框永远「播放中」）
-    m?.currentAudioDialog?.let { old -> m.currentAudioDialog = null; runCatching { old.dismiss() } }
+    m?.currentAudioDialog?.let { old -> m.currentAudioDialog = null; com.usefulunpacker.observedAttempt("PreviewDialogs") { old.dismiss() } }
     m?.currentMediaPlayer?.let { old -> m.currentMediaPlayer = null; old.release() }
 
     // prepare() 可能阻塞数百毫秒到数秒（大文件/慢存储）——必须离开主线程，
     // 否则输入事件堆积有 ANR 风险。对话框先弹，就绪后才开始计数。
-    val dlg = AlertDialog.Builder(activity)
+    val dlg = com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(activity.getString(R.string.title_audio_player, file.name))
         .setMessage(activity.getString(R.string.msg_audio_playing))
         .setPositiveButton(activity.getString(R.string.action_stop), null)
@@ -765,9 +791,9 @@ fun playAudio(activity: AppCompatActivity, file: File) {
                 prepare()
                 start()
             }
-            activity.runOnUiThread {
+            activity.runFeatureOnUiThread {
                 if (activity.isFinishing || activity.isDestroyed || !dlg.isShowing) {
-                    mp.release(); return@runOnUiThread
+                    mp.release(); return@runFeatureOnUiThread
                 }
                 m?.currentMediaPlayer = mp
                 mp.setOnCompletionListener { done ->
@@ -777,17 +803,25 @@ fun playAudio(activity: AppCompatActivity, file: File) {
                     }
                 }
             }
-        } catch (e: Exception) {
-            activity.runOnUiThread {
-                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("PreviewDialogs", e);
+            activity.runFeatureOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
                 dlg.dismiss()
-                Toast.makeText(activity, activity.getString(R.string.err_audio_playback, e.message ?: ""), Toast.LENGTH_SHORT).show()
+                com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.err_audio_playback, e.message ?: ""), Toast.LENGTH_SHORT).show()
             }
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 fun playVideo(activity: AppCompatActivity, file: File) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("video_preview")
+    try {
     try {
         // Uri.fromFile throws FileUriExposedException on API 24+ — always go
         // through the FileProvider (same one the APK installer uses).
@@ -798,7 +832,13 @@ fun playVideo(activity: AppCompatActivity, file: File) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         })
-    } catch (e: Exception) {
-        Toast.makeText(activity, activity.getString(R.string.err_video_playback, e.message ?: ""), Toast.LENGTH_SHORT).show()
+    } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("PreviewDialogs", e);
+        com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.err_video_playback, e.message ?: ""), Toast.LENGTH_SHORT).show()
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }

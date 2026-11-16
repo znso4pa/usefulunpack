@@ -8,7 +8,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.*
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 private fun MainActivity.dp(id: Int) = resources.getDimensionPixelSize(id)
 private fun MainActivity.spx(id: Int) = resources.getDimension(id) / resources.displayMetrics.scaledDensity
@@ -57,7 +57,7 @@ internal fun MainActivity.showCompressionSettings() {
         }
 
         fun singleChoice(title: String, labels: Array<String>, checked: Int, onPick: (Int) -> Unit) {
-            AlertDialog.Builder(this)
+            com.usefulunpacker.UuDialogBuilder(this)
                 .setTitle(title)
                 .setSingleChoiceItems(labels, checked) { _, w -> onPick(w) }
                 .setPositiveButton(getString(R.string.action_confirm), null)
@@ -72,14 +72,14 @@ internal fun MainActivity.showCompressionSettings() {
         fun showCustomSplitDialog() {
             var unitIdx = if (splitSize > 0 && splitSize % (1024L * 1024 * 1024) == 0L) 1 else 0
             val unitLabels = arrayOf(getString(R.string.unit_mb), getString(R.string.unit_gb))
-            val inp = EditText(this).apply {
+            val inp = com.usefulunpacker.UuTextField(this).apply {
                 setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
                 setBackgroundColor(C["surface_dark"]!!); setPadding(dp(R.dimen.space_md), dp(R.dimen.space_sm), dp(R.dimen.space_md), dp(R.dimen.space_sm)); textSize = spx(R.dimen.text_lg)
                 inputType = android.text.InputType.TYPE_CLASS_NUMBER
                 setText(if (splitSize > 0) (splitSize / (if (unitIdx == 1) 1024L * 1024 * 1024 else 1024L * 1024)).toString() else "")
                 hint = "64"
             }
-            val btnUnit = TextView(this).apply {
+            val btnUnit = com.usefulunpacker.UuButton(this).apply {
                 text = unitLabels[unitIdx]; setTextColor(C["accent"]!!); textSize = spx(R.dimen.text_xl)
                 setPadding(dp(R.dimen.space_md), dp(R.dimen.space_sm), dp(R.dimen.space_sm), dp(R.dimen.space_sm))
                 setOnClickListener { unitIdx = (unitIdx + 1) % 2; text = unitLabels[unitIdx] }
@@ -89,7 +89,7 @@ internal fun MainActivity.showCompressionSettings() {
                 addView(inp, LinearLayout.LayoutParams(0, WRAP, 1f))
                 addView(btnUnit)
             }
-            AlertDialog.Builder(this)
+            com.usefulunpacker.UuDialogBuilder(this)
                 .setTitle(getString(R.string.split_custom))
                 .setMessage(getString(R.string.split_min_note))
                 .setView(row)
@@ -99,9 +99,9 @@ internal fun MainActivity.showCompressionSettings() {
                     if (n != null && n >= 1 && n <= 2048) {
                         splitSize = n * factor
                         splitVal.text = fmtSplitSize(splitSize)
-                    } else toast(getString(R.string.split_invalid))
+                    } else failureNotice(getString(R.string.split_invalid))
                 }
-                .setNegativeButton(getString(R.string.action_cancel), null)
+                .setNegativeButton(R.string.action_cancel, null)
                 .show().also { keepTabBarTappable(it, rootToTab = false) }
         }
 
@@ -151,7 +151,7 @@ internal fun MainActivity.showCompressionSettings() {
             etPassword.setSelection(etPassword.text.length)
         }
 
-        AlertDialog.Builder(this)
+        com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.settings_compress))
             .setView(view)
             .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
@@ -168,7 +168,7 @@ internal fun MainActivity.showCompressionSettings() {
                 findViewById<TextView>(R.id.tvTitle)?.text = "UsefulUnpack" + (if (m == 1) getString(R.string.title_mode_compress) else getString(R.string.title_mode_archive))
                 if (m == 0) { bottomBar.visibility = View.GONE; btnExtract.text = getString(R.string.msg_extract_title); btnExtract.setOnClickListener { extract() }; activeTab.btnFolderNext?.visibility = View.GONE; selectedFile = null }
             }
-            .setNegativeButton(getString(R.string.action_cancel), null)
+            .setNegativeButton(R.string.action_cancel, null)
             .show().also { keepTabBarTappable(it, rootToTab = false) }
     }
 
@@ -182,26 +182,21 @@ internal fun MainActivity.showGeneralSettings() {
         val zipEncLabels = arrayOf(getString(R.string.encoding_utf8), getString(R.string.encoding_sjis), getString(R.string.encoding_gbk))
         val ZIP_ENC_VALS = arrayOf("UTF-8", "SHIFT-JIS", "GBK")
 
-        fun row(title: String, value: String, onClick: () -> Unit) = TextView(this).apply {
-            text = "$title\n$value"
-            setTextColor(C["primary"]!!)
-            textSize = spx(R.dimen.text_xl)
-            setPadding(dp(R.dimen.space_lg), dp(R.dimen.space_lg), dp(R.dimen.space_lg), dp(R.dimen.space_lg))
-            background = android.graphics.drawable.ColorDrawable(0x00000000)
-            setOnClickListener { onClick() }
+        fun row(title: String, value: String, onClick: () -> Unit) = UuActionRow(this).apply {
+            bind(title, value, onClick = onClick)
         }
         fun divider() = View(this).apply {
             setBackgroundColor(C["divider_subtle"]!!)
             layoutParams = LinearLayout.LayoutParams(MATCH, 1).apply { setMargins(dp(R.dimen.space_lg), 0, dp(R.dimen.space_lg), 0) }
         }
         fun pick(title: String, labels: Array<String>, vals: Array<String>, current: String, onPick: (String) -> Unit) {
-            AlertDialog.Builder(this)
+            com.usefulunpacker.UuDialogBuilder(this)
                 .setTitle(title)
                 .setSingleChoiceItems(labels, vals.indexOf(current).coerceAtLeast(0)) { d, which ->
                     onPick(vals[which])
                     d.dismiss()
                 }
-                .setNegativeButton(getString(R.string.action_cancel), null)
+                .setNegativeButton(R.string.action_cancel, null)
                 .show().also { keepTabBarTappable(it, rootToTab = false) }
         }
 
@@ -212,7 +207,7 @@ internal fun MainActivity.showGeneralSettings() {
                 getString(R.string.settings_language),
                 langLabels[langTags.indexOf(langCurrent).coerceAtLeast(0)],
             ) {
-                AlertDialog.Builder(this@showGeneralSettings)
+                com.usefulunpacker.UuDialogBuilder(this@showGeneralSettings)
                     .setTitle(getString(R.string.settings_language))
                     .setSingleChoiceItems(langLabels, langTags.indexOf(langCurrent).coerceAtLeast(0)) { d, which ->
                         val tag = langTags[which]
@@ -223,7 +218,7 @@ internal fun MainActivity.showGeneralSettings() {
                         d.dismiss()
                         recreate()
                     }
-                    .setNegativeButton(getString(R.string.action_cancel), null)
+                    .setNegativeButton(R.string.action_cancel, null)
                     .show().also { keepTabBarTappable(it, rootToTab = false) }
             })
             addView(divider())
@@ -265,7 +260,7 @@ internal fun MainActivity.showGeneralSettings() {
                 getString(R.string.settings_parallel_threads),
                 parallelLabels[parallelVals.indexOf(parallelThreads).coerceAtLeast(0)],
             ) {
-                AlertDialog.Builder(this@showGeneralSettings)
+                com.usefulunpacker.UuDialogBuilder(this@showGeneralSettings)
                     .setTitle(getString(R.string.settings_parallel_threads))
                     .setSingleChoiceItems(parallelLabels, parallelVals.indexOf(parallelThreads).coerceAtLeast(0)) { d, w ->
                         parallelThreads = parallelVals[w]
@@ -275,7 +270,7 @@ internal fun MainActivity.showGeneralSettings() {
                         parallelRow.text = getString(R.string.settings_parallel_threads) + "\n" + parallelLabels[w]
                         d.dismiss()
                     }
-                    .setNegativeButton(getString(R.string.action_cancel), null)
+                    .setNegativeButton(R.string.action_cancel, null)
                     .show().also { keepTabBarTappable(it, rootToTab = false) }
             }
             addView(parallelRow)
@@ -296,7 +291,7 @@ internal fun MainActivity.showGeneralSettings() {
                 getString(R.string.settings_sort),
                 sortDisplayLabels[sortVals.indexOf(sortMode).coerceAtLeast(0)],
             ) {
-                AlertDialog.Builder(this@showGeneralSettings)
+                com.usefulunpacker.UuDialogBuilder(this@showGeneralSettings)
                     .setTitle(getString(R.string.settings_sort))
                     .setSingleChoiceItems(sortDisplayLabels, sortVals.indexOf(sortMode).coerceAtLeast(0)) { d, w ->
                         sortMode = sortVals[w]
@@ -305,7 +300,7 @@ internal fun MainActivity.showGeneralSettings() {
                         nav(currentDir)
                         d.dismiss()
                     }
-                    .setNegativeButton(getString(R.string.action_cancel), null)
+                    .setNegativeButton(R.string.action_cancel, null)
                     .show().also { keepTabBarTappable(it, rootToTab = false) }
             }
             addView(sortRow)
@@ -321,7 +316,7 @@ internal fun MainActivity.showGeneralSettings() {
                 getString(R.string.settings_picker_mode),
                 pickerLabels[pickerVals.indexOf(pickerMode).coerceAtLeast(0)],
             ) {
-                AlertDialog.Builder(this@showGeneralSettings)
+                com.usefulunpacker.UuDialogBuilder(this@showGeneralSettings)
                     .setTitle(getString(R.string.settings_picker_mode))
                     .setSingleChoiceItems(pickerLabels, pickerVals.indexOf(pickerMode).coerceAtLeast(0)) { d, w ->
                         pickerMode = pickerVals[w]
@@ -329,14 +324,14 @@ internal fun MainActivity.showGeneralSettings() {
                         pickerRow.text = getString(R.string.settings_picker_mode) + "\n" + pickerLabels[w]
                         d.dismiss()
                     }
-                    .setNegativeButton(getString(R.string.action_cancel), null)
+                    .setNegativeButton(R.string.action_cancel, null)
                     .show().also { keepTabBarTappable(it, rootToTab = false) }
             }
             addView(pickerRow)
             addView(divider())
             // Live memory badge toggle: applies immediately so the overlay can
             // appear/disappear while the dialog stays open.
-            val memSwitch = androidx.appcompat.widget.SwitchCompat(this@showGeneralSettings).apply {
+            val memSwitch = com.usefulunpacker.UuSwitch(this@showGeneralSettings).apply {
                 isChecked = prefs.getBoolean("show_mem", false)
                 setTextColor(C["primary"]!!)
                 setOnCheckedChangeListener { _, checked ->
@@ -356,7 +351,7 @@ internal fun MainActivity.showGeneralSettings() {
                 addView(memSwitch)
             })
         }
-        AlertDialog.Builder(this)
+        com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.settings_general))
             .setView(body)
             .setPositiveButton(getString(R.string.action_close), null)
@@ -364,33 +359,34 @@ internal fun MainActivity.showGeneralSettings() {
     }
 
 internal fun MainActivity.settings() {
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.settings))
-            .setItems(arrayOf(
-                getString(R.string.settings_ui), getString(R.string.settings_general), getString(R.string.settings_compress),
-                getString(R.string.disk_usage),
-                getString(R.string.settings_other), getString(R.string.settings_help), getString(R.string.settings_disclaimer)
-            )) { _, which ->
-                when (which) {
-                    0 -> showUISettings()
-                    1 -> showGeneralSettings()
-                    2 -> showCompressionSettings()
-                    // 从设置进来先问扫哪儿；主页那条横条才是「一键扫存储根」。
-                    3 -> showFolderPicker(this, android.os.Environment.getExternalStorageDirectory()) { picked ->
-                        showDiskUsage(picked)
-                    }
-                    4 -> showOtherSettings()
-                    5 -> showHelpDialog()
-                    6 -> showDisclaimer(fromSettings = true)
-                }
-            }
-            .setNegativeButton(getString(R.string.action_close), null)
-            .show().also { keepTabBarTappable(it, rootToTab = false) }
+    val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    val actions = listOf<Pair<Int, () -> Unit>>(
+        R.string.settings_ui to { showUISettings() },
+        R.string.settings_general to { showGeneralSettings() },
+        R.string.settings_compress to { showCompressionSettings() },
+        R.string.disk_usage to { showFolderPicker(this, android.os.Environment.getExternalStorageDirectory()) { showDiskUsage(it) } },
+        R.string.settings_other to { showOtherSettings() },
+        R.string.diagnostics_title to { showDiagnostics() },
+        R.string.components_title to { showComponentCatalog() },
+        R.string.settings_help to { showHelpDialog() },
+        R.string.settings_disclaimer to { showDisclaimer(fromSettings = true) }
+    )
+    lateinit var dialog: android.app.AlertDialog
+    actions.forEach { (label, action) -> body.addView(UuActionRow(this).apply {
+        bind(getString(label), navigation = true, onClick = { dialog.dismiss(); action() })
+    }) }
+    val scroll = ScrollView(this).apply {
+        isVerticalScrollBarEnabled = false; isHorizontalScrollBarEnabled = false; addView(body)
     }
+    dialog = UuDialogBuilder(this).setTitle(getString(R.string.settings)).setView(scroll)
+        .setNegativeButton(R.string.action_close, null).create()
+    dialog.show()
+    dialog.belowTabs(rootToTab = false, fitContent = true)
+}
 
 internal fun MainActivity.showOtherSettings() {
     val act = this
-    val switchRestore = androidx.appcompat.widget.SwitchCompat(act).apply {
+    val switchRestore = com.usefulunpacker.UuSwitch(act).apply {
         isChecked = prefs.getBoolean("restore_session", false)
         setTextColor(C["primary"]!!)
     }
@@ -423,13 +419,13 @@ internal fun MainActivity.showOtherSettings() {
             setOnClickListener { showRecycleBinSettings() }
         })
     }
-    AlertDialog.Builder(act)
+    com.usefulunpacker.UuDialogBuilder(act)
         .setTitle(getString(R.string.settings_other))
         .setView(container)
         .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
             prefs.edit().putBoolean("restore_session", switchRestore.isChecked).apply()
         }
-        .setNegativeButton(getString(R.string.action_cancel), null)
+        .setNegativeButton(R.string.action_cancel, null)
         .show().also { keepTabBarTappable(it, rootToTab = false) }
     }
 
@@ -437,7 +433,7 @@ internal fun MainActivity.showRecycleBinSettings() {
     val recycleEnabled = com.usefulunpacker.fileops.RecycleBin.isEnabled(prefs)
     var autoCleanDays = com.usefulunpacker.fileops.RecycleBin.autoCleanDays(prefs)
 
-    val switchEnabled = androidx.appcompat.widget.SwitchCompat(this).apply {
+    val switchEnabled = com.usefulunpacker.UuSwitch(this).apply {
         isChecked = recycleEnabled
         setTextColor(C["primary"]!!)
     }
@@ -460,7 +456,8 @@ internal fun MainActivity.showRecycleBinSettings() {
         textSize = spx(R.dimen.text_lg)
     }
 
-    val btnEmpty = Button(this).apply {
+    val btnEmpty = com.usefulunpacker.UuButton(this).apply {
+        actionStyle = ActionStyle.DANGER
         text = getString(R.string.recycle_empty_now)
         setTextColor(C["error"]!!)
         background = null
@@ -472,8 +469,8 @@ internal fun MainActivity.showRecycleBinSettings() {
     thread(start = true) {
         val itemCount = com.usefulunpacker.fileops.RecycleBin.getItemCount(this)
         val usedSize = com.usefulunpacker.fileops.RecycleBin.getUsedSize(this)
-        runOnUiThread {
-            if (isFinishing || isDestroyed) return@runOnUiThread
+        runFeatureOnUiThread {
+            if (isFinishing || isDestroyed) return@runFeatureOnUiThread
             tvInfo.text = getString(R.string.recycle_items, itemCount, fmt(usedSize))
             btnEmpty.isEnabled = itemCount > 0
         }
@@ -517,7 +514,7 @@ internal fun MainActivity.showRecycleBinSettings() {
             else getString(R.string.recycle_days_format, it) 
         }.toTypedArray()
         val currentIdx = daysOptions.indexOf(autoCleanDays).coerceAtLeast(0)
-        AlertDialog.Builder(this)
+        com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.recycle_auto_clean))
             .setSingleChoiceItems(daysLabels, currentIdx) { _, w ->
                 autoCleanDays = daysOptions[w]
@@ -528,34 +525,34 @@ internal fun MainActivity.showRecycleBinSettings() {
     }
 
     btnEmpty.setOnClickListener {
-        AlertDialog.Builder(this)
+        com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.recycle_empty_now))
             .setMessage(getString(R.string.recycle_empty_confirm))
-            .setPositiveButton(getString(R.string.action_delete)) { _, _ ->
+            .setPositiveButton(R.string.action_delete) { _, _ ->
                 // deleteRecursively over a big bin — offload it; the dialog
                 // closes instantly and the refresh happens when done.
                 thread(start = true) {
                     com.usefulunpacker.fileops.RecycleBin.emptyRecycleBin(this)
-                    runOnUiThread {
-                        if (isFinishing || isDestroyed) return@runOnUiThread
+                    runFeatureOnUiThread {
+                        if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                         toast(getString(R.string.recycle_empty))
                         nav(currentDir)
                         showRecycleBinSettings()
                     }
                 }
             }
-            .setNegativeButton(getString(R.string.action_cancel), null)
+            .setNegativeButton(R.string.action_cancel, null)
             .show().also { keepTabBarTappable(it, rootToTab = false) }
     }
 
-    AlertDialog.Builder(this)
+    com.usefulunpacker.UuDialogBuilder(this)
         .setTitle(getString(R.string.title_recycle_bin))
         .setView(container)
         .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
             prefs.edit().putBoolean("recycle_bin_enabled", switchEnabled.isChecked).apply()
             prefs.edit().putInt("recycle_bin_auto_clean_days", autoCleanDays).apply()
         }
-        .setNegativeButton(getString(R.string.action_cancel), null)
+        .setNegativeButton(R.string.action_cancel, null)
         .show().also { keepTabBarTappable(it, rootToTab = false) }
 }
 
@@ -567,11 +564,11 @@ internal fun MainActivity.showUISettings() {
             text = if (hasBg) getString(R.string.bg_set) else getString(R.string.bg_not_set)
             setTextColor(C["tertiary_light"]!!); textSize = spx(R.dimen.text_md)
         }
-        val btnPickBg = Button(this).apply {
+        val btnPickBg = com.usefulunpacker.UuButton(this).apply {
             text = if (hasBg) getString(R.string.bg_change) else getString(R.string.bg_pick)
             setTextColor(C["accent"]!!); background = null; textSize = spx(R.dimen.text_md)
         }
-        val btnClearBg = Button(this).apply {
+        val btnClearBg = com.usefulunpacker.UuButton(this).apply {
             text = getString(R.string.bg_clear)
             setTextColor(C["error"]!!); background = null; textSize = spx(R.dimen.text_md)
             visibility = if (hasBg) View.VISIBLE else View.GONE
@@ -630,14 +627,14 @@ internal fun MainActivity.showUISettings() {
             btnClearBg.visibility = View.GONE
         }
 
-        AlertDialog.Builder(this)
+        com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.settings_ui))
             .setView(body)
             .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                 prefs.edit().putInt("bg_image_alpha", seekAlpha.progress).apply()
                 prefs.getString("bg_image_uri", null)?.let { applyBackgroundImage(Uri.parse(it)) }
             }
-            .setNegativeButton(getString(R.string.action_cancel), null)
+            .setNegativeButton(R.string.action_cancel, null)
             .show().also { keepTabBarTappable(it, rootToTab = false) }
     }
 
@@ -715,11 +712,12 @@ internal fun MainActivity.refreshBackdrop() {
 }
 
 internal fun MainActivity.applyBackgroundImage(uri: Uri) {
+
         try {
             // Decode (and close the stream) off the UI thread; downsample to the
             // screen so a huge wallpaper image doesn't ANR/OOM the main thread.
             thread {
-                val bmp = runCatching {
+                val bmp = com.usefulunpacker.observedAttempt("AppSettings") {
                     contentResolver.openInputStream(uri)?.use { ins ->
                         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                         BitmapFactory.decodeStream(ins, null, bounds)
@@ -741,9 +739,12 @@ internal fun MainActivity.applyBackgroundImage(uri: Uri) {
                             contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
                         }
                     }
-                }.getOrNull() ?: return@thread
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) { bmp.recycle(); return@runOnUiThread }
+                }.getOrNull() ?: run {
+                    AppDiagnostics.begin("wallpaper").fail(FailureCode.INVALID_RESULT, "Cannot decode selected wallpaper")
+                    return@thread
+                }
+                runFeatureOnUiThread {
+                    if (isFinishing || isDestroyed) { bmp.recycle(); return@runFeatureOnUiThread }
                     // The new image becomes the master; drop the previous one.
                     if (bgSourceBitmap !== bmp) bgSourceBitmap?.recycle()
                     bgSourceBitmap = bmp
@@ -758,7 +759,8 @@ internal fun MainActivity.applyBackgroundImage(uri: Uri) {
             refreshBackdrop()
             // Match status bar to toolbar
             window?.statusBarColor = 0xBB000000.toInt()
-        } catch (_: Exception) {}
+        } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("AppSettings", failureCause);}
+
     }
 
 /**

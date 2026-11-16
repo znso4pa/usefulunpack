@@ -13,7 +13,7 @@ import android.widget.TextView
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 private fun MainActivity.dp(id: Int) = resources.getDimensionPixelSize(id)
 private fun MainActivity.spx(id: Int) = resources.getDimension(id) / resources.displayMetrics.scaledDensity
@@ -61,7 +61,7 @@ fun parseScanHits(json: String?): List<ScanHit> {
                 fileCount = if (o.isNull("c")) null else o.optInt("c", 0)
             )
         }
-    } catch (_: Exception) { emptyList() }
+    } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("SignatureScan", failureCause); emptyList() }
 }
 
 /** hit label → archive format key (null = not an archive → save the segment only).
@@ -276,16 +276,18 @@ private const val SCAN_PATTERN_COUNT = 203
 
 /** binwalk-style scan dialog (Rust scan-core + byte-level progress bar). */
 internal fun MainActivity.showSignatureScan(f: File) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("scan_and_carve", newChain = true)
+    try {
     if (!f.isFile) { toast(getString(R.string.scan_dir_error)); return }
     val total = f.length()
-    val pd = ProgressDialog(this).apply {
+    val pd = com.usefulunpacker.UuProgressDialog(this).apply {
         setTitle(getString(R.string.action_scan))
         setMessage(getString(R.string.scan_progress))
         setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
         max = 1000
         progress = 0
         setCancelable(true)
-        setOnCancelListener { ScanCore.scanCancel() }
+        setOnCancelListener { _intentScope.trace.cancelled(); ScanCore.scanCancel() }
         show()
     }
     pd.keepTabsTappable(blockBehind = false)
@@ -295,8 +297,8 @@ internal fun MainActivity.showSignatureScan(f: File) {
             try { Thread.sleep(100) } catch (_: InterruptedException) { break }
             val bytes = ScanCore.scanProgressBytes()
             val tot = ScanCore.scanProgressTotal()
-            runOnUiThread {
-                if (!pd.isShowing) return@runOnUiThread
+            runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread;
+                if (!pd.isShowing) return@runFeatureOnUiThread
                 val pct = if (tot > 0) (bytes * 1000 / tot).toInt().coerceIn(0, 1000) else 0
                 pd.progress = pct
                 pd.setMessage(getString(R.string.scan_progress_bytes, fmt(bytes), fmt(tot)))
@@ -305,21 +307,28 @@ internal fun MainActivity.showSignatureScan(f: File) {
     }
     thread {
         val start = System.currentTimeMillis()
-        val json = try { ScanCore.scanFile(f.absolutePath) } catch (_: Exception) { null }
+        val json = try { AppDiagnostics.step("scan") { ScanCore.scanFile(f.absolutePath) } } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("SignatureScan", failureCause); null }
         val elapsed = System.currentTimeMillis() - start
         val hits = enrichScanHits(f, parseScanHits(json))
         poller.interrupt()
-        runOnUiThread {
+        runFeatureOnUiThread {
             // pd.isShowing alone can't catch a finished activity — the result
             // dialog would still crash with BadTokenException.
-            if (isFinishing || isDestroyed || !pd.isShowing) return@runOnUiThread
+            if (isFinishing || isDestroyed || !pd.isShowing) return@runFeatureOnUiThread
             pd.dismiss()
             showScanResultDialog(f, hits, elapsed)
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 private fun MainActivity.showScanResultDialog(f: File, hits: List<ScanHit>, elapsed: Long) {
+    val scanChain = AppDiagnostics.currentTrace()
     val sep = "-".repeat(72)
     val header = buildString {
         appendLine(f.name)
@@ -364,8 +373,8 @@ private fun MainActivity.showScanResultDialog(f: File, hits: List<ScanHit>, elap
             }
             row.findViewById<TextView>(R.id.scan_hit_text).text =
                 "%9d  0x%x  %s".format(hit.offset, hit.offset, desc)
-            row.findViewById<Button>(R.id.btnExtract).setOnClickListener { extractHit(f, hit) }
-            row.findViewById<Button>(R.id.btnCarve).setOnClickListener { carveHit(f, hit) }
+            row.findViewById<Button>(R.id.btnExtract).setOnClickListener { if (scanChain == null) extractHit(f, hit) else AppDiagnostics.withTrace(scanChain) { extractHit(f, hit) } }
+            row.findViewById<Button>(R.id.btnCarve).setOnClickListener { if (scanChain == null) carveHit(f, hit) else AppDiagnostics.withTrace(scanChain) { carveHit(f, hit) } }
             return row
         }
     }
@@ -386,7 +395,7 @@ private fun MainActivity.showScanResultDialog(f: File, hits: List<ScanHit>, elap
         addView(tvFooter)
     }
 
-    val dlg = AlertDialog.Builder(this)
+    val dlg = com.usefulunpacker.UuDialogBuilder(this)
         .setTitle(getString(R.string.action_scan))
         .setView(root)
         .setNegativeButton(getString(R.string.action_close), null)
@@ -398,6 +407,8 @@ private fun MainActivity.showScanResultDialog(f: File, hits: List<ScanHit>, elap
 
 /** "Extract" entry: archive hits only — per-format handling, then a destination dialog. */
 internal fun MainActivity.extractHit(f: File, hit: ScanHit) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("scan_extract")
+    try {
     val fmt = ARCHIVE_LABELS[hit.label]
     if (fmt == null) {
         toast(getString(R.string.scan_extract_not_archive))
@@ -436,12 +447,12 @@ internal fun MainActivity.extractHit(f: File, hit: ScanHit) {
         // JNI listing can take seconds on large images — keep it off the UI
         // thread (this handler runs on it).
         thread {
-            val json = try { IsoCore.isoListEntries(f.path) } catch (_: Exception) { null }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            val json = try { IsoCore.isoListEntries(f.path) } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("SignatureScan", failureCause); null }
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 if (json != null && json != "[]") {
                     showPreviewDialog(f, parseEntries(json), fmt, "")
-                    return@runOnUiThread
+                    return@runFeatureOnUiThread
                 }
                 showSeparateDestDialog(f, hit, extract = true, message = getString(R.string.msg_separate_iso_invalid))
             }
@@ -459,14 +470,14 @@ internal fun MainActivity.extractHit(f: File, hit: ScanHit) {
                 "zip" -> { ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8"); listEntriesJson(fmt, f, "", false) }
                 else -> listEntriesJson(fmt, f, "", false)
             }
-        } catch (_: Exception) { null }
-        runOnUiThread {
-            if (isFinishing || isDestroyed) return@runOnUiThread
+        } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("SignatureScan", failureCause); null }
+        runFeatureOnUiThread {
+            if (isFinishing || isDestroyed) return@runFeatureOnUiThread
             if (json != null && json != "[]") {
                 showPreviewDialog(f, parseEntries(json), fmt, "")
-                return@runOnUiThread
+                return@runFeatureOnUiThread
             }
-            val needsPw = fmt == "rar" && runCatching { RarCore.rarNeedsPassword(f.path) }.getOrDefault(false)
+            val needsPw = fmt == "rar" && com.usefulunpacker.observedAttempt("SignatureScan") { RarCore.rarNeedsPassword(f.path) }.getOrDefault(false)
             val msg = when {
                 needsPw -> getString(R.string.msg_separate_rar_encrypted)
                 fmt == "rar" -> getString(R.string.msg_separate_rar_invalid)
@@ -475,12 +486,26 @@ internal fun MainActivity.extractHit(f: File, hit: ScanHit) {
             showSeparateDestDialog(f, hit, extract = true, message = msg)
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 /** "Carve" entry: every hit — raw dd of [offset..EOF] into a standalone file,
  *  no parsing, no extraction. */
 internal fun MainActivity.carveHit(f: File, hit: ScanHit) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("scan_carve")
+    try {
     showSeparateDestDialog(f, hit, extract = false, message = null)
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 /** Destination choice: separate to a deduped new folder, or to the current directory.
@@ -490,13 +515,9 @@ internal fun MainActivity.carveHit(f: File, hit: ScanHit) {
 private fun MainActivity.showSeparateDestDialog(f: File, hit: ScanHit, extract: Boolean, message: String?) {
     val base = f.nameWithoutExtension
     val newFolder = uniqueFile(currentDir, base)
-    fun optionRow(text: String, color: Int, onClick: () -> Unit) = TextView(this).apply {
-        this.text = text
+    fun optionRow(text: String, color: Int, onClick: () -> Unit) = UuActionRow(this).apply {
+        bind(text, onClick = onClick)
         setTextColor(color)
-        textSize = spx(R.dimen.text_xl)
-        setPadding(dp(R.dimen.space_lg), dp(R.dimen.space_lg), dp(R.dimen.space_lg), dp(R.dimen.space_lg))
-        background = android.graphics.drawable.ColorDrawable(0x00000000)
-        setOnClickListener { onClick() }
     }
     val body = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -522,10 +543,10 @@ private fun MainActivity.showSeparateDestDialog(f: File, hit: ScanHit, extract: 
             else separateToFile(f, hit, currentDir)
         })
     }
-    AlertDialog.Builder(this)
+    com.usefulunpacker.UuDialogBuilder(this)
         .setTitle(getString(R.string.separate))
         .setView(body)
-        .setNegativeButton(getString(R.string.action_cancel), null)
+        .setNegativeButton(R.string.action_cancel, null)
         .show().also { it.keepTabsTappable() }
 }
 
@@ -567,6 +588,8 @@ private fun carveLengthOf(f: File, hit: ScanHit): Long? {
 
 /** Carve the archive out of the host file (when needed), then run the normal extract flow. */
 private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("scan_extract")
+    try {
     val fmt = ARCHIVE_LABELS[hit.label] ?: return
     val needsCarve = fmt in NEEDS_CARVE || (fmt == "rar" && hit.offset > RAR_SCAN_LIMIT) || (fmt == "zip" && hit.offset > 0) || (fmt == "iso" && hit.offset > 32768L)
     if (!needsCarve) {
@@ -583,7 +606,7 @@ private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File
     val carveTotal = carveLen ?: (f.length() - carveOffset).coerceAtLeast(0L)
     var carved = 0L
     var carveThread: Thread? = null
-    val pd = ProgressDialog(this).apply {
+    val pd = com.usefulunpacker.UuProgressDialog(this).apply {
         setTitle(getString(R.string.separate))
         setMessage(getString(R.string.msg_carving))
         setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
@@ -596,7 +619,7 @@ private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File
     pd.keepTabsTappable(blockBehind = false)
     carveThread = thread {
         if (!OperationLock.acquire()) {
-            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.msg_op_in_progress)) }
+            runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; pd.dismiss(); toast(getString(R.string.msg_op_in_progress)) }
             return@thread
         }
         try {
@@ -605,33 +628,41 @@ private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File
             tempDir.mkdirs()
             carveToFile(f, carveOffset, carveLen, temp) { n ->
                 carved += n
-                runOnUiThread {
-                    if (!pd.isShowing) return@runOnUiThread
+                runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread;
+                    if (!pd.isShowing) return@runFeatureOnUiThread
                     val pct = if (carveTotal > 0) (carved * 1000 / carveTotal).toInt().coerceIn(0, 1000) else 0
                     pd.progress = pct
                     pd.setMessage(getString(R.string.msg_carving_bytes, fmt(carved), fmt(carveTotal)))
                 }
             }
             if (Thread.currentThread().isInterrupted) {
-                runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.msg_cancelled)) }
+                runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; pd.dismiss(); toast(getString(R.string.msg_cancelled)) }
                 return@thread
             }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 pd.dismiss()
                 // extractAll acquires its own lock (we released ours on carve).
                 extractAll(destDir, temp, fmt)
             }
-        } catch (e: Exception) {
-            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("SignatureScan", e);
+            runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; pd.dismiss(); failureNotice(getString(R.string.err_extract_io, e.message ?: "")) }
         } finally {
             OperationLock.release()
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 /** dd: carve [offset..EOF] into a standalone file inside [destDir]. */
 private fun MainActivity.separateToFile(f: File, hit: ScanHit, destDir: File) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("scan_carve")
+    try {
     val ext = ARCHIVE_EXT_FOR_LABEL[hit.label] ?: EXT_FOR_LABEL[hit.label] ?: "bin"
     destDir.mkdirs()
     val out = uniqueFile(destDir, "${f.nameWithoutExtension}.$ext")
@@ -639,7 +670,7 @@ private fun MainActivity.separateToFile(f: File, hit: ScanHit, destDir: File) {
     val carveLen = carveLengthOf(f, hit)
     val carveTotal = carveLen ?: (f.length() - carveOffset).coerceAtLeast(0L)
     var carved = 0L
-    val pd = ProgressDialog(this).apply {
+    val pd = com.usefulunpacker.UuProgressDialog(this).apply {
         setTitle(getString(R.string.separate))
         setMessage(getString(R.string.msg_carving))
         setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
@@ -653,21 +684,27 @@ private fun MainActivity.separateToFile(f: File, hit: ScanHit, destDir: File) {
         try {
             carveToFile(f, carveOffset, carveLen, out) { n ->
                 carved += n
-                runOnUiThread {
-                    if (!pd.isShowing) return@runOnUiThread
+                runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread;
+                    if (!pd.isShowing) return@runFeatureOnUiThread
                     val pct = if (carveTotal > 0) (carved * 1000 / carveTotal).toInt().coerceIn(0, 1000) else 0
                     pd.progress = pct
                     pd.setMessage(getString(R.string.msg_carving_bytes, fmt(carved), fmt(carveTotal)))
                 }
             }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 pd.dismiss()
                 toast(getString(R.string.msg_separate_done, out.name))
                 nav(currentDir)
             }
-        } catch (e: Exception) {
-            runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("SignatureScan", e);
+            runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; pd.dismiss(); failureNotice(getString(R.string.err_extract_io, e.message ?: "")) }
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }

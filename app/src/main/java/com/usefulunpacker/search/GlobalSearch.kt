@@ -8,7 +8,7 @@ import android.view.ViewGroup
 import android.widget.*
 import android.widget.AdapterView.OnItemClickListener
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /**
  * Shared state for archive-content search. Set by the preview/batch preview
@@ -44,6 +44,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         // iteration (toList) still needs an explicit synchronized block.
         val results = java.util.Collections.synchronizedList(mutableListOf<SearchResult>())
         var searchThread: Thread? = null
+        var searchChain: OperationTrace? = null
         lateinit var searchDialog: AlertDialog
         var currentLimit = 200
         val seenFiles = java.util.Collections.synchronizedSet(mutableSetOf<String>())
@@ -172,8 +173,8 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                     if (!opH.await()) return@thread
                     try {
                         extractByFormat(fmt, src.archive.path, src.outDir.path, src.internalPath, prefs, src.password)
-                        runOnUiThread {
-                            if (isFinishing || isDestroyed) return@runOnUiThread
+                        runFeatureOnUiThread {
+                            if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                             pd.dismiss()
                             if (cancelled) {
                                 toast(getString(R.string.msg_cancelled))
@@ -192,7 +193,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
             }
         }
 
-        searchDialog = AlertDialog.Builder(this)
+        searchDialog = com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.msg_search_global))
             .setView(view)
             .create()
@@ -208,6 +209,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         // 之前单独 setOnDismissListener 会被它整个覆盖，搜索线程于是永远不会被
         // interrupt（关掉搜索框后仍在后台把整个存储扫完）。真机 debug 出来的。
         searchDialog.belowTabs(also = {
+            if (searchThread?.isAlive == true) searchChain?.cancelled()
             searchThread?.interrupt()
             searchThread = null
             searchProgress.stopAnim()
@@ -216,10 +218,13 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
 
         // Launch search
         fun doSearch(query: String, mode: Int, maxFileSize: Long, isContinue: Boolean = false) {
+            val _searchIntent = AppDiagnostics.enterIntent("search", newChain = true)
+            try {
             // Validate BEFORE interrupting the running thread: an empty keyword
             // used to kill the old search and return, leaving the spinner and
             // "scanning" stats stuck forever.
             if (query.isEmpty()) { toast(getString(R.string.msg_enter_keyword)); return }
+            if (searchThread?.isAlive == true) searchChain?.cancelled()
             searchThread?.interrupt()
             currentMaxFileSize = maxFileSize
             useRegex = cbRegex.isChecked
@@ -237,6 +242,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
             btnContinue.visibility = View.GONE
             tvStats.text = if (isContinue) getString(R.string.continue_scan) else getString(R.string.search_scanning)
             val scanned = intArrayOf(0)
+            searchChain = _searchIntent.trace
             searchThread = thread {
                 val t = Thread.currentThread()
                 // Only lowercase a PLAIN-TEXT query for case-insensitive matching.
@@ -246,11 +252,11 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                 val searchQuery = if (caseSensitive || useRegex) query else query.lowercase()
                 walkSearch(searchQuery, searchDir, mode, results, currentLimit, maxFileSize, scanned,
                     seenFiles, seenDirs, useRegex, caseSensitive, fileFilter)
-                runOnUiThread {
+                runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread;
                     // A newer search may have started while this one was
                     // interrupted — only publish results if we're still the
                     // current search thread.
-                    if (searchThread !== t) return@runOnUiThread
+                    if (searchThread !== t) return@runFeatureOnUiThread
                     searchProgress.stopAnim()
                     searchProgress.visibility = View.GONE
                     val hasMore = results.size >= currentLimit && results.size < 10000
@@ -272,7 +278,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                     val cur = scanned[0]
                     if (cur != lastScanned) {
                         lastScanned = cur
-                        runOnUiThread {
+                        runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread;
                             if (searchThread === watched) {
                                 tvStats.text = getString(R.string.search_progress_stats, cur, results.size)
                             }
@@ -280,6 +286,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                     }
                 }
             }
+            } finally { AppDiagnostics.leaveIntent(_searchIntent) }
         }
 
         // IME search action (content mode asks for a per-file size limit)
@@ -288,7 +295,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
             if (queryText.isEmpty()) { toast(getString(R.string.msg_enter_keyword)); return }
             // 搜索一开始就收起键盘：横屏 + 键盘时可用高度只剩 ~416dp，结果列表只剩
             // 一两行；收起后窗口会长回去（ADJUST_RESIZE），结果才铺得开。
-            runCatching {
+            com.usefulunpacker.observedAttempt("GlobalSearch") {
                 getSystemService(android.view.inputmethod.InputMethodManager::class.java)
                     ?.hideSoftInputFromWindow(etQuery.windowToken, 0)
             }
@@ -306,7 +313,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                 })
                 val radioGroup = RadioGroup(this).apply { setPadding(24, 0, 24, 0) }
                 labels.forEachIndexed { i, label ->
-                    val rb = RadioButton(this).apply {
+                    val rb = com.usefulunpacker.UuRadioButton(this).apply {
                         text = label; id = i
                         setTextColor(C["primary"]!!); textSize = 15f
                         setPadding(16, 10, 16, 10)
@@ -327,7 +334,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                     text = getString(R.string.custom_mb); setTextColor(C["secondary"]!!); textSize = 13f
                     gravity = Gravity.CENTER_VERTICAL
                 })
-                val customInput = EditText(this).apply {
+                val customInput = com.usefulunpacker.UuTextField(this).apply {
                     hint = getString(R.string.custom_mb); setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
                     // 圆角输入底（与主搜索框同一套），不再是一块平涂的深色
                     setBackgroundResource(R.drawable.bg_input_rounded)
@@ -337,7 +344,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                 }
                 customRow.addView(customInput)
                 body.addView(customRow)
-                AlertDialog.Builder(this)
+                com.usefulunpacker.UuDialogBuilder(this)
                     .setTitle(getString(R.string.size_limit_warn))
                     .setView(body)
                     .setPositiveButton(getString(R.string.search_button)) { _, _ ->
@@ -346,7 +353,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                                    else limits[radioGroup.checkedRadioButtonId.coerceIn(0, limits.size - 1)]
                         doSearch(queryText, 1, bytes)
                     }
-                    .setNegativeButton(getString(R.string.action_cancel), null)
+                    .setNegativeButton(R.string.action_cancel, null)
                     .show().also { it.keepTabsTappable() }
             } else {
                 doSearch(queryText, 0, Long.MAX_VALUE)
@@ -407,6 +414,9 @@ internal fun MainActivity.walkSearch(
         seenFiles: MutableSet<String>, seenDirs: MutableSet<String>,
         useRegex: Boolean = false, caseSensitive: Boolean = false, fileFilter: String = ""
     ) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("search")
+    try {
+        val trace = AppDiagnostics.begin("search")
         // Iterative DFS — deeply nested trees can't overflow the call stack.
         val stack = ArrayDeque<File>()
         stack.add(startDir)
@@ -416,9 +426,9 @@ internal fun MainActivity.walkSearch(
         val regex = if (useRegex) {
             try {
                 if (caseSensitive) Regex(query) else Regex(query, RegexOption.IGNORE_CASE)
-            } catch (e: Exception) {
-                runOnUiThread { toast(getString(R.string.err_invalid_regex, e.message ?: "")) }
-                null
+            } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("GlobalSearch", e);
+                runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; failureNotice(getString(R.string.err_invalid_regex, e.message ?: "")) }
+                return
             }
         } else null
         
@@ -426,9 +436,13 @@ internal fun MainActivity.walkSearch(
             val dir = stack.removeLast()
             // 目录按 **canonical path** 去重（见 `seenDirs` 的说明）。取不到就退回绝对
             // 路径 —— 宁可多走一遍，也不能因为一次 IO 失败就把整个目录漏掉。
-            val dirKey = runCatching { dir.canonicalPath }.getOrElse { dir.absolutePath }
+            val dirKey = com.usefulunpacker.observedAttempt("GlobalSearch") { dir.canonicalPath }.getOrElse { dir.absolutePath }
             if (dirKey in seenDirs) continue
-            val children = dir.listFiles() ?: continue
+            val children = dir.listFiles()
+            if (children == null) {
+                trace.fail(FailureCode.IO, "Cannot read directory ${dir.path}")
+                continue
+            }
             // ⚠️ **走完才登记**。若在 `add` 之后被 limit 截断，那个目录只扫了一半，
             // 续扫时却被当成「已访问」跳过 —— 后半截的命中就永远找不回来了。
             // 半截目录下次重走，重复的命中由 `seenFiles` 挡掉，代价只是重扫。
@@ -485,7 +499,7 @@ internal fun MainActivity.walkSearch(
                                                 }
                                             }
                                         }
-                                } catch (_: Exception) { }
+                                } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("GlobalSearch", failureCause); }
                                 if (matchCount > 0) {
                                     seenFiles.add(absPath)
                                     results.add(SearchResult(child, firstSnippet, firstLine, matchCount))
@@ -495,8 +509,14 @@ internal fun MainActivity.walkSearch(
                     } else if (child.isDirectory) {
                         stack.add(child)
                     }
-                } catch (_: Exception) { }
+                } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("GlobalSearch", failureCause); }
             }
             if (finished) seenDirs.add(dirKey)
         }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
     }

@@ -129,7 +129,7 @@ internal fun MainActivity.setRootedDialogHidden(dlg: android.app.Dialog, hidden:
 internal fun MainActivity.dismissRootedDialogsFor(tabId: Int) {
     val doomed = rootedDialogs.filter { it.ownerTabId == tabId }
     rootedDialogs.removeAll { it.ownerTabId == tabId }
-    doomed.forEach { runCatching { it.dlg.dismiss() } }
+    doomed.forEach { com.usefulunpacker.observedAttempt("DialogHost") { it.dlg.dismiss() } }
 }
 
 /**

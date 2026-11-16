@@ -2,7 +2,7 @@ package com.usefulunpacker
 
 import android.app.AlertDialog
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /**
  * 预览工作区：预览 ⋮「在窗口中打开」把归档整包（或勾选子集）解压到
@@ -49,13 +49,13 @@ internal fun MainActivity.openWorkspaceFromPreview(tab: TabState, selectedOnly: 
         }
     else entries.filter { !it.isDirectory }.sumOf { it.size }
     if (totalSize > WS_SIZE_LIMIT_BYTES) {
-        AlertDialog.Builder(this)
+        com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.ws_open))
             .setMessage(getString(R.string.ws_size_confirm, fmt(totalSize)))
             .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                 startWorkspaceExtract(tab, src, format, pwd, sel, wsDir)
             }
-            .setNegativeButton(getString(R.string.action_cancel), null)
+            .setNegativeButton(R.string.action_cancel, null)
             .show().also { it.keepTabsTappable() }
         return
     }
@@ -65,6 +65,8 @@ internal fun MainActivity.openWorkspaceFromPreview(tab: TabState, selectedOnly: 
 private fun MainActivity.startWorkspaceExtract(
     tab: TabState, src: File, format: String, pwd: String, sel: List<String>, wsDir: File
 ) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("workspace_extract", newChain = true)
+    try {
     // 密码不变量：能进预览说明密码已收集（或无密码），这里直接复用，无需再弹窗，
     // 也不占槽位等待（密码弹窗禁止进 tryStartOperation 的全局约束）。
     val opH = tryStartOperation(this, format)
@@ -88,24 +90,30 @@ private fun MainActivity.startWorkspaceExtract(
             wsDir.deleteRecursively()
             wsDir.mkdirs()
             val o = extractByFormat(format, src.path, wsDir.path, sel.joinToString("\n"), prefs, pwd)
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 prog.dismiss()
-                if (cancelled) { wsDir.deleteRecursively(); toast(getString(R.string.msg_cancelled)); return@runOnUiThread }
-                if (!o.counts.ok) { wsDir.deleteRecursively(); toast(friendlyExtractError(this, o.error)); return@runOnUiThread }
+                if (cancelled) { wsDir.deleteRecursively(); toast(getString(R.string.msg_cancelled)); return@runFeatureOnUiThread }
+                if (!o.counts.ok) { wsDir.deleteRecursively(); toast(friendlyExtractError(this, o.error)); return@runFeatureOnUiThread }
                 openWorkspaceTab(wsDir, src.name)
             }
-        } catch (e: Exception) {
+        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("WorkspaceFlow", e);
             wsDir.deleteRecursively()
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 prog.dismiss()
-                toast(getString(R.string.err_extract_io, e.message ?: ""))
+                failureNotice(getString(R.string.err_extract_io, e.message ?: ""))
             }
         } finally {
             opH.release()
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 /** 开一个浏览工作区目录的新 tab（手动构建，照 openPickerInTab 模式）。 */

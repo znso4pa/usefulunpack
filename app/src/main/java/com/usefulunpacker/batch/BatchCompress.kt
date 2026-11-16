@@ -6,36 +6,38 @@ import android.graphics.drawable.ColorDrawable
 import android.view.View
 import android.widget.*
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 internal fun MainActivity.startBatchCompress() {
         // 跨 tab：聚合所有 tab 的选中文件
         val sel = allSelectedFiles().values.flatten().toList(); if (sel.isEmpty()) return
         val items = sel.filter { it.isDirectory || (it.isFile && it.extension.lowercase() !in ARCHIVE_EXTS) }
         if (items.isEmpty()) { toast(getString(R.string.no_compressible)); return }
-        AlertDialog.Builder(this)
+        com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.title_compress_items, items.size))
             .setItems(arrayOf(getString(R.string.batch_compress_merge), getString(R.string.batch_compress_separate))) { _, w ->
                 when (w) {
                     0 -> compressMerged(items)
                     1 -> compressSeparate(items)
                 }
-            }.setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+            }.setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
     }
 
 internal fun MainActivity.compressMerged(items: List<File>) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("batch_compress_merged")
+    try {
         // 合并只支持多条目归档格式，先选格式再命名；压缩选项（等级/分卷）内联
         showFormatPicker(this, getString(R.string.title_select_format),
             groups = MERGE_COMPRESS_GROUPS, labels = COMPRESS_LABELS
         ) { fmt ->
             val ext = COMPRESS_EXT[fmt] ?: fmt
-            val inp = EditText(this).apply {
+            val inp = com.usefulunpacker.UuTextField(this).apply {
                 setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
                 setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
                 setText("archive")
                 setSingleLine()
             }
-            AlertDialog.Builder(this)
+            com.usefulunpacker.UuDialogBuilder(this)
                 .setTitle(getString(R.string.title_compress_name))
                 .setView(inp)
                 .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
@@ -104,8 +106,8 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                 // 失败/取消必须清掉半成品：产物名可能是 root.pfs，
                                 // 留个截断的 root.pfs 会被游戏当分层补丁挂载。
                                 if (!ok) outF.delete()
-                                runOnUiThread {
-                                    if (isFinishing || isDestroyed) return@runOnUiThread
+                                runFeatureOnUiThread {
+                                    if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                                     pd.dismiss()
                                     if (cancelled) {
                                         toast(getString(R.string.msg_cancelled))
@@ -118,15 +120,15 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                         // cancel/failure keep the selection so the
                                         // user can retry without re-picking files.
                                         exitAllMultiSelect(); nav(currentDir)
-                                    } else toast(getString(R.string.title_compress_failed))
+                                    } else failureNotice(getString(R.string.title_compress_failed))
                                 }
-                            } catch (e: Exception) {
+                            } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("BatchCompress", e);
                                 // Uncaught I/O here used to crash the app and leave
                                 // the progress dialog + poller thread dangling.
-                                runOnUiThread {
-                                    if (isFinishing || isDestroyed) return@runOnUiThread
+                                runFeatureOnUiThread {
+                                    if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                                     pd.dismiss()
-                                    toast(getString(R.string.err_extract_io, e.message ?: ""))
+                                    failureNotice(getString(R.string.err_extract_io, e.message ?: ""))
                                 }
                             } finally {
                                 tmpDir.deleteRecursively()
@@ -136,11 +138,19 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                         true
                     }
                 }
-                .setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+                .setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
         }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
     }
 
 internal fun MainActivity.compressSeparate(items: List<File>) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("batch_compress_separate")
+    try {
         showFormatPicker(this, getString(R.string.title_select_format),
             groups = COMPRESS_GROUPS, labels = COMPRESS_LABELS
         ) { fmt ->
@@ -211,8 +221,8 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                             }
                             if (!ok2) { outF.delete(); ok = false; break }
                         }
-                        runOnUiThread {
-                            if (isFinishing || isDestroyed) return@runOnUiThread
+                        runFeatureOnUiThread {
+                            if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                             pd.dismiss()
                             // 取消/失败保留多选（与 compressMerged 策略一致），
                             // 只有成功才清空并刷新。
@@ -220,10 +230,10 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                             else if (ok) {
                                 toast(getString(R.string.msg_batch_compress_done)); exitAllMultiSelect(); nav(currentDir)
                             }
-                            else toast(getString(R.string.title_compress_failed))
+                            else failureNotice(getString(R.string.title_compress_failed))
                         }
-                    } catch (e: Exception) {
-                        runOnUiThread { if (isFinishing || isDestroyed) return@runOnUiThread; pd.dismiss(); toast(getString(R.string.err_extract_io, e.message ?: "")) }
+                    } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("BatchCompress", e);
+                        runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; pd.dismiss(); failureNotice(getString(R.string.err_extract_io, e.message ?: "")) }
                     } finally {
                         opH.release()
                     }
@@ -231,4 +241,10 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                 true
             }
         }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
     }

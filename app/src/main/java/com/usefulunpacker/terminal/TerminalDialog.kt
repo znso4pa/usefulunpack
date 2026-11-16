@@ -10,11 +10,11 @@ import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 import java.io.File
 
 fun showTerminal(activity: AppCompatActivity, currentDir: File, onNavigate: (File) -> Unit) {
-    val inp = EditText(activity).apply {
+    val inp = com.usefulunpacker.UuTextField(activity).apply {
         hint = activity.getString(R.string.terminal_cd_prompt, currentDir)
         setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
         setBackgroundColor(C["surface"]!!); textSize = 12f; minLines = 1; maxLines = 1
@@ -51,14 +51,14 @@ fun showTerminal(activity: AppCompatActivity, currentDir: File, onNavigate: (Fil
                                  else if (target.startsWith("/")) File(target)
                                  else File(currentDir, target)
                     if (newDir != null && newDir.isDirectory) {
-                        activity.runOnUiThread {
-                            if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                        activity.runFeatureOnUiThread {
+                            if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
                             onNavigate(newDir)
                         }
                         "→ ${newDir.absolutePath}"
                     } else activity.getString(R.string.terminal_not_found, target)
                 }
-                else -> runCatching {
+                else -> com.usefulunpacker.observedAttempt("TerminalDialog") {
                     val process = ProcessBuilder("/system/bin/sh", "-c", "cd \"${currentDir.absolutePath}\" && $cmd")
                         .redirectErrorStream(true).start()
                     // 输出必须边跑边排空：waitFor 先阻塞的话，子进程写满管道
@@ -66,7 +66,7 @@ fun showTerminal(activity: AppCompatActivity, currentDir: File, onNavigate: (Fil
                     // 退出，30 秒后把健康命令误杀并丢弃全部输出。
                     val outCollector = java.io.ByteArrayOutputStream()
                     val pumper = thread {
-                        runCatching { process.inputStream.copyTo(outCollector) }
+                        com.usefulunpacker.observedAttempt("TerminalDialog") { process.inputStream.copyTo(outCollector) }
                     }
                     val completed = process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
                     if (completed) {
@@ -78,14 +78,14 @@ fun showTerminal(activity: AppCompatActivity, currentDir: File, onNavigate: (Fil
                     }
                 }.getOrDefault(activity.getString(R.string.terminal_exec_failed))
             }
-            activity.runOnUiThread {
-                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+            activity.runFeatureOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
                 out.text = r.take(TEXT_PREVIEW_MAX_CHARS)
             }
         }
     }
 
-    val dlg = AlertDialog.Builder(activity).setTitle(activity.getString(R.string.terminal_title)).setView(layout)
+    val dlg = com.usefulunpacker.UuDialogBuilder(activity).setTitle(activity.getString(R.string.terminal_title)).setView(layout)
         .setPositiveButton(activity.getString(R.string.terminal_run), null)
         .setNegativeButton(activity.getString(R.string.action_close), null)
         .setNeutralButton(activity.getString(R.string.terminal_help_btn), null)
@@ -129,7 +129,7 @@ fun showTerminalHelp(activity: AppCompatActivity, inp: EditText, onApply: (Strin
         lastSelected = pos
         adapter.notifyDataSetChanged()
     }
-    AlertDialog.Builder(activity)
+    com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(activity.getString(R.string.title_help))
         .setView(listView)
         .setPositiveButton(activity.getString(R.string.action_confirm)) { _, _ ->

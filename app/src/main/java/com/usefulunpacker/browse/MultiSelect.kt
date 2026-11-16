@@ -5,7 +5,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.*
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 internal fun MainActivity.enterMultiSelect(f: File) = enterMultiSelect(activeTab, f)
 internal fun MainActivity.enterMultiSelect(tab: TabState, f: File) {
@@ -133,15 +133,15 @@ internal fun MainActivity.confirmBatchDelete() {
         // 跨 tab：聚合所有 tab 的选中文件
         val sel = allSelectedFiles().values.flatten().toList(); if (sel.isEmpty()) return
         val recycleEnabled = com.usefulunpacker.fileops.RecycleBin.isEnabled(prefs)
-        AlertDialog.Builder(this).setTitle(getString(R.string.title_batch_delete)).setMessage(getString(if (recycleEnabled) R.string.confirm_recycle_batch_msg else R.string.confirm_delete_batch_msg, sel.size))
-            .setPositiveButton(getString(R.string.action_delete)) { _, _ ->
+        com.usefulunpacker.UuDialogBuilder(this).setTitle(getString(R.string.title_batch_delete)).setMessage(getString(if (recycleEnabled) R.string.confirm_recycle_batch_msg else R.string.confirm_delete_batch_msg, sel.size))
+            .setPositiveButton(R.string.action_delete) { _, _ ->
                 deleteWithProgress(this, sel, prefs) { del, fail ->
                     if (fail > 0) toast(getString(R.string.msg_delete_result, del, fail)) else toast(getString(if (recycleEnabled) R.string.msg_moved_to_recycle else R.string.msg_deleted))
                     pruneBookmarksForDeleted(sel)
                     exitAllMultiSelect(); navTab(tab, tab.currentDir)
                 }
             }
-            .setNegativeButton(getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+            .setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
     }
 
 internal fun MainActivity.startBatchMove() {

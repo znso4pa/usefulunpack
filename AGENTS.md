@@ -28,7 +28,7 @@ cargo test --workspace             # Rust suite — must stay green
        try { /* work */ } finally { opH.release() }
    }
    ```
-   Same `fmtKey` serializes; different keys share 3 slots. Composite two-format flows use pseudo-key `"merge"`; zip entry edits use `"zip"`.
+   Same `fmtKey` serializes; different keys share 3 slots. Composite flows call `tryStartCompositeOperation(sourceFmt, targetFmt)`: one global slot atomically reserves both native-library keys plus `"merge"`; the pseudo-key alone does not isolate native state. Zip entry edits use `"zip"`.
    **Keys that share a `.so` MUST also share a slot** — go through `schedulerKeyOf()` in `archive/ArchiveExtractor.kt`, never the raw key. Three such families exist: `pf6`→`pfs`; the five tar variants (`tar`/`tgz`/`tbz2`/`txz`/`tzst`)→`tar`; and all eight `rgss*`/`rpgmv*`→`rgss`. A per-format `.so` with one `compress_progress` static, polled by several keys, means the second op's `reset(total)` wipes the first one's total and the second op's cancel aborts the first. This already happened twice (pf6, then the tar family) — the `schedulerKeyOf` comment lists the families; keep it accurate when adding a format.
 2. **Password prompts BEFORE `tryStartOperation`** — modals block ~30 s and must never hold a slot/format lock.
 3. Every new JNI operation entry calls `clear_cancel()` first, or the previous op's cancel poisons it.
@@ -130,3 +130,17 @@ Download the RPG Maker files with `curl` from `raw.githubusercontent.com/uuksu/R
 4. If a format or codec was touched, run the real-file corpora above — synthetic round-trips are necessary, not sufficient. `crates/*/testdata` fixtures and `app/src/main/jniLibs/*.so` are **not in git** (copyright / build output): with them absent the affected tests print `SKIP …` and CI goes green without running a single real-file assertion, so the local corpus run is the real gate
 5. Behavioral checklist for UI-sensitive changes: rotation survival, cancel mid-op cleanup, parallel smoke (different formats overlap; same format queues; queued-cancel isolates), Honor scrollbar avoidance
 6. Four-locale string set comparison (same key set in all four `strings.xml`, and every `help_tutorials` item has a `Title\nBody` split)
+
+## Shared UI and diagnostics (refactor contract)
+
+- Views remain the UI stack. Use `UuDialogBuilder`, `UuButton` (`ActionStyle`), `UuIconButton`, `UuTextField`, `UuSwitch`, and `UuActionRow`; do not construct parallel platform controls for the same semantics. XML uses the same classes and `uuActionStyle`.
+- `DialogHost.kt` remains the owner of tab binding, shield, placement and dismissal cleanup. The shared builder must not take over caller onShow/onDismiss listeners.
+- Use the existing dimen/color tokens. Touch targets are at least 48dp; navigation rows and action rows share geometry, but only navigation rows show the chevron. Specialized file/content views keep their own semantics.
+- Use `UuNotice` for transient notices; errors additionally go through `AppDiagnostics` with a stable stage/code. A Toast alone is insufficient for new error paths.
+- Deliberate exception fallbacks use `observedAttempt`, which logs the failure while preserving the Result contract. Cancellation must propagate; expected format/encoding candidate mismatches remain normal negative probes.
+- Never record raw command arguments, passwords, keys or document payloads. Register operation secrets when beginning a trace. Cleanup failures must remain visible even after cancellation.
+- Review shared controls under Settings → UI components, logs under Settings → Logs and diagnostics. See `docs/ui-components.md` for scope and verification.
+
+- A chain is a user intent, never an IO call. Start it with `userIntent`/`onUserIntent`; `begin` creates a step. Use `featureThread` and `runFeatureOnUiThread` to retain context. The diagnostics presenter deliberately uses guarded raw UI dispatch to avoid recursive error reporting.
+- Cancellation is a terminal chain result; cleanup failures remain visible. Main success plus cleanup failure is partial failure. Do not redact identity/status/code metadata; redact payloads before attaching the trusted prefix. Automatic UUT sidecars are execution receipts, never script/stdout dumps.
+- Shared dialogs retain intent context for continuations. Final acknowledgement dialogs without further work use `keepChainOpen=false`. Keep recycle payloads protected once originals move or deletion begins; bookkeeping failures must never remove the surviving copy.

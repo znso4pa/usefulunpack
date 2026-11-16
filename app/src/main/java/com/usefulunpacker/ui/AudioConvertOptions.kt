@@ -247,13 +247,13 @@ internal fun showAudioConvertOptions(
         isHorizontalScrollBarEnabled = false
     }
 
-    val dialog = AlertDialog.Builder(activity)
+    val dialog = com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(activity.getString(R.string.media_opt_title, fmt.uppercase()))
         .setView(scroller)
         .setPositiveButton(activity.getString(R.string.media_opt_start)) { _, _ ->
             onStart(opts)
         }
-        .setNegativeButton(activity.getString(R.string.action_cancel), null)
+        .setNegativeButton(R.string.action_cancel, null)
         .create()
     dialog.belowTabs(fitContent = true)
     androidx.appcompat.content.res.AppCompatResources

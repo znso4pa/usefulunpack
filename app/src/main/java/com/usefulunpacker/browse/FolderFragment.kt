@@ -9,7 +9,7 @@ import android.view.ViewGroup
 import android.widget.*
 import androidx.fragment.app.Fragment
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /**
  * One folder window (tab). Inflates [R.layout.folder_view], binds a [TabState]'s
@@ -128,7 +128,7 @@ class FolderFragment : Fragment() {
         tab.fabExtract.setOnClickListener { act.extract(tab) }
 
         // Compression-mode "→" folder button, created per-tab on its bottom bar.
-        tab.btnFolderNext = Button(requireContext()).apply {
+        tab.btnFolderNext = com.usefulunpacker.UuButton(requireContext()).apply {
             text = "→"
             textSize = 14f
             visibility = View.GONE
@@ -224,13 +224,13 @@ class FolderFragment : Fragment() {
                     thread {
                         val fileCount = f.listFiles()?.size ?: 0
                         val eta = fileCount / 200
-                        act2.runOnUiThread {
-                            if (act2.isFinishing || act2.isDestroyed) return@runOnUiThread
-                            AlertDialog.Builder(ctx)
+                        act2.runFeatureOnUiThread {
+                            if (act2.isFinishing || act2.isDestroyed) return@runFeatureOnUiThread
+                            com.usefulunpacker.UuDialogBuilder(ctx)
                                 .setTitle(act.getString(R.string.action_file_info))
                                 .setMessage(act.getString(R.string.msg_calc_dir_size_prompt, f.name, fileCount, eta, eta + 3))
                                 .setPositiveButton(act.getString(R.string.calc_size)) { _, _ -> calcDirSize(act, f) }
-                                .setNegativeButton(act.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+                                .setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
                         }
                     }
                 } else {
@@ -245,10 +245,10 @@ class FolderFragment : Fragment() {
             }
             items += act.getString(R.string.action_share) to { act.shareFile(f) }
 
-            AlertDialog.Builder(requireContext())
+            com.usefulunpacker.UuDialogBuilder(requireContext())
                 .setTitle(f.name)
                 .setItems(items.map { it.first }.toTypedArray()) { _, w -> items[w].second() }
-                .setNegativeButton(act.getString(R.string.action_cancel), null).show().also { it.keepTabsTappable() }
+                .setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }
             true
         }
 
@@ -337,19 +337,19 @@ class FolderFragment : Fragment() {
             }
         }
         val tvBatchCount = TextView(requireContext()).apply { setTextColor(C["primary"]!!); textSize = 12f }
-        fun b(text: String, color: Int) = Button(requireContext()).apply { this.text = text; setTextColor(color); background = null; textSize = 12f; isAllCaps = false; setPadding(6, 0, 6, 0) }
+        fun b(text: String, style: ActionStyle) = UuButton(requireContext()).apply { this.text = text; actionStyle = style }
         // Emoji lives in the string resource (one leading glyph per item) — never
         // concatenate another here or the button shows doubled icons. The tag
         // drives mode-based visibility in syncMultiBar (text matching broke when
         // v5.13.0 prefixed extra emojis: the extract button started with 📦 and
         // was hidden in extract mode).
-        val btnBatchExtract = b(act.getString(R.string.batch_extract), C["accent"]!!).apply { tag = "extract"; setOnClickListener { activate(); act.startBatchExtract() } }
-        val btnBatchPreview = b(act.getString(R.string.action_preview), C["accent"]!!).apply { tag = "preview"; setOnClickListener { activate(); act.startBatchPreviewOnly() } }
-        val btnBatchCompress = b(act.getString(R.string.batch_compress), C["accent"]!!).apply { tag = "compress"; setOnClickListener { activate(); act.startBatchCompress() } }
-        val btnBatchCopy = b(act.getString(R.string.action_copy), C["accent"]!!).apply { setOnClickListener { activate(); act.startBatchCopy() } }
-        val btnBatchMove = b(act.getString(R.string.action_move), C["accent"]!!).apply { setOnClickListener { activate(); act.startBatchMove() } }
-        val btnBatchDelete = b(act.getString(R.string.action_delete), C["error"]!!).apply { setOnClickListener { activate(); act.confirmBatchDelete() } }
-        val btnBatchCancel = b("✕ " + act.getString(R.string.action_cancel), C["tertiary"]!!).apply { setOnClickListener { act.exitAllMultiSelect() } }
+        val btnBatchExtract = b(act.getString(R.string.batch_extract), ActionStyle.SECONDARY).apply { tag = "extract"; setOnClickListener { activate(); act.startBatchExtract() } }
+        val btnBatchPreview = b(act.getString(R.string.action_preview), ActionStyle.SECONDARY).apply { tag = "preview"; setOnClickListener { activate(); act.startBatchPreviewOnly() } }
+        val btnBatchCompress = b(act.getString(R.string.batch_compress), ActionStyle.SECONDARY).apply { tag = "compress"; setOnClickListener { activate(); act.startBatchCompress() } }
+        val btnBatchCopy = b(act.getString(R.string.action_copy), ActionStyle.SECONDARY).apply { setOnClickListener { activate(); act.startBatchCopy() } }
+        val btnBatchMove = b(act.getString(R.string.action_move), ActionStyle.SECONDARY).apply { setOnClickListener { activate(); act.startBatchMove() } }
+        val btnBatchDelete = b(act.getString(R.string.action_delete), ActionStyle.DANGER).apply { setOnClickListener { activate(); act.confirmBatchDelete() } }
+        val btnBatchCancel = b("✕ " + act.getString(R.string.action_cancel), ActionStyle.TEXT).apply { setOnClickListener { act.exitAllMultiSelect() } }
         val batchScroll = HorizontalScrollView(requireContext()).apply {
             isHorizontalScrollBarEnabled = false
             isVerticalScrollBarEnabled = false

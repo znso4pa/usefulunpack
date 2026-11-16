@@ -19,7 +19,7 @@ import com.usefulunpacker.fileops.DiskScan
 import com.usefulunpacker.fileops.DiskScanner
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 
 /**
  * 「磁盘查询」—— WizTree 那类空间分析功能的 GUI。
@@ -43,6 +43,8 @@ import kotlin.concurrent.thread
  * 取消按钮置位 `AtomicBoolean`，扫描器每个文件、每个目录都查一次。
  */
 internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternalStorageDirectory()) {
+    val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("disk_usage", newChain = true)
+    try {
     val act = this
     val density = resources.displayMetrics.density
     fun px(v: Int) = (v * density).toInt()
@@ -67,10 +69,10 @@ internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternal
         addView(bar, LinearLayout.LayoutParams(MATCH, px(4)).apply { topMargin = px(12) })
     }
 
-    val dlg = AlertDialog.Builder(act)
+    val dlg = com.usefulunpacker.UuDialogBuilder(act)
         .setTitle(getString(R.string.disk_usage))
         .setView(body)
-        .setNegativeButton(getString(R.string.action_cancel), null)
+        .setNegativeButton(R.string.action_cancel, null)
         .create()
     // ⚠️ 取消只能从 `also` 进来：`setOnDismissListener` 只有一个槽位，
     // `keepTabBarTappable` 里 `resetPagerInputOnDialogDismiss` 已经占用了它，
@@ -82,7 +84,7 @@ internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternal
         val scanner = DiskScanner(
             topN = DISK_TOP_FILES,
             onProgress = { n, b ->
-                act.runOnUiThread {
+                act.runFeatureOnUiThread { if (act.isFinishing || act.isDestroyed) return@runFeatureOnUiThread;
                     if (!cancelled.get() && dlg.isShowing) {
                         tvProgress.text = act.getString(R.string.disk_scanning, n.toString(), fmt(b))
                     }
@@ -91,21 +93,27 @@ internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternal
             isCancelled = { cancelled.get() },
         )
         val scan = scanner.scan(startDir)
-        act.runOnUiThread {
-            if (act.isFinishing || act.isDestroyed) return@runOnUiThread
+        act.runFeatureOnUiThread {
+            if (act.isFinishing || act.isDestroyed) return@runFeatureOnUiThread
             if (scan == null) {
                 // 取消：negative button 默认就把窗口关了，所以**不能**拿 `dlg.isShowing`
                 // 当判据 —— 那样这句提示永远到不了（弹窗已经不在，代码直接 return）。
                 // 补一句确认，否则用户只看到窗口消失，不知道是停了还是出错。
                 act.toast(getString(R.string.disk_cancelled))
-                return@runOnUiThread
+                return@runFeatureOnUiThread
             }
             // 扫完了、但用户已经把扫描窗口关掉 → 结果丢弃，别硬弹一个新窗口。
-            if (!dlg.isShowing) return@runOnUiThread
+            if (!dlg.isShowing) return@runFeatureOnUiThread
             dlg.dismiss()
             showDiskResult(act, scan)
         }
     }
+    } catch (intentCancelled: java.util.concurrent.CancellationException) {
+        _intentScope.trace.cancelled(); throw intentCancelled
+    } catch (intentFailure: Exception) {
+        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        throw intentFailure
+    } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
 }
 
 /** 外部存储卷的 `(已用, 总量)`。StatFs 是系统调用，微秒级，主线程直接调。 */
@@ -113,7 +121,7 @@ internal fun externalStorageUsage(): Pair<Long, Long> = try {
     val sf = StatFs(Environment.getExternalStorageDirectory().absolutePath)
     val total = sf.totalBytes
     (total - sf.availableBytes) to total
-} catch (_: Exception) {
+} catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("DiskUsageDialog", failureCause);
     0L to 0L
 }
 
@@ -284,7 +292,7 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
         ellipsize = TextUtils.TruncateAt.MIDDLE
     }
     val tvTotal = textView(act, "", 11.5f, C["tertiary"]!!)
-    val btnPick = Button(act).apply {
+    val btnPick = com.usefulunpacker.UuButton(act).apply {
         text = act.getString(R.string.disk_pick_dir)
         setTextColor(C["accent"]!!)
         background = null
@@ -478,7 +486,7 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
         }
     }
 
-    val dialog = AlertDialog.Builder(act)
+    val dialog = com.usefulunpacker.UuDialogBuilder(act)
         .setTitle(act.getString(R.string.disk_usage))
         .setView(root)
         .setPositiveButton(act.getString(R.string.action_close), null)

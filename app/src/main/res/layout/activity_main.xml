@@ -36,10 +36,10 @@
                 android:orientation="horizontal"
                 android:scrollbars="none" />
 
-            <ImageButton
+            <com.usefulunpacker.UuIconButton
                 android:id="@+id/btnAddTab"
                 android:layout_width="36dp"
-                android:layout_height="36dp"
+                android:layout_height="@dimen/touch_target"
                 android:src="@drawable/ic_add_tab"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 app:tint="@color/accent"
@@ -80,28 +80,28 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintEnd_toEndOf="parent">
 
-            <ImageButton
+            <com.usefulunpacker.UuIconButton
                 android:id="@+id/btnDrawer"
                 android:layout_width="44dp"
-                android:layout_height="44dp"
+                android:layout_height="@dimen/touch_target"
                 android:src="@drawable/ic_drawer"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 app:tint="@color/ui_icon_tint"
                 android:contentDescription="@string/a11y_drawer" />
 
-            <ImageButton
+            <com.usefulunpacker.UuIconButton
                 android:id="@+id/btnRecycle"
                 android:layout_width="44dp"
-                android:layout_height="44dp"
+                android:layout_height="@dimen/touch_target"
                 android:src="@drawable/ic_recycle"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 app:tint="@color/ui_icon_tint"
                 android:contentDescription="@string/title_recycle_bin" />
 
-            <ImageButton
+            <com.usefulunpacker.UuIconButton
                 android:id="@+id/btnRoot"
                 android:layout_width="44dp"
-                android:layout_height="44dp"
+                android:layout_height="@dimen/touch_target"
                 android:src="@drawable/ic_home"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 app:tint="@color/ui_icon_tint"
@@ -120,10 +120,10 @@
                 android:singleLine="true"
                 android:ellipsize="end" />
 
-            <ImageButton
+            <com.usefulunpacker.UuIconButton
                 android:id="@+id/btnCLI"
                 android:layout_width="44dp"
-                android:layout_height="44dp"
+                android:layout_height="@dimen/touch_target"
                 android:src="@drawable/ic_overflow"
                 android:scaleType="centerInside"
                 android:padding="10dp"
@@ -164,9 +164,9 @@
     </androidx.constraintlayout.widget.ConstraintLayout>
 
     <!-- Drawer: bookmarks -->
-    <LinearLayout
+    <com.usefulunpacker.UuSidePanel
         android:id="@+id/drawerContent"
-        android:layout_width="260dp"
+        android:layout_width="@dimen/drawer_width"
         android:layout_height="match_parent"
         android:layout_gravity="start"
         android:orientation="vertical"
@@ -203,6 +203,6 @@
             android:background="?attr/selectableItemBackground"
             android:clickable="true"
             android:focusable="true" />
-    </LinearLayout>
+    </com.usefulunpacker.UuSidePanel>
 
 </androidx.drawerlayout.widget.DrawerLayout>

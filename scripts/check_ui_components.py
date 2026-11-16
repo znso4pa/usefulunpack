@@ -43,9 +43,14 @@ if "--self-test" in sys.argv:
     sys.exit(0)
 
 for file in (root / "app/src/main/java").rglob("*.kt"):
+    source = file.read_text()
+    if re.search(r"addFlags\([^\n]*FLAG_DIM_BEHIND", source):
+        failures.append(f"{file.relative_to(root)}: system dimming must not darken the independent tab strip")
+    if re.search(r"\b(?:rootToTab|blockBehind)\s*=\s*false", source):
+        failures.append(f"{file.relative_to(root)}: every modal must stay on its opening tab and block background input")
     if file.name == "UuComponents.kt":
         continue
-    source = file.read_text()
+
     if file.name != "Diagnostics.kt" and re.search(r"\.(?:delete|deleteRecursively)\(\)", re.sub(r"//[^\n]*", "", source)):
         failures.append(f"{file.relative_to(root)}: use deleteOutputChecked and choose main deletion or cleanup semantics")
     for offset, body in direct_control_bodies(source):
@@ -78,6 +83,16 @@ for file in (root / "app/src/main/res/layout").glob("*.xml"):
             for attr in element.attrib:
                 if attr.rsplit("}", 1)[-1] in appearance:
                     failures.append(f"{file.relative_to(root)}: move {attr.rsplit('}', 1)[-1]} into {element.tag}")
+# A focusable bookmark button disables the folder row's ListView item click.
+file_row = ET.parse(root / "app/src/main/res/layout/item_file.xml")
+android = "{http://schemas.android.com/apk/res/android}"
+star = next(element for element in file_row.iter() if element.get(android + "id") == "@+id/btnStar")
+if star.get(android + "focusable") != "false":
+    failures.append("item_file.xml: bookmark button must not take focus from folder navigation")
+theme = ET.parse(root / "app/src/main/res/values/themes.xml")
+style = theme.find("style[@name='Theme.UsefulUnpack.Dialog']")
+if style.find("item[@name='android:backgroundDimEnabled']").text != "false":
+    failures.append("Dialog theme: DialogHost owns the content-only scrim; system dim must stay disabled")
 if failures:
     print("\n".join(failures))
     sys.exit(1)

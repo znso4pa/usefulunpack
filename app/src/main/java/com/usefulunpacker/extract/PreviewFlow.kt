@@ -33,7 +33,7 @@ internal fun MainActivity.previewArchive(src: File, format: String) {
             setCancelable(false)
             show()
         }
-        pd.keepTabsTappable(blockBehind = false)
+        pd.keepTabsTappable()
         thread {
             // Ask for the password up front so header-encrypted 7z can be
             // listed and entry previews reuse it (no "wrong password" toast).

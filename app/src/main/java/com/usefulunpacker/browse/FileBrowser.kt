@@ -400,7 +400,7 @@ internal fun MainActivity.installApk(f: File) {
         .setTitle(f.name)
         .setView(body)
         .setNegativeButton(R.string.action_cancel, null)
-        .show().also { it.keepTabsTappable(rootToTab = false) }
+        .show().also { it.keepTabsTappable() }
 }
 
 private fun MainActivity.doInstallApk(f: File, keepCopy: Boolean) {
@@ -446,7 +446,7 @@ private fun MainActivity.installViaPackageInstaller(f: File) {
         setCancelable(false)
         show()
     }
-    pd.keepTabsTappable(rootToTab = false, blockBehind = false)
+    pd.keepTabsTappable()
     thread {
         try {
             val pm = packageManager
@@ -487,7 +487,7 @@ private fun MainActivity.installViaPackageInstaller(f: File) {
                         } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileBrowser", e); android.util.Log.e("FileBrowser", "APK backup failed", e) }
                     }
                     .setNegativeButton(R.string.action_cancel, null)
-                    .show().also { it.keepTabsTappable(rootToTab = false) }
+                    .show().also { it.keepTabsTappable() }
             }
         } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileBrowser", e);
             runFeatureOnUiThread {
@@ -497,7 +497,7 @@ private fun MainActivity.installViaPackageInstaller(f: File) {
                     .setTitle(getString(R.string.title_install_failed))
                     .setMessage(getString(R.string.err_install_apk, e.message ?: ""))
                     .setPositiveButton(getString(R.string.action_confirm), null)
-                    .show().also { it.keepTabsTappable(rootToTab = false) }
+                    .show().also { it.keepTabsTappable() }
             }
         }
     }

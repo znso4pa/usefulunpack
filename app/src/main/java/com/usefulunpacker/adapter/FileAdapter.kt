@@ -81,6 +81,9 @@ class FileAdapter(
         val date = view.findViewById<TextView>(R.id.info_date)
 
         val starBtn = view.findViewById<ImageView>(R.id.btnStar)
+        // A focusable child makes ListView stop dispatching the folder row's item click.
+        starBtn.isFocusable = false
+        starBtn.isFocusableInTouchMode = false
         if (f.isDirectory) {
             starBtn.visibility = View.VISIBLE
             val bm = bookmarks.contains(f.absolutePath)

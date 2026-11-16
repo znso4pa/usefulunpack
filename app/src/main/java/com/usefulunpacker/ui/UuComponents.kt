@@ -23,14 +23,46 @@ private fun tracedClick(listener: View.OnClickListener?): View.OnClickListener? 
     }
 }
 
-/** Native menu rendering uses the same theme; action registration retains intent context. */
-class UuPopupMenu(private val host: Context, anchor: View) : PopupMenu(host, anchor) {
-    fun action(id: Int, title: Int, block: () -> Unit) {
+/** Menus use the same modal/tab ownership as dialogs; native PopupWindow input is separate. */
+class UuPopupMenu(private val host: Context, private val anchor: View) {
+    private val actions = mutableListOf<Pair<Int, () -> Unit>>()
+    private var dialog: AlertDialog? = null
+    fun action(@Suppress("UNUSED_PARAMETER") id: Int, title: Int, block: () -> Unit) {
         val trace = AppDiagnostics.currentTrace()
-        menu.add(0, id, id, host.getString(title)).setOnMenuItemClickListener {
-            AppDiagnostics.invokeCallback(trace, block)
-            true
+        actions.add(title to { AppDiagnostics.invokeCallback(trace, block) })
+    }
+    fun show() {
+        val body = LinearLayout(host).apply { orientation = LinearLayout.VERTICAL }
+        actions.forEach { (title, action) ->
+            body.addView(UuActionRow(host).apply {
+                bind(host.getString(title), onClick = { dialog?.dismiss(); action() })
+            })
         }
+        dialog = UuDialogBuilder(host).setView(UuScrollView(host).apply { addView(body) })
+            .create().also {
+                (host.hostActivity() as? MainActivity)?.anchorMenu(it, anchor)
+                it.show()
+            }
+    }
+    fun dismiss() { dialog?.dismiss() }
+}
+
+/** The drawer cannot intercept gestures that began on the independent tab strip. */
+class UuDrawerLayout @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = null) : androidx.drawerlayout.widget.DrawerLayout(ctx, attrs) {
+    private var tabGesture = false
+    init { setScrimColor(android.graphics.Color.TRANSPARENT) }
+    override fun onInterceptTouchEvent(event: android.view.MotionEvent): Boolean {
+        if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+            val tab = findViewById<View>(R.id.tabBar)
+            val bounds = android.graphics.Rect()
+            val origin = IntArray(2)
+            getLocationOnScreen(origin)
+            tabGesture = tab?.getGlobalVisibleRect(bounds) == true &&
+                event.y + origin[1] >= bounds.top && event.y + origin[1] < bounds.bottom
+        }
+        val bypass = tabGesture
+        if (event.actionMasked == android.view.MotionEvent.ACTION_UP || event.actionMasked == android.view.MotionEvent.ACTION_CANCEL) tabGesture = false
+        return if (bypass) false else super.onInterceptTouchEvent(event)
     }
 }
 
@@ -79,7 +111,12 @@ internal object UuMetrics {
         view.gravity = Gravity.CENTER
         text(view)
         view.isAllCaps = false
-        view.setTypeface(view.typeface, if (style == ActionStyle.PRIMARY || style == ActionStyle.DANGER) Typeface.BOLD else Typeface.NORMAL)
+        view.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        view.letterSpacing = 0f
+        view.includeFontPadding = false
+        view.setSingleLine(false)
+        view.maxLines = 2
+        view.ellipsize = android.text.TextUtils.TruncateAt.END
         val accent = ctx.getColor(if (style == ActionStyle.DANGER) R.color.state_error else R.color.accent)
         val filled = style == ActionStyle.PRIMARY
         val color = if (filled) ctx.getColor(R.color.accent_on) else accent
@@ -89,7 +126,7 @@ internal object UuMetrics {
             cornerRadius = px(ctx, R.dimen.corner_input).toFloat()
             setColor(if (filled) accent else if (style == ActionStyle.SECONDARY) ctx.getColor(R.color.accent_soft) else android.graphics.Color.TRANSPARENT)
         }
-        view.setPadding(px(ctx, R.dimen.space_lg), px(ctx, R.dimen.space_sm), px(ctx, R.dimen.space_lg), px(ctx, R.dimen.space_sm))
+        view.setPadding(px(ctx, R.dimen.space_md), px(ctx, R.dimen.space_sm), px(ctx, R.dimen.space_md), px(ctx, R.dimen.space_sm))
         view.foreground = ripple(ctx.getColor(R.color.ripple_light))
     }
 }
@@ -404,6 +441,7 @@ class UuDialogBuilder(ctx: Context, private val keepChainOpen: Boolean = true) :
     override fun setItems(items: Array<out CharSequence>?, listener: android.content.DialogInterface.OnClickListener?): AlertDialog.Builder = super.setItems(items, wrap(listener))
     override fun setSingleChoiceItems(items: Array<out CharSequence>?, checkedItem: Int, listener: android.content.DialogInterface.OnClickListener?): AlertDialog.Builder = super.setSingleChoiceItems(items, checkedItem, wrap(listener))
     override fun create(): AlertDialog = super.create().also { dialog ->
+        prepareDialogWindow(dialog)
         if (keepChainOpen) ownerTrace?.retain()
         var released = false
         dialog.window?.decorView?.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
@@ -411,11 +449,9 @@ class UuDialogBuilder(ctx: Context, private val keepChainOpen: Boolean = true) :
                 if (!released) { released = true; if (keepChainOpen) ownerTrace?.release() }
             }
             override fun onViewAttachedToWindow(v: View) {
-                v.post {
-                    val activity = context.hostActivity()
-                    if (activity?.isFinishing == true || activity?.isDestroyed == true || !dialog.isShowing) return@post
-                    styleDialog(dialog, positiveStyle)
-                }
+                val activity = context.hostActivity()
+                if (activity?.isFinishing == true || activity?.isDestroyed == true) return
+                styleDialog(dialog, positiveStyle)
             }
         })
     }
@@ -425,6 +461,7 @@ class UuDialogBuilder(ctx: Context, private val keepChainOpen: Boolean = true) :
 @Suppress("DEPRECATION")
 class UuProgressDialog(ctx: Context) : android.app.ProgressDialog(ctx) {
     private val ownerTrace = AppDiagnostics.currentTrace()
+    init { prepareDialogWindow(this) }
     override fun setTitle(title: CharSequence?) {
         super.setTitle(ownerTrace?.let { "[${it.id}] ${title ?: ""}" } ?: title)
     }

@@ -197,7 +197,7 @@ fun showTextPreview(activity: AppCompatActivity, file: File, highlightLine: Int 
     val pd = com.usefulunpacker.UuProgressDialog(activity).apply {
         setMessage(activity.getString(R.string.msg_loading)); setCancelable(false); show()
     }
-    pd.keepTabsTappable(blockBehind = false)
+    pd.keepTabsTappable()
     thread {
         val prefs = (activity as? MainActivity)?.prefs
         val data = com.usefulunpacker.observedAttempt("PreviewDialogs") { readPrefix(file, 1 shl 20) }.getOrNull()
@@ -523,7 +523,7 @@ private fun loadAndOpenEditor(activity: AppCompatActivity, file: File, tempFile:
     val pd = com.usefulunpacker.UuProgressDialog(activity).apply {
         setMessage(activity.getString(R.string.msg_loading)); setCancelable(false); show()
     }
-    pd.keepTabsTappable(blockBehind = false)
+    pd.keepTabsTappable()
     thread {
         val data = com.usefulunpacker.observedAttempt("PreviewDialogs") { file.readBytes() }.getOrNull()
         val tempContent = if (useTempContent) com.usefulunpacker.observedAttempt("PreviewDialogs") { tempFile.readText() }.getOrNull() else null

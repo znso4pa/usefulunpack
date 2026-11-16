@@ -35,8 +35,9 @@
     <style name="Theme.UsefulUnpack.Dialog" parent="Theme.AppCompat.DayNight.Dialog.Alert">
         <item name="android:background">@color/bg_surface_dim</item>
         <item name="android:windowBackground">@drawable/dialog_bg_rounded</item>
-        <item name="android:backgroundDimEnabled">true</item>
-        <item name="android:backgroundDimAmount">0.6</item>
+        <!-- DialogHost dims only the content below the independent tab strip. -->
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
         <item name="colorAccent">@color/accent</item>
         <item name="android:colorAccent">@color/accent</item>
         <!-- 同一条主色阶（对话框里的 Material 按钮按的是这个） -->

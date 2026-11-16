@@ -34,7 +34,7 @@ fun showImageEditor(activity: AppCompatActivity, file: File) {
         val editorView = ImageEditorView(activity)
         val pd = com.usefulunpacker.UuProgressDialog(activity)
         pd.setMessage(activity.getString(R.string.msg_loading)); pd.setCancelable(false); pd.show()
-        pd.keepTabsTappable(blockBehind = false)
+        pd.keepTabsTappable()
         thread {
             val bmp = decodeBitmapCapped(file, IMG_EDIT_MAX_PX)
             activity.runFeatureOnUiThread {

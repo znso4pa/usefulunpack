@@ -216,6 +216,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         drawer = findViewById(R.id.drawer)
+        configureTabSafeDrawer()
 
         // Init background image picker
         bgImageLauncher = registerForActivityResult(
@@ -251,6 +252,7 @@ class MainActivity : AppCompatActivity() {
                 // Dialogs opened from a tab are rooted to it: hide the ones that
                 // don't belong to the now-active tab, restore the ones that do.
                 syncRootedDialogs()
+                syncDrawerToTab()
                 // 终端层按 tab 扎根：切走 GONE 隐藏，切回 owner tab 自动恢复。
                 _terminalPanel?.onTabChanged(tabs.getOrNull(position)?.tabId ?: -1)
                 // OpOverlay cards are scoped to their owning window — switching
@@ -418,6 +420,25 @@ class MainActivity : AppCompatActivity() {
         // 都是转屏前的值，不重算就还是旧方向那套（真机：横屏开着的搜索框转竖屏后
         // 仍是 480dp 宽、还按横屏的 y 偏移居中）。见 ui/DialogHost.kt。
         reapplyDialogPlacements()
+    }
+
+    private var blockedBackgroundGesture = false
+
+    override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+        if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+            val tabBounds = android.graphics.Rect()
+            findViewById<View>(R.id.tabBar)?.getGlobalVisibleRect(tabBounds)
+            blockedBackgroundGesture = shieldHolders.isNotEmpty() &&
+                !tabBounds.contains(event.rawX.toInt(), event.rawY.toInt())
+            if (blockedBackgroundGesture) {
+                android.util.Log.d("UuDialogHost", "phase=blocked_background active=${tabs.getOrNull(activeTabIndex)?.tabId} owners=${shieldHolders.size}")
+                dismissAnchoredMenuFromBackground()
+            }
+        }
+        val blocked = blockedBackgroundGesture
+        if (event.actionMasked == android.view.MotionEvent.ACTION_UP ||
+            event.actionMasked == android.view.MotionEvent.ACTION_CANCEL) blockedBackgroundGesture = false
+        return if (blocked) true else super.dispatchTouchEvent(event)
     }
 
     override fun onBackPressed() {
@@ -853,6 +874,10 @@ class MainActivity : AppCompatActivity() {
      * **重复申请 / 重复释放都是幂等的**，集合空了护盾才收起。
      */
     internal val shieldHolders = mutableSetOf<android.app.Dialog>()
+    internal val dialogDimOwners = mutableSetOf<Any>()
+    internal val dialogChainTabs = java.util.WeakHashMap<IntentChain, Int>()
+    internal val drawerOpenTabs = mutableSetOf<Int>()
+    internal var syncingDrawerTab = false
 
     /** 按 tab 扎根的弹窗登记表（[RootedDialog] 定义在 `ui/DialogHost.kt`）。 */
     internal val rootedDialogs = mutableListOf<RootedDialog>()

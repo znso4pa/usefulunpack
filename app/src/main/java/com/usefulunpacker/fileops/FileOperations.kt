@@ -101,7 +101,7 @@ fun calcDirSize(activity: AppCompatActivity, dir: File) {
         setCancelable(false)
         show()
     }
-    pd.keepTabsTappable(blockBehind = false)
+    pd.keepTabsTappable()
     thread {
         var total = 0L
         var processed = 0

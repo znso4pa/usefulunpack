@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Multi-window layout: toolbar + tab bar + ViewPager2 of folder views -->
-<androidx.drawerlayout.widget.DrawerLayout
+<com.usefulunpacker.UuDrawerLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/drawer"
@@ -128,6 +128,20 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintEnd_toEndOf="parent" />
 
+        <View
+            android:id="@+id/dialogDim"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:background="@color/dialog_scrim"
+            android:clickable="false"
+            android:focusable="false"
+            android:importantForAccessibility="no"
+            android:visibility="gone"
+            app:layout_constraintTop_toBottomOf="@id/dividerTabBar"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
         <!-- 触摸护盾：对话框打开期间盖住**除 tab 栏以外的一切**（工具栏 + 内容区），
              让「弹窗打开后除了 tab 栏什么都点不动」成立 —— 背后的文件列表、工具栏
              按钮全吃不到触摸，杜绝误触；tab 栏留在护盾外面，所以还能切窗口。
@@ -185,4 +199,4 @@
             android:text="@string/drawer_add_current" />
     </com.usefulunpacker.UuSidePanel>
 
-</androidx.drawerlayout.widget.DrawerLayout>
+</com.usefulunpacker.UuDrawerLayout>

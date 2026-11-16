@@ -290,7 +290,7 @@ internal fun MainActivity.showSignatureScan(f: File) {
         setOnCancelListener { _intentScope.trace.cancelled(); ScanCore.scanCancel() }
         show()
     }
-    pd.keepTabsTappable(blockBehind = false)
+    pd.keepTabsTappable()
     // Poll the JNI progress statics every 100ms and update the bar.
     val poller = thread {
         while (!Thread.currentThread().isInterrupted) {
@@ -616,7 +616,7 @@ private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File
         setOnCancelListener { carveThread?.interrupt() }
         show()
     }
-    pd.keepTabsTappable(blockBehind = false)
+    pd.keepTabsTappable()
     carveThread = thread {
         if (!OperationLock.acquire()) {
             runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; pd.dismiss(); toast(getString(R.string.msg_op_in_progress)) }
@@ -679,7 +679,7 @@ private fun MainActivity.separateToFile(f: File, hit: ScanHit, destDir: File) {
         setCancelable(false)
         show()
     }
-    pd.keepTabsTappable(blockBehind = false)
+    pd.keepTabsTappable()
     thread {
         try {
             carveToFile(f, carveOffset, carveLen, out) { n ->

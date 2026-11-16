@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <color name="dialog_scrim">#80000000</color>
     <!-- ═══ Backgrounds — dark ═══ -->
     <color name="bg_surface">#303030</color>
     <color name="bg_surface_dim">#252525</color>

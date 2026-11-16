@@ -244,7 +244,6 @@ internal class TerminalPanel(private val act: MainActivity) {
         val runBtn = com.usefulunpacker.UuButton(act).apply {
             actionStyle = ActionStyle.PRIMARY
             text = act.getString(R.string.terminal_run)
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
             isClickable = true
             isFocusable = true
             setOnClickListener { run0() }
@@ -315,6 +314,7 @@ internal class TerminalPanel(private val act: MainActivity) {
             topMargin = topInset()
         }
         root = layout
+        layout.isClickable = true
 
         if (sess.output.isEmpty()) append(str(R.string.terminal_banner))
         render()
@@ -333,6 +333,15 @@ internal class TerminalPanel(private val act: MainActivity) {
      * 状态栏实测 + 106dp 固定 chrome）。
      */
     private fun topInset(): Int {
+        val tabDivider = act.findViewById<View>(R.id.dividerTabBar)
+        val content = act.findViewById<View>(android.R.id.content)
+        if (tabDivider != null && content != null && tabDivider.isLaidOut) {
+            val dividerPos = IntArray(2)
+            val contentPos = IntArray(2)
+            tabDivider.getLocationOnScreen(dividerPos)
+            content.getLocationOnScreen(contentPos)
+            return dividerPos[1] + tabDivider.height - contentPos[1]
+        }
         val dm = act.resources.displayMetrics
         var inset = 106 * dm.density
         val sb = act.resources.getIdentifier("status_bar_height", "dimen", "android")
@@ -353,10 +362,17 @@ internal class TerminalPanel(private val act: MainActivity) {
     /** 用户主动关闭（✕ / back）：从视图树移除。状态留在 ViewModel。 */
     fun hide() {
         val r = root
+        r?.let { hideInput(it) }
         root = null; out = null; scroller = null; input = null; cwdView = null
         progressView = null
         cancelThunk = null
         (r?.parent as? ViewGroup)?.removeView(r)
+    }
+
+    private fun hideInput(view: View) {
+        input?.clearFocus()
+        (act.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
+            ?.hideSoftInputFromWindow(view.windowToken, 0)
     }
 
     val isOpen: Boolean get() = root != null
@@ -373,6 +389,7 @@ internal class TerminalPanel(private val act: MainActivity) {
         val ownerAlive = act.tabs.any { it.tabId == ownerTabId }
         if (!ownerAlive) { hide(); return }
         val visible = newActiveTabId == ownerTabId
+        if (!visible) hideInput(r)
         r.visibility = if (visible) View.VISIBLE else View.GONE
         // 恢复可见时滚回底部：GONE 期间后台输出的 fullScroll 在无布局的视图上
         // 会失败，不补一次的话切回来停在顶部，看不到最新输出。
@@ -1194,7 +1211,7 @@ internal class TerminalPanel(private val act: MainActivity) {
             .setNegativeButton(R.string.action_cancel, null)
             .create()
         dlg.show()
-        dlg.keepTabsTappable(rootToTab = false)
+        dlg.keepTabsTappable()
     }
 
     /** 把选中的路径接到原命令后面重跑一次。 */

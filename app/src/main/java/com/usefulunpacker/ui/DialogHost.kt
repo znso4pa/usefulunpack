@@ -2,20 +2,204 @@ package com.usefulunpacker
 
 import android.view.View
 
+/** WindowManager dimming affects the tab strip too. Keep the scrim inside the content viewport. */
+internal fun MainActivity.setDialogDimmed(owner: Any, dimmed: Boolean) {
+    if (dimmed) dialogDimOwners.add(owner) else dialogDimOwners.remove(owner)
+    val dim = findViewById<View>(R.id.dialogDim) ?: return
+    if (dialogDimOwners.isNotEmpty()) {
+        dim.bringToFront()
+        findViewById<View>(R.id.touchShield)?.bringToFront()
+        dim.visibility = View.VISIBLE
+    } else dim.postOnAnimation {
+        if (dialogDimOwners.isEmpty()) dim.visibility = View.GONE
+    }
+}
+
+internal fun MainActivity.configureTabSafeDrawer() {
+    drawer.addDrawerListener(object : androidx.drawerlayout.widget.DrawerLayout.SimpleDrawerListener() {
+        override fun onDrawerSlide(drawerView: View, slideOffset: Float) {
+            if (!syncingDrawerTab && slideOffset > 0f && tabs.isNotEmpty()) drawerOpenTabs.add(activeTab.tabId)
+            setDialogDimmed(drawer, slideOffset > 0f)
+        }
+        override fun onDrawerOpened(drawerView: View) {
+            if (!syncingDrawerTab && tabs.isNotEmpty()) drawerOpenTabs.add(activeTab.tabId)
+        }
+        override fun onDrawerClosed(drawerView: View) {
+            if (!syncingDrawerTab && tabs.isNotEmpty()) drawerOpenTabs.remove(activeTab.tabId)
+            setDialogDimmed(drawer, false)
+        }
+    })
+    findViewById<View>(R.id.root)?.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+        val sidebar = findViewById<View>(R.id.drawerContent) ?: return@addOnLayoutChangeListener
+        val params = sidebar.layoutParams as? androidx.drawerlayout.widget.DrawerLayout.LayoutParams ?: return@addOnLayoutChangeListener
+        val top = findViewById<View>(R.id.dividerTabBar)?.bottom ?: 0
+        if (params.topMargin != top) { params.topMargin = top; sidebar.layoutParams = params }
+    }
+}
+
+internal fun MainActivity.syncDrawerToTab() {
+    if (tabs.isEmpty()) return
+    syncingDrawerTab = true
+    try {
+        drawerOpenTabs.retainAll(tabs.map { it.tabId }.toSet())
+        if (activeTab.tabId in drawerOpenTabs) drawer.openDrawer(androidx.core.view.GravityCompat.START, false)
+        else drawer.closeDrawer(androidx.core.view.GravityCompat.START, false)
+    } finally { syncingDrawerTab = false }
+}
+
+/** Prepare before show(): the first visible frame must already have its final placement. */
+internal fun prepareDialogWindow(dlg: android.app.Dialog) {
+    val activity = dlg.context.findMainActivity() ?: return
+    val window = dlg.window ?: return
+    val decor = window.decorView
+    if (decor.getTag(R.id.dialogPresentation) == true) return
+    decor.setTag(R.id.dialogPresentation, true)
+    val openingTabId = activity.tabs.getOrNull(activity.activeTabIndex)?.tabId?.let { activeId ->
+        AppDiagnostics.currentTrace()?.chain?.let { activity.dialogChainTabs.getOrPut(it) { activeId } } ?: activeId
+    }
+    window.setWindowAnimations(0)
+    window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+    window.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+    window.setDimAmount(0f)
+    dlg.setCanceledOnTouchOutside(false)
+    // Never keep a touch-modal window invisible while waiting for layout.
+    decor.alpha = 1f
+    var frames = 0
+    var lastViewport: Pair<Int, Int>? = null
+    val firstDraw = DialogFirstDrawGate()
+    val firstFrame = object : android.view.ViewTreeObserver.OnPreDrawListener {
+        override fun onPreDraw(): Boolean {
+            if (activity.isFinishing || activity.isDestroyed || !dlg.isShowing) {
+                decor.viewTreeObserver.removeOnPreDrawListener(this)
+                return true
+            }
+            frames++
+            val old = window.attributes.let { listOf(it.width, it.height, it.gravity, it.y) }
+            if (frames == 1) activity.applyPresentationGeometry(dlg)
+            val root = activity.findViewById<View>(R.id.root)
+            lastViewport = root?.let { it.width to it.height }
+            val attrs = window.attributes
+            val geometryChanged = old != listOf(attrs.width, attrs.height, attrs.gravity, attrs.y)
+            if (firstDraw.defer(geometryChanged || decor.isLayoutRequested)) {
+                decor.postInvalidateOnAnimation()
+                return false
+            }
+            decor.viewTreeObserver.removeOnPreDrawListener(this)
+            val xy = IntArray(2)
+            decor.getLocationOnScreen(xy)
+            android.util.Log.d("UuDialogHost", "phase=first_visible frames=$frames bounds=${xy[0]},${xy[1]},${decor.width},${decor.height} dim=content_only")
+            return true
+        }
+    }
+    decor.setOnApplyWindowInsetsListener { view, insets ->
+        view.post {
+            val root = activity.findViewById<View>(R.id.root)
+            val viewport = root?.let { it.width to it.height }
+            if (!activity.isFinishing && !activity.isDestroyed && dlg.isShowing && view.isAttachedToWindow && viewport != lastViewport) {
+                lastViewport = viewport
+                activity.applyPresentationGeometry(dlg)
+            }
+        }
+        insets
+    }
+    decor.viewTreeObserver.addOnPreDrawListener(firstFrame)
+    decor.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+        override fun onViewAttachedToWindow(v: View) {
+            // Plain alerts must obey the same ownership and input policy as sheets.
+            activity.rootDialogToTab(dlg, ownerTabId = openingTabId)
+            activity.syncRootedDialogs()
+            if (openingTabId != null && activity.tabs.none { it.tabId == openingTabId }) {
+                v.post { if (dlg.isShowing) dlg.dismiss() }
+            }
+            val entry = activity.rootedDialogs.firstOrNull { it.dlg === dlg }
+            if (entry?.hidden != true) {
+                activity.blockContentBehind(dlg)
+                activity.setDialogDimmed(dlg, true)
+            }
+            android.util.Log.d("UuDialogHost", "phase=attached window=${System.identityHashCode(dlg).toString(16)} owner=${entry?.ownerTabId} shield=${entry?.hidden != true}")
+        }
+        override fun onViewDetachedFromWindow(v: View) {
+            if (v.viewTreeObserver.isAlive) v.viewTreeObserver.removeOnPreDrawListener(firstFrame)
+            activity.setDialogDimmed(dlg, false)
+            activity.releaseContentBlock(dlg)
+            android.util.Log.d("UuDialogHost", "phase=detached window=${System.identityHashCode(dlg).toString(16)}")
+            v.removeOnAttachStateChangeListener(this)
+        }
+    })
+}
+
+private val anchoredMenus = java.util.WeakHashMap<android.app.Dialog, java.lang.ref.WeakReference<View>>()
+
+internal fun MainActivity.anchorMenu(dialog: android.app.Dialog, anchor: View) {
+    anchoredMenus[dialog] = java.lang.ref.WeakReference(anchor)
+    placeDialog(dialog, null)
+}
+
+internal fun MainActivity.dismissAnchoredMenuFromBackground() {
+    rootedDialogs.lastOrNull { it.ownerTabId == activeTab.tabId && it.dlg.window?.decorView?.isAttachedToWindow == true }
+        ?.dlg?.takeIf { anchoredMenus.containsKey(it) }?.dismiss()
+}
+
+private fun MainActivity.applyPresentationGeometry(dialog: android.app.Dialog) {
+    val anchor = anchoredMenus[dialog]?.get()
+    if (anchor != null) {
+        val window = dialog.window ?: return
+        if (isFinishing || isDestroyed || (dialog.isShowing && !window.decorView.isAttachedToWindow)) return
+        val frame = android.graphics.Rect()
+        window.decorView.getWindowVisibleDisplayFrame(frame)
+        if (frame.width() <= 0 || frame.height() <= 0) return
+        val xy = IntArray(2)
+        anchor.getLocationOnScreen(xy)
+        val density = resources.displayMetrics.density
+        val margin = (8 * density).toInt()
+        val width = resources.getDimensionPixelSize(R.dimen.menu_width).coerceAtMost(frame.width() - 2 * margin)
+        val left = (xy[0] + anchor.width - width - frame.left).coerceIn(margin, (frame.width() - width - margin).coerceAtLeast(margin))
+        val x = if (resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_RTL) frame.width() - left - width else left
+        val divider = findViewById<View>(R.id.dividerTabBar)
+        val tabPos = IntArray(2)
+        divider?.getLocationOnScreen(tabPos)
+        val safeTop = tabPos[1] + (divider?.height ?: 0)
+        val height = window.decorView.measuredHeight.coerceAtLeast((48 * density).toInt())
+        val maxY = (frame.height() - height - margin).coerceAtLeast(safeTop - frame.top)
+        val y = (xy[1] + anchor.height - frame.top).coerceIn(safeTop - frame.top, maxY)
+        val attrs = window.attributes
+        val gravity = android.view.Gravity.TOP or android.view.Gravity.START
+        if (attrs.gravity != gravity || attrs.x != x || attrs.y != y || attrs.width != width) {
+            window.attributes = attrs.apply { this.gravity = gravity; this.x = x; this.y = y; this.width = width }
+        }
+        return
+    }
+    val placement = placedDialogs.firstOrNull { it.first.get() === dialog }
+    if (placement != null) applyDialogGeometry(dialog, placement.second, placement.third)
+    else applyCenteredDialogGeometry(dialog)
+}
+
+private fun MainActivity.applyCenteredDialogGeometry(dlg: android.app.Dialog) {
+    if (isFinishing || isDestroyed) return
+    val window = dlg.window ?: return
+    if (dlg.isShowing && !window.decorView.isAttachedToWindow) return
+    val root = findViewById<View>(R.id.root) ?: return
+    val safeTop = findViewById<View>(R.id.dividerTabBar)?.bottom ?: 0
+    val attrs = window.attributes
+    val y = safeTop / 2
+    if (attrs.gravity != android.view.Gravity.CENTER || attrs.y != y) {
+        window.attributes = attrs.apply { gravity = android.view.Gravity.CENTER; this.y = y }
+    }
+    fun pixels(value: Int) = (value * resources.displayMetrics.density).toInt()
+    val maxHeight = (root.height - safeTop - pixels(32)).coerceAtLeast(pixels(160))
+    val maxWidth = minOf(root.width - pixels(32), resources.getDimensionPixelSize(R.dimen.dialog_max_width)).coerceAtLeast(pixels(160))
+    val decor = window.decorView
+    if (decor.measuredWidth > maxWidth || decor.measuredHeight > maxHeight) {
+        val width = minOf(decor.measuredWidth, maxWidth)
+        val height = minOf(decor.measuredHeight, maxHeight)
+        if (window.attributes.width != width || window.attributes.height != height) window.setLayout(width, height)
+    }
+}
+
 /**
- * 弹窗宿主 —— 「弹窗框架 + 触摸护盾 + 按 tab 扎根」整块，从 [MainActivity] 尾部**原样搬出来**
- * （UI 架构评价 P3）。全是 [MainActivity] 的 extension，所以调用点写法不变
- * （`dlg.belowTabs()` / `act.keepTabBarTappable(...)`）；只是因为散在 1300 行的 Activity
- * 尾部**没法测** —— 护盾跨 tab 死锁那个 bug 就藏在这里面。**没有行为改动。**
- *
- * 三块：
- * - **触摸护盾**（`@id/touchShield`）：确认类弹窗打开时挡住「tab 栏以外的一切」。按
- *   「谁申请谁释放」用集合记账（[MainActivity.shieldHolders] 仍留在 [MainActivity] 上，
- *   因为它是**按实例**的状态，扩展属性没有背后字段）。
- * - **按 tab 扎根**（[rootDialogToTab] / [syncRootedDialogs]）：弹窗是 Activity 的窗口、
- *   不属于任何 tab；切 tab 时按 [RootedDialog.wantsShield] 藏 / 放，回来时状态还在。
- * - **两种停靠**：[keepTabBarTappable]（居中，保留 tab 栏可点）与 [belowTabBar]
- *   （竖屏贴底 / 横屏居中浮动卡）。
+ * Shared presentation owner: bounded first-frame placement, content-only dimming,
+ * touch shields, tab ownership and dismissal cleanup. Window geometry writes must
+ * be idempotent: changing attributes on every insets dispatch can starve drawing.
  */
 
 /**
@@ -34,14 +218,15 @@ import android.view.View
 internal fun MainActivity.resetPagerInputOnDialogDismiss(
     dlg: android.app.Dialog,
     also: (() -> Unit)? = null,
-    releaseShield: Boolean = false,
 ) {
     dlg.setOnDismissListener {
-        also?.invoke()
-        // 触摸护盾按「谁申请谁释放」配对（集合幂等，重复释放是 no-op）。
-        if (releaseShield) releaseContentBlock(dlg)
-        viewPager.setUserInputEnabled(false)
-        viewPager.setUserInputEnabled(true)
+        try { also?.invoke() }
+        finally {
+            releaseContentBlock(dlg)
+            setDialogDimmed(dlg, false)
+            viewPager.setUserInputEnabled(false)
+            viewPager.setUserInputEnabled(true)
+        }
     }
 }
 
@@ -69,21 +254,22 @@ internal fun MainActivity.releaseContentBlock(dlg: android.app.Dialog) {
 internal class RootedDialog(
     val dlg: android.app.Dialog,
     val ownerTabId: Int,
-    /** 这个弹窗要不要护盾（进度对话框不要）。切 tab 藏/放它时按这个配对。 */
-    val wantsShield: Boolean,
 ) {
     var hidden = false
 }
 
 /** Pin [dlg] to the tab that is active right now. Safe before or after `show()`. */
-internal fun MainActivity.rootDialogToTab(dlg: android.app.Dialog, wantsShield: Boolean = true) {
+internal fun MainActivity.rootDialogToTab(dlg: android.app.Dialog, ownerTabId: Int? = null) {
     if (tabs.isEmpty()) return
-    val entry = RootedDialog(dlg, activeTab.tabId, wantsShield)
+    if (rootedDialogs.any { it.dlg === dlg }) return
+    val owner = ownerTabId ?: AppDiagnostics.currentTrace()?.chain?.let { dialogChainTabs[it] } ?: activeTab.tabId
+    val entry = RootedDialog(dlg, owner)
     rootedDialogs.add(entry)
     dlg.window?.decorView?.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
         override fun onViewAttachedToWindow(v: View) {}
         override fun onViewDetachedFromWindow(v: View) {
             rootedDialogs.remove(entry)
+            syncRootedDialogs()
             v.removeOnAttachStateChangeListener(this)
         }
     })
@@ -92,22 +278,34 @@ internal fun MainActivity.rootDialogToTab(dlg: android.app.Dialog, wantsShield: 
 /** Hide rooted dialogs whose tab is no longer active and re-show the ones
  *  whose tab just came back. Called from the pager's onPageSelected. */
 internal fun MainActivity.syncRootedDialogs() {
-    if (tabs.isEmpty()) return
+    if (tabs.isEmpty() || isFinishing || isDestroyed) return
     val activeId = activeTab.tabId
-    for (entry in rootedDialogs) {
-        val shouldShow = entry.ownerTabId == activeId
-        if (shouldShow == !entry.hidden) continue
-        setRootedDialogHidden(entry.dlg, !shouldShow)
-        entry.hidden = !shouldShow
-        // 护盾必须跟着弹窗的可见性走：藏起来时它还在旧 tab 里，护盾却盖在新
-        // tab 上 —— 新 tab 没有任何东西能关掉它，整个界面死锁（真机踩过）。
-        // 按 entry.wantsShield 配对：进度对话框（不要护盾）两头都是 no-op。
-        if (shouldShow) {
-            if (entry.wantsShield) blockContentBehind(entry.dlg)
-        } else {
-            releaseContentBlock(entry.dlg)
-        }
+    val top = rootedDialogs.lastOrNull {
+        it.ownerTabId == activeId && it.dlg.window?.decorView?.isAttachedToWindow == true
     }
+    for (entry in rootedDialogs) {
+        val attached = entry.dlg.window?.decorView?.isAttachedToWindow == true
+        val presentation = tabModalPresentation(entry.ownerTabId, activeId, attached, entry === top)
+        val shouldShow = presentation.visible
+        val visibility = if (shouldShow) View.VISIBLE else View.GONE
+        if (attached && entry.dlg.window?.decorView?.visibility != visibility) {
+            setRootedDialogHidden(entry.dlg, !shouldShow)
+        }
+        entry.hidden = !shouldShow
+        if (attached) {
+            val window = entry.dlg.window ?: continue
+            val blocked = android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            // A nested modal must not pass an outside touch to its parent window.
+            val flags = if (presentation.acceptsInput) window.attributes.flags and blocked.inv()
+                else window.attributes.flags or blocked
+            if (flags != window.attributes.flags) window.attributes = window.attributes.apply { this.flags = flags }
+            setDialogDimmed(entry.dlg, shouldShow)
+        }
+        if (presentation.blocksBackground) blockContentBehind(entry.dlg)
+        else releaseContentBlock(entry.dlg)
+    }
+    android.util.Log.d("UuDialogHost", "phase=tab_sync active=$activeId top=${top?.dlg?.let { System.identityHashCode(it).toString(16) }} visible=${rootedDialogs.count { it.ownerTabId == activeId }} shield=${shieldHolders.size}")
 }
 
 internal fun MainActivity.setRootedDialogHidden(dlg: android.app.Dialog, hidden: Boolean) {
@@ -123,6 +321,7 @@ internal fun MainActivity.setRootedDialogHidden(dlg: android.app.Dialog, hidden:
         decor.visibility = View.VISIBLE
         w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
     }
+    setDialogDimmed(dlg, !hidden)
 }
 
 /** Dismiss every dialog rooted to a closed tab. */
@@ -142,30 +341,21 @@ internal fun MainActivity.dismissRootedDialogsFor(tabId: Int) {
  *
  * 三条不变式：
  *  1. 窗口外点击必须落到 tab 栏（[FLAG_NOT_TOUCH_MODAL]）→ 所以绝不能「点外面关闭」；
- *  2. 要护盾就**当场**申请，并由 [resetPagerInputOnDialogDismiss] 配对释放
- *     （集合记账，重复释放是 no-op）；
- *  3. 扎根时的 `wantsShield` 必须与这里一致 —— 不一致就是「切 tab 后护盾盖在新 tab 上、
- *     没人能关掉」那次死锁。
+ *  2. 所有模态窗口都阻挡背景触摸，只有最上层窗口和 tab 栏可交互；
+ *  3. 遮罩/输入护盾跟随所属 tab，关闭与切换均配对释放。
  */
 private fun MainActivity.placeDialog(
     dlg: android.app.Dialog,
-    rootToTab: Boolean,
-    shield: Boolean,
     also: (() -> Unit)?,
 ) {
-    dlg.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
-    // The whole point is that an outside tap belongs to the UI behind (the
-    // tab strip), so the dialog must never treat it as "tap outside to
-    // dismiss". On some ROMs (Honor/EMUI) the outside-down still raises
-    // ACTION_OUTSIDE and dismisses while the tab click is lost — the dialog
-    // vanished but the window never switched. Explicitly disable it.
-    dlg.setCanceledOnTouchOutside(false)
-    if (rootToTab) rootDialogToTab(dlg, wantsShield = shield)
-    // 默认把「tab 栏以外」全挡上（触摸护盾）：确认类弹窗打开时不该还能点到背后的
-    // 文件列表 —— 那是误触。**进度对话框要传 false**：本应用支持操作排队后继续
-    // 浏览（批量解压/压缩/扫描跑着的时候用户照样能翻目录），挡住内容反而是退化。
-    if (shield) blockContentBehind(dlg)
-    resetPagerInputOnDialogDismiss(dlg, also, releaseShield = shield)
+    if (isFinishing || isDestroyed) return
+    if (dlg.isShowing && dlg.window?.decorView?.isAttachedToWindow != true) return
+    prepareDialogWindow(dlg)
+    rootDialogToTab(dlg)
+    // All modal windows block content; other tabs remain independently usable.
+    if (rootedDialogs.none { it.dlg === dlg && it.hidden }) blockContentBehind(dlg)
+    resetPagerInputOnDialogDismiss(dlg, also)
+    syncRootedDialogs()
 }
 
 /** Let the tab strip stay bright and tappable while a settings dialog is open.
@@ -183,23 +373,12 @@ private fun MainActivity.placeDialog(
  *  The pager input re-arm rides along, because the same dismiss can leave
  *  ViewPager2 unable to swipe (see [resetPagerInputOnDialogDismiss]).
  *
- *  `rootToTab` (default) pins the dialog to the current tab; pass false for
- *  app-global dialogs (settings / help / recycle bin / installer) that should
- *  stay put across tab switches. */
+ *  Every dialog belongs to its opening tab and blocks the content underneath. */
 internal fun MainActivity.keepTabBarTappable(
     dlg: android.app.Dialog,
-    rootToTab: Boolean = true,
-    // 必须排在 `also` 之前：调用方若用尾随 lambda 传 also，排在后面会把尾记抢走。
-    blockBehind: Boolean = true,
     also: (() -> Unit)? = null,
 ) {
-    dlg.window?.let { w ->
-        // 只有「居中 + 亮 tab 栏」这一件事是 keepTabBarTappable 独有的几何/明暗处理；
-        // 标志 / 护盾 / 扎根 / 收尾全交给 placeDialog（配对只有一份）。
-        w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-        w.setDimAmount(0f)
-    }
-    placeDialog(dlg, rootToTab = rootToTab, shield = blockBehind, also = also)
+    placeDialog(dlg, also = also)
 }
 
 /** Bottom-anchored variant of [keepTabBarTappable] for **tall** dialogs.
@@ -208,7 +387,7 @@ internal fun MainActivity.keepTabBarTappable(
  *  the tab strip on shorter screens, so `FLAG_NOT_TOUCH_MODAL` alone is not
  *  enough — the window has to be physically kept below the strip. This moves
  *  the dialog to the bottom and sizes it to the space under
- *  status+toolbar+tabs, with a local scrim instead of the system dim (which
+ *  tabs, with a local scrim instead of the system dim (which
  *  would darken the strip too). Mirrors what `PreviewFlow`/`BatchExtract`
  *  used to hand-roll; those two now call this so the geometry cannot drift.
  *
@@ -218,13 +397,12 @@ internal fun MainActivity.belowTabBar(
     dlg: android.app.Dialog,
     swipeAreaDp: Float = 130f,
     fitContent: Boolean = false,
-    rootToTab: Boolean = true,
     also: (() -> Unit)? = null,
 ) {
     registerPlacement(dlg, swipeAreaDp, fitContent)
     applyDialogGeometry(dlg, swipeAreaDp, fitContent)
     // 弹窗一律要护盾（除 tab 栏外全挡）；配对全在 placeDialog 里。
-    placeDialog(dlg, rootToTab = rootToTab, shield = true, also = also)
+    placeDialog(dlg, also = also)
 }
 
 /**
@@ -242,11 +420,14 @@ private fun MainActivity.applyDialogGeometry(
     @Suppress("UNUSED_PARAMETER") swipeAreaDp: Float,
     fitContent: Boolean,
 ) {
+    if (isFinishing || isDestroyed) return
     val w = dlg.window ?: return
+    // During dismiss(), isShowing may remain true after WindowManager removed the decor.
+    if (dlg.isShowing && !w.decorView.isAttachedToWindow) return
     val dm = resources.displayMetrics
     val density = dm.density
-    val topInset = viewPager?.takeIf { it.top > 0 }?.top
-        ?: (24f * density).toInt() + (106f * density).toInt()  // status 24dp + toolbar 56dp + tabs 50dp
+    val topInset = findViewById<View>(R.id.dividerTabBar)?.bottom
+        ?: (50f * density).toInt()
     val landscape = resources.configuration.orientation ==
         android.content.res.Configuration.ORIENTATION_LANDSCAPE
     val sheetW = if (landscape) {
@@ -256,36 +437,12 @@ private fun MainActivity.applyDialogGeometry(
         minOf(dm.widthPixels, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
     }
 
-    // ── 几何 / 明暗：与调用顺序无关，当场生效 ────────────────────────────
-    if (landscape) {
-        // 可用区 = [topInset, 屏高]；Gravity.CENTER 的 y 是**相对中心的偏移**，
-        // 往下推 topInset/2 正好把中心从屏幕中心挪到可用区中心。
-        w.setGravity(android.view.Gravity.CENTER)
-        w.attributes = w.attributes.apply { y = topInset / 2 }
-        // 卡片外面用系统压暗，不再用窗口自带的局部 scrim —— 局部 scrim 只能盖住窗口
-        // 矩形，浮动卡外一圈会是亮的，没有模态感。tab 条被压暗但仍可点
-        //（NOT_TOUCH_MODAL 保留）。卡片外观交给对话框主题的圆角 windowBackground。
-        w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-        w.setDimAmount(0.5f)
-        // ⚠️ 转屏重算时必须把窗口背景**换回主题的圆角底**：竖屏分支把它替换成了纯色
-        // scrim（见下），而窗口背景一旦被 setBackgroundDrawable 改过就没有「恢复默认」
-        // 的 API —— 不换回来的话，竖屏转横屏后浮动卡变直角、外面还压着一层 0x99000000。
-        // 取的是 `w.context`（对话框主题包装过的），不是 Activity 的 context。
-        val ta = w.context.obtainStyledAttributes(intArrayOf(android.R.attr.windowBackground))
-        val themedBg = ta.getDrawable(0)
-        ta.recycle()
-        // 主题里没设就不动：宁可留着上一次的背景，也不要 setBackgroundDrawable(null)
-        // 把卡片变成全透明。
-        if (themedBg != null) w.setBackgroundDrawable(themedBg)
-    } else {
-        w.setGravity(android.view.Gravity.BOTTOM)
-        // ⚠️ y 必须归零：横屏分支把它设成 topInset/2，BOTTOM 重力下这个正值会把窗口
-        // 往下推出屏幕（底边被裁掉）。同样只有转屏重算才会碰到。
-        w.attributes = w.attributes.apply { y = 0 }
-        // 竖屏仍是贴底大窗 + 窗口自带的局部 scrim（不动 tab 条的亮度）
-        w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-        w.setDimAmount(0f)
-        w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0x99000000.toInt()))
+    // Window dim/animation policy is configured once by prepareDialogWindow.
+    // Reapplying window attributes from pre-draw/insets would keep requesting another layout.
+    val gravity = if (landscape) android.view.Gravity.CENTER else android.view.Gravity.BOTTOM
+    val offset = if (landscape) topInset / 2 else 0
+    if (w.attributes.gravity != gravity || w.attributes.y != offset) {
+        w.attributes = w.attributes.apply { this.gravity = gravity; y = offset }
     }
 
     /**
@@ -312,7 +469,7 @@ private fun MainActivity.applyDialogGeometry(
             // 列表会塌成 0 高 —— 真机踩过。）
             // 宽高都由窗口定死（show 之后 setLayout 有效）。只定宽不定高的话窗口会比面板
             // 高出装饰层那点内边距，面板居中 → 底部露出一条窗口底色，看着像从底部呼出的。
-            w.setLayout(sheetW, availH)
+            if (w.attributes.width != sheetW || w.attributes.height != availH) w.setLayout(sheetW, availH)
             fitDialogPanel(dlg)
             return
         }
@@ -322,32 +479,11 @@ private fun MainActivity.applyDialogGeometry(
             View.MeasureSpec.makeMeasureSpec(sheetW, View.MeasureSpec.AT_MOST),
             View.MeasureSpec.makeMeasureSpec(availH, View.MeasureSpec.AT_MOST))
         val measured = decor.measuredHeight
-        w.setLayout(sheetW, if (measured in 1 until availH) measured else availH)
+        val height = if (measured in 1 until availH) measured else availH
+        if (w.attributes.width != sheetW || w.attributes.height != height) w.setLayout(sheetW, height)
     }
-    if (dlg.isShowing) {
-        applySize()
-    } else {
-        // 用 attach 监听而不是 setOnShowListener：那个槽位调用方也在用
-        //（PreviewFlow 的按钮重绑），抢了就把它顶掉 —— 和 dismiss 监听器同一个坑。
-        val decor = w.decorView
-        decor.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
-            override fun onViewAttachedToWindow(v: View) {
-                v.removeOnAttachStateChangeListener(this)
-                v.post { applySize() }
-            }
-            override fun onViewDetachedFromWindow(v: View) {}
-        })
-    }
-
-    // ⚠️ 输入法弹出时父窗口（Activity）被压矮（横屏实测 1944 → 1121px），而窗口是按
-    // **当时**的可用高度量出来的、之后不会自己重算 —— 超出父窗口的那一截**收不到触摸**
-    //（真机：横屏搜出结果后点列表下半部分毫无反应，探针确认 itemClick 没触发）。
-    // insets 变化时请求一次重新布局，窗口就会按新的可用高度重新量。
-    w.decorView.setOnApplyWindowInsetsListener { v, insets ->
-        // 输入法弹出/收起 → root 高度变了 → 重新按当前可用高度算一次面板尺寸
-        v.post { applySize() }
-        insets
-    }
+    // The shared pre-draw gate calls this again before revealing a newly attached window.
+    applySize()
 
 }
 /** 记录「几何与方向相关」的弹窗，转屏时按新方向重算（[reapplyDialogPlacements]）。 */
@@ -364,8 +500,7 @@ private fun registerPlacement(dlg: android.app.Dialog, swipeAreaDp: Float, fitCo
 }
 
 /**
- * 方向变了 → 给所有还在显示的 `belowTabs` 弹窗重算几何
- * （`keepTabsTappable` 的居中弹窗是 WRAP + CENTER，不受方向影响）。
+ * Reflow visible sheets and centered dialogs when the content viewport changes.
  *
  * ⚠️ **必须 post 到下一帧**：`onConfigurationChanged` 是在新方向还没走完布局时回调的，
  * 此刻 `R.id.root.height` 还是旧方向的值 —— 直接算等于拿旧尺寸又设了一遍。
@@ -375,12 +510,16 @@ internal fun MainActivity.reapplyDialogPlacements() {
 }
 
 private fun MainActivity.reapplyDialogPlacementsNow() {
+    if (isFinishing || isDestroyed) return
     val iter = placedDialogs.iterator()
     while (iter.hasNext()) {
         val (ref, swipeAreaDp, fitContent) = iter.next()
         val d = ref.get()
         if (d == null || !d.isShowing) { iter.remove(); continue }
         applyDialogGeometry(d, swipeAreaDp, fitContent)
+    }
+    dialogDimOwners.filterIsInstance<android.app.Dialog>().forEach { dialog ->
+        if (dialog.isShowing && placedDialogs.none { it.first.get() === dialog }) applyPresentationGeometry(dialog)
     }
 }
 
@@ -492,24 +631,21 @@ private fun android.content.Context.findMainActivity(): MainActivity? {
  * when no MainActivity hosts the dialog keeps these safe to call unconditionally.
  */
 internal fun android.app.Dialog.keepTabsTappable(
-    rootToTab: Boolean = true,
-    blockBehind: Boolean = true,
     also: (() -> Unit)? = null,
 ) {
-    context.findMainActivity()?.keepTabBarTappable(this, rootToTab, blockBehind, also)
+    context.findMainActivity()?.keepTabBarTappable(this, also)
 }
 
 /**
  * Bottom-anchored variant for tall dialogs; see `MainActivity.belowTabBar`.
  * `fitContent = true` makes the sheet hug short content (capped below the tab
- * strip) instead of always taking the full available height. `rootToTab`
- * (default) pins the dialog to the tab that opened it; false keeps it global.
+ * strip) instead of always taking the full available height. Every dialog is
+ * pinned to the tab that opened it.
  */
 internal fun android.app.Dialog.belowTabs(
     swipeAreaDp: Float = 130f,
     fitContent: Boolean = false,
-    rootToTab: Boolean = true,
     also: (() -> Unit)? = null,
 ) {
-    context.findMainActivity()?.belowTabBar(this, swipeAreaDp, fitContent, rootToTab, also)
+    context.findMainActivity()?.belowTabBar(this, swipeAreaDp, fitContent, also)
 }

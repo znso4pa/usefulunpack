@@ -39,5 +39,5 @@ internal fun MainActivity.showComponentCatalog() {
     body.addView(UuActionRow(this).apply { bind(getString(R.string.components_action), getString(R.string.diagnostics_title)) { showDiagnostics() } })
     val scroll = com.usefulunpacker.UuScrollView(this).apply { isVerticalScrollBarEnabled = false; isHorizontalScrollBarEnabled = false; addView(body) }
     UuDialogBuilder(this).setTitle(R.string.components_title).setView(scroll)
-        .setNegativeButton(R.string.action_close, null).show().also { it.belowTabs(rootToTab = false, fitContent = true) }
+        .setNegativeButton(R.string.action_close, null).show().also { it.belowTabs(fitContent = true) }
 }

@@ -119,7 +119,7 @@ private class RecycleEntryAdapter(
                     }
                 }
                 .setNegativeButton(R.string.action_cancel, null)
-                .show().also { it.keepTabsTappable(rootToTab = false) }
+                .show().also { it.keepTabsTappable() }
         }
 
         return view
@@ -189,7 +189,7 @@ fun showRecycleBinDialog(activity: MainActivity) {
         setCancelable(false)
         show()
     }
-    pd.keepTabsTappable(rootToTab = false, blockBehind = false)
+    pd.keepTabsTappable()
     thread {
         val entries = RecycleBin.listEntries(activity)
         activity.runFeatureOnUiThread {
@@ -277,7 +277,7 @@ fun showRecycleBinDialog(activity: MainActivity) {
                             }
                         }
                         .setNegativeButton(R.string.action_cancel, null)
-                        .show().also { it.keepTabsTappable(rootToTab = false) }
+                        .show().also { it.keepTabsTappable() }
                 }
                 .setNegativeButton(activity.getString(R.string.action_close), null)
                 .show().also { it.belowTabs(fitContent = true) }

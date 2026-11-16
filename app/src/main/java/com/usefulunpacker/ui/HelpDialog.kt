@@ -101,7 +101,6 @@ internal fun MainActivity.showHelpDialog() {
         .setNegativeButton(getString(R.string.action_close), null)
         .create()
     // Tall help viewer (capped ~0.88h) — bottom-anchor below the tab strip.
-    // App-global: keep it visible across tab switches (rootToTab = false).
     dlg.belowTabs()
     dlg.show()
 }

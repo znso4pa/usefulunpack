@@ -7,6 +7,9 @@ import android.view.View
 fun View.onUserIntent(feature: String, action: (View) -> Unit) {
     setOnClickListener { view ->
         val scope = AppDiagnostics.enterIntent(feature, newChain = true)
+        (view.context.hostActivity() as? MainActivity)?.let { activity ->
+            scope.trace.chain?.let { chain -> activity.tabs.getOrNull(activity.activeTabIndex)?.let { activity.dialogChainTabs[chain] = it.tabId } }
+        }
         try { AppDiagnostics.invokeCallback(scope.trace) { action(view) } }
         finally { AppDiagnostics.leaveIntent(scope) }
     }

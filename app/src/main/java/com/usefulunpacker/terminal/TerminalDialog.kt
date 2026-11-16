@@ -136,5 +136,5 @@ fun showTerminalHelp(activity: AppCompatActivity, inp: EditText, onApply: (Strin
         }
         .setNegativeButton(activity.getString(R.string.action_close), null)
         .create()
-        .also { it.show(); it.keepTabsTappable(rootToTab = false) }
+        .also { it.show(); it.keepTabsTappable() }
 }

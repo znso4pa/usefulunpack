@@ -59,7 +59,7 @@ internal fun MainActivity.showCompressionSettings() {
                 .setTitle(title)
                 .setSingleChoiceItems(labels, checked) { _, w -> onPick(w) }
                 .setPositiveButton(getString(R.string.action_confirm), null)
-                .show().also { keepTabBarTappable(it, rootToTab = false) }
+                .show().also { keepTabBarTappable(it) }
         }
 
 
@@ -93,7 +93,7 @@ internal fun MainActivity.showCompressionSettings() {
                     } else failureNotice(getString(R.string.split_invalid))
                 }
                 .setNegativeButton(R.string.action_cancel, null)
-                .show().also { keepTabBarTappable(it, rootToTab = false) }
+                .show().also { keepTabBarTappable(it) }
         }
 
         bindRow(rowZip, "ZIP " + getString(R.string.settings_compress), levelLabel(ZIP_VALS, ZIP_LABELS, zipLevel)) {
@@ -160,7 +160,7 @@ internal fun MainActivity.showCompressionSettings() {
                 if (m == 0) { bottomBar.visibility = View.GONE; btnExtract.text = getString(R.string.msg_extract_title); btnExtract.setOnClickListener { extract() }; activeTab.btnFolderNext?.visibility = View.GONE; selectedFile = null }
             }
             .setNegativeButton(R.string.action_cancel, null)
-            .show().also { keepTabBarTappable(it, rootToTab = false) }
+            .show().also { keepTabBarTappable(it) }
     }
 
 internal fun MainActivity.showGeneralSettings() {
@@ -188,7 +188,7 @@ internal fun MainActivity.showGeneralSettings() {
                     d.dismiss()
                 }
                 .setNegativeButton(R.string.action_cancel, null)
-                .show().also { keepTabBarTappable(it, rootToTab = false) }
+                .show().also { keepTabBarTappable(it) }
         }
 
         val body = LinearLayout(this).apply {
@@ -210,7 +210,7 @@ internal fun MainActivity.showGeneralSettings() {
                         recreate()
                     }
                     .setNegativeButton(R.string.action_cancel, null)
-                    .show().also { keepTabBarTappable(it, rootToTab = false) }
+                    .show().also { keepTabBarTappable(it) }
             })
             addView(divider())
             lateinit var textEncRow: TextView
@@ -262,7 +262,7 @@ internal fun MainActivity.showGeneralSettings() {
                         d.dismiss()
                     }
                     .setNegativeButton(R.string.action_cancel, null)
-                    .show().also { keepTabBarTappable(it, rootToTab = false) }
+                    .show().also { keepTabBarTappable(it) }
             }
             addView(parallelRow)
             addView(divider())
@@ -292,7 +292,7 @@ internal fun MainActivity.showGeneralSettings() {
                         d.dismiss()
                     }
                     .setNegativeButton(R.string.action_cancel, null)
-                    .show().also { keepTabBarTappable(it, rootToTab = false) }
+                    .show().also { keepTabBarTappable(it) }
             }
             addView(sortRow)
             addView(divider())
@@ -316,7 +316,7 @@ internal fun MainActivity.showGeneralSettings() {
                         d.dismiss()
                     }
                     .setNegativeButton(R.string.action_cancel, null)
-                    .show().also { keepTabBarTappable(it, rootToTab = false) }
+                    .show().also { keepTabBarTappable(it) }
             }
             addView(pickerRow)
             addView(divider())
@@ -335,7 +335,7 @@ internal fun MainActivity.showGeneralSettings() {
             .setTitle(getString(R.string.settings_general))
             .setView(body)
             .setPositiveButton(getString(R.string.action_close), null)
-            .show().also { keepTabBarTappable(it, rootToTab = false) }
+            .show().also { keepTabBarTappable(it) }
     }
 
 internal fun MainActivity.settings() {
@@ -361,7 +361,7 @@ internal fun MainActivity.settings() {
     dialog = UuDialogBuilder(this).setTitle(getString(R.string.settings)).setView(scroll)
         .setNegativeButton(R.string.action_close, null).create()
     dialog.show()
-    dialog.belowTabs(rootToTab = false, fitContent = true)
+    dialog.belowTabs(fitContent = true)
 }
 
 internal fun MainActivity.showOtherSettings() {
@@ -390,7 +390,7 @@ internal fun MainActivity.showOtherSettings() {
             prefs.edit().putBoolean("restore_session", switchRestore.isChecked).apply()
         }
         .setNegativeButton(R.string.action_cancel, null)
-        .show().also { keepTabBarTappable(it, rootToTab = false) }
+        .show().also { keepTabBarTappable(it) }
     }
 
 internal fun MainActivity.showRecycleBinSettings() {
@@ -425,7 +425,7 @@ internal fun MainActivity.showRecycleBinSettings() {
                     bindAutoClean()
                 }
                 .setPositiveButton(R.string.action_confirm, null)
-                .show().also { keepTabBarTappable(it, rootToTab = false) }
+                .show().also { keepTabBarTappable(it) }
         }
     }
     bindAutoClean()
@@ -476,7 +476,7 @@ internal fun MainActivity.showRecycleBinSettings() {
                 }
             }
             .setNegativeButton(R.string.action_cancel, null)
-            .show().also { keepTabBarTappable(it, rootToTab = false) }
+            .show().also { keepTabBarTappable(it) }
     }
 
     com.usefulunpacker.UuDialogBuilder(this)
@@ -487,7 +487,7 @@ internal fun MainActivity.showRecycleBinSettings() {
             prefs.edit().putInt("recycle_bin_auto_clean_days", autoCleanDays).apply()
         }
         .setNegativeButton(R.string.action_cancel, null)
-        .show().also { keepTabBarTappable(it, rootToTab = false) }
+        .show().also { keepTabBarTappable(it) }
 }
 
 internal fun MainActivity.showUISettings() {
@@ -567,7 +567,7 @@ internal fun MainActivity.showUISettings() {
                 prefs.getString("bg_image_uri", null)?.let { applyBackgroundImage(Uri.parse(it)) }
             }
             .setNegativeButton(R.string.action_cancel, null)
-            .show().also { keepTabBarTappable(it, rootToTab = false) }
+            .show().also { keepTabBarTappable(it) }
     }
 
 // ─── 背景图（壁纸）让位表 ─────────────────────────────────────────────────

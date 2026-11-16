@@ -39,13 +39,14 @@ import com.usefulunpacker.featureThread as thread
  * 渲染 —— 再扫一遍是分钟级的浪费。
  *
  * ## 长任务的纪律（与批量解压同一条）
- * 扫描框**不要护盾**（`blockBehind = false`）：扫一分钟的时间里用户照样能翻目录。
+ * 扫描框与结果框绑定发起 tab；其它 tab 仍可独立浏览。
  * 取消按钮置位 `AtomicBoolean`，扫描器每个文件、每个目录都查一次。
  */
 internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternalStorageDirectory()) {
     val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("disk_usage", newChain = true)
     try {
     val act = this
+    val ownerTabId = activeTab.tabId
     val density = resources.displayMetrics.density
     fun px(v: Int) = (v * density).toInt()
 
@@ -77,7 +78,7 @@ internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternal
     // ⚠️ 取消只能从 `also` 进来：`setOnDismissListener` 只有一个槽位，
     // `keepTabBarTappable` 里 `resetPagerInputOnDialogDismiss` 已经占用了它，
     // 再自己设一次就会把「关掉弹窗后 ViewPager 还能滑」那条修复顶掉（真机踩过两次）。
-    dlg.keepTabsTappable(rootToTab = false, blockBehind = false) { cancelled.set(true) }
+    dlg.keepTabsTappable() { cancelled.set(true) }
     dlg.show()
 
     thread {
@@ -105,7 +106,7 @@ internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternal
             // 扫完了、但用户已经把扫描窗口关掉 → 结果丢弃，别硬弹一个新窗口。
             if (!dlg.isShowing) return@runFeatureOnUiThread
             dlg.dismiss()
-            showDiskResult(act, scan)
+            showDiskResult(act, scan, ownerTabId)
         }
     }
     } catch (intentCancelled: java.util.concurrent.CancellationException) {
@@ -276,7 +277,8 @@ private fun diskColumn(act: MainActivity, title: String, pane: View): LinearLayo
     }
 }
 
-private fun showDiskResult(act: MainActivity, scan: DiskScan) {
+private fun showDiskResult(act: MainActivity, scan: DiskScan, ownerTabId: Int) {
+    if (act.tabs.none { it.tabId == ownerTabId }) return
     val density = act.resources.displayMetrics.density
     fun px(v: Int) = (v * density).toInt()
 
@@ -511,16 +513,16 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
                 // 再等一帧才开新窗口：`belowTabs` 的 `applySize` 读的是 Activity 根视图
                 // 的**当前高度**，而转屏这一帧它还是旧方向的值 —— 读早了会开出一个只占
                 // 半屏的窗口（真机：竖屏单栏骨架对了，但窗口只有上半屏高）。
-                act.window?.decorView?.post { showDiskResult(act, scan) }
+                act.window?.decorView?.post { showDiskResult(act, scan, ownerTabId) }
             }
         }
 
         override fun onLowMemory() {}
     }
     act.application.registerComponentCallbacks(skeletonWatch)
+    act.rootDialogToTab(dialog, ownerTabId = ownerTabId)
     dialog.belowTabs(
         fitContent = false,
-        rootToTab = false,
         // 方向监听的生命周期跟着对话框走：窗口没了就没人再需要它。
         also = { act.application.unregisterComponentCallbacks(skeletonWatch) },
     )

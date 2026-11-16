@@ -63,7 +63,7 @@ internal fun MainActivity.showDiagnostics(selectedId: String? = null, feature: S
                     }
                 }
                 .setNegativeButton(R.string.action_close, null)
-                .show().also { it.keepTabsTappable(rootToTab = false) }
+                .show().also { it.keepTabsTappable() }
         }
     }
 }
@@ -97,5 +97,5 @@ private fun MainActivity.showDiagnosticEntry(entry: DiagnosticEntry) {
             }
             }
         }
-        .setNegativeButton(R.string.action_close, null).show().also { it.belowTabs(rootToTab = false, fitContent = true) }
+        .setNegativeButton(R.string.action_close, null).show().also { it.belowTabs(fitContent = true) }
 }

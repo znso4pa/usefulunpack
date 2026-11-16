@@ -66,7 +66,7 @@ internal fun prepareDialogWindow(dlg: android.app.Dialog) {
     decor.alpha = 1f
     var frames = 0
     var lastViewport: Pair<Int, Int>? = null
-    val firstDraw = DialogFirstDrawGate()
+    var firstDraw = DialogFirstDrawGate()
     val firstFrame = object : android.view.ViewTreeObserver.OnPreDrawListener {
         override fun onPreDraw(): Boolean {
             if (activity.isFinishing || activity.isDestroyed || !dlg.isShowing) {
@@ -85,6 +85,9 @@ internal fun prepareDialogWindow(dlg: android.app.Dialog) {
                 return false
             }
             decor.viewTreeObserver.removeOnPreDrawListener(this)
+            if (activity.rootedDialogs.none { it.dlg === dlg && it.hidden }) {
+                DialogMotion.enter(dlg, anchoredMenus.containsKey(dlg), window.attributes.gravity == android.view.Gravity.BOTTOM)
+            }
             val xy = IntArray(2)
             decor.getLocationOnScreen(xy)
             android.util.Log.d("UuDialogHost", "phase=first_visible frames=$frames bounds=${xy[0]},${xy[1]},${decor.width},${decor.height} dim=content_only")
@@ -97,14 +100,18 @@ internal fun prepareDialogWindow(dlg: android.app.Dialog) {
             val viewport = root?.let { it.width to it.height }
             if (!activity.isFinishing && !activity.isDestroyed && dlg.isShowing && view.isAttachedToWindow && viewport != lastViewport) {
                 lastViewport = viewport
+                DialogMotion.reset(dlg)
                 activity.applyPresentationGeometry(dlg)
             }
         }
         insets
     }
-    decor.viewTreeObserver.addOnPreDrawListener(firstFrame)
     decor.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
         override fun onViewAttachedToWindow(v: View) {
+            frames = 0
+            firstDraw = DialogFirstDrawGate()
+            lastViewport = null
+            v.viewTreeObserver.addOnPreDrawListener(firstFrame)
             // Plain alerts must obey the same ownership and input policy as sheets.
             activity.rootDialogToTab(dlg, ownerTabId = openingTabId)
             activity.syncRootedDialogs()
@@ -120,10 +127,11 @@ internal fun prepareDialogWindow(dlg: android.app.Dialog) {
         }
         override fun onViewDetachedFromWindow(v: View) {
             if (v.viewTreeObserver.isAlive) v.viewTreeObserver.removeOnPreDrawListener(firstFrame)
+            DialogMotion.reset(dlg)
             activity.setDialogDimmed(dlg, false)
             activity.releaseContentBlock(dlg)
             android.util.Log.d("UuDialogHost", "phase=detached window=${System.identityHashCode(dlg).toString(16)}")
-            v.removeOnAttachStateChangeListener(this)
+            // Keep this listener: a dismissed Dialog may be shown again.
         }
     })
 }
@@ -152,20 +160,26 @@ private fun MainActivity.applyPresentationGeometry(dialog: android.app.Dialog) {
         anchor.getLocationOnScreen(xy)
         val density = resources.displayMetrics.density
         val margin = (8 * density).toInt()
-        val width = resources.getDimensionPixelSize(R.dimen.menu_width).coerceAtMost(frame.width() - 2 * margin)
-        val left = (xy[0] + anchor.width - width - frame.left).coerceIn(margin, (frame.width() - width - margin).coerceAtLeast(margin))
-        val x = if (resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_RTL) frame.width() - left - width else left
         val divider = findViewById<View>(R.id.dividerTabBar)
         val tabPos = IntArray(2)
         divider?.getLocationOnScreen(tabPos)
-        val safeTop = tabPos[1] + (divider?.height ?: 0)
-        val height = window.decorView.measuredHeight.coerceAtLeast((48 * density).toInt())
-        val maxY = (frame.height() - height - margin).coerceAtLeast(safeTop - frame.top)
-        val y = (xy[1] + anchor.height - frame.top).coerceIn(safeTop - frame.top, maxY)
+        val safeTop = tabPos[1] + (divider?.height ?: 0) - frame.top
+        // Measure natural content again so a keyboard-capped menu can grow back.
+        val desiredWidth = resources.getDimensionPixelSize(R.dimen.menu_width)
+        val measureWidth = desiredWidth.coerceAtMost(frame.width()).coerceAtLeast(1)
+        window.decorView.measure(View.MeasureSpec.makeMeasureSpec(measureWidth, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+        val bounds = popupBounds(frame.width(), frame.height(), safeTop,
+            xy[0] + anchor.width - frame.left, xy[1] + anchor.height - frame.top,
+            desiredWidth, window.decorView.measuredHeight, margin)
+        val width = bounds.width
+        val height = bounds.height
+        val x = if (resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_RTL) frame.width() - bounds.x - width else bounds.x
+        val y = bounds.y
         val attrs = window.attributes
         val gravity = android.view.Gravity.TOP or android.view.Gravity.START
-        if (attrs.gravity != gravity || attrs.x != x || attrs.y != y || attrs.width != width) {
-            window.attributes = attrs.apply { this.gravity = gravity; this.x = x; this.y = y; this.width = width }
+        if (attrs.gravity != gravity || attrs.x != x || attrs.y != y || attrs.width != width || attrs.height != height) {
+            window.attributes = attrs.apply { this.gravity = gravity; this.x = x; this.y = y; this.width = width; this.height = height }
         }
         return
     }
@@ -174,6 +188,8 @@ private fun MainActivity.applyPresentationGeometry(dialog: android.app.Dialog) {
     else applyCenteredDialogGeometry(dialog)
 }
 
+private val centeredSizes = java.util.WeakHashMap<android.app.Dialog, Pair<Int, Int>>()
+
 private fun MainActivity.applyCenteredDialogGeometry(dlg: android.app.Dialog) {
     if (isFinishing || isDestroyed) return
     val window = dlg.window ?: return
@@ -181,19 +197,26 @@ private fun MainActivity.applyCenteredDialogGeometry(dlg: android.app.Dialog) {
     val root = findViewById<View>(R.id.root) ?: return
     val safeTop = findViewById<View>(R.id.dividerTabBar)?.bottom ?: 0
     val attrs = window.attributes
+    val original = centeredSizes.getOrPut(dlg) { attrs.width to attrs.height }
     val y = safeTop / 2
     if (attrs.gravity != android.view.Gravity.CENTER || attrs.y != y) {
         window.attributes = attrs.apply { gravity = android.view.Gravity.CENTER; this.y = y }
     }
     fun pixels(value: Int) = (value * resources.displayMetrics.density).toInt()
-    val maxHeight = (root.height - safeTop - pixels(32)).coerceAtLeast(pixels(160))
-    val maxWidth = minOf(root.width - pixels(32), resources.getDimensionPixelSize(R.dimen.dialog_max_width)).coerceAtLeast(pixels(160))
+    val maxHeight = (root.height - safeTop - pixels(32)).coerceAtLeast(1)
+    val maxWidth = minOf(root.width - pixels(32), resources.getDimensionPixelSize(R.dimen.dialog_max_width)).coerceAtLeast(1)
     val decor = window.decorView
-    if (decor.measuredWidth > maxWidth || decor.measuredHeight > maxHeight) {
-        val width = minOf(decor.measuredWidth, maxWidth)
-        val height = minOf(decor.measuredHeight, maxHeight)
-        if (window.attributes.width != width || window.attributes.height != height) window.setLayout(width, height)
+    // Re-measure natural content when the viewport grows after the IME is hidden.
+    decor.measure(View.MeasureSpec.makeMeasureSpec(maxWidth, View.MeasureSpec.AT_MOST),
+        View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST))
+    fun bounded(originalSize: Int, measured: Int, limit: Int): Int = when {
+        originalSize > 0 -> originalSize.coerceAtMost(limit)
+        originalSize == android.view.ViewGroup.LayoutParams.MATCH_PARENT || measured >= limit -> limit
+        else -> originalSize // Restore WRAP_CONTENT so changing progress/messages can still grow.
     }
+    val width = bounded(original.first, decor.measuredWidth, maxWidth)
+    val height = bounded(original.second, decor.measuredHeight, maxHeight)
+    if (window.attributes.width != width || window.attributes.height != height) window.setLayout(width, height)
 }
 
 /**
@@ -293,6 +316,7 @@ internal fun MainActivity.syncRootedDialogs() {
         }
         entry.hidden = !shouldShow
         if (attached) {
+            if (!presentation.acceptsInput) DialogMotion.reset(entry.dlg)
             val window = entry.dlg.window ?: continue
             val blocked = android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -311,6 +335,7 @@ internal fun MainActivity.syncRootedDialogs() {
 internal fun MainActivity.setRootedDialogHidden(dlg: android.app.Dialog, hidden: Boolean) {
     val w = dlg.window ?: return
     val decor = w.decorView
+    DialogMotion.reset(dlg)
     if (hidden) {
         // Hide the decor AND make the window untouchable, otherwise the
         // invisible window would still swallow taps in its frame on the tab
@@ -461,7 +486,7 @@ private fun MainActivity.applyDialogGeometry(
         // 可用高度取**父窗口当前的实际高度**（root 会被输入法压矮），不是屏幕高度 ——
         // 拿 displayMetrics 算出来的高度在键盘弹出后就是超的，超出的那截收不到触摸。
         val rootH = findViewById<View>(R.id.root)?.height ?: 0
-        val availH = (rootH - topInset - (2 * 20f * density).toInt()).coerceAtLeast((160 * density).toInt())
+        val availH = (rootH - topInset - (2 * 20f * density).toInt()).coerceAtLeast(1)
         if (!fitContent) {
             // 长内容：给**面板**（AlertDialog 的 android.R.id.content 第一层子）设精确高度，
             // 不碰窗口。窗口是 WRAP，会跟着面板量；面板内部列表带权重，自然分到剩余高度。
@@ -516,10 +541,15 @@ private fun MainActivity.reapplyDialogPlacementsNow() {
         val (ref, swipeAreaDp, fitContent) = iter.next()
         val d = ref.get()
         if (d == null || !d.isShowing) { iter.remove(); continue }
+        if (d.context.findMainActivity() !== this) continue
+        DialogMotion.reset(d)
         applyDialogGeometry(d, swipeAreaDp, fitContent)
     }
     dialogDimOwners.filterIsInstance<android.app.Dialog>().forEach { dialog ->
-        if (dialog.isShowing && placedDialogs.none { it.first.get() === dialog }) applyPresentationGeometry(dialog)
+        if (dialog.isShowing && placedDialogs.none { it.first.get() === dialog }) {
+            DialogMotion.reset(dialog)
+            applyPresentationGeometry(dialog)
+        }
     }
 }
 

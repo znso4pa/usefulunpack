@@ -8,7 +8,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.FileProvider
-import com.google.android.material.snackbar.Snackbar
 import java.io.File
 import com.usefulunpacker.featureThread as thread
 
@@ -34,8 +33,7 @@ internal class DiagnosticsUi(private val activity: MainActivity) {
         val id = groups.keys.singleOrNull()
         val message = if (id == null) activity.getString(R.string.diagnostics_multiple_failures, groups.size)
             else activity.getString(if (groups.getValue(id).any { it.code == FailureCode.CLEANUP }) R.string.diagnostics_cleanup_failed else R.string.diagnostics_failure) + " [$id]"
-        Snackbar.make(activity.findViewById(R.id.root), message, Snackbar.LENGTH_INDEFINITE)
-            .setAction(R.string.diagnostics_view) { activity.showDiagnostics(id) }.show()
+        UuNotice.persistent(activity.findViewById(R.id.root), message, R.string.diagnostics_view) { activity.showDiagnostics(id) }
     }
 }
 
@@ -79,7 +77,7 @@ private fun MainActivity.showDiagnosticEntry(entry: DiagnosticEntry) {
         typeface = Typeface.MONOSPACE
         setPadding(dp(16), dp(12), dp(16), dp(12))
     }
-    val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false; isHorizontalScrollBarEnabled = false; addView(text) }
+    val scroll = com.usefulunpacker.UuScrollView(this).apply { isVerticalScrollBarEnabled = false; isHorizontalScrollBarEnabled = false; addView(text) }
     UuDialogBuilder(this).setTitle("${entry.id}.log").setView(scroll)
         .setNeutralButton(R.string.diagnostics_share) { _, _ ->
             userIntent("share_log") {

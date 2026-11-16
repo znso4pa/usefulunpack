@@ -14,8 +14,6 @@ fun showRenameDialog(activity: AppCompatActivity, f: File, currentDir: File, boo
     try {
     val inp = com.usefulunpacker.UuTextField(activity).apply {
         setText(f.name); selectAll()
-        setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-        setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
     }
     com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(activity.getString(R.string.action_rename))
@@ -33,7 +31,8 @@ fun showRenameDialog(activity: AppCompatActivity, f: File, currentDir: File, boo
             // renameTo can fail (cross-device, permission, race) — never fake success.
             if (!dst.exists()) {
                 val ok = f.renameTo(dst)
-                com.usefulunpacker.UuNotice.makeText(activity, activity.getString(if (ok) R.string.action_rename else R.string.err_file_error), Toast.LENGTH_SHORT).show()
+                if (ok) UuNotice.makeText(activity, activity.getString(R.string.action_rename), Toast.LENGTH_SHORT).show()
+                else UuNotice.failure(activity, activity.getString(R.string.err_file_error), Toast.LENGTH_LONG).show()
                 if (ok) onSaved()
                 return@setPositiveButton
             }
@@ -41,8 +40,18 @@ fun showRenameDialog(activity: AppCompatActivity, f: File, currentDir: File, boo
                 .setTitle(activity.getString(R.string.msg_target_exists))
                 .setItems(arrayOf(activity.getString(R.string.action_replace), activity.getString(R.string.action_keep_both), activity.getString(R.string.action_compare))) { _, which ->
                     when (which) {
-                        0 -> { dst.delete(); val ok = f.renameTo(dst); com.usefulunpacker.UuNotice.makeText(activity, activity.getString(if (ok) R.string.action_rename else R.string.err_file_error), Toast.LENGTH_SHORT).show(); if (ok) onSaved() }
-                        1 -> { val u = uniqueFile(f.parentFile!!, newName); val ok = f.renameTo(u); com.usefulunpacker.UuNotice.makeText(activity, if (ok) activity.getString(R.string.msg_renamed_to, u.name) else activity.getString(R.string.err_file_error), Toast.LENGTH_SHORT).show(); if (ok) onSaved() }
+                        0 -> {
+                            if (!deleteOutputChecked(dst, cleanup = false)) return@setItems
+                            val ok = f.renameTo(dst)
+                            if (ok) { UuNotice.makeText(activity, activity.getString(R.string.action_rename), Toast.LENGTH_SHORT).show(); onSaved() }
+                            else UuNotice.failure(activity, activity.getString(R.string.err_file_error), Toast.LENGTH_LONG).show()
+                        }
+                        1 -> {
+                            val u = uniqueFile(f.parentFile!!, newName)
+                            val ok = f.renameTo(u)
+                            if (ok) { UuNotice.makeText(activity, activity.getString(R.string.msg_renamed_to, u.name), Toast.LENGTH_SHORT).show(); onSaved() }
+                            else UuNotice.failure(activity, activity.getString(R.string.err_file_error), Toast.LENGTH_LONG).show()
+                        }
                         2 -> { compareFiles(activity, f, dst, bookmarks, currentDir, onSaved) }
                     }
                 }.setNegativeButton(R.string.action_cancel, null).show().also { it.keepTabsTappable() }

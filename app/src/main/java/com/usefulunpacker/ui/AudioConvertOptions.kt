@@ -197,7 +197,7 @@ internal fun showAudioConvertOptions(
                 rowItems.forEach { c ->
                     row.addView(
                         formatCell(
-                            activity, c.label, OPT_COLUMNS, density,
+                            activity, c.label, OPT_COLUMNS,
                             available = c.available,
                             selected = c.value == cur,
                         ) {
@@ -240,7 +240,7 @@ internal fun showAudioConvertOptions(
     }
     render()
 
-    val scroller = ScrollView(activity).apply {
+    val scroller = com.usefulunpacker.UuScrollView(activity).apply {
         addView(root)
         // Honor/EMUI 在自定义 View 上画滚动条会 NPE —— 关掉。
         isVerticalScrollBarEnabled = false

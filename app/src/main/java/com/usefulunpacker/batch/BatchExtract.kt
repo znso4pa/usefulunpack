@@ -110,7 +110,7 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
                                         // 清掉本次新建的部分输出目录（uniqueFile 预计算的
                                         // 名字在提取前都不存在，删除是安全的）；解到父目录
                                         // 的模式与既有文件混在一起，无法区分，不清理。
-                                        if (w == 0) thread { for (i in 0 until doneUntil) outDirs[i].deleteRecursively() }
+                                        if (w == 0) thread { for (i in 0 until doneUntil) deleteOutputChecked(outDirs[i], recursive = true) }
                                         toast(getString(R.string.msg_cancelled))
                                     }
                                     else if (ok) toast(getString(R.string.msg_batch_done))
@@ -307,8 +307,8 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
             layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
         })
         val btnSearchTitle = com.usefulunpacker.UuIconButton(this).apply {
-            setImageResource(R.drawable.ic_search); setBackgroundColor(C["surface"]!!); setPadding(dp(R.dimen.space_xs), dp(R.dimen.space_xs), dp(R.dimen.space_xs), dp(R.dimen.space_xs))
-            scaleType = ImageView.ScaleType.FIT_XY; layoutParams = LinearLayout.LayoutParams(52, 40)
+            setImageResource(R.drawable.ic_search);
+                scaleType = ImageView.ScaleType.FIT_XY; layoutParams = LinearLayout.LayoutParams(52, 40)
             setOnClickListener {
                 val cacheDir = File(cacheDir, "archive_search/batch_${all.map{it.first.nameWithoutExtension}.joinToString("_").take(50)}")
                 thread {
@@ -344,7 +344,7 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                         thread {
                             if (!opH.await()) return@thread
                             try {
-                                cacheDir.deleteRecursively(); cacheDir.mkdirs()
+                                com.usefulunpacker.deleteOutputChecked(cacheDir, recursive = true); cacheDir.mkdirs()
                                 // Each archive gets its own subdir so same-named entries
                                 // from different archives never collide; a resolver maps
                                 // every cached path back to (archive, password, out dir).

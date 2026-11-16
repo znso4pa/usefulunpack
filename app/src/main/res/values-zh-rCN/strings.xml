@@ -844,4 +844,6 @@
     <string name="components_action">动作条目</string>
     <string name="diagnostics_cleanup_failed">清理失败，可能有文件残留。</string>
     <string name="diagnostics_multiple_failures">%1$d 条任务链遇到问题，请查看诊断详情。</string>
+    <string name="components_color">颜色 %1$s</string>
+    <string name="components_slider">滑块</string>
 </resources>

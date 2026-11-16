@@ -61,7 +61,7 @@ fun showImageEditor(activity: AppCompatActivity, file: File) {
             .setTitle(activity.getString(R.string.img_edit_restore_title))
             .setMessage(activity.getString(R.string.img_edit_restore_msg))
             .setPositiveButton(activity.getString(R.string.editor_restore)) { _, _ -> open() }
-            .setNegativeButton(activity.getString(R.string.editor_discard)) { _, _ -> tempFile.delete(); open() }
+            .setNegativeButton(activity.getString(R.string.editor_discard)) { _, _ -> com.usefulunpacker.deleteOutputChecked(tempFile); open() }
             .show().also { it.keepTabsTappable() }
     } else open()
     } catch (intentCancelled: java.util.concurrent.CancellationException) {
@@ -74,22 +74,19 @@ fun showImageEditor(activity: AppCompatActivity, file: File) {
 
 private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView: ImageEditorView, tempFile: File) {
     val act = activity
+    val ownerTrace = AppDiagnostics.currentTrace()
+    val autosaveExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     fun toolBtn(text: String, style: ActionStyle = ActionStyle.TEXT, onClick: () -> Unit) = com.usefulunpacker.UuButton(act).apply {
         this.text = text
         actionStyle = style
-        isAllCaps = false
-        setTextColor(C["accent"]!!)
-        background = null
-        textSize = 13f
-        setPadding(8, 6, 8, 6)
         setOnClickListener { onClick() }
     }
 
     // ── Brush options row (color swatch + palette + opacity + width) ──
-    val colorView = ImageView(act).apply {
-        layoutParams = LinearLayout.LayoutParams(36, 36).apply { setMargins(8, 0, 8, 0) }
-        setBackgroundColor(editorView.brushColor)
+    val colorView = UuColorButton(act).apply {
+        color = editorView.brushColor
+        isEnabled = false
     }
     val palette = intArrayOf(
         0xFFFFE066.toInt(), 0xFF66E0FF.toInt(), 0xFFFF6E66.toInt(),
@@ -98,7 +95,7 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
         text = "${act.getString(R.string.img_edit_opacity)}: ${editorView.brushAlpha * 100 / 255}%"
         setTextColor(C["secondary"]!!); textSize = 12f
     }
-    val opacitySeek = SeekBar(act).apply {
+    val opacitySeek = com.usefulunpacker.UuSlider(act).apply {
         max = 255; progress = editorView.brushAlpha
         setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
@@ -113,7 +110,7 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
         text = "${act.getString(R.string.img_edit_width)}: ${editorView.brushWidthPx}px"
         setTextColor(C["secondary"]!!); textSize = 12f
     }
-    val widthSeek = SeekBar(act).apply {
+    val widthSeek = com.usefulunpacker.UuSlider(act).apply {
         max = 60; progress = editorView.brushWidthPx
         setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
@@ -129,19 +126,16 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
         setPadding(8, 4, 8, 4)
         addView(TextView(act).apply {
             text = act.getString(R.string.img_edit_brush); setTextColor(C["primary"]!!); textSize = 13f
-            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
         })
-        addView(opacityText); addView(opacitySeek, LinearLayout.LayoutParams(0, WRAP, 2f))
-        addView(widthText); addView(widthSeek, LinearLayout.LayoutParams(0, WRAP, 2f))
+        addView(opacityText); addView(opacitySeek, LinearLayout.LayoutParams(act.dp(120), WRAP))
+        addView(widthText); addView(widthSeek, LinearLayout.LayoutParams(act.dp(120), WRAP))
         addView(colorView)
     }
 
     // ── Eyedrop result row ──
-    val eyedropRow = TextView(act).apply {
+    val eyedropRow = UuActionRow(act).apply {
         text = act.getString(R.string.img_edit_pick_hint)
-        setTextColor(C["secondary"]!!); textSize = 13f
-        setPadding(12, 6, 12, 6)
-        gravity = Gravity.CENTER
     }
     editorView.onColorSampled = { color ->
         val hex = String.format("#%08X", color)
@@ -185,14 +179,11 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
     val btnReset = toolBtn(act.getString(R.string.img_edit_reset)) { editorView.clearEdits() }
     lateinit var dlg: AlertDialog
     val btnSave = toolBtn(act.getString(R.string.img_edit_save), ActionStyle.PRIMARY) {
-        saveEdited(act, file, editorView, tempFile) { dlg.dismiss() }
+        saveEdited(act, file, editorView, tempFile, autosaveExecutor) { dlg.dismiss() }
     }
 
     // ── Stretch fold-out row (collapsible) ──
-    val stretchRow = LinearLayout(act).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(10, 2, 10, 2)
+    val stretchRow = com.usefulunpacker.UuActionBar(act).apply {
         visibility = android.view.View.GONE
     }
     fun addRatio(label: String, w: Int, h: Int) {
@@ -212,10 +203,7 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
             android.view.View.VISIBLE else android.view.View.GONE
     }
 
-    val toolRow = LinearLayout(act).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(6, 4, 6, 6)
+    val toolRow = com.usefulunpacker.UuActionBar(act).apply {
         addView(btnBrush); addView(btnCrop); addView(btnStretch)
         addView(btnEyedrop); addView(btnUndo); addView(btnReset)
         addView(android.view.View(act).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) })
@@ -224,13 +212,11 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
 
     // ── Palette tap-to-pick ──
     palette.forEach { c ->
-        val sw = ImageView(act).apply {
-            layoutParams = LinearLayout.LayoutParams(30, 30).apply { setMargins(4, 0, 4, 0) }
-            setBackgroundColor(c)
-            isClickable = true
+        val sw = UuColorButton(act).apply {
+            color = c
             setOnClickListener {
                 editorView.brushColor = c
-                colorView.setBackgroundColor(c)
+                colorView.color = c
             }
         }
         brushRow.addView(sw)
@@ -239,11 +225,11 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
     val container = LinearLayout(act).apply {
         orientation = LinearLayout.VERTICAL
         setBackgroundColor(C["surface"]!!)
-        addView(brushRow)
+        addView(UuHorizontalScrollView(act).apply { addView(brushRow) })
         addView(eyedropRow)
         addView(editorView)
-        addView(stretchRow)
-        addView(toolRow)
+        addView(UuHorizontalScrollView(act).apply { addView(stretchRow) })
+        addView(UuHorizontalScrollView(act).apply { addView(toolRow) })
     }
 
     dlg = com.usefulunpacker.UuDialogBuilder(act)
@@ -255,32 +241,55 @@ private fun showEditorDialog(activity: AppCompatActivity, file: File, editorView
     // Autosave edits to cache for rotation/restore (throttled by the view).
     // 单线程执行器串行化：400ms 节流会在慢 PNG 编码期间放行第二次触发，
     // 两个线程并发写同一 tempFile 会互相截断产出损坏的恢复副本。用后回收。
-    val autosaveExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     editorView.onAutosave = {
-        autosaveExecutor.execute {
-            val bmp = editorView.composeResult()
-            if (bmp != null) {
-                com.usefulunpacker.observedAttempt("ImageEditorDialog") { FileOutputStream(tempFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+        // Snapshot on the UI thread; the pool only encodes immutable snapshots.
+        val bmp = editorView.composeResult()
+        if (bmp != null) {
+            try {
+                executeFeature(autosaveExecutor, ownerTrace) {
+                    try {
+                        observedAttempt("image_autosave") {
+                            writeOutputAtomically(tempFile) { staged ->
+                                FileOutputStream(staged).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                            }
+                        }
+                    } finally { bmp.recycle() }
+                }
+            } catch (e: java.util.concurrent.RejectedExecutionException) {
                 bmp.recycle()
+                AppDiagnostics.failure("image_autosave_schedule", e)
             }
         }
     }
+    editorView.addOnAttachStateChangeListener(object : android.view.View.OnAttachStateChangeListener {
+        override fun onViewAttachedToWindow(v: android.view.View) {}
+        override fun onViewDetachedFromWindow(v: android.view.View) {
+            editorView.onAutosave = null
+            autosaveExecutor.shutdown()
+        }
+    })
 
     // Full-size editor (capped 0.9h) — bottom-anchor below the tab strip.
     dlg.belowTabs()
     dlg.show()
 }
 
-private fun saveEdited(act: AppCompatActivity, file: File, view: ImageEditorView, tempFile: File, onDone: () -> Unit) {
+private fun saveEdited(act: AppCompatActivity, file: File, view: ImageEditorView, tempFile: File,
+                       executor: java.util.concurrent.Executor, onDone: () -> Unit) {
     showFolderPicker(act, file.parentFile ?: act.cacheDir, false) { dir ->
         val outF = uniqueFile(dir, "${file.nameWithoutExtension}-edit.png")
-        thread {
-            val bmp = view.composeResult()
-            val ok = bmp != null && com.usefulunpacker.observedAttempt("ImageEditorDialog") {
-                FileOutputStream(outF).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                true
-            }.getOrDefault(false)
-            bmp?.recycle()
+        val bmp = view.composeResult()
+        val resumeAutosave = view.onAutosave
+        view.onAutosave = null
+        // Serialize behind pending autosaves, so none can recreate recovery after a successful save.
+        executeFeature(executor) {
+            val ok = try {
+                bmp != null && observedAttempt("image_save") {
+                    writeOutputAtomically(outF) { staged ->
+                        FileOutputStream(staged).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    }
+                }.isSuccess
+            } finally { bmp?.recycle() }
             act.runFeatureOnUiThread {
                 if (act.isFinishing || act.isDestroyed) return@runFeatureOnUiThread
                 if (ok) {
@@ -289,9 +298,10 @@ private fun saveEdited(act: AppCompatActivity, file: File, view: ImageEditorView
                     com.usefulunpacker.deleteOutputChecked(tempFile)
                     com.usefulunpacker.UuNotice.makeText(act, act.getString(R.string.img_edit_saved, outF.name), Toast.LENGTH_LONG).show()
                 } else {
+                    view.onAutosave = resumeAutosave
                     com.usefulunpacker.UuNotice.failure(act, act.getString(R.string.img_edit_failed), Toast.LENGTH_SHORT).show()
                 }
-                onDone()
+                if (ok) onDone()
             }
         }
     }

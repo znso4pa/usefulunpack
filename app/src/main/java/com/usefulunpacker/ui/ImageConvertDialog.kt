@@ -76,7 +76,7 @@ internal fun encodeImageTo(
     }
     val ok = java.io.FileOutputStream(out).use { bmp.compress(format, q, it) }
     bmp.recycle()
-    if (!ok) out.delete()
+    if (!ok) com.usefulunpacker.deleteOutputChecked(out)
     ok
 }.getOrDefault(false)
 
@@ -104,7 +104,7 @@ private fun convertImage(activity: AppCompatActivity, file: File, targetFmt: Str
                     val ok = com.usefulunpacker.observedAttempt("ImageConvertDialog") {
                         java.nio.file.Files.move(temp.toPath(), outF.toPath())
                         true
-                    }.getOrDefault(false).also { if (!it) temp.delete() }
+                    }.getOrDefault(false).also { if (!it) com.usefulunpacker.deleteOutputChecked(temp) }
                     activity.runFeatureOnUiThread {
                         if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
                         if (ok) com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.img_edit_saved, outF.name), Toast.LENGTH_LONG).show()

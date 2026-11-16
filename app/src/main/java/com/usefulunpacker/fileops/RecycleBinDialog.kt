@@ -107,11 +107,12 @@ private class RecycleEntryAdapter(
                 .setPositiveButton(R.string.action_delete) { _, _ ->
                     thread {
                         val dir = RecycleBin.recycleDir(activity)
-                        java.io.File(dir, entry.id).deleteRecursively()
-                        RecycleBin.removeFromManifest(activity, entry.id)
+                        val deleted = com.usefulunpacker.deleteOutputChecked(java.io.File(dir, entry.id), recursive = true, cleanup = false)
+                        if (deleted) RecycleBin.removeFromManifest(activity, entry.id)
                         val updatedEntries = RecycleBin.listEntries(activity)
                         activity.runFeatureOnUiThread {
                             if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
+                            if (!deleted) com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.err_file_error), Toast.LENGTH_LONG).show()
                             updateEntries(updatedEntries)
                             if (updatedEntries.isEmpty()) showEmptyBinDialog(activity)
                         }
@@ -264,10 +265,11 @@ fun showRecycleBinDialog(activity: MainActivity) {
                         .setMessage(activity.getString(R.string.recycle_empty_confirm))
                         .setPositiveButton(R.string.action_delete) { _, _ ->
                             thread {
-                                RecycleBin.emptyRecycleBin(activity)
+                                val emptied = RecycleBin.emptyRecycleBin(activity)
                                 activity.runFeatureOnUiThread {
                                     if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
-                                    com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.recycle_empty), Toast.LENGTH_SHORT).show()
+                                    if (emptied) com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.recycle_empty), Toast.LENGTH_SHORT).show()
+                                    else com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.err_file_error), Toast.LENGTH_LONG).show()
                                     dialog?.dismiss()
                                     // 同 restore：走 enterBrowserAt，hub 盖着时也能真的看到列表
                                     activity.enterBrowserAt(activity.activeTab, activity.currentDir)

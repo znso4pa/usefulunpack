@@ -16,7 +16,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Shared UI and diagnostics boundaries
-        run: python3 scripts/check_ui_components.py
+        run: |
+          python3 scripts/check_ui_components.py --self-test
+          python3 scripts/check_ui_components.py
 
       # `crates/video-core` path-depends on the sibling v2video repo
       # (`../../../../v2video/crates/vc1` from the crate directory), which

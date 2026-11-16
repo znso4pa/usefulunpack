@@ -58,7 +58,7 @@ internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternal
     val tvProgress = textView(
         act, act.getString(R.string.disk_scanning, "0", fmt(0L)), 13f, C["secondary"]!!,
     )
-    val bar = android.widget.ProgressBar(act, null, android.R.attr.progressBarStyleHorizontal).apply {
+    val bar = UuProgressBar(act, null, android.R.attr.progressBarStyleHorizontal).apply {
         isIndeterminate = true
     }
     val body = LinearLayout(act).apply {
@@ -294,12 +294,6 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
     val tvTotal = textView(act, "", 11.5f, C["tertiary"]!!)
     val btnPick = com.usefulunpacker.UuButton(act).apply {
         text = act.getString(R.string.disk_pick_dir)
-        setTextColor(C["accent"]!!)
-        background = null
-        textSize = 11.5f
-        setPadding(px(6), 0, px(6), 0)
-        minWidth = 0
-        minimumWidth = 0
     }
 
     val pathRow = LinearLayout(act).apply {
@@ -495,18 +489,6 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan) {
     dlg = dialog
     // 中性按钮默认点完就关窗；「上一级」要的是就地重画，所以自己接管。
     dialog.setOnShowListener {
-        // 面板整体补一层不透明底。竖屏贴底窗的窗口背景是 scrim（`0x99000000`，见
-        // `applyDialogGeometry`），而 AlertController 把标题栏 / 内容 / 按钮栏装成三个
-        // 兄弟 —— 只给 `root` 补底的话标题那一条仍是半透明，真机上主页搜索框会透上来
-        // 与「磁盘查询」叠字。三者共同的父就是 `android.R.id.content` 的第一层子。
-        //
-        // 用 `surface_dim`（#252525）而不是更深的 `surface_dark`：横屏浮动卡的窗口背景
-        // 正是这个色（`dialog_bg_rounded` → `bg_surface_dim`），圆角也取同一个 14dp，
-        // 于是标题栏上下不会出现比自身更深的缺口。**转屏不重建视图树**，所以不能按当前
-        // 方向二选一 —— 一套背景要同时满足两边。
-        val panel = (dialog.findViewById<View>(android.R.id.content) as? ViewGroup)
-            ?.getChildAt(0) as? View
-        (panel ?: root).background = roundedBg(px(14), C["surface_dim"]!!)
         dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
             if (stack.size > 1) {
                 stack.removeLast()

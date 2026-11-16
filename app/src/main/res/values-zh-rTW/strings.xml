@@ -839,4 +839,6 @@
     <string name="components_action">動作項目</string>
     <string name="diagnostics_cleanup_failed">清理失敗，可能有檔案殘留。</string>
     <string name="diagnostics_multiple_failures">%1$d 條任務鏈遇到問題，請查看診斷詳情。</string>
+    <string name="components_color">色彩 %1$s</string>
+    <string name="components_slider">滑桿</string>
 </resources>

@@ -113,12 +113,12 @@ class FolderFragment : Fragment() {
             act.openWorkspaceFromPreview(tab, selectedOnly)
         }
         tab.btnPreviewOverflow.setOnClickListener { v ->
-            PopupMenu(act, v).apply {
-                menu.add(0, 1, 0, act.getString(R.string.edit_archive)).setOnMenuItemClickListener { doEdit(); true }
-                menu.add(0, 2, 0, act.getString(R.string.zip_manage)).setOnMenuItemClickListener { doZipManage(); true }
-                menu.add(0, 3, 0, act.getString(R.string.action_convert_cso)).setOnMenuItemClickListener { doConvertIso(); true }
-                menu.add(0, 4, 0, act.getString(R.string.ws_open)).setOnMenuItemClickListener { doOpenWorkspace(false); true }
-                menu.add(0, 5, 0, act.getString(R.string.ws_open_selected)).setOnMenuItemClickListener { doOpenWorkspace(true); true }
+            com.usefulunpacker.UuPopupMenu(act, v).apply {
+                action(1, R.string.edit_archive) { doEdit() }
+                action(2, R.string.zip_manage) { doZipManage() }
+                action(3, R.string.action_convert_cso) { doConvertIso() }
+                action(4, R.string.ws_open) { doOpenWorkspace(false) }
+                action(5, R.string.ws_open_selected) { doOpenWorkspace(true) }
                 show()
             }
         }
@@ -130,9 +130,7 @@ class FolderFragment : Fragment() {
         // Compression-mode "→" folder button, created per-tab on its bottom bar.
         tab.btnFolderNext = com.usefulunpacker.UuButton(requireContext()).apply {
             text = "→"
-            textSize = 14f
             visibility = View.GONE
-            setPadding(8, 0, 8, 0)
             setOnClickListener { tab.selectedFile?.let { if (it.isDirectory) act.enterBrowserAt(tab, it) } }
         }
         tab.bottomBar.addView(tab.btnFolderNext, LinearLayout.LayoutParams(
@@ -350,7 +348,7 @@ class FolderFragment : Fragment() {
         val btnBatchMove = b(act.getString(R.string.action_move), ActionStyle.SECONDARY).apply { setOnClickListener { activate(); act.startBatchMove() } }
         val btnBatchDelete = b(act.getString(R.string.action_delete), ActionStyle.DANGER).apply { setOnClickListener { activate(); act.confirmBatchDelete() } }
         val btnBatchCancel = b("✕ " + act.getString(R.string.action_cancel), ActionStyle.TEXT).apply { setOnClickListener { act.exitAllMultiSelect() } }
-        val batchScroll = HorizontalScrollView(requireContext()).apply {
+        val batchScroll = com.usefulunpacker.UuHorizontalScrollView(requireContext()).apply {
             isHorizontalScrollBarEnabled = false
             isVerticalScrollBarEnabled = false
             // Inner row fills the scroll area and right-aligns its buttons (the

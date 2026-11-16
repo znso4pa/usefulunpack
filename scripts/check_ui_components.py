@@ -3,13 +3,57 @@
 from pathlib import Path
 import re
 import sys
+import xml.etree.ElementTree as ET
 
 root = Path(__file__).resolve().parents[1]
 failures = []
-raw = re.compile(r"(?<![\w])(?:AlertDialog\.Builder|Button|ImageButton|ProgressDialog|EditText|SwitchCompat|RadioButton|CheckBox)\s*\(|Toast\.makeText\s*\(")
+raw = re.compile(r"(?<![\w])(?:AlertDialog\.Builder|(?:AppCompat|Material)?Button|ImageButton|ProgressDialog|EditText|SwitchCompat|RadioButton|CheckBox|RadioGroup|SeekBar|ScrollView|HorizontalScrollView|FloatingActionButton|ProgressBar|PopupMenu)\s*\(|Toast\.makeText\s*\(")
+
+def direct_control_bodies(source):
+    """Ignore literals, comments, nested callbacks and layout params."""
+    literals = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/|"""[\s\S]*?"""|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
+    masked = literals.sub(lambda match: "".join("\n" if c == "\n" else " " for c in match[0]), source)
+    pattern = r"\bUu(?:Button|IconButton|TextField|Switch|CheckBox|RadioButton|Slider|ColorButton|ChoiceCell)\([^\n]*?\)\.apply\s*\{"
+    for match in re.finditer(pattern, masked):
+        depth = 1
+        visible = []
+        for char in masked[match.end():]:
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            visible.append(char if depth == 1 else ("\n" if char == "\n" else " "))
+        yield match.end(), "".join(visible)
+
+appearance_call = re.compile(r"\b(?:setTextColor|setHintTextColor|setBackgroundColor|setBackgroundResource|setPadding|setColorFilter)\s*\(|(?<![.\w])(?:background|backgroundTintList|textSize|minHeight|minimumHeight|minWidth|minimumWidth|imageTintList)\s*=(?!=)")
+if "--self-test" in sys.argv:
+    cases = [
+        ('UuButton(ctx).apply { background = custom }', True),
+        ('UuButton(ctx).apply { setPadding(1, 2, 3, 4) }', True),
+        ('UuButton(ctx).apply { // " unbalanced quote {\n textSize = 12f }', True),
+        ('UuButton(ctx).apply { text = "background = example"; setOnClickListener { label.textSize = 12f } }', False),
+        ('UuButton(ctx).apply { layoutParams = LayoutParams(0, 1).apply { width = 48 } }', False),
+    ]
+    for source, expected in cases:
+        found = any(appearance_call.search(body) for _, body in direct_control_bodies(source))
+        assert found == expected, source
+    print("Shared-control boundary regression cases: OK")
+    sys.exit(0)
+
 for file in (root / "app/src/main/java").rglob("*.kt"):
     if file.name == "UuComponents.kt":
         continue
+    source = file.read_text()
+    if file.name != "Diagnostics.kt" and re.search(r"\.(?:delete|deleteRecursively)\(\)", re.sub(r"//[^\n]*", "", source)):
+        failures.append(f"{file.relative_to(root)}: use deleteOutputChecked and choose main deletion or cleanup semantics")
+    for offset, body in direct_control_bodies(source):
+        # Strip line comments before matching; literals and nested code are already masked.
+        body = re.sub(r"//[^\n]*", "", body)
+        for override in appearance_call.finditer(body):
+            line = source[:offset + override.start()].count("\n") + 1
+            failures.append(f"{file.relative_to(root)}:{line}: shared control appearance belongs in UuComponents")
     for number, line in enumerate(file.read_text().splitlines(), 1):
         if line.lstrip().startswith(("//", "*")):
             continue
@@ -22,9 +66,18 @@ for file in (root / "app/src/main/java").rglob("*.kt"):
         # TrGuess's inflate probe intentionally treats invalid candidate data as a negative match.
         if file.name != "TrGuess.kt" and re.search(r"\brunCatching\s*\{", line):
             failures.append(f"{file.relative_to(root)}:{number}: use observedAttempt or handle the failure explicitly")
+# XML control appearance belongs to the shared class; hosts retain backdrop registration.
+control_names = {"UuButton", "UuIconButton", "UuTextField", "UuSwitch", "UuCheckBox", "UuRadioButton", "UuFab", "UuProgressBar"}
+appearance = {"background", "backgroundTint", "padding", "paddingStart", "paddingEnd", "paddingLeft", "paddingRight", "paddingTop", "paddingBottom", "textColor", "textSize", "tint", "minWidth", "minHeight", "textAllCaps", "progressTint", "indeterminateTint"}
+raw_xml = {"Button", "ImageButton", "EditText", "CheckBox", "RadioButton", "SeekBar", "ScrollView", "HorizontalScrollView", "ProgressBar", "androidx.appcompat.widget.SwitchCompat", "com.google.android.material.floatingactionbutton.FloatingActionButton"}
 for file in (root / "app/src/main/res/layout").glob("*.xml"):
-    if re.search(r"<(?:Button|ImageButton|EditText|CheckBox|RadioButton|androidx\.appcompat\.widget\.SwitchCompat)(?=[\s>])", file.read_text()):
-        failures.append(f"{file.relative_to(root)}: use shared XML control classes")
+    for element in ET.parse(file).iter():
+        if element.tag in raw_xml:
+            failures.append(f"{file.relative_to(root)}: use shared XML control classes ({element.tag})")
+        if element.tag.rsplit(".", 1)[-1] in control_names:
+            for attr in element.attrib:
+                if attr.rsplit("}", 1)[-1] in appearance:
+                    failures.append(f"{file.relative_to(root)}: move {attr.rsplit('}', 1)[-1]} into {element.tag}")
 if failures:
     print("\n".join(failures))
     sys.exit(1)

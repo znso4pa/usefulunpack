@@ -16,8 +16,7 @@ import java.io.File
 fun showTerminal(activity: AppCompatActivity, currentDir: File, onNavigate: (File) -> Unit) {
     val inp = com.usefulunpacker.UuTextField(activity).apply {
         hint = activity.getString(R.string.terminal_cd_prompt, currentDir)
-        setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-        setBackgroundColor(C["surface"]!!); textSize = 12f; minLines = 1; maxLines = 1
+ minLines = 1; maxLines = 1
         setSingleLine(true)
     }
     val out = TextView(activity).apply {

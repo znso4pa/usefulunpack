@@ -847,4 +847,6 @@
     <string name="components_action">Action item</string>
     <string name="diagnostics_cleanup_failed">Cleanup failed; some output may remain.</string>
     <string name="diagnostics_multiple_failures">%1$d tasks encountered problems. Open diagnostics for details.</string>
+    <string name="components_color">Color %1$s</string>
+    <string name="components_slider">Slider</string>
 </resources>

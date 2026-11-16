@@ -546,7 +546,7 @@ private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, room
         )
         return cap to card
     }
-    val scroll = ScrollView(act).apply {
+    val scroll = com.usefulunpacker.UuScrollView(act).apply {
         // Honor/EMUI ROM：自定义 ScrollView 一开原生滚动条就会在 onDrawScrollBars 里 NPE。
         isVerticalScrollBarEnabled = false
         isHorizontalScrollBarEnabled = false
@@ -640,7 +640,7 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
         )
         return cap to card
     }
-    val scroll = ScrollView(act).apply {
+    val scroll = com.usefulunpacker.UuScrollView(act).apply {
         isVerticalScrollBarEnabled = false
         isHorizontalScrollBarEnabled = false
     }

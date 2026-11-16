@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Compression settings dialog: standard settings-list rows + switches -->
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<com.usefulunpacker.UuScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
@@ -12,13 +12,9 @@
         android:orientation="vertical">
 
         <!-- Work mode toggle -->
-        <LinearLayout
+        <com.usefulunpacker.UuToggleRow
             android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:paddingStart="20dp"
-            android:paddingEnd="16dp">
+            android:layout_height="wrap_content">
 
             <TextView
                 android:layout_width="0dp"
@@ -32,7 +28,7 @@
                 android:id="@+id/switchMode"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content" />
-        </LinearLayout>
+        </com.usefulunpacker.UuToggleRow>
 
         <include
             android:id="@+id/rowZip"
@@ -48,13 +44,9 @@
             layout="@layout/item_settings_row" />
 
         <!-- Password toggle -->
-        <LinearLayout
+        <com.usefulunpacker.UuToggleRow
             android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:paddingStart="20dp"
-            android:paddingEnd="16dp">
+            android:layout_height="wrap_content">
 
             <TextView
                 android:layout_width="0dp"
@@ -68,7 +60,7 @@
                 android:id="@+id/switchPwd"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content" />
-        </LinearLayout>
+        </com.usefulunpacker.UuToggleRow>
 
         <!-- Password input (hidden until enabled) -->
         <LinearLayout
@@ -92,13 +84,9 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:textSize="14sp"
                     android:singleLine="true"
                     android:inputType="textPassword"
                     android:hint="@string/password_hint_long"
-                    android:background="@drawable/bg_input"
-                    android:padding="12dp"
-                    android:textColor="@color/text_primary"
                     android:textColorHint="@color/text_hint" />
 
                 <com.usefulunpacker.UuIconButton
@@ -106,8 +94,6 @@
                     android:layout_width="40dp"
                     android:layout_height="@dimen/touch_target"
                     android:src="@drawable/ic_eye"
-                    app:tint="@color/accent"
-                    android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="@string/action_confirm" />
             </LinearLayout>
 
@@ -121,4 +107,4 @@
         </LinearLayout>
 
     </LinearLayout>
-</ScrollView>
+</com.usefulunpacker.UuScrollView>

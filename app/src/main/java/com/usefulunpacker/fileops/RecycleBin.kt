@@ -343,10 +343,8 @@ object RecycleBin {
         return false
     }
 
-    fun emptyRecycleBin(context: Context) {
-        synchronized(this) {
-            com.usefulunpacker.deleteOutputChecked(recycleDir(context), recursive = true)
-        }
+    fun emptyRecycleBin(context: Context): Boolean = synchronized(this) {
+        com.usefulunpacker.deleteOutputChecked(recycleDir(context), recursive = true, cleanup = false)
     }
 
     fun autoClean(context: Context, prefs: SharedPreferences) {
@@ -540,7 +538,7 @@ object RecycleBin {
             if (!tmp.renameTo(file)) {
                 // rename failed (cross-device etc.) — fall back to direct write
                 file.writeText(manifest.toString(2))
-                tmp.delete()
+                com.usefulunpacker.deleteOutputChecked(tmp)
             }
         }
     }

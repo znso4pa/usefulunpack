@@ -128,7 +128,7 @@ fun deleteWithProgress(
                 } else {
                     // Direct delete: count per FILE (historical onDone units).
                     com.usefulunpacker.observedAttempt("DeleteProgress") {
-                        t.walkBottomUp().forEach { f -> if (f.delete()) deleted++ else failed++ }
+                        t.walkBottomUp().forEach { f -> if (com.usefulunpacker.deleteOutputChecked(f, cleanup = false)) deleted++ else failed++ }
                     }
                     processed++
                 }

@@ -200,7 +200,7 @@ internal fun MainActivity.previewSearch(tab: TabState) {
         if (!opH.await()) return@thread
         try {
             val cacheDir = File(cacheDir, "archive_search/${src.nameWithoutExtension}_${src.parentFile?.absolutePath?.hashCode()?.toString(16) ?: "root"}")
-            cacheDir.deleteRecursively()
+            com.usefulunpacker.deleteOutputChecked(cacheDir, recursive = true)
             cacheDir.mkdirs()
             // Phase 1: touch placeholders for ALL entries (fast filename search).
             for (e in entries) {
@@ -286,10 +286,6 @@ internal fun MainActivity.previewZipManage(tab: TabState) {
                         val inp = com.usefulunpacker.UuTextField(this).apply {
                             setText(baseName)
                             hint = getString(R.string.zip_add_name)
-                            setTextColor(C["primary"]!!)
-                            setHintTextColor(C["hint"]!!)
-                            setBackgroundColor(C["surface"]!!)
-                            setPadding(12, 8, 12, 8)
                         }
                         com.usefulunpacker.UuDialogBuilder(this)
                             .setTitle(getString(R.string.zip_add_title))
@@ -376,10 +372,7 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
         }
 
         // Custom title bar with search button at top-right
-        val titleBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(24, 14, 8, 14)
+        val titleBar = com.usefulunpacker.UuActionBar(this).apply {
             setBackgroundColor(C["surface"]!!)
         }
         titleBar.addView(TextView(this).apply {
@@ -396,8 +389,6 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
         lateinit var dlg: AlertDialog
         val btnSearchTitle = com.usefulunpacker.UuIconButton(this).apply {
             setImageResource(R.drawable.ic_search)
-            setBackgroundColor(C["surface"]!!)
-            setPadding(8, 4, 8, 4)
             scaleType = ImageView.ScaleType.FIT_XY
             layoutParams = LinearLayout.LayoutParams(64, 48)
             setOnClickListener {
@@ -422,7 +413,7 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                 thread {
                     if (!opH.await()) return@thread
                     try {
-                        cacheDir.deleteRecursively()
+                        com.usefulunpacker.deleteOutputChecked(cacheDir, recursive = true)
                         cacheDir.mkdirs()
                         // Phase 1: touch empty placeholder files for ALL entries (fast, for filename search)
                         for (e in entries) {
@@ -480,11 +471,6 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
 
         val btnEditArchive = com.usefulunpacker.UuButton(this).apply {
             text = getString(R.string.edit_archive)
-            textSize = 14f
-            isAllCaps = false
-            setTextColor(C["accent"]!!)
-            background = null
-            setPadding(12, 8, 12, 8)
             layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
             setOnClickListener {
                 if (format !in setOf("xp3", "pfs", "iso", "nsa", "7z", "ypf", "rgss")) {
@@ -502,11 +488,6 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
         if (format == "zip" && !(isVolumeFile(src) == "zip" || isZipVolumeName(src.name))) {
             val btnZipManage = com.usefulunpacker.UuButton(this).apply {
                 text = getString(R.string.zip_manage)
-                textSize = 14f
-                isAllCaps = false
-                setTextColor(C["accent"]!!)
-                background = null
-                setPadding(12, 8, 12, 8)
                 layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
                 setOnClickListener {
                     com.usefulunpacker.UuDialogBuilder(this@showPreviewDialog)
@@ -535,10 +516,6 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
                                         val inp = com.usefulunpacker.UuTextField(this@showPreviewDialog).apply {
                                             setText(baseName)
                                             hint = getString(R.string.zip_add_name)
-                                            setTextColor(C["primary"]!!)
-                                            setHintTextColor(C["hint"]!!)
-                                            setBackgroundColor(C["surface"]!!)
-                                            setPadding(12, 8, 12, 8)
                                         }
                                         com.usefulunpacker.UuDialogBuilder(this@showPreviewDialog)
                                             .setTitle(getString(R.string.zip_add_title))
@@ -566,11 +543,6 @@ internal fun MainActivity.showPreviewDialog(src: File, entries: List<ArchiveEntr
         if (format == "iso") {
             val btnConvertIso = com.usefulunpacker.UuButton(this).apply {
                 text = getString(R.string.action_convert_cso)
-                textSize = 14f
-                isAllCaps = false
-                setTextColor(C["accent"]!!)
-                background = null
-                setPadding(12, 8, 12, 8)
                 layoutParams = LinearLayout.LayoutParams(WRAP, WRAP)
                 setOnClickListener {
                     dlg.dismiss()
@@ -932,7 +904,7 @@ internal fun MainActivity.startEditArchive(src: File, format: String, pwd: Strin
         // eagerly at enqueue time and no other exit path runs below.
         if (!opH.await()) { OpenArchiveRegistry.unregister(openKey); return@thread }
         try {
-            editDir.deleteRecursively()
+            com.usefulunpacker.deleteOutputChecked(editDir, recursive = true)
             editDir.mkdirs()
             val o = extractByFormat(format, src.path, editDir.path, "", prefs, pwd)
             val scripts = editDir.walkTopDown()
@@ -1061,7 +1033,7 @@ private fun MainActivity.repackEditedArchive(src: File, format: String, editDir:
             }
             // 失败/取消清半成品：产物名可能是 root.pfs，截断的 root.pfs 会被
             // 游戏当分层补丁挂载，比留个 -cn 残留危险得多。
-            if (cancelled || !ok) outF.delete()
+            if (cancelled || !ok) com.usefulunpacker.deleteOutputChecked(outF)
             runFeatureOnUiThread {
                 if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 prog.dismiss()
@@ -1146,8 +1118,6 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
                                 cleanupCancelledOutput(out, existedBefore)
                                 val inp = com.usefulunpacker.UuTextField(this).apply {
                                     hint = getString(R.string.prompt_password)
-                                    setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                                    setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
                                     inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
                                 }
                                 com.usefulunpacker.UuDialogBuilder(this)
@@ -1407,9 +1377,9 @@ internal fun MainActivity.listEntriesJson(
             onResult = { o ->
             // 每个晚到的失败路径都要清掉已解出的嵌套包：cacheDir/nested 无任何
             // 其他清理机制，漏删就是永久孤儿（直到系统清缓存）。
-            if (!o.counts.ok) { outDir.deleteRecursively(); toast(friendlyExtractError(this, o.error)); return@tryExtractWithPassword }
+            if (!o.counts.ok) { com.usefulunpacker.deleteOutputChecked(outDir, recursive = true); toast(friendlyExtractError(this, o.error)); return@tryExtractWithPassword }
             if (!extracted.exists()) {
-                outDir.deleteRecursively()
+                com.usefulunpacker.deleteOutputChecked(outDir, recursive = true)
                 failureNotice(getString(R.string.err_preview_unsupported, ""))
                 return@tryExtractWithPassword
             }
@@ -1422,15 +1392,15 @@ internal fun MainActivity.listEntriesJson(
                 // "suspect" here — which is exactly the warning the user needs.
                 val encNote = xp3SchemeToken(nestedFmt, extracted)
                 runFeatureOnUiThread {
-                    if (isFinishing || isDestroyed) { outDir.deleteRecursively(); return@runFeatureOnUiThread }
+                    if (isFinishing || isDestroyed) { com.usefulunpacker.deleteOutputChecked(outDir, recursive = true); return@runFeatureOnUiThread }
                     if (entries.isNullOrEmpty()) {
-                        outDir.deleteRecursively()
+                        com.usefulunpacker.deleteOutputChecked(outDir, recursive = true)
                         failureNotice(getString(R.string.err_cannot_read_maybe_pwd))
                         return@runFeatureOnUiThread
                     }
                     val before = tabs.size
                     addTab()
-                    if (tabs.size == before) { outDir.deleteRecursively(); return@runFeatureOnUiThread  // max tabs reached
+                    if (tabs.size == before) { com.usefulunpacker.deleteOutputChecked(outDir, recursive = true); return@runFeatureOnUiThread  // max tabs reached
                     }
                     val newTab = tabs.last()
                     // 与 previewArchive 相同的注册竞态处理：抢注失败（他窗已持
@@ -1438,7 +1408,7 @@ internal fun MainActivity.listEntriesJson(
                     if (!OpenArchiveRegistry.register(openKey, newTab)) {
                         val winner = OpenArchiveRegistry.owner(openKey)
                         closeTab(newTab)
-                        outDir.deleteRecursively()
+                        com.usefulunpacker.deleteOutputChecked(outDir, recursive = true)
                         if (winner != null) toast(getString(R.string.msg_archive_open_in_tab, tabTitle(winner)))
                         return@runFeatureOnUiThread
                     }
@@ -1470,7 +1440,7 @@ internal fun MainActivity.cleanupZipModifyArtifacts(archive: File) {
         val n = f.name
         if (n.startsWith("$base.") && (n == "$base.mod.zip" || n == "$base.del.zip" || n == "$base.add.zip"
                 || n.startsWith("$base.mod.zip.tmp") || n.startsWith("$base.del.zip.tmp") || n.startsWith("$base.add.zip.tmp"))) {
-            f.delete()
+            com.usefulunpacker.deleteOutputChecked(f)
         }
     }
 }

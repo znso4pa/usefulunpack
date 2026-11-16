@@ -30,13 +30,12 @@
         android:minHeight="20dp" />
 
     <!-- Overall (全量) progress -->
-    <ProgressBar
+    <com.usefulunpacker.UuProgressBar
         android:id="@+id/progress_overall"
         style="?android:attr/progressBarStyleHorizontal"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:progressTint="@color/accent" />
+        android:layout_marginTop="12dp" />
 
     <TextView
         android:id="@+id/progress_overall_text"
@@ -47,14 +46,13 @@
         android:layout_marginTop="2dp" />
 
     <!-- Current-file progress (bottom bar, shown for large files) -->
-    <ProgressBar
+    <com.usefulunpacker.UuProgressBar
         android:id="@+id/progress_file"
         style="?android:attr/progressBarStyleHorizontal"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="10dp"
-        android:visibility="gone"
-        android:progressTint="@color/accent" />
+        android:visibility="gone" />
 
     <TextView
         android:id="@+id/progress_file_text"
@@ -72,8 +70,6 @@
         android:layout_gravity="end"
         android:layout_marginTop="10dp"
         android:visibility="gone"
-        android:textColor="@color/accent"
-        android:background="?attr/selectableItemBackground"
         style="?android:attr/borderlessButtonStyle" />
 
 </LinearLayout>

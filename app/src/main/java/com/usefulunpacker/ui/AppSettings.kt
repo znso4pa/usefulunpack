@@ -36,10 +36,10 @@ internal fun MainActivity.showCompressionSettings() {
 
         val view = layoutInflater.inflate(R.layout.dialog_compress_settings, null)
         val switchMode = view.findViewById<androidx.appcompat.widget.SwitchCompat>(R.id.switchMode)
-        val rowZip = view.findViewById<View>(R.id.rowZip)
-        val rowSz = view.findViewById<View>(R.id.rowSz)
-        val rowGeneric = view.findViewById<View>(R.id.rowGeneric)
-        val rowSplit = view.findViewById<View>(R.id.rowSplit)
+        val rowZip = view.findViewById<UuActionRow>(R.id.rowZip)
+        val rowSz = view.findViewById<UuActionRow>(R.id.rowSz)
+        val rowGeneric = view.findViewById<UuActionRow>(R.id.rowGeneric)
+        val rowSplit = view.findViewById<UuActionRow>(R.id.rowSplit)
         val switchPwd = view.findViewById<androidx.appcompat.widget.SwitchCompat>(R.id.switchPwd)
         val pwdWrap = view.findViewById<View>(R.id.pwdWrap)
         val etPassword = view.findViewById<EditText>(R.id.etPassword)
@@ -50,10 +50,8 @@ internal fun MainActivity.showCompressionSettings() {
         pwdWrap.visibility = if (passwordEnabled) View.VISIBLE else View.GONE
         etPassword.setText(prefs.getString("compress_password", ""))
 
-        fun bindRow(row: View, title: String, value: String, onClick: () -> Unit) {
-            row.findViewById<TextView>(R.id.settings_row_title).text = title
-            row.findViewById<TextView>(R.id.settings_row_value).text = value
-            row.setOnClickListener { onClick() }
+        fun bindRow(row: UuActionRow, title: String, value: String, onClick: () -> Unit) {
+            row.bind(title, value, navigation = true, onClick = onClick)
         }
 
         fun singleChoice(title: String, labels: Array<String>, checked: Int, onPick: (Int) -> Unit) {
@@ -64,24 +62,17 @@ internal fun MainActivity.showCompressionSettings() {
                 .show().also { keepTabBarTappable(it, rootToTab = false) }
         }
 
-        val zipVal = rowZip.findViewById<TextView>(R.id.settings_row_value)
-        val szVal = rowSz.findViewById<TextView>(R.id.settings_row_value)
-        val genericVal = rowGeneric.findViewById<TextView>(R.id.settings_row_value)
-        val splitVal = rowSplit.findViewById<TextView>(R.id.settings_row_value)
 
         fun showCustomSplitDialog() {
             var unitIdx = if (splitSize > 0 && splitSize % (1024L * 1024 * 1024) == 0L) 1 else 0
             val unitLabels = arrayOf(getString(R.string.unit_mb), getString(R.string.unit_gb))
             val inp = com.usefulunpacker.UuTextField(this).apply {
-                setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                setBackgroundColor(C["surface_dark"]!!); setPadding(dp(R.dimen.space_md), dp(R.dimen.space_sm), dp(R.dimen.space_md), dp(R.dimen.space_sm)); textSize = spx(R.dimen.text_lg)
                 inputType = android.text.InputType.TYPE_CLASS_NUMBER
                 setText(if (splitSize > 0) (splitSize / (if (unitIdx == 1) 1024L * 1024 * 1024 else 1024L * 1024)).toString() else "")
                 hint = "64"
             }
             val btnUnit = com.usefulunpacker.UuButton(this).apply {
-                text = unitLabels[unitIdx]; setTextColor(C["accent"]!!); textSize = spx(R.dimen.text_xl)
-                setPadding(dp(R.dimen.space_md), dp(R.dimen.space_sm), dp(R.dimen.space_sm), dp(R.dimen.space_sm))
+                text = unitLabels[unitIdx];
                 setOnClickListener { unitIdx = (unitIdx + 1) % 2; text = unitLabels[unitIdx] }
             }
             val row = LinearLayout(this).apply {
@@ -98,7 +89,7 @@ internal fun MainActivity.showCompressionSettings() {
                     val factor = if (unitIdx == 1) 1024L * 1024 * 1024 else 1024L * 1024
                     if (n != null && n >= 1 && n <= 2048) {
                         splitSize = n * factor
-                        splitVal.text = fmtSplitSize(splitSize)
+                        rowSplit.valueText = fmtSplitSize(splitSize)
                     } else failureNotice(getString(R.string.split_invalid))
                 }
                 .setNegativeButton(R.string.action_cancel, null)
@@ -107,17 +98,17 @@ internal fun MainActivity.showCompressionSettings() {
 
         bindRow(rowZip, "ZIP " + getString(R.string.settings_compress), levelLabel(ZIP_VALS, ZIP_LABELS, zipLevel)) {
             singleChoice("ZIP " + getString(R.string.settings_compress), ZIP_LABELS, ZIP_VALS.indexOfFirst { it == zipLevel }.coerceAtLeast(0)) { w ->
-                zipLevel = ZIP_VALS[w]; zipVal.text = levelLabel(ZIP_VALS, ZIP_LABELS, zipLevel)
+                zipLevel = ZIP_VALS[w]; rowZip.valueText = levelLabel(ZIP_VALS, ZIP_LABELS, zipLevel)
             }
         }
         bindRow(rowSz, "7z " + getString(R.string.settings_compress), levelLabel(SZ_VALS, ZIP_LABELS, szLevel)) {
             singleChoice("7z " + getString(R.string.settings_compress), ZIP_LABELS, SZ_VALS.indexOfFirst { it == szLevel }.coerceAtLeast(0)) { w ->
-                szLevel = SZ_VALS[w]; szVal.text = levelLabel(SZ_VALS, ZIP_LABELS, szLevel)
+                szLevel = SZ_VALS[w]; rowSz.valueText = levelLabel(SZ_VALS, ZIP_LABELS, szLevel)
             }
         }
         bindRow(rowGeneric, getString(R.string.settings_compress_generic), levelLabel(ZIP_VALS, ZIP_LABELS, genericLevel)) {
             singleChoice(getString(R.string.settings_compress_generic), ZIP_LABELS, ZIP_VALS.indexOfFirst { it == genericLevel }.coerceAtLeast(0)) { w ->
-                genericLevel = ZIP_VALS[w]; genericVal.text = levelLabel(ZIP_VALS, ZIP_LABELS, genericLevel)
+                genericLevel = ZIP_VALS[w]; rowGeneric.valueText = levelLabel(ZIP_VALS, ZIP_LABELS, genericLevel)
             }
         }
         bindRow(rowSplit, getString(R.string.split_title), fmtSplitSize(splitSize)) {
@@ -130,9 +121,9 @@ internal fun MainActivity.showCompressionSettings() {
             }
             singleChoice(getString(R.string.split_title), SPLIT_VALS, checked) { w ->
                 when (w) {
-                    0 -> { splitSize = 0L; splitVal.text = fmtSplitSize(splitSize) }
+                    0 -> { splitSize = 0L; rowSplit.valueText = fmtSplitSize(splitSize) }
                     4 -> showCustomSplitDialog()
-                    else -> { splitSize = SPLIT_PRESET[w]; splitVal.text = fmtSplitSize(splitSize) }
+                    else -> { splitSize = SPLIT_PRESET[w]; rowSplit.valueText = fmtSplitSize(splitSize) }
                 }
             }
         }
@@ -333,23 +324,12 @@ internal fun MainActivity.showGeneralSettings() {
             // appear/disappear while the dialog stays open.
             val memSwitch = com.usefulunpacker.UuSwitch(this@showGeneralSettings).apply {
                 isChecked = prefs.getBoolean("show_mem", false)
-                setTextColor(C["primary"]!!)
                 setOnCheckedChangeListener { _, checked ->
                     prefs.edit().putBoolean("show_mem", checked).apply()
                     applyMemoryBadge()
                 }
             }
-            addView(LinearLayout(this@showGeneralSettings).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = android.view.Gravity.CENTER_VERTICAL
-                addView(TextView(this@showGeneralSettings).apply {
-                    text = getString(R.string.settings_show_memory)
-                    setTextColor(C["primary"]!!)
-                    textSize = spx(R.dimen.text_xl)
-                    layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
-                })
-                addView(memSwitch)
-            })
+            addView(UuToggleRow(this@showGeneralSettings).apply { bind(getString(R.string.settings_show_memory), memSwitch) })
         }
         com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.settings_general))
@@ -375,7 +355,7 @@ internal fun MainActivity.settings() {
     actions.forEach { (label, action) -> body.addView(UuActionRow(this).apply {
         bind(getString(label), navigation = true, onClick = { dialog.dismiss(); action() })
     }) }
-    val scroll = ScrollView(this).apply {
+    val scroll = com.usefulunpacker.UuScrollView(this).apply {
         isVerticalScrollBarEnabled = false; isHorizontalScrollBarEnabled = false; addView(body)
     }
     dialog = UuDialogBuilder(this).setTitle(getString(R.string.settings)).setView(scroll)
@@ -388,35 +368,19 @@ internal fun MainActivity.showOtherSettings() {
     val act = this
     val switchRestore = com.usefulunpacker.UuSwitch(act).apply {
         isChecked = prefs.getBoolean("restore_session", false)
-        setTextColor(C["primary"]!!)
     }
     val container = LinearLayout(act).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(R.dimen.space_lg), dp(R.dimen.space_md), dp(R.dimen.space_lg), dp(R.dimen.space_md))
-        addView(LinearLayout(act).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER_VERTICAL
-            addView(TextView(act).apply {
-                text = getString(R.string.restore_session)
-                setTextColor(C["primary"]!!)
-                textSize = spx(R.dimen.text_lg)
-                layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
-            })
-            addView(switchRestore)
-        })
+        addView(UuToggleRow(act).apply { bind(getString(R.string.restore_session), switchRestore) })
         addView(TextView(act).apply {
             text = getString(R.string.restore_session_desc)
             setTextColor(C["tertiary"]!!)
             textSize = spx(R.dimen.text_xs)
             setPadding(0, dp(R.dimen.space_xs), 0, dp(R.dimen.space_md))
         })
-        addView(TextView(act).apply {
-            text = getString(R.string.title_recycle_bin)
-            setTextColor(C["primary"]!!)
-            textSize = spx(R.dimen.text_lg)
-            setPadding(0, dp(R.dimen.space_md), 0, 0)
-            isClickable = true
-            setOnClickListener { showRecycleBinSettings() }
+        addView(UuActionRow(act).apply {
+            bind(getString(R.string.title_recycle_bin), navigation = true) { showRecycleBinSettings() }
         })
     }
     com.usefulunpacker.UuDialogBuilder(act)
@@ -435,7 +399,6 @@ internal fun MainActivity.showRecycleBinSettings() {
 
     val switchEnabled = com.usefulunpacker.UuSwitch(this).apply {
         isChecked = recycleEnabled
-        setTextColor(C["primary"]!!)
     }
 
     val tvInfo = TextView(this).apply {
@@ -447,21 +410,29 @@ internal fun MainActivity.showRecycleBinSettings() {
         setPadding(0, dp(R.dimen.space_sm), 0, 0)
     }
 
-    val tvAutoClean = TextView(this).apply {
-        // recycle_auto_clean has no format specifier (it doubles as the plain
-        // dialog title below) — compose the value here instead of passing args.
-        val autoVal = if (autoCleanDays == 0) getString(R.string.recycle_auto_clean_never) else getString(R.string.recycle_days_format, autoCleanDays)
-        text = "${getString(R.string.recycle_auto_clean)} $autoVal"
-        setTextColor(C["primary"]!!)
-        textSize = spx(R.dimen.text_lg)
+    val tvAutoClean = UuActionRow(this)
+    fun bindAutoClean() {
+        val value = if (autoCleanDays == 0) getString(R.string.recycle_auto_clean_never)
+            else getString(R.string.recycle_days_format, autoCleanDays)
+        tvAutoClean.bind(getString(R.string.recycle_auto_clean), value, navigation = true) {
+            val daysOptions = intArrayOf(7, 14, 30, 60, 90, 0)
+            val daysLabels = daysOptions.map {
+                if (it == 0) getString(R.string.recycle_auto_clean_never) else getString(R.string.recycle_days_format, it)
+            }.toTypedArray()
+            UuDialogBuilder(this).setTitle(R.string.recycle_auto_clean)
+                .setSingleChoiceItems(daysLabels, daysOptions.indexOf(autoCleanDays).coerceAtLeast(0)) { _, w ->
+                    autoCleanDays = daysOptions[w]
+                    bindAutoClean()
+                }
+                .setPositiveButton(R.string.action_confirm, null)
+                .show().also { keepTabBarTappable(it, rootToTab = false) }
+        }
     }
+    bindAutoClean()
 
     val btnEmpty = com.usefulunpacker.UuButton(this).apply {
         actionStyle = ActionStyle.DANGER
         text = getString(R.string.recycle_empty_now)
-        setTextColor(C["error"]!!)
-        background = null
-        textSize = spx(R.dimen.text_md)
         isEnabled = false  // enabled once the async stat pass finds entries
     }
 
@@ -480,48 +451,10 @@ internal fun MainActivity.showRecycleBinSettings() {
     val container = LinearLayout(act).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(R.dimen.space_lg), dp(R.dimen.space_lg), dp(R.dimen.space_lg), dp(R.dimen.space_lg))
-        addView(LinearLayout(act).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER_VERTICAL
-            addView(TextView(act).apply {
-                text = getString(R.string.recycle_enable)
-                setTextColor(C["primary"]!!)
-                textSize = spx(R.dimen.text_lg)
-                layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
-            })
-            addView(switchEnabled)
-        })
-        addView(LinearLayout(act).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER_VERTICAL
-            setPadding(0, dp(R.dimen.space_lg), 0, 0)
-            addView(TextView(act).apply {
-                text = getString(R.string.recycle_auto_clean)
-                setTextColor(C["primary"]!!)
-                textSize = spx(R.dimen.text_lg)
-                layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
-            })
-            addView(tvAutoClean)
-        })
+        addView(UuToggleRow(act).apply { bind(getString(R.string.recycle_enable), switchEnabled) })
+        addView(tvAutoClean)
         addView(tvInfo)
         addView(btnEmpty)
-    }
-
-    tvAutoClean.setOnClickListener {
-        val daysOptions = intArrayOf(7, 14, 30, 60, 90, 0)
-        val daysLabels = daysOptions.map { 
-            if (it == 0) getString(R.string.recycle_auto_clean_never) 
-            else getString(R.string.recycle_days_format, it) 
-        }.toTypedArray()
-        val currentIdx = daysOptions.indexOf(autoCleanDays).coerceAtLeast(0)
-        com.usefulunpacker.UuDialogBuilder(this)
-            .setTitle(getString(R.string.recycle_auto_clean))
-            .setSingleChoiceItems(daysLabels, currentIdx) { _, w ->
-                autoCleanDays = daysOptions[w]
-                tvAutoClean.text = "${getString(R.string.recycle_auto_clean)} ${daysLabels[w]}"
-            }
-            .setPositiveButton(getString(R.string.action_confirm), null)
-            .show().also { keepTabBarTappable(it, rootToTab = false) }
     }
 
     btnEmpty.setOnClickListener {
@@ -532,10 +465,11 @@ internal fun MainActivity.showRecycleBinSettings() {
                 // deleteRecursively over a big bin — offload it; the dialog
                 // closes instantly and the refresh happens when done.
                 thread(start = true) {
-                    com.usefulunpacker.fileops.RecycleBin.emptyRecycleBin(this)
+                    val emptied = com.usefulunpacker.fileops.RecycleBin.emptyRecycleBin(this)
                     runFeatureOnUiThread {
                         if (isFinishing || isDestroyed) return@runFeatureOnUiThread
-                        toast(getString(R.string.recycle_empty))
+                        if (emptied) toast(getString(R.string.recycle_empty))
+                        else failureNotice(getString(R.string.err_file_error))
                         nav(currentDir)
                         showRecycleBinSettings()
                     }
@@ -566,11 +500,10 @@ internal fun MainActivity.showUISettings() {
         }
         val btnPickBg = com.usefulunpacker.UuButton(this).apply {
             text = if (hasBg) getString(R.string.bg_change) else getString(R.string.bg_pick)
-            setTextColor(C["accent"]!!); background = null; textSize = spx(R.dimen.text_md)
         }
         val btnClearBg = com.usefulunpacker.UuButton(this).apply {
+            actionStyle = ActionStyle.DANGER
             text = getString(R.string.bg_clear)
-            setTextColor(C["error"]!!); background = null; textSize = spx(R.dimen.text_md)
             visibility = if (hasBg) View.VISIBLE else View.GONE
         }
         val bgRow = LinearLayout(this).apply {
@@ -586,9 +519,8 @@ internal fun MainActivity.showUISettings() {
             text = getString(R.string.bg_alpha, curAlpha); setTextColor(C["tertiary"]!!); textSize = spx(R.dimen.text_sm)
             setPadding(dp(R.dimen.space_xl), dp(R.dimen.space_xs), dp(R.dimen.space_lg), 0)
         }
-        val seekAlpha = SeekBar(act).apply {
+        val seekAlpha = com.usefulunpacker.UuSlider(act).apply {
             max = 100; progress = curAlpha
-            setPadding(dp(R.dimen.space_xl), 0, dp(R.dimen.space_xl), dp(R.dimen.space_sm))
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) { tvAlpha.text = getString(R.string.bg_alpha, p) }
                 override fun onStartTrackingTouch(sb: SeekBar?) {}

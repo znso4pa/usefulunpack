@@ -378,7 +378,7 @@ fun extractByFormat(
 fun promptPasswordSync(activity: AppCompatActivity, message: String = ""): String? {
     val latch = java.util.concurrent.CountDownLatch(1)
     val holder = arrayOf<String?>(null)
-    activity.runFeatureOnUiThread {
+    activity.runFeatureOnUiThread(onUnavailable = { latch.countDown() }) {
         // The activity may be finishing (e.g. rotation/back): showing a
         // dialog on a dead window throws BadTokenException and would leave
         // the caller blocked forever — count down and bail out instead.
@@ -389,8 +389,6 @@ fun promptPasswordSync(activity: AppCompatActivity, message: String = ""): Strin
         try {
             val inp = com.usefulunpacker.UuTextField(activity).apply {
                 hint = activity.getString(R.string.prompt_password)
-                setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
                 inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
             }
             val dlg = com.usefulunpacker.UuDialogBuilder(activity)
@@ -404,19 +402,25 @@ fun promptPasswordSync(activity: AppCompatActivity, message: String = ""): Strin
             // `also` keeps the latch release on dismiss while the helper also
             // re-arms the pager (a dismiss listener set here would clobber it).
             dlg.keepTabsTappable { latch.countDown() }
-        } catch (_: Exception) {
+        } catch (failure: Exception) {
             // BadTokenException / WindowManager errors: never leave the
             // caller blocked on the latch.
             latch.countDown()
+            AppDiagnostics.failure("password_prompt", failure)
         }
     }
     // 30s ceiling so a wedged UI can't block the worker thread forever.
     val finished = try {
         latch.await(30, java.util.concurrent.TimeUnit.SECONDS)
     } catch (_: InterruptedException) {
+        Thread.currentThread().interrupt()
+        AppDiagnostics.currentTrace()?.cancelled()
         false
     }
-    if (!finished) return null
+    if (!finished) {
+        if (!AppDiagnostics.isCancellationRequested()) AppDiagnostics.begin("password_prompt").fail(FailureCode.IO, "Password prompt timed out")
+        return null
+    }
     return holder[0]
 }
 
@@ -437,8 +441,6 @@ fun showPasswordDialog(
 ) {
     val inp = com.usefulunpacker.UuTextField(activity).apply {
         hint = activity.getString(R.string.prompt_password)
-        setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-        setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
         inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
     }
     com.usefulunpacker.UuDialogBuilder(activity)
@@ -539,8 +541,6 @@ fun tryExtractWithPassword(
                 // operation, so it can never report "operation in progress".
                 val inp = com.usefulunpacker.UuTextField(activity).apply {
                     hint = activity.getString(R.string.prompt_password)
-                    setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                    setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
                     inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
                 }
                 com.usefulunpacker.UuDialogBuilder(activity)

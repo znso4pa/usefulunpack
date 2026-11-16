@@ -126,7 +126,7 @@ internal class TerminalPanel(private val act: MainActivity) {
             setPadding(dp(14), dp(12), dp(14), dp(16))
             setTextIsSelectable(true)
         }
-        val scroll = ScrollView(act).apply {
+        val scroll = com.usefulunpacker.UuScrollView(act).apply {
             // Honor/EMUI ROM: custom ScrollView 启用原生滚动条会在
             // onDrawScrollBars 里 NPE（项目既有不变量）
             isVerticalScrollBarEnabled = false
@@ -171,11 +171,10 @@ internal class TerminalPanel(private val act: MainActivity) {
         // 上一版把标题、cwd、三个动作全塞进一行、上下只有 6dp，动作之间没有间距，
         // 右边挤成一坨。现在：标题左侧加状态点、cwd 做成贴住文字的胶囊（限宽、超长中省略）、
         // 一个弹性空档把动作推到最右，动作各自留出点击留白。
-        val header = LinearLayout(act).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        val header = com.usefulunpacker.UuActionBar(act).apply {
+
             setBackgroundColor(C["surface_raised"]!!)
-            setPadding(dp(14), dp(9), dp(8), dp(9))
+
             addView(View(act).apply { setBackgroundResource(R.drawable.bg_dot_accent) },
                 LinearLayout.LayoutParams(dp(7), dp(7)))
             addView(TextView(act).apply {
@@ -205,16 +204,12 @@ internal class TerminalPanel(private val act: MainActivity) {
                 append(UuCommands.renderDocs())
             })
             addView(action(R.string.terminal_clear) { sess.clearOutput(); render() })
-            addView(action(R.string.terminal_close) { hide() }.apply { setTextColor(C["accent"]!!) })
+            addView(action(R.string.terminal_close) { hide() })
         }
 
         // ── 底部输入行：提示符 + 输入框 + 运行 ────────────────────────────
         val inp = com.usefulunpacker.UuTextField(act).apply {
-            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-            setBackgroundColor(android.graphics.Color.TRANSPARENT)
-            textSize = 13f
             setSingleLine(true)
-            setPadding(0, 0, 0, 0)
             imeOptions = EditorInfo.IME_ACTION_GO
             setOnEditorActionListener { _, actionId, _ ->
                 if (actionId == EditorInfo.IME_ACTION_GO) { run0(); true } else false
@@ -249,22 +244,15 @@ internal class TerminalPanel(private val act: MainActivity) {
         val runBtn = com.usefulunpacker.UuButton(act).apply {
             actionStyle = ActionStyle.PRIMARY
             text = act.getString(R.string.terminal_run)
-            setTextColor(C["accent_on"]!!)
-            textSize = 13f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            background = act.getDrawable(R.drawable.bg_btn_accent)
-            minimumHeight = dp(46)
-            setPadding(dp(22), 0, dp(22), 0)
             isClickable = true
             isFocusable = true
             setOnClickListener { run0() }
         }
-        val inputBar = LinearLayout(act).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        val inputBar = com.usefulunpacker.UuActionBar(act).apply {
+
             setBackgroundColor(C["surface"]!!)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
+
             addView(inputBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(runBtn, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -286,14 +274,10 @@ internal class TerminalPanel(private val act: MainActivity) {
             setBackgroundColor(C["nav_bg"]!!)
             addView(header, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-            addView(TextView(act).apply {
+            addView(UuActionRow(act).apply {
                 progressView = this
                 visibility = View.GONE
-                setTextColor(C["accent"]!!)
-                textSize = 11f
                 typeface = android.graphics.Typeface.MONOSPACE
-                setPadding(dp(12), dp(8), dp(12), dp(8))
-                background = act.getDrawable(R.drawable.bg_chip_accent)
                 isSingleLine = true
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 isClickable = true
@@ -363,15 +347,6 @@ internal class TerminalPanel(private val act: MainActivity) {
     private fun action(resId: Int, onClick: () -> Unit) = UuButton(act).apply {
         actionStyle = ActionStyle.TEXT
         text = act.getString(resId)
-        setTextColor(C["secondary"]!!); textSize = 12.5f
-        val pad = (11 * act.resources.displayMetrics.density).toInt()
-        // 最小可点高 40dp：原来这三个动作挤在 6dp 行高里，点起来发虚
-        minimumHeight = (40 * act.resources.displayMetrics.density).toInt()
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(pad, pad / 2, pad, pad / 2)
-        val ripple = android.util.TypedValue()
-        act.theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, ripple, true)
-        if (ripple.resourceId != 0) setBackgroundResource(ripple.resourceId)
         setOnClickListener { onClick() }
     }
 
@@ -1178,25 +1153,8 @@ internal class TerminalPanel(private val act: MainActivity) {
             setBackgroundColor(C["surface"]!!)
         }
         fun choice(label: String, sub: String, onClick: () -> Unit) {
-            body.addView(LinearLayout(act).apply {
-                orientation = LinearLayout.VERTICAL
-                val p = { v: Int -> (v * act.resources.displayMetrics.density).toInt() }
-                setPadding(p(18), p(14), p(18), p(14))
-                setOnClickListener { close(); onClick() }
-                addView(TextView(act).apply {
-                    text = label
-                    setTextColor(C["primary"]!!); textSize = 15f
-                })
-                addView(TextView(act).apply {
-                    text = sub
-                    setTextColor(C["hint"]!!); textSize = 12f
-                })
-            })
-            body.addView(View(act).apply {
-                setBackgroundColor(C["divider_subtle"]!!)
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, 1
-                )
+            body.addView(UuActionRow(act).apply {
+                bind(label, sub, navigation = true) { close(); onClick() }
             })
         }
 

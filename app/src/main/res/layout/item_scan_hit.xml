@@ -32,28 +32,18 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/scan_extract"
-            android:textSize="@dimen/text_sm"
-            android:textColor="@color/accent"
-            android:background="?attr/selectableItemBackgroundBorderless"
             android:drawableStart="@drawable/ic_extract"
             android:drawableTint="@color/accent"
-            android:drawablePadding="@dimen/space_xs"
-            android:minHeight="0dp"
-            android:padding="@dimen/space_sm" />
+            android:drawablePadding="@dimen/space_xs" />
 
         <com.usefulunpacker.UuButton
             android:id="@+id/btnCarve"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/scan_carve"
-            android:textSize="@dimen/text_sm"
-            android:textColor="@color/text_tertiary"
-            android:background="?attr/selectableItemBackgroundBorderless"
             android:drawableStart="@drawable/ic_carve"
             android:drawableTint="@color/text_tertiary"
-            android:drawablePadding="@dimen/space_xs"
-            android:minHeight="0dp"
-            android:padding="@dimen/space_sm" />
+            android:drawablePadding="@dimen/space_xs" />
 
     </LinearLayout>
 

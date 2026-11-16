@@ -624,7 +624,7 @@ private fun MainActivity.separateAndExtract(f: File, hit: ScanHit, destDir: File
         }
         try {
             // Clean stale carved temps, then carve [offset..EOF].
-            tempDir.deleteRecursively()
+            com.usefulunpacker.deleteOutputChecked(tempDir, recursive = true)
             tempDir.mkdirs()
             carveToFile(f, carveOffset, carveLen, temp) { n ->
                 carved += n

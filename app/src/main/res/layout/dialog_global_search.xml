@@ -45,16 +45,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
-            android:textSize="11sp"
-            android:textColor="@color/accent"
-            android:background="@drawable/bg_chip_accent"
             android:stateListAnimator="@null"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:paddingStart="14dp"
-            android:paddingEnd="14dp"
-            android:paddingTop="5dp"
-            android:paddingBottom="5dp"
             android:letterSpacing="0.02" />
     </LinearLayout>
 
@@ -85,13 +76,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:textSize="13sp"
-                android:background="@drawable/bg_segment_off"
                 android:stateListAnimator="@null"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:paddingTop="9dp"
-                android:paddingBottom="9dp"
                 android:letterSpacing="0.02" />
 
             <com.usefulunpacker.UuButton
@@ -100,13 +85,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:layout_marginStart="3dp"
-                android:textSize="13sp"
-                android:background="@drawable/bg_segment_off"
                 android:stateListAnimator="@null"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:paddingTop="9dp"
-                android:paddingBottom="9dp"
                 android:letterSpacing="0.02" />
         </LinearLayout>
 
@@ -141,12 +120,9 @@
                     android:layout_height="match_parent"
                     android:layout_weight="1"
                     android:layout_marginStart="8dp"
-                    android:textSize="14sp"
                     android:singleLine="true"
                     android:imeOptions="actionSearch"
                     android:inputType="text"
-                    android:background="@null"
-                    android:textColor="@color/text_primary"
                     android:textColorHint="@color/text_hint" />
 
                 <com.usefulunpacker.UuIconButton
@@ -154,24 +130,15 @@
                     android:layout_width="36dp"
                     android:layout_height="@dimen/touch_target"
                     android:src="@drawable/ic_clear"
-                    app:tint="@color/text_hint"
-                    android:background="?attr/selectableItemBackgroundBorderless"
                     android:importantForAccessibility="no" />
             </LinearLayout>
 
             <com.usefulunpacker.UuButton app:uuActionStyle="primary"
                 android:id="@+id/btnSearch"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content" android:minHeight="@dimen/touch_target"
+                android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
-                android:textSize="14sp"
-                android:textColor="@color/accent_on"
-                android:background="@drawable/bg_btn_accent"
                 android:stateListAnimator="@null"
-                android:minWidth="0dp"
-
-                android:paddingStart="22dp"
-                android:paddingEnd="22dp"
                 android:letterSpacing="0.04" />
         </LinearLayout>
 
@@ -197,18 +164,14 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="@string/search_regex"
-                    android:textSize="12sp"
-                    android:textColor="@color/text_secondary" />
+                    android:text="@string/search_regex" />
 
                 <com.usefulunpacker.UuCheckBox
                     android:id="@+id/cbCaseSensitive"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="@string/search_case_sensitive"
-                    android:textSize="12sp"
-                    android:textColor="@color/text_secondary" />
+                    android:text="@string/search_case_sensitive" />
             </LinearLayout>
 
             <!-- 卡内发丝分隔线：把「选项」和「类型过滤」分成两组 -->
@@ -223,15 +186,8 @@
                 android:id="@+id/etFileFilter"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:textSize="12sp"
                 android:singleLine="true"
                 android:hint="@string/search_file_filter"
-                android:background="@drawable/bg_input_rounded"
-                android:paddingStart="12dp"
-                android:paddingEnd="12dp"
-                android:paddingTop="10dp"
-                android:paddingBottom="10dp"
-                android:textColor="@color/text_primary"
                 android:textColorHint="@color/text_hint" />
         </LinearLayout>
     </LinearLayout>
@@ -308,26 +264,14 @@
                 android:id="@+id/btnContinue"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:textSize="12sp"
-                android:textColor="@color/accent"
-                android:background="@null"
                 android:visibility="gone"
-                android:stateListAnimator="@null"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:padding="11dp" />
+                android:stateListAnimator="@null" />
 
             <com.usefulunpacker.UuButton
                 android:id="@+id/btnClose"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:textSize="13sp"
-                android:textColor="@color/text_secondary"
-                android:background="@null"
-                android:stateListAnimator="@null"
-                android:minWidth="0dp"
-                android:minHeight="0dp"
-                android:padding="11dp" />
+                android:stateListAnimator="@null" />
         </LinearLayout>
     </LinearLayout>
 

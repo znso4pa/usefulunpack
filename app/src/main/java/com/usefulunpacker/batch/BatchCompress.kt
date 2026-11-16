@@ -32,8 +32,6 @@ internal fun MainActivity.compressMerged(items: List<File>) {
         ) { fmt ->
             val ext = COMPRESS_EXT[fmt] ?: fmt
             val inp = com.usefulunpacker.UuTextField(this).apply {
-                setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
                 setText("archive")
                 setSingleLine()
             }
@@ -77,7 +75,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                 // Copy off the UI thread — large batches would
                                 // ANR the main thread here. Clear any stale staging
                                 // dir from a previously crashed run first.
-                                tmpDir.deleteRecursively()
+                                com.usefulunpacker.deleteOutputChecked(tmpDir, recursive = true)
                                 tmpDir.mkdirs()
                                 // 跨 tab 聚合的选择常有同名文件（两个窗口各一个
                                 // readme.txt 很常见）——直接用原名拷贝会静默覆盖，
@@ -102,10 +100,10 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                 // clears the cancel flag on entry, so honor the
                                 // Kotlin-side flag here instead.
                                 val ok = if (cancelled) false else compressDispatch(tmpDir, outF, fmt, level, password, prefs, chosenSplit, xp3Enc)
-                                tmpDir.deleteRecursively()
+                                com.usefulunpacker.deleteOutputChecked(tmpDir, recursive = true)
                                 // 失败/取消必须清掉半成品：产物名可能是 root.pfs，
                                 // 留个截断的 root.pfs 会被游戏当分层补丁挂载。
-                                if (!ok) outF.delete()
+                                if (!ok) com.usefulunpacker.deleteOutputChecked(outF)
                                 runFeatureOnUiThread {
                                     if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                                     pd.dismiss()
@@ -131,7 +129,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                     failureNotice(getString(R.string.err_extract_io, e.message ?: ""))
                                 }
                             } finally {
-                                tmpDir.deleteRecursively()
+                                com.usefulunpacker.deleteOutputChecked(tmpDir, recursive = true)
                                 opH.release()
                             }
                         }
@@ -209,17 +207,17 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                                 val tmpDir = File(cacheDir, "batch_compress/${f.nameWithoutExtension}")
                                 // 先清掉上次崩溃/失败可能留下的残留，否则旧文件会被
                                 // 打进本次产物；异常路径也要保证清理（finally 语义）。
-                                tmpDir.deleteRecursively()
+                                com.usefulunpacker.deleteOutputChecked(tmpDir, recursive = true)
                                 tmpDir.mkdirs()
                                 val result = try {
                                     f.copyTo(File(tmpDir, f.name), overwrite = true)
                                     compressDispatch(tmpDir, outF, fmt, level, password, prefs, chosenSplit, xp3Enc)
                                 } finally {
-                                    tmpDir.deleteRecursively()
+                                    com.usefulunpacker.deleteOutputChecked(tmpDir, recursive = true)
                                 }
                                 result
                             }
-                            if (!ok2) { outF.delete(); ok = false; break }
+                            if (!ok2) { com.usefulunpacker.deleteOutputChecked(outF); ok = false; break }
                         }
                         runFeatureOnUiThread {
                             if (isFinishing || isDestroyed) return@runFeatureOnUiThread

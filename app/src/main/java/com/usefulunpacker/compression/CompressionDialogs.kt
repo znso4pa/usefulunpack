@@ -137,16 +137,13 @@ fun showCompressOptionsDialog(
         var unitIdx = if (chosenSplit > 0 && chosenSplit % (1024L * 1024 * 1024) == 0L) 1 else 0
         val unitLabels = arrayOf(activity.getString(R.string.unit_mb), activity.getString(R.string.unit_gb))
         val inp = com.usefulunpacker.UuTextField(activity).apply {
-            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-            setBackgroundColor(C["surface_dark"]!!); setPadding(12, 8, 12, 8); textSize = 14f
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
             setText(if (chosenSplit > 0) (chosenSplit / (if (unitIdx == 1) 1024L * 1024 * 1024 else 1024L * 1024)).toString() else "")
             hint = "64"
         }
         val btnUnit = com.usefulunpacker.UuButton(activity).apply {
-            text = unitLabels[unitIdx]; setTextColor(C["accent"]!!); textSize = 15f
-            setPadding(12, 8, 4, 8)
-            setOnClickListener { unitIdx = (unitIdx + 1) % 2; text = unitLabels[unitIdx] }
+            text = unitLabels[unitIdx];
+                setOnClickListener { unitIdx = (unitIdx + 1) % 2; text = unitLabels[unitIdx] }
         }
         val unitRow = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.HORIZONTAL; setPadding(28, 8, 28, 0)
@@ -278,8 +275,6 @@ fun showCompressOptionsDialog(
             addView(com.usefulunpacker.UuSwitch(activity).apply {
                 isChecked = artemisNaming
                 text = activity.getString(R.string.pfs_artemis_naming)
-                setTextColor(C["primary"]!!)
-                setPadding(24, 12, 24, 12)
                 setOnCheckedChangeListener { _, checked ->
                     artemisNaming = checked
                     prefs.edit().putBoolean("pfs_artemis_naming", checked).apply()
@@ -290,8 +285,6 @@ fun showCompressOptionsDialog(
             addView(com.usefulunpacker.UuSwitch(activity).apply {
                 isChecked = gameNaming
                 text = activity.getString(R.string.rgss_game_naming)
-                setTextColor(C["primary"]!!)
-                setPadding(24, 12, 24, 12)
                 setOnCheckedChangeListener { _, checked ->
                     gameNaming = checked
                     prefs.edit().putBoolean("rgss_game_naming", checked).apply()
@@ -310,9 +303,6 @@ fun showCompressOptionsDialog(
                 inputType = android.text.InputType.TYPE_CLASS_TEXT
                 setText(mvKey)
                 hint = activity.getString(R.string.rpgmv_key_title)
-                setTextColor(C["primary"]!!)
-                setHintTextColor(C["hint"]!!)
-                setPadding(24, 8, 24, 8)
             }
             addView(mvKeyField)
         }
@@ -394,8 +384,8 @@ private fun runCompress(
                     f.name.startsWith(finalFile.name + ".") &&
                     f.name.substringAfterLast('.').isNotEmpty() &&
                     f.name.substringAfterLast('.').all { it.isDigit() }
-                }?.forEach { it.delete() }
-                var deleted = false; for (i in 0..10) { deleted = finalFile.delete(); if (deleted) break else Thread.sleep(200) }
+                }?.forEach { com.usefulunpacker.deleteOutputChecked(it) }
+                var deleted = false; for (i in 0..10) { deleted = com.usefulunpacker.deleteOutputChecked(finalFile); if (deleted) break else Thread.sleep(200) }
             }
             val packError = PackErrors.last
             activity.runFeatureOnUiThread {

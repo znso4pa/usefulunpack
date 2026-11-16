@@ -86,16 +86,7 @@
         android:layout_height="wrap_content"
         android:layout_marginStart="8dp"
         android:text="@string/action_restore"
-        android:textSize="11sp"
-        android:textColor="@color/accent"
-        android:background="@drawable/bg_chip_accent"
-        android:stateListAnimator="@null"
-        android:minWidth="0dp"
-        android:minHeight="0dp"
-        android:paddingStart="14dp"
-        android:paddingEnd="14dp"
-        android:paddingTop="7dp"
-        android:paddingBottom="7dp" />
+        android:stateListAnimator="@null" />
 
     <com.usefulunpacker.UuButton
         android:id="@+id/btnPermanentDelete"
@@ -103,15 +94,6 @@
         android:layout_height="wrap_content"
         android:layout_marginStart="2dp"
         android:text="@string/recycle_permanent_delete"
-        android:textSize="11sp"
-        android:textColor="@color/state_error"
-        android:background="@null"
-        android:stateListAnimator="@null"
-        android:minWidth="0dp"
-        android:minHeight="0dp"
-        android:paddingStart="10dp"
-        android:paddingEnd="10dp"
-        android:paddingTop="7dp"
-        android:paddingBottom="7dp" />
+        android:stateListAnimator="@null" />
 
 </LinearLayout>

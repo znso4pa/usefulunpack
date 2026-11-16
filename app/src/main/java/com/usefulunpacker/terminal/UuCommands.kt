@@ -418,7 +418,7 @@ internal object UuCommands {
                     // 展示名用 scan 的 label；临时文件名是一串哈希没有信息量。
                     return listResolved(carved, e.label, showAll, pwd, ctx, asJson, asTree, bySize, prePipeline)
                 } finally {
-                    carved.deleteRecursively()
+                    com.usefulunpacker.deleteOutputChecked(carved, recursive = true)
                 }
             }
             FdRef.NotFd -> Unit
@@ -462,7 +462,7 @@ internal object UuCommands {
             } else ""
             Result(warn + inner.text, inner.exitCode)
         } finally {
-            temp?.deleteRecursively()
+            temp?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }
         }
     }
 
@@ -554,7 +554,7 @@ internal object UuCommands {
                     try {
                         if (multi) out.append(a).append(':').append('\n')
                         out.append(hashOf(r.f).text).append('\n'); anyOk = true
-                    } finally { r.temp?.deleteRecursively() }
+                    } finally { r.temp?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) } }
                 }
             }
         }
@@ -665,7 +665,7 @@ internal object UuCommands {
             if (dst.exists()) {
                 if (!force) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
                 // -f 覆盖：先删再拷（目录也整棵换掉 —— 幂等脚本的写法）
-                if (!dst.deleteRecursively()) return Result(ctx.text(R.string.cli_failed, dst.path), 1)
+                if (!com.usefulunpacker.deleteOutputChecked(dst, recursive = true, cleanup = false)) return Result(ctx.text(R.string.cli_failed, dst.path), 1)
             }
             // 目录拷贝进自己（cp mydir mydir/inner）→ 无限自嵌套直到路径爆掉
             if (src.isDirectory && dst.canonicalPath.startsWith(src.canonicalPath + File.separator)) {
@@ -678,7 +678,7 @@ internal object UuCommands {
             }
             return Result(ctx.text(R.string.cli_copy_done, src.path, dst.path))
         } finally {
-            srcTemp?.deleteRecursively()  // fN 区间临时 carve 用完即清
+            srcTemp?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }  // fN 区间临时 carve 用完即清
         }
     }
 
@@ -917,7 +917,7 @@ internal object UuCommands {
                 }
 
                 if (cancelled.get()) {
-                    outDir.deleteRecursively()
+                    com.usefulunpacker.deleteOutputChecked(outDir, recursive = true)
                     return Result(UuText.extractCancelled(ctx.str), 1)
                 }
                 if (!o.counts.ok) {
@@ -949,8 +949,8 @@ internal object UuCommands {
                 opH?.release()
             }
         } finally {
-            carvedTemp?.deleteRecursively()
-            preTemp?.deleteRecursively()
+            carvedTemp?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }
+            preTemp?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }
         }
     }
 
@@ -1101,7 +1101,7 @@ internal object UuCommands {
                                     if (note.isEmpty()) "" else " $note")
                             }
                         } finally {
-                            staging.deleteRecursively()
+                            com.usefulunpacker.deleteOutputChecked(staging, recursive = true)
                         }
                     } else {
                         // 分别压缩：每个源一个产物；单文件 + zip/7z/tar 系需临时目录包裹
@@ -1123,7 +1123,7 @@ internal object UuCommands {
                                 if (ok) okCount++ else failCount++
                                 if (ok) packResultLines.add(ctx.text(R.string.cli_pack_ok, outF.name))
                             } finally {
-                                wrapDir?.deleteRecursively()
+                                wrapDir?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }
                             }
                         }
                     }
@@ -1228,7 +1228,7 @@ internal object UuCommands {
                 if (packOk && enc.isNotEmpty()) encNote = encNoteText(ctx.str)
                 packOk
             } finally {
-                wrapDir?.deleteRecursively()
+                wrapDir?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }
                 done.set(true)
                 poller?.join(600)
             }
@@ -1293,12 +1293,12 @@ internal object UuCommands {
         tmp.parentFile?.mkdirs()
         val res = runTransform(host, 0, null, pipeline, tmp)
         if (res !is TrResult.Ok || res.interrupted) {
-            tmp.delete()
+            com.usefulunpacker.deleteOutputChecked(tmp)
             return PreResult.Err(Result(UuText.failed(ctx.str, host.name), 1))
         }
         // 防呆：变换后必须能认出是归档，否则拒（见上）。
         if (detectFormatByMagic(tmp) == null) {
-            tmp.delete()
+            com.usefulunpacker.deleteOutputChecked(tmp)
             return PreResult.Err(Result(ctx.text(R.string.cli_pre_unrecognised, pipeline.text()), 1))
         }
         return PreResult.Ok(tmp)
@@ -1330,16 +1330,16 @@ internal object UuCommands {
         val r = runTransform(pre, 0, pre.length(), pipeline, out)
         val wrote = (r as? TrResult.Ok)?.takeIf { !it.interrupted }
         if (r is TrResult.Failed || wrote == null) {
-            out.delete()
+            com.usefulunpacker.deleteOutputChecked(out)
             pre.renameTo(out)
             return Result(ctx.text(R.string.cli_post_failed_kept, out.name), 1)
         }
         if (!inverseRoundTrips(pre, out, inverse)) {
-            out.delete()
+            com.usefulunpacker.deleteOutputChecked(out)
             pre.renameTo(out)
             return Result(ctx.text(R.string.cli_post_verify_failed, out.name), 1)
         }
-        pre.delete()
+        com.usefulunpacker.deleteOutputChecked(pre)
         return null
     }
 
@@ -1373,7 +1373,8 @@ internal object UuCommands {
                     true
                 }
             }
-        } catch (_: Exception) {
+        } catch (failure: Exception) {
+            AppDiagnostics.failure("inverse_verify", failure)
             false
         }
     }
@@ -1598,10 +1599,10 @@ internal object UuCommands {
                 return Result(text + if (truncated)
                     "\n" + ctx.text(R.string.cli_cat_truncated, fmt(CAT_MAX_BYTES)) else "")
             } finally {
-                tmpDir.deleteRecursively()
+                com.usefulunpacker.deleteOutputChecked(tmpDir, recursive = true)
             }
         } finally {
-            temp?.deleteRecursively()
+            temp?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }
         }
     }
 
@@ -1684,7 +1685,7 @@ internal object UuCommands {
             val body = sb.toString().trimEnd('\n')
             return Result(head + (if (body.isEmpty()) "" else "\n$body"))
         } finally {
-            tempDir?.deleteRecursively()
+            tempDir?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }
         }
     }
 
@@ -1701,7 +1702,7 @@ internal object UuCommands {
         for (p in pos) {
             val f = UuText.resolve(ctx.cwd, p)
             if (!f.exists()) { fail++; continue }
-            val done = if (hard) com.usefulunpacker.observedAttempt("UuCommands") { f.deleteRecursively() }.getOrDefault(false)
+            val done = if (hard) com.usefulunpacker.observedAttempt("UuCommands") { com.usefulunpacker.deleteOutputChecked(f, recursive = true, cleanup = false) }.getOrDefault(false)
                        else com.usefulunpacker.observedAttempt("UuCommands") { RecycleBin.moveToRecycleBin(act!!, f) }.getOrDefault(false)
             if (done) ok++ else fail++
         }
@@ -1738,21 +1739,23 @@ internal object UuCommands {
         if (dst.isDirectory) dst = File(dst, src.name)
         if (dst.exists()) {
             if (!force) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
-            if (!dst.deleteRecursively()) return Result(ctx.text(R.string.cli_failed, dst.path), 1)
+            if (!com.usefulunpacker.deleteOutputChecked(dst, recursive = true, cleanup = false)) return Result(ctx.text(R.string.cli_failed, dst.path), 1)
         }
         if (src.isDirectory && dst.canonicalPath.startsWith(src.canonicalPath + File.separator)) {
             return Result(ctx.text(R.string.cli_failed, dst.path), 1)
         }
         if (src.renameTo(dst)) return Result(ctx.text(R.string.cli_mv_done, src.name, dst.path))
-        return try {
-            if (src.isDirectory) src.copyRecursively(dst, overwrite = false)
-            else { dst.parentFile?.mkdirs(); src.copyTo(dst, overwrite = false) }
-            if (src.isDirectory) src.deleteRecursively() else src.delete()
-            Result(ctx.text(R.string.cli_mv_done, src.name, dst.path))
+        try {
+            if (src.isDirectory) {
+                if (!src.copyRecursively(dst, overwrite = false)) throw java.io.IOException("Incomplete move copy")
+            } else { dst.parentFile?.mkdirs(); src.copyTo(dst, overwrite = false) }
         } catch (e: Exception) {
-            dst.deleteRecursively()  // 半成品清掉；复制失败绝不删源
-            Result(UuText.failed(ctx.str, e.message ?: src.name), 1)
+            AppDiagnostics.failure("move_copy", e)
+            deleteOutputChecked(dst, recursive = true)
+            return Result(UuText.failed(ctx.str, e.message ?: src.name), 1)
         }
+        if (!deleteOutputChecked(src, recursive = src.isDirectory)) return Result(ctx.text(R.string.cli_failed, src.path), 1)
+        return Result(ctx.text(R.string.cli_mv_done, src.name, dst.path))
     }
 
     /** `uu tree [dir] [depth]` — 目录树（默认深 3，最多 TREE_MAX 行）。 */
@@ -1968,7 +1971,7 @@ internal object UuCommands {
                 val tmp = File(parent, "${archive.nameWithoutExtension}.set.zip")
                 val ok = ZipCore.zipModify("", archive.path, tmp.path, "replace|$rel|${srcFile.path}", pw)
                 if (!ok) {
-                    tmp.delete()
+                    com.usefulunpacker.deleteOutputChecked(tmp)
                     return Result(UuText.packFailed(ctx.str, outF.name), 1)
                 }
                 java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
@@ -2032,7 +2035,7 @@ internal object UuCommands {
             } finally {
                 done.set(true)
                 poller?.join(600)
-                staging.deleteRecursively()
+                com.usefulunpacker.deleteOutputChecked(staging, recursive = true)
             }
         } finally {
             opH?.release()
@@ -2084,11 +2087,11 @@ internal object UuCommands {
                 poller?.join(600)
             }
             if (cancelled.get()) {
-                outF.delete()
+                com.usefulunpacker.deleteOutputChecked(outF)
                 return Result(UuText.extractCancelled(ctx.str), 1)
             }
             if (!ok) {
-                outF.delete()
+                com.usefulunpacker.deleteOutputChecked(outF)
                 return Result(UuText.packFailed(ctx.str, outF.name), 1)
             }
             return Result(ctx.text(R.string.cli_cso_done, outF.name) + "\n" +
@@ -2180,7 +2183,7 @@ internal object UuCommands {
                 val okOne = try {
                     AudioCore.audioConvert("", src.path, outF.path, fmt, opts.toJni())
                 } catch (e: Exception) {
-                    outF.delete()
+                    com.usefulunpacker.deleteOutputChecked(outF)
                     sb.append(
                         ctx.text(R.string.cli_conv_fail, src.name, e.message ?: e.javaClass.simpleName)
                     ).append('\n')
@@ -2192,7 +2195,7 @@ internal object UuCommands {
                 }
                 if (!okOne) {
                     // 返回 false 而没抛异常：引擎侧的失败路径已经删过输出，这里再删一次是幂等的。
-                    outF.delete()
+                    com.usefulunpacker.deleteOutputChecked(outF)
                     sb.append(ctx.text(R.string.cli_conv_fail, src.name, fmt)).append('\n')
                     fail++
                     continue
@@ -2277,7 +2280,7 @@ internal object UuCommands {
                 val okOne = try {
                     VideoCore.videoConvert("", src.path, outF.path, target, "")
                 } catch (e: Exception) {
-                    outF.delete()
+                    com.usefulunpacker.deleteOutputChecked(outF)
                     sb.append(
                         ctx.text(R.string.cli_conv_fail, src.name, e.message ?: e.javaClass.simpleName)
                     ).append('\n')
@@ -2289,7 +2292,7 @@ internal object UuCommands {
                 }
                 if (!okOne) {
                     // 返回 false 而没抛异常：引擎侧的失败路径已经删过输出，这里再删一次是幂等的。
-                    outF.delete()
+                    com.usefulunpacker.deleteOutputChecked(outF)
                     sb.append(ctx.text(R.string.cli_conv_fail, src.name, target)).append('\n')
                     fail++
                     continue
@@ -2403,7 +2406,7 @@ internal object UuCommands {
             val ok = com.usefulunpacker.observedAttempt("UuCommands") { ZipCore.zipModify("", archive.path, tmp.path, ops, pw) }
                 .getOrDefault(false)
             if (!ok) {
-                tmp.delete()
+                com.usefulunpacker.deleteOutputChecked(tmp)
                 return Result(UuText.packFailed(ctx.str, outF.name), 1)
             }
             java.nio.file.Files.move(tmp.toPath(), outF.toPath(),
@@ -2559,7 +2562,7 @@ internal object UuCommands {
                     fail++
                 }
             } finally {
-                temp?.delete()
+                temp?.let { com.usefulunpacker.deleteOutputChecked(it) }
             }
         }
         if (srcs.size > 1) sb.append(ctx.text(R.string.cli_conv_summary, ok.toString(), fail.toString()))
@@ -2623,7 +2626,7 @@ internal object UuCommands {
             return if (ok) Result(ctx.text(R.string.cli_b64_saved, dest.absolutePath))
                    else Result(UuText.failed(ctx.str, dest.name), 1)
         } finally {
-            temp?.delete()
+            temp?.let { com.usefulunpacker.deleteOutputChecked(it) }
         }
     }
 
@@ -2783,13 +2786,13 @@ internal object UuCommands {
             if (dst.isDirectory) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
             if (dst.exists()) {
                 if (!force) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
-                if (!dst.deleteRecursively()) return Result(UuText.failed(ctx.str, dst.path), 1)
+                if (!com.usefulunpacker.deleteOutputChecked(dst, recursive = true, cleanup = false)) return Result(UuText.failed(ctx.str, dst.path), 1)
             }
             dst.parentFile?.mkdirs()
             val ok = com.usefulunpacker.observedAttempt("UuCommands") { carveToFile(host, base + skip, n, dst, report); true }
                 .getOrDefault(false)
             if (!ok) {
-                dst.delete()   // 半成品不留：失败后留个截断文件比直接报错更坏
+                com.usefulunpacker.deleteOutputChecked(dst)   // 半成品不留：失败后留个截断文件比直接报错更坏
                 return Result(UuText.failed(ctx.str, dst.name), 1)
             }
             return Result(ctx.text(R.string.cli_dd_done, fmt(n), dst.absolutePath))
@@ -2906,8 +2909,8 @@ internal object UuCommands {
             sb.append('\n').append(ctx.text(R.string.cli_cmp_count, diffs.toString(), fmt(off)))
             return Result(sb.toString(), 1)
         } finally {
-            tempA?.deleteRecursively()
-            tempB?.deleteRecursively()
+            tempA?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }
+            tempB?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }
         }
     }
 
@@ -2979,7 +2982,7 @@ internal object UuCommands {
             if (size > cap) head.append('\n').append(ctx.text(R.string.cli_strings_truncated, fmt(cap)))
             return Result(head.toString())
         } finally {
-            temp?.deleteRecursively()
+            temp?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }
         }
     }
 
@@ -3148,7 +3151,7 @@ internal object UuCommands {
                     )).append('\n')
                 }
             } finally {
-                temp?.deleteRecursively()
+                temp?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }
             }
         }
         if (multi) out.append(ctx.text(R.string.cli_sed_summary, ok.toString(), fail.toString())).append('\n')
@@ -3166,8 +3169,9 @@ internal object UuCommands {
                 java.nio.file.StandardCopyOption.REPLACE_EXISTING
             )
             true
-        } catch (_: Exception) {
-            com.usefulunpacker.observedAttempt("UuCommands") { tmp.delete() }   // 失败/中断不留临时文件
+        } catch (failure: Exception) {
+            AppDiagnostics.failure("atomic_write", failure)
+            com.usefulunpacker.observedAttempt("UuCommands") { com.usefulunpacker.deleteOutputChecked(tmp) }   // 失败/中断不留临时文件
             false
         }
     }
@@ -3266,7 +3270,7 @@ internal object UuCommands {
         if (dst.isDirectory) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
         if (dst.exists()) {
             if ("-f" !in pa.bools) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
-            if (!dst.deleteRecursively()) return Result(UuText.failed(ctx.str, dst.path), 1)
+            if (!com.usefulunpacker.deleteOutputChecked(dst, recursive = true, cleanup = false)) return Result(UuText.failed(ctx.str, dst.path), 1)
         }
         dst.parentFile?.mkdirs()
 
@@ -3275,12 +3279,12 @@ internal object UuCommands {
         }
         val res = runTransform(host, base, avail, pipeline, dst, report)
         if (res is TrResult.Failed) {
-            dst.delete()   // 半成品不留：失败后留个截断文件比报错更坏
+            com.usefulunpacker.deleteOutputChecked(dst)   // 半成品不留：失败后留个截断文件比报错更坏
             return Result(UuText.failed(ctx.str, dst.name), 1)
         }
         val ok = res as TrResult.Ok
         if (ok.interrupted) {
-            dst.delete()
+            com.usefulunpacker.deleteOutputChecked(dst)
             return Result(UuText.extractCancelled(ctx.str), 1)
         }
 

@@ -32,7 +32,7 @@ internal fun MainActivity.showFileInfoDialog(f: File) {
             setPadding(24, 0, 8, 0); setSingleLine(true)
             ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; typeface = android.graphics.Typeface.MONOSPACE
         }
-        val btnMd5 = com.usefulunpacker.UuButton(this).apply { text = "📋"; setTextColor(C["accent"]!!); background = null; textSize = 12f; setPadding(0, 0, 24, 0); isEnabled = false }
+        val btnMd5 = UuIconButton(this).apply { setImageResource(R.drawable.ic_copy); contentDescription = getString(R.string.action_copy); isEnabled = false }
         val rowMd5 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; addView(tvMd5Val, LinearLayout.LayoutParams(0, WRAP, 1f)); addView(btnMd5) }
         val tvShaLabel = TextView(this).apply { text = "SHA-256"; setTextColor(C["primary"]!!); textSize = 12f; setPadding(24, 6, 24, 0); setTypeface(null, android.graphics.Typeface.BOLD) }
         val tvShaVal = TextView(this).apply {
@@ -40,7 +40,7 @@ internal fun MainActivity.showFileInfoDialog(f: File) {
             setPadding(24, 0, 8, 0); setSingleLine(true)
             ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; typeface = android.graphics.Typeface.MONOSPACE
         }
-        val btnSha = com.usefulunpacker.UuButton(this).apply { text = "📋"; setTextColor(C["accent"]!!); background = null; textSize = 12f; setPadding(0, 0, 24, 0); isEnabled = false }
+        val btnSha = UuIconButton(this).apply { setImageResource(R.drawable.ic_copy); contentDescription = getString(R.string.action_copy); isEnabled = false }
         val rowSha = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; addView(tvShaVal, LinearLayout.LayoutParams(0, WRAP, 1f)); addView(btnSha) }
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL

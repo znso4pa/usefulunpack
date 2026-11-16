@@ -87,18 +87,18 @@ private fun MainActivity.startWorkspaceExtract(
         if (!opH.await()) return@thread
         try {
             // 工作目录在锁内清空重建：排队的第二次开工作区不会毁掉进行中的那次。
-            wsDir.deleteRecursively()
+            com.usefulunpacker.deleteOutputChecked(wsDir, recursive = true)
             wsDir.mkdirs()
             val o = extractByFormat(format, src.path, wsDir.path, sel.joinToString("\n"), prefs, pwd)
             runFeatureOnUiThread {
                 if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 prog.dismiss()
-                if (cancelled) { wsDir.deleteRecursively(); toast(getString(R.string.msg_cancelled)); return@runFeatureOnUiThread }
-                if (!o.counts.ok) { wsDir.deleteRecursively(); toast(friendlyExtractError(this, o.error)); return@runFeatureOnUiThread }
+                if (cancelled) { com.usefulunpacker.deleteOutputChecked(wsDir, recursive = true); toast(getString(R.string.msg_cancelled)); return@runFeatureOnUiThread }
+                if (!o.counts.ok) { com.usefulunpacker.deleteOutputChecked(wsDir, recursive = true); toast(friendlyExtractError(this, o.error)); return@runFeatureOnUiThread }
                 openWorkspaceTab(wsDir, src.name)
             }
         } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("WorkspaceFlow", e);
-            wsDir.deleteRecursively()
+            com.usefulunpacker.deleteOutputChecked(wsDir, recursive = true)
             runFeatureOnUiThread {
                 if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                 prog.dismiss()
@@ -127,7 +127,7 @@ internal fun MainActivity.openWorkspaceTab(wsDir: File, srcName: String) {
         if (idx >= 0) viewPager.currentItem = idx
         return
     }
-    if (tabs.size >= MainActivity.MAX_TABS) { wsDir.deleteRecursively(); toast(getString(R.string.msg_max_tabs)); return } // 双保险：不留孤儿缓存
+    if (tabs.size >= MainActivity.MAX_TABS) { com.usefulunpacker.deleteOutputChecked(wsDir, recursive = true); toast(getString(R.string.msg_max_tabs)); return } // 双保险：不留孤儿缓存
     val ws = TabState((tabs.maxOfOrNull { it.tabId } ?: -1) + 1)
     ws.currentDir = wsDir
     ws.wsDir = wsDir

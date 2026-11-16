@@ -313,4 +313,75 @@ class DiagnosticsTest {
             assertTrue(record.text.contains("[redacted]"))
         } finally { AppDiagnostics.store = previous; AppDiagnostics.takePending(); store.close() }
     }
+    @Test fun poolTasksRetainIdentityAndRestoreTheWorkerName() {
+        val store = DiagnosticStore(temp.newFolder())
+        val previous = AppDiagnostics.store
+        AppDiagnostics.store = store
+        val tasks = mutableListOf<Runnable>()
+        val executor = java.util.concurrent.Executor { tasks.add(it) }
+        val before = Thread.currentThread().name
+        try {
+            userIntent("image_edit") {
+                val id = AppDiagnostics.currentTrace()!!.id
+                executeFeature(executor) {
+                    assertEquals(id, AppDiagnostics.currentTrace()!!.id)
+                    assertEquals("uu-$id", Thread.currentThread().name)
+                    AppDiagnostics.step("autosave") { }
+                }
+            }
+            assertEquals("RUNNING", store.snapshot().single().status)
+            tasks.single().run()
+            assertEquals(before, Thread.currentThread().name)
+            assertEquals("SUCCESS", store.snapshot().single().status)
+        } finally { AppDiagnostics.store = previous; AppDiagnostics.takePending(); store.close() }
+    }
+
+    @Test fun rejectedPoolTaskEndsTheChainWithAVisibleFailure() {
+        val store = DiagnosticStore(temp.newFolder())
+        val previous = AppDiagnostics.store
+        AppDiagnostics.store = store
+        try {
+            try {
+                userIntent("image_edit") {
+                    executeFeature(java.util.concurrent.Executor { throw java.util.concurrent.RejectedExecutionException("injected") }) {}
+                }
+                fail("accepted rejected task")
+            } catch (_: java.util.concurrent.RejectedExecutionException) {}
+            assertEquals("FAILED", store.snapshot().single().status)
+            assertTrue(AppDiagnostics.takePending().isNotEmpty())
+        } finally { AppDiagnostics.store = previous; AppDiagnostics.takePending(); store.close() }
+    }
+
+    @Test fun synchronousPoolFailureCannotReleaseAnotherPendingTask() {
+        val store = DiagnosticStore(temp.newFolder())
+        val previous = AppDiagnostics.store
+        AppDiagnostics.store = store
+        var pending: Runnable? = null
+        try {
+            userIntent("image_edit") {
+                executeFeature(java.util.concurrent.Executor { pending = it }) {}
+                try { executeFeature(java.util.concurrent.Executor { it.run() }) { throw IOException("injected") } }
+                catch (_: IOException) {}
+            }
+            assertEquals("RUNNING", store.snapshot().single().status)
+            pending!!.run()
+            assertEquals("FAILED", store.snapshot().single().status)
+        } finally { AppDiagnostics.store = previous; AppDiagnostics.takePending(); store.close() }
+    }
+
+    @Test fun mainDeletionFailureIsNotMisclassifiedAsCleanupOnly() {
+        val store = DiagnosticStore(temp.newFolder())
+        val previous = AppDiagnostics.store
+        AppDiagnostics.store = store
+        val file = temp.newFile()
+        val refusing = object : File(file.path) { override fun delete(): Boolean = false }
+        try {
+            userIntent("delete_file") { assertFalse(deleteOutputChecked(refusing, cleanup = false)) }
+            val entry = store.snapshot().single()
+            assertEquals("FAILED", entry.status)
+            assertFalse(entry.cleanupFailed)
+            assertEquals(FailureCode.IO, AppDiagnostics.takePending().last().code)
+        } finally { AppDiagnostics.store = previous; AppDiagnostics.takePending(); store.close() }
+    }
+
 }

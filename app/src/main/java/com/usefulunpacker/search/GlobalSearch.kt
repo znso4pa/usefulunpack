@@ -63,8 +63,8 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         val view = layoutInflater.inflate(R.layout.dialog_global_search, null)
         val tvDir = view.findViewById<TextView>(R.id.searchScope)
         val btnChangeDir = view.findViewById<Button>(R.id.btnChangeDir)
-        val btnFilename = view.findViewById<Button>(R.id.btnFilename)
-        val btnContent = view.findViewById<Button>(R.id.btnContent)
+        val btnFilename = view.findViewById<UuButton>(R.id.btnFilename)
+        val btnContent = view.findViewById<UuButton>(R.id.btnContent)
         val etQuery = view.findViewById<EditText>(R.id.etQuery)
         val btnClear = view.findViewById<ImageButton>(R.id.btnClear)
         val btnSearch = view.findViewById<Button>(R.id.btnSearch)
@@ -89,15 +89,8 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
 
         fun selectMode(mode: Int) {
             searchMode = mode
-            // 分段控件：选中半段 accent 填充 + 深色字，未选中半段透明 + 次级字。
-            // 必须用 drawable 而不是 setBackgroundColor —— 圆角在 drawable 里，
-            // 纯色会把胶囊切成方块（上一版就是两个平面按钮，观感和主题也不搭）。
-            btnFilename.setBackgroundResource(
-                if (mode == 0) R.drawable.bg_segment_on else R.drawable.bg_segment_off)
-            btnFilename.setTextColor(if (mode == 0) C["accent_on"]!! else C["tertiary"]!!)
-            btnContent.setBackgroundResource(
-                if (mode == 1) R.drawable.bg_segment_on else R.drawable.bg_segment_off)
-            btnContent.setTextColor(if (mode == 1) C["accent_on"]!! else C["tertiary"]!!)
+            btnFilename.selectChoice(mode == 0)
+            btnContent.selectChoice(mode == 1)
         }
         btnFilename.setOnClickListener { selectMode(0) }
         btnContent.setOnClickListener { selectMode(1) }
@@ -172,12 +165,14 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                 thread {
                     if (!opH.await()) return@thread
                     try {
-                        extractByFormat(fmt, src.archive.path, src.outDir.path, src.internalPath, prefs, src.password)
+                        val outcome = extractByFormat(fmt, src.archive.path, src.outDir.path, src.internalPath, prefs, src.password)
                         runFeatureOnUiThread {
                             if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                             pd.dismiss()
                             if (cancelled) {
                                 toast(getString(R.string.msg_cancelled))
+                            } else if (!outcome.counts.ok) {
+                                failureNotice(friendlyExtractError(this, outcome.error))
                             } else if (!previewClickedFile(r, queryText)) {
                                 // 定位类结果：搜索框必须收起，否则列表被它压着看不见
                                 searchDialog.dismiss()
@@ -311,12 +306,10 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                     setTextColor(C["secondary"]!!); textSize = 13f
                     setPadding(24, 16, 24, 12)
                 })
-                val radioGroup = RadioGroup(this).apply { setPadding(24, 0, 24, 0) }
+                val radioGroup = UuRadioGroup(this)
                 labels.forEachIndexed { i, label ->
                     val rb = com.usefulunpacker.UuRadioButton(this).apply {
                         text = label; id = i
-                        setTextColor(C["primary"]!!); textSize = 15f
-                        setPadding(16, 10, 16, 10)
                         if (i == 2) isChecked = true
                     }
                     radioGroup.addView(rb, LinearLayout.LayoutParams(MATCH, WRAP))
@@ -335,10 +328,9 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                     gravity = Gravity.CENTER_VERTICAL
                 })
                 val customInput = com.usefulunpacker.UuTextField(this).apply {
-                    hint = getString(R.string.custom_mb); setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                    // 圆角输入底（与主搜索框同一套），不再是一块平涂的深色
-                    setBackgroundResource(R.drawable.bg_input_rounded)
-                    setPadding(12, 8, 12, 8); textSize = 14f; gravity = Gravity.CENTER
+                    hint = getString(R.string.custom_mb);
+                // 圆角输入底（与主搜索框同一套），不再是一块平涂的深色
+ gravity = Gravity.CENTER
                     inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
                     layoutParams = LinearLayout.LayoutParams(140, WRAP).apply { setMargins(12, 0, 0, 0) }
                 }

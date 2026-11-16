@@ -299,6 +299,8 @@ private fun MainActivity.applyDialogGeometry(
      * 两种写法结果一致。
      */
     fun applySize() {
+        // Attach/insets posts can outlive a dismissed dialog or its Activity.
+        if (isFinishing || isDestroyed || !dlg.isShowing || !w.decorView.isAttachedToWindow) return
         // 可用高度取**父窗口当前的实际高度**（root 会被输入法压矮），不是屏幕高度 ——
         // 拿 displayMetrics 算出来的高度在键盘弹出后就是超的，超出的那截收不到触摸。
         val rootH = findViewById<View>(R.id.root)?.height ?: 0

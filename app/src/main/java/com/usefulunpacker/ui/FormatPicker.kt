@@ -1,10 +1,7 @@
 package com.usefulunpacker
 
 import android.app.AlertDialog
-import android.content.res.ColorStateList
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.RippleDrawable
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
@@ -54,7 +51,7 @@ fun showFormatPicker(
             rowItems.forEach { fmt ->
                 val label = labels[fmt] ?: fmt.uppercase()
                 rowView.addView(
-                    formatCell(activity, label, columns, density) {
+                    formatCell(activity, label, columns) {
                         dialogRef?.dismiss()
                         onPick(fmt)
                     },
@@ -73,7 +70,7 @@ fun showFormatPicker(
         }
     }
 
-    val scroller = ScrollView(activity).apply {
+    val scroller = com.usefulunpacker.UuScrollView(activity).apply {
         addView(root)
         // Honor/EMUI NPEs drawing scrollbars on custom views — disable.
         isVerticalScrollBarEnabled = false
@@ -110,54 +107,14 @@ internal fun AppCompatActivity.buildFormatPickerDialog(title: String, content: V
     return dialog
 }
 
-/** One selectable card. Grid mode: centered, up to 2 lines. List mode: a single
- *  left-aligned ellipsized line. `available = false` renders it dimmed and
- *  without a ripple — the caller decides what tapping it means.
- *
- *  `selected = true` 用 accent 描边 + accent 文字，表示「当前选中的那一档」。
- *  选项面板（音视频转换的采样率 / 位深 / 码率）复用它 —— 那些格子是**开关**
- *  而不是**入口**，语义不同但长相必须是同一套，否则同一屏里两种卡片风格。 */
+/** Compatibility adapter: all choice geometry and selected/disabled states live in UuChoiceCell. */
 internal fun formatCell(
     activity: AppCompatActivity,
     label: String,
     columns: Int,
-    density: Float,
     available: Boolean = true,
     selected: Boolean = false,
     onClick: () -> Unit,
-): TextView {
-    val content = GradientDrawable().apply {
-        setColor(C["surface_raised"]!!)
-        cornerRadius = 10f * density
-        if (selected) {
-            setStroke((1.5f * density).toInt(), C["accent"]!!)
-        } else {
-            setStroke((1f * density).toInt(), C["divider_subtle"]!!)
-        }
-    }
-    val bg = if (available) RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), content, null) else content
-    fun dp(v: Int): Int = (v * density).toInt()
-    return TextView(activity).apply {
-        text = label
-        setTextColor(C[if (!available) "hint" else if (selected) "accent" else "primary"]!!)
-        background = bg
-        isClickable = true
-        setOnClickListener { onClick() }
-        if (!available) alpha = 0.6f
-        if (columns == 1) {
-            textSize = 14f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
-            gravity = Gravity.CENTER_VERTICAL or Gravity.START
-            minHeight = dp(44)
-            setPadding(dp(14), dp(10), dp(14), dp(10))
-        } else {
-            textSize = 12.5f
-            maxLines = 2
-            minLines = 2
-            gravity = Gravity.CENTER
-            minHeight = dp(54)
-            setPadding(dp(8), dp(10), dp(8), dp(10))
-        }
-    }
+): UuChoiceCell = UuChoiceCell(activity).apply {
+    bind(label, listMode = columns == 1, available = available, selected = selected, onClick = onClick)
 }

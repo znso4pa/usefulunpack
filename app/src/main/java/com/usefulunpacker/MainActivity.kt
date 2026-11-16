@@ -210,8 +210,9 @@ class MainActivity : AppCompatActivity() {
         try {
             RarCore.setParallelThreads(parallelThreads)
             ZipCore.setParallelThreads(parallelThreads)
-        } catch (_: UnsatisfiedLinkError) {
+        } catch (failure: UnsatisfiedLinkError) {
             // stale .so without the setter — parallel uses the auto default
+            AppDiagnostics.begin("parallel_threads").fail(FailureCode.UNSUPPORTED, "Native parallel setting unavailable", failure)
         }
 
         drawer = findViewById(R.id.drawer)
@@ -297,14 +298,9 @@ class MainActivity : AppCompatActivity() {
         updatePasteButton()
         // Bottom-left circular "add folder" button
         val btnAddFolder = com.usefulunpacker.UuIconButton(this).apply {
+            actionStyle = ActionStyle.PRIMARY
             setImageResource(R.drawable.ic_add_folder)
-            setColorFilter(0xFF000000.toInt())
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setSize(64, 64); setColor(C["accent"]!!)
-            }
             scaleType = ImageView.ScaleType.FIT_CENTER
-            setPadding(12, 12, 12, 12)
             layoutParams = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams(64, 64).apply {
                 bottomToBottom = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
                 startToStart = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
@@ -314,8 +310,6 @@ class MainActivity : AppCompatActivity() {
                 val inp = com.usefulunpacker.UuTextField(this@MainActivity).apply {
                     setText(getString(R.string.default_new_folder_name))
                     selectAll()
-                    setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                    setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
                 }
                 com.usefulunpacker.UuDialogBuilder(this@MainActivity)
                     .setTitle(getString(R.string.title_new_folder))
@@ -538,8 +532,8 @@ class MainActivity : AppCompatActivity() {
         try {
             val editDir = File(cacheDir, "edit")
             if (editDir.exists()) {
-                editDir.listFiles()?.forEach { it.delete() }
-                editDir.delete()
+                editDir.listFiles()?.forEach { com.usefulunpacker.deleteOutputChecked(it) }
+                com.usefulunpacker.deleteOutputChecked(editDir)
             }
         } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("MainActivity", failureCause);}
         tabs.forEach { it.stopObserver() }
@@ -578,10 +572,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     internal fun updatePasteButton() {
-        findViewById<ImageButton>(R.id.btnCLI)?.let { cli ->
+        findViewById<UuIconButton>(R.id.btnCLI)?.let { cli ->
             val hasFile = fileToMove != null
             cli.setImageResource(if (hasFile) R.drawable.ic_clipboard else R.drawable.ic_overflow)
-            cli.setColorFilter(if (hasFile) C["accent"]!! else C["tertiary"]!!)
+            cli.actionStyle = if (hasFile) ActionStyle.PRIMARY else ActionStyle.TEXT
             cli.setOnClickListener { v ->
                 if (hasFile) { userIntent("file_move") {
                     if (multiFiles.size > 1) {
@@ -601,16 +595,13 @@ class MainActivity : AppCompatActivity() {
                         else failureNotice(getString(R.string.msg_move_failed))
                     }
                 } } else {
-                    val popup = PopupMenu(this@MainActivity, v)
-                    popup.menu.add(0, 0, 0, getString(R.string.action_terminal))
-                    popup.menu.add(0, 1, 1, getString(R.string.msg_search_global))
-                    popup.menu.add(0, 2, 2, getString(R.string.nav_bookmarks))
-                    popup.menu.add(0, 3, 3, getString(R.string.settings))
-                    popup.setOnMenuItemClickListener { item ->
-                        when (item.itemId) { 0 -> terminalPanel.show(); 1 -> globalSearch(); 2 -> drawer.open(); 3 -> settings() }
-                        true
+                    UuPopupMenu(this@MainActivity, v).apply {
+                        action(0, R.string.action_terminal) { terminalPanel.show() }
+                        action(1, R.string.msg_search_global) { globalSearch() }
+                        action(2, R.string.nav_bookmarks) { drawer.open() }
+                        action(3, R.string.settings) { settings() }
+                        show()
                     }
-                    popup.show()
                 }
             }
         }
@@ -622,8 +613,6 @@ class MainActivity : AppCompatActivity() {
                 val btnCancel = com.usefulunpacker.UuButton(this@MainActivity).apply {
                     actionStyle = ActionStyle.TEXT
                     text = "✕"
-                    textSize = 16f; setTextColor(C["error"]!!)
-                    gravity = Gravity.CENTER; setPadding(4, 0, 8, 0)
                     tag = "cancel_move"
                     setOnClickListener { fileToMove = null; multiFiles = listOf(); updatePasteButton(); toast(getString(R.string.msg_cancelled)) }
                 }
@@ -679,8 +668,6 @@ class MainActivity : AppCompatActivity() {
             setText(tab.title)
             selectAll()
             filters = arrayOf(android.text.InputFilter.LengthFilter(8))
-            setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-            setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
             hint = getString(R.string.tab_rename_prompt)
         }
         com.usefulunpacker.UuDialogBuilder(this)
@@ -741,7 +728,7 @@ class MainActivity : AppCompatActivity() {
             com.usefulunpacker.UuDialogBuilder(this)
                 .setTitle(getString(R.string.ws_cleanup_prompt))
                 .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
-                    thread { ws.deleteRecursively() }
+                    thread { com.usefulunpacker.deleteOutputChecked(ws, recursive = true) }
                     closeTabNow(tab)
                 }
                 .setNegativeButton(R.string.action_cancel) { _, _ -> closeTabNow(tab) }
@@ -919,11 +906,11 @@ internal class TabStripAdapter(private val act: MainActivity) :
             maxWidth = (96 * act.resources.displayMetrics.density).toInt()
             ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
         }
-        val close = TextView(act).apply {
-            text = "✕"
-            textSize = act.resources.getDimension(R.dimen.text_sm) / act.resources.displayMetrics.scaledDensity
-            setPadding(act.resources.getDimensionPixelSize(R.dimen.space_xs), 0, act.resources.getDimensionPixelSize(R.dimen.space_xs), 0)
+        val close = UuIconButton(act).apply {
+            setImageResource(R.drawable.ic_clear)
+            contentDescription = act.getString(R.string.action_close)
         }
+
         // 选中项数量角标：小圆角背景 + 数字，默认隐藏
         val badge = TextView(act).apply {
             textSize = 9f
@@ -959,7 +946,7 @@ internal class TabStripAdapter(private val act: MainActivity) :
         }
         val icon = holder.root.getChildAt(0) as ImageView
         val label = holder.root.getChildAt(1) as TextView
-        val close = holder.root.getChildAt(3) as TextView
+        val close = holder.root.getChildAt(3) as UuIconButton
         val isActive = position == act.activeTabIndex
         val thisTab = tabs[position]
         // 图标颜色与其他图标统一：激活 accent，未激活 tertiary
@@ -972,7 +959,6 @@ internal class TabStripAdapter(private val act: MainActivity) :
         } else {
             android.graphics.drawable.ColorDrawable(0x00000000)
         }
-        close.setTextColor(C["tertiary"]!!)
         close.visibility = if (tabs.size > 1) View.VISIBLE else View.GONE
         // 选中项角标：仅当该 tab 有选中项时显示数字
         val selCount = thisTab.multiSelected.size

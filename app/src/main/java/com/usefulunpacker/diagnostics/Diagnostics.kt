@@ -321,6 +321,27 @@ fun featureThread(start: Boolean = true, trace: OperationTrace? = AppDiagnostics
     }
 }
 
+/** Pool tasks need the same context lifetime as dedicated feature threads. */
+fun executeFeature(executor: java.util.concurrent.Executor, trace: OperationTrace? = AppDiagnostics.currentTrace(), block: () -> Unit) {
+    trace?.retain()
+    val started = java.util.concurrent.atomic.AtomicBoolean()
+    try {
+        executor.execute {
+            started.set(true)
+            val worker = Thread.currentThread()
+            val previousName = worker.name
+            worker.name = trace?.let { "uu-${it.id}" } ?: "uu-background"
+            try { AppDiagnostics.invokeCallback(trace, block) }
+            finally { worker.name = previousName; trace?.release() }
+        }
+    } catch (e: Exception) {
+        if (started.get()) throw e
+        // Rejection happens before a task can release its retained reference.
+        try { AppDiagnostics.invokeCallback(trace) { throw e } }
+        finally { trace?.release() }
+    }
+}
+
 /** Inline so existing early returns still run the scope's finally block. */
 inline fun <T> userIntent(feature: String, block: () -> T): T {
     val scope = AppDiagnostics.enterIntent(feature)
@@ -331,14 +352,15 @@ inline fun <T> userIntent(feature: String, block: () -> T): T {
 }
 
 /** Cleanup problems are independent failures, even after a user cancelled the main task. */
-fun deleteOutputChecked(file: File, recursive: Boolean = false): Boolean {
-    val trace = AppDiagnostics.begin("cleanup")
+fun deleteOutputChecked(file: File, recursive: Boolean = false, cleanup: Boolean = true): Boolean {
+    val trace = AppDiagnostics.begin(if (cleanup) "cleanup" else "delete")
+    val code = if (cleanup) FailureCode.CLEANUP else FailureCode.IO
     return try {
         val ok = if (!file.exists()) true else if (recursive) file.deleteRecursively() else file.delete()
-        if (!ok) trace.fail(FailureCode.CLEANUP, "Cannot remove ${file.path}") else trace.success()
+        if (!ok) trace.fail(code, "Cannot remove ${file.path}") else trace.success()
         ok
     } catch (e: Exception) {
-        trace.fail(FailureCode.CLEANUP, e.message ?: e.javaClass.simpleName, e)
+        trace.fail(code, e.message ?: e.javaClass.simpleName, e)
         false
     }
 }

@@ -85,7 +85,7 @@ class FileAdapter(
             starBtn.visibility = View.VISIBLE
             val bm = bookmarks.contains(f.absolutePath)
             starBtn.setImageResource(if (bm) R.drawable.ic_star_on else R.drawable.ic_star_off)
-            starBtn.setColorFilter(if (bm) 0xFFffc107.toInt() else 0xFF666666.toInt())
+            starBtn.isSelected = bm
             // 星标是个**真控件**（独立可点），必须自带描述，否则 TalkBack 只会念
             // 「未标记的按钮」——描述还要跟着选中态走（加入 / 取消）。
             starBtn.contentDescription =

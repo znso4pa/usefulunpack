@@ -76,8 +76,6 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                             // fresh operation.
                             val inp = com.usefulunpacker.UuTextField(this).apply {
                                 hint = getString(R.string.prompt_password)
-                                setTextColor(C["primary"]!!); setHintTextColor(C["hint"]!!)
-                                setBackgroundColor(C["surface"]!!); setPadding(12, 8, 12, 8)
                                 inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
                             }
                             com.usefulunpacker.UuDialogBuilder(this)

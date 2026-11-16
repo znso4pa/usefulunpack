@@ -131,7 +131,7 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
                 maxWidth = screenW
                 maxHeight = screenH
             }
-            val scroll = ScrollView(activity).apply {
+            val scroll = com.usefulunpacker.UuScrollView(activity).apply {
                 addView(iv)
                 setBackgroundColor(0xFF000000.toInt())
                 // Honor/EMUI NPEs drawing scrollbars on custom views — disable (scroll works).
@@ -143,14 +143,11 @@ fun showImagePreview(activity: AppCompatActivity, file: File) {
             // the bottom of the preview clean (only Close).
             val overflowBtn = com.usefulunpacker.UuIconButton(activity).apply {
                 setImageResource(R.drawable.ic_overflow)
-                setBackgroundColor(0x00000000)
-                setColorFilter(C["accent"]!!)
-                setPadding(10, 10, 10, 10)
                 contentDescription = activity.getString(R.string.action_more)
                 setOnClickListener { v ->
-                    PopupMenu(activity, v).apply {
-                        menu.add(0, 1, 0, activity.getString(R.string.action_edit)).setOnMenuItemClickListener { d.dismiss(); showImageEditor(activity, file); true }
-                        menu.add(0, 2, 0, activity.getString(R.string.img_convert_menu)).setOnMenuItemClickListener { d.dismiss(); showImageConvert(activity, file); true }
+                    UuPopupMenu(activity, v).apply {
+                        action(1, R.string.action_edit) { d.dismiss(); showImageEditor(activity, file) }
+                        action(2, R.string.img_convert_menu) { d.dismiss(); showImageConvert(activity, file) }
                         show()
                     }
                 }
@@ -258,20 +255,17 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
     // Encoding switch row: re-decode instantly so a wrong-pick preview fixes
     // itself (and persists the choice as the new default) without leaving the
     // dialog — the classic "GBK file read as UTF-8" flow.
-    val encRow = TextView(activity)
+    val encRow = UuActionRow(activity)
     encRow.apply {
-        text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)] + "  ▾"
-        setTextColor(C["accent"]!!)
-        textSize = 13f
-        setPadding(16, 12, 16, 12)
-        setBackgroundColor(C["surface_raised"]!!)
+        navigation = true
+        text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)]
         isClickable = true
         setOnClickListener {
             com.usefulunpacker.UuDialogBuilder(activity)
                 .setTitle(activity.getString(R.string.settings_text_encoding))
                 .setSingleChoiceItems(encLabels, TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)) { d, w ->
                     curEncoding = TEXT_ENCODINGS[w]
-                    encRow.text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[w] + "  ▾"
+                    encRow.text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[w]
                     prefs?.edit()?.putString("text_encoding", curEncoding)?.apply()
                     d.dismiss()
                     refreshContent()
@@ -351,7 +345,7 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
             movementMethod = android.text.method.ScrollingMovementMethod()
             typeface = android.graphics.Typeface.MONOSPACE
         }
-        val scroll = ScrollView(activity).apply {
+        val scroll = com.usefulunpacker.UuScrollView(activity).apply {
             addView(tv)
             setBackgroundColor(C["surface_dark"]!!)
             isVerticalScrollBarEnabled = false
@@ -386,20 +380,17 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
                     } ?: 0
                 }
             }
-            val navBar = LinearLayout(activity).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            val navBar = com.usefulunpacker.UuActionBar(activity).apply {
                 setBackgroundColor(C["nav_bg"]!!); setPadding(0, 6, 0, 6)
             }
             val btnPrev = com.usefulunpacker.UuButton(activity).apply {
-                text = activity.getString(R.string.search_prev); textSize = 12f; isAllCaps = false
-                setTextColor(C["accent"]!!); background = null; setPadding(12, 4, 12, 4)
+                text = activity.getString(R.string.search_prev)
             }
             val tvCounter = TextView(activity).apply {
                 gravity = Gravity.CENTER; textSize = 12f; setTextColor(C["tertiary_light"]!!); setPadding(20, 4, 20, 4)
             }
             val btnNext = com.usefulunpacker.UuButton(activity).apply {
-                text = activity.getString(R.string.search_next); textSize = 12f; isAllCaps = false
-                setTextColor(C["accent"]!!); background = null; setPadding(12, 4, 12, 4)
+                text = activity.getString(R.string.search_next)
             }
             fun scrollToMatch(idx: Int) {
                 curMatch = idx.coerceIn(0, matchPos.size - 1)
@@ -441,15 +432,11 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
 
     // Render toggle row (md/markdown/rtf only): tap to flip between styled and
     // plain text without leaving the dialog.
-    val richRow = TextView(activity)
+    val richRow = UuActionRow(activity)
     if (isRich) {
         richRow.apply {
             text = activity.getString(R.string.preview_rich) + ": " +
                 if (richEnabled) activity.getString(R.string.preview_rich_on) else activity.getString(R.string.preview_rich_off)
-            setTextColor(C["accent"]!!)
-            textSize = 13f
-            setPadding(16, 10, 16, 10)
-            setBackgroundColor(C["surface"]!!)
             isClickable = true
             setOnClickListener {
                 richEnabled = !richEnabled
@@ -575,6 +562,8 @@ private fun openEditorWithContent(
     encoding: String,
     bom: Boolean
 ) {
+    val ownerTrace = AppDiagnostics.currentTrace()
+    val autosaveLock = Any()
     val editHistory = EditHistory(maxSteps = 30)
     editHistory.pushState(content)
     var curEncoding = encoding
@@ -588,11 +577,6 @@ private fun openEditorWithContent(
     
     val et = com.usefulunpacker.UuTextField(activity).apply {
         setText(content)
-        setTextColor(C["primary"]!!)
-        setHintTextColor(C["hint"]!!)
-        textSize = 14f
-        setBackgroundColor(C["surface_dark"]!!)
-        setPadding(16, 16, 16, 16)
         gravity = android.view.Gravity.TOP or android.view.Gravity.START
         typeface = android.graphics.Typeface.MONOSPACE
         setHorizontallyScrolling(false)
@@ -606,11 +590,11 @@ private fun openEditorWithContent(
     val autosaveHandler = android.os.Handler(android.os.Looper.getMainLooper())
     var autosavePending: Runnable? = null
     // 代际计数：已在跑的 thread{writeText} 无法被 removeCallbacks 取消，若在
-    // 保存/放弃的 tempFile.delete() 之后完成，会把刚删的临时文件用旧内容
+    // 保存/放弃的 com.usefulunpacker.deleteOutputChecked(tempFile) 之后完成，会把刚删的临时文件用旧内容
     // 复活（下次打开弹「恢复上次编辑」）。写入前校验代际，过期即弃写。
-    var autosaveGen = 0
+    val autosaveGen = java.util.concurrent.atomic.AtomicInteger()
     fun cancelPendingAutosave() {
-        autosavePending?.let { autosaveHandler.removeCallbacks(it) }
+        autosavePending?.let { autosaveHandler.removeCallbacks(it); ownerTrace?.release() }
         autosavePending = null
     }
     
@@ -631,32 +615,43 @@ private fun openEditorWithContent(
                 editHistory.pushState(currentText)
                 // 自动保存到临时文件（防抖 + 后台写）
                 cancelPendingAutosave()
-                autosaveGen++
-                val gen = autosaveGen
+                autosaveGen.incrementAndGet()
+                val gen = autosaveGen.get()
                 val snapshot = currentText
+                ownerTrace?.retain() // Keep the intent alive throughout the debounce delay.
                 val r = Runnable {
-                    thread { try { if (gen == autosaveGen) tempFile.writeText(snapshot) } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("PreviewDialogs", failureCause);} }
+                    autosavePending = null
+                    try {
+                        thread(trace = ownerTrace) {
+                            observedAttempt("text_autosave") {
+                                synchronized(autosaveLock) {
+                                    if (gen == autosaveGen.get()) writeOutputAtomically(tempFile) { staged -> staged.writeText(snapshot); true }
+                                }
+                            }
+                        }
+                    } finally { ownerTrace?.release() }
                 }
                 autosavePending = r
-                autosaveHandler.postDelayed(r, 500)
+                if (!autosaveHandler.postDelayed(r, 500)) {
+                    autosavePending = null
+                    try { AppDiagnostics.begin("text_autosave_schedule").fail(FailureCode.IO, "Cannot schedule recovery write") }
+                    finally { ownerTrace?.release() }
+                }
             }
         }
     })
     
-    val encRow = TextView(activity)
+    val encRow = UuActionRow(activity)
     encRow.apply {
-        text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)] + "  ▾"
-        setTextColor(C["accent"]!!)
-        textSize = 14f
-        setPadding(16, 12, 16, 12)
-        setBackgroundColor(C["surface_raised"]!!)
+        navigation = true
+        text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)]
         isClickable = true
         setOnClickListener {
             com.usefulunpacker.UuDialogBuilder(activity)
                 .setTitle(activity.getString(R.string.settings_text_encoding))
                 .setSingleChoiceItems(encLabels, TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)) { d, w ->
                     curEncoding = TEXT_ENCODINGS[w]
-                    encRow.text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[w] + "  ▾"
+                    encRow.text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[w]
                     d.dismiss()
                 }
                 .setNegativeButton(R.string.action_cancel, null)
@@ -672,16 +667,10 @@ private fun openEditorWithContent(
     }
     val btnUndo = com.usefulunpacker.UuButton(activity).apply {
         text = activity.getString(R.string.editor_undo)
-        setTextColor(C["accent"]!!)
-        background = null
-        textSize = 12f
         isEnabled = false
     }
     val btnRedo = com.usefulunpacker.UuButton(activity).apply {
         text = activity.getString(R.string.editor_redo)
-        setTextColor(C["accent"]!!)
-        background = null
-        textSize = 12f
         isEnabled = false
     }
     undoRedoRow.addView(btnUndo)
@@ -725,27 +714,35 @@ private fun openEditorWithContent(
     val dlg = com.usefulunpacker.UuDialogBuilder(activity)
         .setTitle(activity.getString(R.string.title_text_editor))
         .setView(body)
-        .setPositiveButton(activity.getString(R.string.action_save)) { _, _ ->
-            val bytes = encodeText(et.text.toString(), curEncoding, bom)
-            try {
-                originalFile.writeBytes(bytes)
-                autosaveGen++  // 使在途的自动保存写失效，防止复活刚删的临时文件
-                cancelPendingAutosave()
-                tempFile.delete()  // 正常保存，删除临时文件
-                com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.msg_saved), Toast.LENGTH_SHORT).show()
-                onSaved?.invoke()
-            } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("PreviewDialogs", e);
-                // 保存失败时 KEEP 临时文件 — 它是自动保存的恢复副本；删掉会丢掉
-                // 用户的所有未保存编辑，使其无法恢复。
-                com.usefulunpacker.UuNotice.failure(activity, activity.getString(R.string.err_extract_io, e.message ?: ""), Toast.LENGTH_LONG).show()
-            }
-        }
+        .setPositiveButton(activity.getString(R.string.action_save), null)
         .setNegativeButton(activity.getString(R.string.editor_no_save)) { _, _ ->
-            autosaveGen++
+            autosaveGen.incrementAndGet()
             cancelPendingAutosave()
-            tempFile.delete()  // 明确不保存，删除临时文件
+            synchronized(autosaveLock) { deleteOutputChecked(tempFile) } // Exclude in-flight autosaves.
         }
         .create()
+    dlg.setOnShowListener {
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            AppDiagnostics.invokeCallback(ownerTrace) {
+                val bytes = encodeText(et.text.toString(), curEncoding, bom)
+                autosaveGen.incrementAndGet()
+                cancelPendingAutosave()
+                try {
+                    synchronized(autosaveLock) {
+                        writeOutputAtomically(originalFile) { staged -> staged.writeBytes(bytes); true }
+                        deleteOutputChecked(tempFile)
+                    }
+                    UuNotice.makeText(activity, activity.getString(R.string.msg_saved), Toast.LENGTH_SHORT).show()
+                    onSaved?.invoke()
+                    dlg.dismiss()
+                } catch (failure: Exception) {
+                    AppDiagnostics.failure("text_save", failure)
+                    // Keep the editor and its live text open if saving failed.
+                    UuNotice.failure(activity, activity.getString(R.string.err_extract_io, failure.message ?: ""), Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
     // back 键退出时【不】清理临时文件：它是自动保存的恢复副本，下次打开同一
     // 文件时会弹「恢复上次编辑」引导（用户可选恢复或放弃，那里负责真正清理）。
     // 此前这里无条件删除，保存失败后对话框一关恢复副本就没了。

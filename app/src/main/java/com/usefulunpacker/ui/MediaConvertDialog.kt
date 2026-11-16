@@ -159,7 +159,7 @@ internal fun showMediaConvertDialog(activity: MainActivity, file: File) {
         })
         targets.forEach { t ->
             col.addView(
-                formatCell(activity, t.label, columns = 1, density = density, available = t.available) {
+                formatCell(activity, t.label, columns = 1, available = t.available) {
                     // 不可用的目标只是「还没接」：提示一下就留着面板，让用户能改选。
                     if (!t.available) {
                         com.usefulunpacker.UuNotice.makeText(activity, activity.getString(R.string.media_soon), Toast.LENGTH_SHORT).show()
@@ -212,7 +212,7 @@ internal fun showMediaConvertDialog(activity: MainActivity, file: File) {
         )
     }
 
-    val scroller = ScrollView(activity).apply {
+    val scroller = com.usefulunpacker.UuScrollView(activity).apply {
         addView(content, LinearLayout.LayoutParams(MATCH, WRAP))
         // Honor/EMUI 在自定义 View 上画滚动条会 NPE —— 关掉。
         isVerticalScrollBarEnabled = false

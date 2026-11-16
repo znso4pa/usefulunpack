@@ -6,7 +6,7 @@ import com.usefulunpacker.RECYCLE_BIN_CLEAN_INTERVAL_MS
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import kotlin.concurrent.thread
+import com.usefulunpacker.featureThread as thread
 import java.util.UUID
 
 data class RecycleEntry(
@@ -85,26 +85,48 @@ object RecycleBin {
         var size = 0L
         var count = 0
         file.walkBottomUp().forEach { f ->
-            if (f.isFile) { size += runCatching { f.length() }.getOrDefault(0L); count++ }
+            if (f.isFile) { size += com.usefulunpacker.observedAttempt("RecycleBin") { f.length() }.getOrDefault(0L); count++ }
         }
         return ScanResult(size, count)
     }
 
-    fun moveToRecycleBin(context: Context, file: File, onProgress: MoveProgress? = null): Boolean {
-        val dir = recycleDir(context)
+    fun moveToRecycleBin(context: Context, file: File, onProgress: MoveProgress? = null): Boolean =
+        moveToDirectory(recycleDir(context), file, onProgress)
+
+    internal fun moveToDirectory(
+        dir: File, file: File, onProgress: MoveProgress? = null,
+        scheduleBackfill: (() -> Unit) -> Unit = { task -> thread { task() } }
+    ): Boolean {
         val id = UUID.randomUUID().toString()
         val entryDir = File(dir, id)
-        if (!entryDir.mkdirs() && !entryDir.isDirectory) return false
-
+        if (!entryDir.mkdirs() && !entryDir.isDirectory) {
+            com.usefulunpacker.AppDiagnostics.failure("recycle_prepare", java.io.IOException("Cannot create recycle entry"))
+            return false
+        }
+        val staging = RecycleStaging(entryDir)
+        val originalIsDirectory = file.isDirectory
+        fun cleanupFailure() {
+            staging.discardIncomplete()
+            if (staging.protected) {
+                com.usefulunpacker.AppDiagnostics.currentTrace()?.note("backup_preserved entry=$id")
+                // The per-entry metadata is authoritative; a stale cache must not hide this backup.
+                synchronized(this) { com.usefulunpacker.deleteOutputChecked(File(dir, MANIFEST)) }
+            }
+        }
         try {
-            val dest = File(entryDir, file.name)
+            // Fixed payload name cannot collide with the original's name or our metadata.
+            val dest = File(entryDir, "payload")
             fun baseMeta(): JSONObject = JSONObject().apply {
                 put("id", id)
                 put("originalPath", file.absolutePath)
                 put("originalName", file.name)
                 put("deletedAt", System.currentTimeMillis())
-                put("isDirectory", file.isDirectory)
+                put("isDirectory", originalIsDirectory)
+                put("storageName", "payload")
+                put("complete", true)
             }
+            val fastMeta = baseMeta().put("size", 0L)
+            File(entryDir, "_meta.json").writeText(fastMeta.toString(2))
 
             // FAST PATH FIRST: a same-volume rename is instant — no prescan.
             // (The old order walked the whole tree up front, which read as a
@@ -112,20 +134,18 @@ object RecycleBin {
             // the background afterwards; the copy fallback below scans for
             // totals because its progress bar needs them anyway.
             if (file.renameTo(dest)) {
+                staging.protect()
                 // Report completion even on the instant rename path. The fast path
                 // used to report NOTHING, so the card sat on a spinner with an
                 // empty size line until the whole target finished — which read as
                 // "lost progress" rather than "already done".
-                val n = if (file.isFile) 1 else 0
-                val sz = if (file.isFile) runCatching { file.length() }.getOrDefault(0L) else 0L
+                val n = if (dest.isFile) 1 else 0
+                val sz = if (dest.isFile) dest.length() else 0L
                 onProgress?.onProgress(MoveState(maxOf(n, 1), maxOf(n, 1), sz, sz, sz))
-                val meta = baseMeta().apply { put("size", 0L) }
-                File(entryDir, "_meta.json").writeText(meta.toString(2))
-                updateManifest(dir) { manifest ->
-                    manifest.getJSONArray("entries").put(meta)
-                }
-                thread {
-                    runCatching {
+                val meta = fastMeta
+                recordEntry(dir, meta)
+                scheduleBackfill {
+                    com.usefulunpacker.observedAttempt("RecycleBin") {
                         val s = scanTree(dest)
                         // _meta.json 用独立副本写：meta 已被别名进 manifest（裸
                         // HashMap），在锁外再 put 会与并发 updateManifest/listEntries
@@ -149,8 +169,19 @@ object RecycleBin {
             // 复制失败必须抛出：吞掉错误再删原树 = 用户文件永久丢失。
             return try {
                 val scan = scanTree(file)
-                val meta = baseMeta().apply { put("size", scan.size) }
+                val meta = baseMeta().put("size", scan.size).put("complete", false)
                 File(entryDir, "_meta.json").writeText(meta.toString(2))
+                var deleteFailed = false
+                fun removeOriginal(target: File): Boolean {
+                    val ok = com.usefulunpacker.deleteOutputChecked(target)
+                    if (!ok) deleteFailed = true
+                    return ok
+                }
+                fun protectCompleteCopy() {
+                    meta.put("complete", true)
+                    File(entryDir, "_meta.json").writeText(meta.toString(2))
+                    staging.protect()
+                }
 
                 // The move is TWO passes over the same volume of data — copy,
                 // then delete the original — so the byte total is 2× and each
@@ -173,24 +204,24 @@ object RecycleBin {
                     val copied = ArrayList<Pair<File, Long>>()
                     file.walkTopDown().forEach { f ->
                         if (copyFailed != null) return@forEach
-                        val rel = try { f.relativeTo(file) } catch (e: Exception) { return@forEach }
+                        val rel = try { f.relativeTo(file) } catch (e: Exception) { copyFailed = e; return@forEach }
                         val out = File(dest, rel.path)
-                        if (f.isDirectory) out.mkdirs()
-                        else {
-                            out.parentFile?.mkdirs()
-                            val ok = runCatching { f.copyTo(out, overwrite = false) }.isSuccess
+                        if (f.isDirectory) {
+                            if (!out.isDirectory && !out.mkdirs()) throw java.io.IOException("Cannot create recycle payload directory")
+                        } else {
+                            out.parentFile?.let { if (!it.isDirectory && !it.mkdirs()) throw java.io.IOException("Cannot create recycle payload parent") }
+                            val ok = com.usefulunpacker.observedAttempt("RecycleBin") { f.copyTo(out, overwrite = false) }.isSuccess
                             done++
-                            if (done <= 3 || done % 50 == 0) {
-                            }
-                            val len = runCatching { f.length() }.getOrDefault(0L)
+                            val len = com.usefulunpacker.observedAttempt("RecycleBin") { f.length() }.getOrDefault(0L)
                             if (ok) { doneBytes += len; copied.add(f to len) }
                             onProgress?.onProgress(MoveState(done, scan.fileCount, doneBytes, totalBytes, scan.size))
-                            if (!ok && copyFailed == null) {
+                            if (!ok) {
                                 copyFailed = java.io.IOException("copy failed: ${f.path}")
                             }
                         }
                     }
                     if (copyFailed != null) throw copyFailed!!
+                    protectCompleteCopy()
                     // Delete originals child-before-parent, feeding the second
                     // half of the bar. Directories carry 0 bytes (they're not in
                     // ScanResult.size) but must still be removed.
@@ -201,8 +232,7 @@ object RecycleBin {
                         )
                     }
                     for ((target, len) in copied.asReversed()) {
-                        target.delete()
-                        if (len > 0) deletedBytes += len
+                        if (removeOriginal(target) && len > 0) deletedBytes += len
                         reportDelete()
                     }
                     // Files first, then the directories that contained them.
@@ -211,39 +241,41 @@ object RecycleBin {
                     val dirs = ArrayList<File>()
                     file.walkTopDown().forEach { f -> if (f != file && f.isDirectory) dirs.add(f) }
                     for (d in dirs.asReversed()) {
-                        d.delete()
+                        removeOriginal(d)
                         reportDelete()
                     }
-                    file.delete()
+                    removeOriginal(file)
                     // Final report is exact, so the bar lands on 100% even when a
                     // length() drifted between scan, copy and delete.
-                    onProgress?.onProgress(
+                    if (!deleteFailed) onProgress?.onProgress(
                         MoveState(scan.fileCount, scan.fileCount, totalBytes, totalBytes, scan.size)
                     )
                 } else {
                     file.copyTo(dest, overwrite = false)
-                    file.delete()
+                    // Copy is complete, but originals are still intact: exactly half the work.
+                    onProgress?.onProgress(MoveState(1, 1, copyPhaseEnd, totalBytes, scan.size))
+                    protectCompleteCopy()
+                    removeOriginal(file)
                     // scanTree already measured it; report the same number rather
                     // than re-stat'ing, so the bar lands exactly on 100%.
-                    onProgress?.onProgress(MoveState(1, 1, totalBytes, totalBytes, scan.size))
+                    if (!deleteFailed) onProgress?.onProgress(MoveState(1, 1, totalBytes, totalBytes, scan.size))
                 }
-                updateManifest(dir) { manifest ->
-                    manifest.getJSONArray("entries").put(meta)
-                }
-                true
-            } catch (e: Exception) {
-                entryDir.deleteRecursively()
+                recordEntry(dir, meta)
+                !deleteFailed
+            } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("RecycleBin", e);
+                cleanupFailure()
                 false
             }
-        } catch (e: Exception) {
-            // Scan/meta-write failures must honor the Boolean contract too.
-            entryDir.deleteRecursively()
+        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("RecycleBin", e);
+            // Metadata/progress failures after rename must never destroy the only surviving copy.
+            cleanupFailure()
             return false
         }
     }
 
-    fun restore(context: Context, entryId: String): Boolean {
-        val dir = recycleDir(context)
+    fun restore(context: Context, entryId: String): Boolean = restoreFromDirectory(recycleDir(context), entryId)
+
+    internal fun restoreFromDirectory(dir: File, entryId: String, rename: (File, File) -> Boolean = File::renameTo): Boolean {
         val entryDir = File(dir, entryId)
         val metaFile = File(entryDir, "_meta.json")
         if (!metaFile.exists()) return false
@@ -252,13 +284,13 @@ object RecycleBin {
         // thread (restore runs on a bare thread{} — an uncaught throw there
         // takes down the process); report as a failed restore instead. The
         // getString reads can also throw (missing key) — same treatment.
-        val meta = try { JSONObject(metaFile.readText()) } catch (e: Exception) { return false }
+        val meta = try { JSONObject(metaFile.readText()) } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("RecycleBin", e); return false }
         val originalPath: File
         val originalName: String
         try {
             originalPath = File(meta.getString("originalPath"))
             originalName = meta.getString("originalName")
-        } catch (e: Exception) { return false }
+        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("RecycleBin", e); return false }
 
         // Proper component-level check: a path is "inside the recycle bin" only
         // if the recycle base is a real ancestor (string startsWith would mis-flag
@@ -268,10 +300,10 @@ object RecycleBin {
             val recycleBinBase = dir.canonicalPath
             canonicalOriginal == recycleBinBase ||
                 canonicalOriginal.startsWith(recycleBinBase + File.separator)
-        } catch (e: Exception) { false }
+        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("RecycleBin", e); false }
         if (!inRecycleBin) {
-            val source = File(entryDir, originalName)
-            if (!source.exists()) return false
+            if (!completeEntry(entryDir, meta)) return false
+            val source = File(entryDir, meta.optString("storageName", originalName))
 
             originalPath.parentFile?.mkdirs()
 
@@ -282,33 +314,38 @@ object RecycleBin {
                 originalPath
             }
 
-            val success = source.renameTo(dest)
+            val success = rename(source, dest)
             if (!success) {
                 // 跨盘 rename 必失败（bin 在 filesDir，原目录在外部存储），目录
                 // 还原走的是这里：copyTo 对目录直接抛异常 → 文件夹永远还原不
                 // 回来。目录用 copyRecursively；失败时清掉半成品再报失败。
-                return try {
-                    if (source.isDirectory) source.copyRecursively(dest, overwrite = false)
-                    else source.copyTo(dest, overwrite = false)
-                    entryDir.deleteRecursively()
-                    removeFromManifest(context, entryId)
-                    true
+                try {
+                    if (source.isDirectory) {
+                        if (!source.copyRecursively(dest, overwrite = false)) throw java.io.IOException("Incomplete restore copy")
+                    } else source.copyTo(dest, overwrite = false)
                 } catch (e: Exception) {
-                    dest.deleteRecursively()
-                    false
+                    com.usefulunpacker.AppDiagnostics.failure("recycle_restore_copy", e)
+                    com.usefulunpacker.deleteOutputChecked(dest, recursive = true)
+                    return false
                 }
             }
-
-            entryDir.deleteRecursively()
-            removeFromManifest(context, entryId)
-            return true
+            val cleaned = com.usefulunpacker.deleteOutputChecked(entryDir, recursive = true)
+            if (!cleaned) return false
+            return try {
+                removeFromManifestIn(dir, entryId)
+                true
+            } catch (e: Exception) {
+                // The restored destination is now the surviving copy: never roll it back.
+                com.usefulunpacker.AppDiagnostics.failure("recycle_restore_manifest", e)
+                false
+            }
         }
         return false
     }
 
     fun emptyRecycleBin(context: Context) {
         synchronized(this) {
-            recycleDir(context).deleteRecursively()
+            com.usefulunpacker.deleteOutputChecked(recycleDir(context), recursive = true)
         }
     }
 
@@ -332,11 +369,10 @@ object RecycleBin {
             // autoClean runs on a bare thread{} (onResume) — a malformed
             // manifest entry must skip, not kill the process.
             val entry = entries.optJSONObject(i) ?: continue
-            val id = runCatching { entry.getString("id") }.getOrNull() ?: continue
-            val deletedAt = runCatching { entry.getLong("deletedAt") }.getOrDefault(0L)
+            val id = com.usefulunpacker.observedAttempt("RecycleBin") { entry.getString("id") }.getOrNull() ?: continue
+            val deletedAt = com.usefulunpacker.observedAttempt("RecycleBin") { entry.getLong("deletedAt") }.getOrDefault(0L)
             if (deletedAt < cutoff) {
-                toRemove.add(id)
-                File(dir, id).deleteRecursively()
+                if (com.usefulunpacker.deleteOutputChecked(File(dir, id), recursive = true)) toRemove.add(id)
             }
         }
 
@@ -354,8 +390,9 @@ object RecycleBin {
         }
     }
 
-    fun removeFromManifest(context: Context, entryId: String) {
-        val dir = recycleDir(context)
+    fun removeFromManifest(context: Context, entryId: String) = removeFromManifestIn(recycleDir(context), entryId)
+
+    private fun removeFromManifestIn(dir: File, entryId: String) {
         updateManifest(dir) { manifest ->
             val entries = manifest.getJSONArray("entries")
             val newEntries = JSONArray()
@@ -368,8 +405,9 @@ object RecycleBin {
         }
     }
 
-    fun listEntries(context: Context): List<RecycleEntry> {
-        val dir = recycleDir(context)
+    fun listEntries(context: Context): List<RecycleEntry> = listEntriesIn(recycleDir(context))
+
+    internal fun listEntriesIn(dir: File): List<RecycleEntry> {
         val manifest = readManifest(dir)
 
         if (manifest == null) {
@@ -379,6 +417,7 @@ object RecycleBin {
                     if (metaFile.exists()) {
                         try {
                             val meta = JSONObject(metaFile.readText())
+                            if (!completeEntry(entryDir, meta)) return@mapNotNull null
                             RecycleEntry(
                                 id = meta.getString("id"),
                                 originalPath = File(meta.getString("originalPath")),
@@ -387,15 +426,16 @@ object RecycleBin {
                                 isDirectory = meta.getBoolean("isDirectory"),
                                 size = meta.optLong("size", 0)
                             )
-                        } catch (e: Exception) { null }
+                        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("RecycleBin", e); null }
                     } else null
                 }?.sortedByDescending { it.deletedAt } ?: emptyList()
         }
 
         val entries = manifest.getJSONArray("entries")
         return try {
-            (0 until entries.length()).map { i ->
+            (0 until entries.length()).mapNotNull { i ->
                 val e = entries.getJSONObject(i)
+                if (!completeEntry(File(dir, e.getString("id")), e)) return@mapNotNull null
                 RecycleEntry(
                     id = e.getString("id"),
                     originalPath = File(e.getString("originalPath")),
@@ -405,7 +445,7 @@ object RecycleBin {
                     size = e.optLong("size", 0)
                 )
             }.sortedByDescending { it.deletedAt }
-        } catch (e: Exception) { emptyList() }
+        } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("RecycleBin", e); emptyList() }
     }
 
     fun getUsedSize(context: Context): Long {
@@ -428,7 +468,7 @@ object RecycleBin {
         dir.listFiles()?.filter { it.isDirectory && it.name != "." && it.name != ".." }?.forEach { entryDir ->
             val metaFile = File(entryDir, "_meta.json")
             if (metaFile.exists()) {
-                runCatching { sum += JSONObject(metaFile.readText()).optLong("size", 0) }
+                com.usefulunpacker.observedAttempt("RecycleBin") { sum += JSONObject(metaFile.readText()).optLong("size", 0) }
             }
         }
         return sum
@@ -453,6 +493,19 @@ object RecycleBin {
         return candidate
     }
 
+    private fun completeEntry(entryDir: File, meta: JSONObject): Boolean {
+        if (!meta.optBoolean("complete", true)) return false
+        val source = File(entryDir, meta.optString("storageName", meta.optString("originalName")))
+        return source.parentFile?.canonicalPath == entryDir.canonicalPath && source.exists()
+    }
+
+    private fun recordEntry(dir: File, meta: JSONObject) = updateManifest(dir) { manifest ->
+        val entries = manifest.getJSONArray("entries")
+        val id = meta.getString("id")
+        val existing = (0 until entries.length()).firstOrNull { entries.getJSONObject(it).optString("id") == id }
+        if (existing == null) entries.put(meta) else entries.put(existing, meta)
+    }
+
     private fun readManifest(dir: File): JSONObject? {
         synchronized(this) {
             val file = File(dir, MANIFEST)
@@ -461,7 +514,7 @@ object RecycleBin {
                 val content = file.readText()
                 if (content.isBlank()) null
                 else JSONObject(content)
-            } catch (e: Exception) {
+            } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("RecycleBin", e);
                 file.renameTo(File(dir, "$MANIFEST.bak"))
                 null
             }
@@ -473,10 +526,10 @@ object RecycleBin {
             val file = File(dir, MANIFEST)
             val manifest = if (file.exists()) {
                 val content = file.readText()
-                if (content.isBlank()) createEmptyManifest()
-                else try { JSONObject(content) } catch (e: Exception) { recoverManifest(dir) }
+                if (content.isBlank()) recoverManifest(dir)
+                else try { JSONObject(content) } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("RecycleBin", e); recoverManifest(dir) }
             } else {
-                createEmptyManifest()
+                recoverManifest(dir)
             }
 
             transform(manifest)
@@ -503,10 +556,10 @@ object RecycleBin {
                 if (metaFile.exists()) {
                     try {
                         val meta = JSONObject(metaFile.readText())
-                        if (meta.getString("id").isNotEmpty()) {
+                        if (meta.getString("id").isNotEmpty() && completeEntry(entryDir, meta)) {
                             entries.put(meta)
                         }
-                    } catch (e: Exception) { /* skip bad meta */ }
+                    } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("RecycleBin", e); /* skip bad meta */ }
                 }
             }
         return manifest

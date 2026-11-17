@@ -97,7 +97,7 @@ class TabState(val tabId: Int) {
     var homeVisible: Boolean = false
 
     // View refs（FolderFragment.onCreateView 绑定；nullable 因为可能还没绑）。
-    var homeRoot: ScrollView? = null
+    var homeRoot: FrameLayout? = null
     var pathBar: LinearLayout? = null
     // 文件列表那一层。hub 显示时和 hub 一起配平可见性：hub 页面在有壁纸时是透明的
     // （透 R.id.root 的壁纸），列表不藏就会从下面透出来。见 browse/HomeHub.kt。

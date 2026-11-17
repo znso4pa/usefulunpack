@@ -164,7 +164,7 @@ internal fun heroCard(
     val row = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        if (roomy) setPadding(d(30), 0, d(30), 0) else setPadding(d(14), d(13), d(12), d(13))
+        if (roomy) setPadding(d(30), 0, d(30), 0) else setPadding(d(14), d(9), d(12), d(9))
     }
     row.addView(iconView(ctx, iconRes, glyph, C["accent"]!!).apply {
         background = GradientDrawable().apply {
@@ -189,6 +189,9 @@ internal fun heroCard(
             background = GradientDrawable().apply {
                 cornerRadius = d(99).toFloat(); setColor(C["accent_soft"]!!)
             }
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            maxWidth = ctx.resources.getDimensionPixelSize(if (roomy) R.dimen.home_tag_max_width_wide else R.dimen.home_tag_max_width)
             setPadding(d(if (roomy) 11 else 9), d(5), d(if (roomy) 11 else 9), d(5))
             layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = d(14) }
         })
@@ -221,7 +224,7 @@ internal fun miniCard(
     return LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        if (roomy) setPadding(d(16), d(18), d(16), d(18)) else setPadding(d(11), d(11), d(11), d(11))
+        if (roomy) setPadding(d(16), d(18), d(16), d(18)) else setPadding(d(11), d(9), d(11), d(9))
         background = roundedBg(d(if (roomy) 16 else 14), bg, d(1), C["hairline"]!!)
         foreground = ripple(C["ripple"]!!)
         isClickable = true
@@ -237,7 +240,10 @@ internal fun miniCard(
                 .apply { gravity = Gravity.CENTER }
         })
         val names = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        names.addView(primaryText(ctx, title, if (roomy) 14.5f else 13f, bold = true))
+        names.addView(primaryText(ctx, title, if (roomy) 14.5f else 13f, bold = true).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        })
         names.addView(textView(ctx, sub, if (roomy) 11f else 10f, C["tertiary"]!!).apply {
             layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = d(2) }
             setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.MIDDLE

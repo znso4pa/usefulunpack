@@ -23,74 +23,10 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 每个 tab 的「主界面」（hub）—— 用户从四版 HTML 设计稿里选定的 **C2「命令中心」**。
- *
- * ```text
- *   tab ─┬─ 主界面（hub，盖住 pathBar+panel）─┬─ 命令面板（点击 → 全局搜索）
- *        │                                   ├─ 两张 hero 卡（文件浏览 / 终端）
- *        │                                   ├─ 快捷入口（搜索 / 回收站 / 根目录 / 设置）
- *        │                                   ├─ 最近打开的归档 │ 书签（宽屏双栏）
- *        │                                   └─ 页脚
- *        └─ 文件浏览器（navTab 渲染的列表）
- * ```
- *
- * 实现与归档内预览（`previewRoot`）同一套路：`folder_view.xml` 里最后声明的覆盖层，
- * 盖住 pathBar + panel；`TabState.homeVisible` 决定谁在上面。
- *
- * 新 tab 默认落在主界面（`addTab` 置 true）；恢复会话的 tab 不落（恢复的是「你上次
- * 在哪儿」）—— 所以 `homeVisible` 不进 session，默认 false 即可。
- *
- * ## 两套布局（[isRoomy] 一分为二）
- *
- * | | 判定 | 骨架 |
- * |---|---|---|
- * | **宽屏**（横屏） | **横屏** 且 `screenWidthDp ≥ 600` | 单列纵向；hero 并排 2 张（**横向内容**，`weight=1` 吃剩余高度撑满整屏）、快捷 1×4、最近/书签**双栏且各自定高**（[LIST_CARD_H]） |
- * | **手机竖屏**（含平板竖屏） | 其余（竖屏一律走这套） | 单列；hero **上下两张横向紧凑卡**、快捷 **2×2**、最近/书签各占**一整行**；**每个块都按设计稿的硬编码比例定高**（`PW_*`），卡片内部独立滚动 |
- *
- * 判据见 [isRoomy]：**竖屏一律走手机那套**（平板竖屏 812dp 宽也只按宽度判会被误判成宽屏，
- * 竖屏就变成横屏的骨架 —— 用户否掉过）；横屏再按宽度区分，因为手机横屏宽度通常 640–900dp，
- * 只看 `is_wide`/`sw600dp`（与方向无关）会把手机横屏误判成窄屏、双栏被压成上下堆叠。
- *
- * **撑满 / 一屏装下的做法**：`homeRoot` 是 `fillViewport="true"` 的 ScrollView，内容矮时
- * `homeGrid` 会被撑到 viewport 高（EXACTLY），于是内部 `weight` 就能分配到「剩余高度」。
- * 内容真的超一屏时 fillViewport 不生效，自然回退成滚动 —— 不会把内容压扁。
- *
- * - **宽屏**：**只有 hero 区** `height=0 + weight=1`（吃剩余高度撑满整屏，定稿的样子）；
- *   两个列表窗口**定高**（[LIST_CARD_H]），条目多了窗口内滚动。
- * - **手机竖屏**：**整列每一块都带权重**，权重 = 设计稿里的自然高度 dp（见 `PW_*`）。
- *   于是各块尺寸是一个确定值（不随内容多少、也不随剩余空间乱分），整列等比铺满、不溢出；
- *   在设计稿画布（412×915）上逐块还原设计稿。列表卡内部滚动。
- *   ⚠️ 早期版本只给两张列表卡 `weight=1`，结果卡片被拉到 300dp（设计稿 153dp）——
- *   一屏里塞满空白的「冗余」，用户明确否掉。改成全列按比例后，卡片回到设计稿的比例。
- *
- * ⚠️ **尾部间距必须计入子项自身高度（`paddingBottom`），不能靠 `marginBottom` 或父容器
- * 的纵向 `padding`**：`LinearLayout` 第一遍测量只累加 `marginTop + childHeight` ——
- * `marginBottom` 与父容器纵向 `padding` 都**不计**，而权重块拿的是
- * `heightSize - mTotalLength` → 弹性块把这些间距一起吃掉、自己长高，排在它后面的页脚
- * 整块溢出容器被裁掉（横屏真机实测：页脚根本没被布局）。`marginTop` 和子项自身
- * `padding` 才计入。所以：首项用 `marginTop`、末项用自身 `paddingBottom`（宽屏）或直接
- * 算进权重（竖屏，见 [PW_FOOTER]）。
- * **注意**：横屏刻意**不限宽**（用户要「覆盖整个屏幕」），所以没用 `content_max_width`。
- *
- * ⚠️ **旋转后必须重拼卡片**：清单声明了 `configChanges`，Activity 不重建，而 hub 的骨架是
- * 拼一次就留着的 → 不重拼会一直是旧方向那套。`MainActivity.onConfigurationChanged` 里调
- * [refreshHubs]（见那里）。
- *
- * ⚠️ **页面底色 = 透 `R.id.root` 的壁纸（有壁纸）/ 实底 #303030（无壁纸）；卡片永远实底**：
- * hub 是覆盖层，**后面就是文件列表** —— 页面无条件透明会把那份列表透出来（第一版
- * 「全部透了过来」的真正来源，不只是壁纸）。所以 [showHome] 显示 hub 时把 `panel`
- * （文件列表那一层）一并 `GONE`，页面才敢透明：有壁纸时 `homeGrid` **不设底**，直接
- * 透出 root 上的壁纸 —— 与文件浏览逐像素一致；无壁纸时铺实底 #303030（与 `homeRoot`
- * 的 XML 底 `bg_file_list` 同色，所以切壁纸 / 清壁纸都不会闪）。**卡片永远实底**：
- * 文字不直接压在壁纸上（第一版教训）。
- *
- * 曾经的写法是「把 root 的壁纸位图复制一份贴到这一层」（`constantState.newDrawable()`）——
- * 但壁纸是 `applyBackgroundImage` **异步解码**的，首屏那一刻位图还没就绪，只能先铺实底
- * （真机反馈：一开始看不见背景，进一次文件浏览再退回来才出现）。透明 + 藏 `panel`
- * 就没有这个时间差，也省掉一份位图。
- *
- * ⚠️ **派生，不存储**（不变式 8）：最近归档 / 书签 / 回收站条数都是 [showHome] 时
- * 现查现画的 —— 不缓存，用户解包完回到主界面看到的就是新的。
+ * Per-tab home overlay: fixed outer panel, with independently scrolling recent/bookmark lists.
+ * Portrait keeps one row per list, compact action cards and two hero cards sharing spare height.
+ * Landscape keeps the two-column layout. Home visibility is derived from TabState and applyLayer.
+ * Wallpaper comes from the Activity root; the file/preview layers underneath must stay hidden.
  */
 /** 切到主界面。视图未绑时（启动期 addTab）只记状态，fragment 建视图时按它渲染。 */
 internal fun MainActivity.showHome(tab: TabState) {
@@ -152,7 +88,7 @@ internal fun isRoomy(act: MainActivity): Boolean {
  * （真机反例），而且「只有 1 条时被拉成一条巨行」也是同一类问题。
  * 剩余高度交给上面的 hero 区吸收（它仍是 `weight=1`），整页照样铺满、页脚不被挤掉。
  *
- * 手机竖屏**不能**定高：那边要求「刚好一屏装下」，矮屏上定高会装不下，所以走 `weight=1`。
+ * Portrait uses the shared single-row height instead of the landscape multi-row height.
  *
  * ⚠️ **这个高度里替「磁盘占用横条」让出了一份**：横屏的 hero 区是 `weight=1`（吃剩余高度），
  * 任何新增的定高块都只能从它身上抠 —— 磁盘条（49.6dp 实体 + 16dp 间距 ≈ 66dp）一加，
@@ -166,41 +102,8 @@ private const val LIST_CARD_H = 118
 /** 列表卡底部渐隐的高度（dp）。半行文字的高度 —— 够把「被切的那一行」收进暗部。 */
 private const val LIST_FADE_H = 22
 
-/*
- * ── 手机竖屏：整列按设计稿的**硬编码比例**分高度 ──────────────────────────
- *
- * 设计稿画布是 **412 × 915 dp**（`~/Desktop/1/主界面-手机竖屏.html`，`.device` 的
- * `width/height`）。扣掉状态栏 26 / 标签栏 50 / 工具栏 56，内容区 783dp；再扣 `.hub` 的
- * 上下内边距 16 + 14 → **hub 可用高度 753dp**。各块在设计稿里的自然高度（dp）就是下面这些
- * 常量，加起来 681dp，余下的 72dp 是各块的间距（首项 16、块间 12/14/9/14/7…）。
- *
- * ⚠️ **总权重是这一列唯一的「预算」**：加一块就要从别处减一块，否则每一块等比缩小。
- * 磁盘条（[PW_DISK] = 40）是从两张列表卡各减 20（154 → 134）换来的，所以总和仍是 681 ——
- * hero、命令面板、快捷入口、页脚的高度与加磁盘条之前**完全一致**。
- *
- * **为什么用「比例」而不是「绝对 dp」**：用户要求「竖屏的比例严格按照原生比例，确保能占满
- * 整个屏幕同时不会溢出，每个格子都是硬编码大小、内部独立滚动」。绝对 dp 做不到 —— 把每块
- * 钉死在设计稿的 dp 上，本机平板竖屏（可用 ~1036dp）会在底部空出 280dp；而只让列表卡吃剩余
- * 高度，卡片又会被拉成 300dp（真机反例，正是用户说的「冗余」）。改成**权重 = 设计稿 dp**
- * 之后：在设计稿画布上逐块还原设计稿，在任何屏幕上整列等比铺满、不溢出，且每块的尺寸是
- * 一个确定的像素值（不随内容多少变化），列表卡内部独立滚动。
- *
- * 行高**不**跟着缩放（沿用自然高度）—— 缩放行高只会让文字与大留白错位，且卡片本来就能滚。
- */
-private const val PW_PALETTE = 44f    // 命令面板
-private const val PW_HERO = 72f       // 一张 hero 卡
-private const val PW_QUICK = 58f      // 快捷入口一行（2×2 的其中一行）
-private const val PW_DISK = 40f       // 磁盘占用横条（单行：图标 + 标题 + 已用/共）
-private const val PW_CAP = 20f        // 「最近打开的归档」/「书签」标题
-/*
- * 列表卡：设计稿 753 − 固定块 → 每张 ~153dp，**再减 20 = 134**（两张共让出 40）。
- *
- * 这 40 是 [PW_DISK] 的成本。整列都是权重子项，总权重一旦变大，**每一块**都会等比缩小 ——
- * 第一次加磁盘条时没动这里，总权重从 681 涨到 721，hero 也跟着缩了 5.5%（真机可见）。
- * 现在两张卡各让 20，总权重回到 681，其余各块与加磁盘条之前**逐像素一致**。
- */
-private const val PW_CARD = 134f      // 列表卡（设计稿 ~153dp，让 20 给磁盘条 → 134）
-private const val PW_FOOTER = 29f     // 页脚 15 + hub 底部内边距 14（纵向内边距不能靠容器 padding）
+/** One shared height keeps a portrait list viewport and each of its rows aligned. */
+private fun homeListRowHeight(act: MainActivity) = act.resources.getDimensionPixelSize(R.dimen.home_list_row_height)
 
 /** 无壁纸时的页面实底 #303030（= `homeRoot` 的 XML 底 `bg_file_list`，同色所以不闪）。 */
 private fun solidHubBg() = GradientDrawable().apply { setColor(C["surface"]!!) }
@@ -240,8 +143,7 @@ internal fun MainActivity.refreshHubPageBg() {
  * 真机现象：平板竖屏下看到的是横屏的双栏骨架（hero 并排、快捷 1×4），整屏被压扁。
  * 横屏 / 竖屏各自「刚好一屏」的权重也是在同一处算的，所以两件事必须一起重来。
  *
- * `homeRoot` 是 `fillViewport` 的 ScrollView：内容矮时 `homeGrid` 被撑到 viewport 高，
- * 权重照新方向重新分配；所以只要重拼卡片，尺寸就跟着对了。
+ * homeRoot is a fixed panel; rebuild cards against the new viewport after rotation.
  */
 internal fun MainActivity.refreshHubs() {
     tabs.forEach { tab ->
@@ -258,6 +160,8 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
     val dimBg = C["surface_dim"]!!
     val roomy = isRoomy(act)
 
+    // The outer home panel never scrolls. Portrait lists each expose one 58dp row;
+    // their own scroll containers retain access to the remaining entries.
     container.removeAllViews()
     container.orientation = LinearLayout.VERTICAL
     // 页面底色（见类注释）：有壁纸 → 透 root 的壁纸；无壁纸 → 实底 #303030。
@@ -271,15 +175,16 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
     val palette = LinearLayout(act).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        if (roomy) setPadding(act.dp(20), act.dp(14), act.dp(18), act.dp(14)) else setPadding(act.dp(14), act.dp(11), act.dp(12), act.dp(11))
+        if (roomy) setPadding(act.dp(20), act.dp(14), act.dp(18), act.dp(14)) else setPadding(act.dp(14), act.dp(8), act.dp(12), act.dp(8))
         background = roundedBg(act.dp(if (roomy) 16 else 14), dimBg, act.dp(1), C["accent_line"]!!)
         // 首项的上间距：原来在 container 的 padding-top 里，见上面的注释（纵向只能用 margin）。
-        // 手机竖屏**按设计稿比例定高**（[PW_PALETTE]），不再是 `wrap_content`。
+        // Keep the search label and button at their natural text height.
         layoutParams = LinearLayout.LayoutParams(
-            MATCH, if (roomy) WRAP else 0, if (roomy) 0f else PW_PALETTE,
+            MATCH, WRAP,
         ).apply {
-            topMargin = act.dp(if (roomy) 24 else 16)
+            topMargin = act.dp(if (roomy) 24 else 8)
         }
+        minimumHeight = act.dp(48)
         foreground = ripple(C["ripple"]!!)
         isClickable = true
         isFocusable = true
@@ -308,8 +213,7 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
 
     // ── 两张 hero 卡 ─────────────────────────────────────────────
     // 宽屏：并排两张、横向内容，`weight=1` 吃剩余高度把整屏撑起来（定稿的样子）。
-    // 手机竖屏：上下两张横向紧凑卡，**按设计稿比例定高**（[PW_HERO]）—— 412dp 宽并排只剩
-    // ~150dp/卡、描述会折 4–5 行；定高后卡片尺寸不再随内容或屏幕剩余空间漂。
+    // Portrait stacks both cards and shares spare height after their natural content.
     val browseTag = if (tab.currentDir == Environment.getExternalStorageDirectory()) {
         act.getString(R.string.home_storage_root)
     } else {
@@ -324,9 +228,9 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         container.addView(equalRow(act, browseHero, termHero, gapDp = 18),
             LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = act.dp(22) })
     } else {
-        // 手机竖屏：两张上下排、**按设计稿比例定高**（[PW_HERO]），不再 `wrap_content`。
-        container.addView(browseHero, LinearLayout.LayoutParams(MATCH, 0, PW_HERO).apply { topMargin = act.dp(12) })
-        container.addView(termHero, LinearLayout.LayoutParams(MATCH, 0, PW_HERO).apply { topMargin = act.dp(12) })
+        // Two cards retain natural content height and share spare screen height.
+        container.addView(browseHero, LinearLayout.LayoutParams(MATCH, WRAP, 1f).apply { topMargin = act.dp(6) })
+        container.addView(termHero, LinearLayout.LayoutParams(MATCH, WRAP, 1f).apply { topMargin = act.dp(6) })
     }
 
     // ── 快捷入口：搜索 / 回收站 / 根目录 / 设置 ───────────────────
@@ -348,15 +252,15 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
     )
     fun miniRow(cells: List<View>, topMarginDp: Int) = container.addView(
         equalRow(act, *cells.toTypedArray(), gapDp = if (roomy) 14 else 9),
-        // 手机竖屏按设计稿比例定高（[PW_QUICK]）；宽屏仍是一整行 `wrap_content`。
-        LinearLayout.LayoutParams(MATCH, if (roomy) WRAP else 0, if (roomy) 0f else PW_QUICK)
+        // Compact rows keep their natural text height.
+        LinearLayout.LayoutParams(MATCH, WRAP)
             .apply { topMargin = act.dp(topMarginDp) },
     )
     if (roomy) {
         miniRow(minis, 20)
     } else {
-        miniRow(minis.subList(0, 2), 14)
-        miniRow(minis.subList(2, 4), 9)
+        miniRow(minis.subList(0, 2), 8)
+        miniRow(minis.subList(2, 4), 8)
     }
 
     // ── 磁盘占用横条 ─────────────────────────────────────────────
@@ -366,15 +270,13 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
     // 就知道值不值得点。
     container.addView(
         diskUsageBar(act, roomy),
-        LinearLayout.LayoutParams(MATCH, if (roomy) WRAP else 0, if (roomy) 0f else PW_DISK)
-            .apply { topMargin = act.dp(if (roomy) 16 else 12) },
+        LinearLayout.LayoutParams(MATCH, WRAP)
+            .apply { topMargin = act.dp(if (roomy) 16 else 8) },
     )
 
     // ── 最近打开的归档 │ 书签 ───────────────────────────────────
     // 宽屏：双栏并排，两个窗口**定高**（[LIST_CARD_H]）。
-    // 手机竖屏：各占一整行，**标题与卡片各自按设计稿比例定高**（[PW_CAP] / [PW_CARD]），
-    // 卡片内部独立滚动 —— 所以标题和卡片必须是 `container` 的**两个直接子项**，
-    // 不能再包一层 `col`（那样卡片的实际高度会被标题的固定高度吃掉一截，比例就不准了）。
+    // Portrait exposes exactly one row in each independently scrolling list.
     val (recentsCap, recentsCard) = homeRecentsParts(act, tab, cardBg, roomy)
     val (bmsCap, bmsCard) = homeBookmarksParts(act, tab, cardBg, roomy)
     if (roomy) {
@@ -391,16 +293,15 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         cols.addView(col(bmsCap, bmsCard), LinearLayout.LayoutParams(0, WRAP, 1f))
         container.addView(cols, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = act.dp(22) })
     } else {
-        // 手机竖屏：标题 20 / 卡片 134（设计稿比例，已让出 20 给磁盘条），间距走各自的 topMargin（权重子项的
-        // `marginTop` 计入 `mTotalLength`）。左右 2dp 是 sectionCap 原有的微调，覆盖时要带上。
-        container.addView(recentsCap, LinearLayout.LayoutParams(MATCH, 0, PW_CAP).apply {
-            setMargins(act.dp(2), act.dp(14), act.dp(2), 0)
+        // Small headers sit outside the fixed one-row viewports.
+        container.addView(recentsCap, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+            setMargins(act.dp(2), act.dp(8), act.dp(2), 0)
         })
-        container.addView(recentsCard, LinearLayout.LayoutParams(MATCH, 0, PW_CARD).apply { topMargin = act.dp(7) })
-        container.addView(bmsCap, LinearLayout.LayoutParams(MATCH, 0, PW_CAP).apply {
-            setMargins(act.dp(2), act.dp(14), act.dp(2), 0)
+        container.addView(recentsCard, LinearLayout.LayoutParams(MATCH, homeListRowHeight(act)).apply { topMargin = act.dp(4) })
+        container.addView(bmsCap, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+            setMargins(act.dp(2), act.dp(8), act.dp(2), 0)
         })
-        container.addView(bmsCard, LinearLayout.LayoutParams(MATCH, 0, PW_CARD).apply { topMargin = act.dp(7) })
+        container.addView(bmsCard, LinearLayout.LayoutParams(MATCH, homeListRowHeight(act)).apply { topMargin = act.dp(4) })
     }
 
     // ── 页脚 ─────────────────────────────────────────────────────
@@ -415,13 +316,12 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         // `LinearLayout` 第一遍测量只累加 `marginTop + childHeight`，`marginBottom`
         // 不计入 → 权重块把它吃掉 → 页脚整块溢出容器被裁（横屏真机实测）。
         // 写成自身 padding 就是 childHeight 的一部分，一定被计入。
-        // 手机竖屏：整列都是权重子项，页脚的高度由权重给定，下间距直接算进 [PW_FOOTER]，
-        // 不能再叠一层 paddingBottom（那会撑破权重给的高度）。
+        // Footer keeps its natural text height; spare height goes to the hero cards.
         setPadding(0, 0, 0, if (roomy) act.dp(20) else 0)
         layoutParams = LinearLayout.LayoutParams(
-            MATCH, if (roomy) WRAP else 0, if (roomy) 0f else PW_FOOTER,
+            MATCH, WRAP,
         ).apply {
-            topMargin = act.dp(if (roomy) 16 else 12)
+            topMargin = act.dp(if (roomy) 16 else 8)
         }
     })
 }
@@ -433,7 +333,7 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
  *
  * | | 骨架 | 为什么 |
  * |---|---|---|
- * | **竖屏**（含平板竖屏） | 单行：图标 + 标题 + 「已用 / 共」+ 箭头 | 高度由 [PW_DISK] 权重给定（412dp 画布上约 37dp），两行文字会溢出被裁；这条横条只有一行的余地 |
+ * | **竖屏**（含平板竖屏） | 单行：图标 + 标题 + 「已用 / 共」+ 箭头 | 高度由 内容和内边距决定，两行文字会溢出被裁；这条横条只有一行的余地 |
  * | **横屏宽屏** | 图标 + 标题 + **内嵌容量条** + 「已用 / 共」+ 箭头，条本身 50dp 高 | 横向空间富裕、纵向反而不必省；容量条把「还剩多少」画出来，扫一眼就知道 |
  *
  * 数字来自 [externalStorageUsage]（StatFs，系统调用、微秒级），不是扫描结果 ——
@@ -449,7 +349,8 @@ private fun diskUsageBar(act: MainActivity, roomy: Boolean): View {
     val line = LinearLayout(act).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        // 横屏靠纵向 padding 撑到 ~50dp（父容器是 WRAP）；竖屏高度由权重给定，不要再加 padding。
+        // A full-height touch target remains available without a weighted text budget.
+        minimumHeight = act.resources.getDimensionPixelSize(R.dimen.touch_target)
         setPadding(
             act.dp(if (roomy) 18 else 12),
             act.dp(if (roomy) 15 else 0),
@@ -516,7 +417,7 @@ private fun capacityStrip(act: MainActivity, used: Long, total: Long): LinearLay
 /**
  * 「最近打开的归档」区块 = **标题 + 卡片两块**（[Pair]），由调用处决定怎么摆。
  *
- * 拆开返回是因为手机竖屏下这两块的**高度是各自独立的权重**（[PW_CAP] / [PW_CARD]）：
+ * Header and fixed-height list viewport are separate children:
  * 若包一层 `col`，卡片能拿到的就是「col 的高度 − 标题的自然高度」，标题那 ~27dp 不跟着
  * 缩放、比例就不准了。宽屏则由调用处把两块塞进一个 `col` 再并排。
  */
@@ -526,11 +427,11 @@ private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, room
     val cap = sectionCap(act, act.getString(R.string.home_recents),
         if (entries.isEmpty()) null else entries.size.toString(),
         if (roomy) 11.5f else 10.5f, if (roomy) 12f else 11f)
-    // 卡片**定高**（宽屏 [LIST_CARD_H]、竖屏按设计稿比例 [PW_CARD]）、**行高固定**，
+    // 卡片**定高**（宽屏 [LIST_CARD_H]、竖屏 [homeListRowHeight]）、**行高固定**，
     // 装不下时在卡片内滚动 —— 窗口尺寸不随内容/剩余空间变（行若用 weight 平分：1 条时
     // 被拉成巨行、10 条时被压扁）。高度由调用处给。
     val radius = act.dp(if (roomy) 16 else 14)
-    val card = FadeCard(act, act.dp(LIST_FADE_H), radius).apply {
+    val card = FadeCard(act, act.dp(if (roomy) LIST_FADE_H else 4), radius).apply {
         background = roundedBg(radius, cardBg, act.dp(1), C["hairline"]!!)
         clipToOutline = true
     }
@@ -585,6 +486,7 @@ private fun homeRecentRow(act: MainActivity, tab: TabState, e: RecentsStore.Entr
         // v1 先落到归档所在目录（直接在此开预览要接一遍 openKey/互斥，后续再做）。
         setOnClickListener { f.parentFile?.let { act.enterBrowserAt(tab, it) } }
     }
+    if (!roomy) row.layoutParams = LinearLayout.LayoutParams(MATCH, homeListRowHeight(act))
     val fmtColor = FORMAT_COLORS[ext] ?: C["icon_gray_dim"]!!
     row.addView(textView(act, ext.uppercase(), if (roomy) 11f else 10f, C["text_bright"]!!).apply {
         gravity = Gravity.CENTER
@@ -622,10 +524,10 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
     val cap = sectionCap(act, act.getString(R.string.home_bookmarks),
         if (bookmarks.isEmpty()) null else bookmarks.size.toString(),
         if (roomy) 11.5f else 10.5f, if (roomy) 12f else 11f)
-    // 与「最近」同一套：卡片定高（宽屏 [LIST_CARD_H] / 竖屏 [PW_CARD]）、行高固定、
+    // 与「最近」同一套：卡片定高（宽屏 [LIST_CARD_H] / 竖屏 [homeListRowHeight]）、行高固定、
     // 装不下时在卡片内滚动。高度由调用处给。
     val radius = act.dp(if (roomy) 16 else 14)
-    val card = FadeCard(act, act.dp(LIST_FADE_H), radius).apply {
+    val card = FadeCard(act, act.dp(if (roomy) LIST_FADE_H else 4), radius).apply {
         background = roundedBg(radius, cardBg, act.dp(1), C["hairline"]!!)
         clipToOutline = true
     }
@@ -647,11 +549,12 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
     card.addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
     val box = LinearLayout(act).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(act.dp(6), act.dp(6), act.dp(6), act.dp(6))
+        setPadding(act.dp(6), if (roomy) act.dp(6) else 0, act.dp(6), if (roomy) act.dp(6) else 0)
     }
     scroll.addView(box)
     bookmarks.forEach { path ->
         box.addView(LinearLayout(act).apply {
+            if (!roomy) layoutParams = LinearLayout.LayoutParams(MATCH, homeListRowHeight(act))
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(

@@ -38,4 +38,7 @@
     <dimen name="touch_target">48dp</dimen>
     <dimen name="drawer_width">300dp</dimen>
     <dimen name="menu_width">240dp</dimen>
+    <dimen name="home_list_row_height">58dp</dimen>
+    <dimen name="home_tag_max_width">100dp</dimen>
+    <dimen name="home_tag_max_width_wide">180dp</dimen>
 </resources>

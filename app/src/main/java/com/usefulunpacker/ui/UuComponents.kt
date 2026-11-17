@@ -421,7 +421,13 @@ class UuDialogBuilder(ctx: Context, private val keepChainOpen: Boolean = true) :
         if (listener == null || ownerTrace == null) listener else android.content.DialogInterface.OnClickListener { dialog, which ->
             AppDiagnostics.invokeCallback(ownerTrace) { listener.onClick(dialog, which) }
         }
-    init { super.setOnCancelListener { ownerTrace?.cancelled() } }
+    private fun cancelOwner() {
+        // Closing a completed result viewer must not append CANCELLED after CHAIN_END.
+        if (keepChainOpen && ownerTrace?.chain?.isEnded() != true && ownerTrace?.chain?.isCancelled() != true) {
+            ownerTrace?.cancelled()
+        }
+    }
+    init { super.setOnCancelListener { cancelOwner() } }
     override fun setPositiveButton(text: CharSequence?, listener: android.content.DialogInterface.OnClickListener?): AlertDialog.Builder {
         positiveStyle = ActionStyle.PRIMARY
         return super.setPositiveButton(text, wrap(listener))
@@ -433,7 +439,7 @@ class UuDialogBuilder(ctx: Context, private val keepChainOpen: Boolean = true) :
     override fun setNegativeButton(text: CharSequence?, listener: android.content.DialogInterface.OnClickListener?): AlertDialog.Builder = super.setNegativeButton(text, wrap(listener))
     override fun setNegativeButton(textId: Int, listener: android.content.DialogInterface.OnClickListener?): AlertDialog.Builder =
         super.setNegativeButton(textId, wrap { dialog, which ->
-            if (textId == R.string.action_cancel) ownerTrace?.cancelled()
+            if (textId == R.string.action_cancel) cancelOwner()
             listener?.onClick(dialog, which)
         })
     override fun setNeutralButton(text: CharSequence?, listener: android.content.DialogInterface.OnClickListener?): AlertDialog.Builder = super.setNeutralButton(text, wrap(listener))

@@ -846,4 +846,5 @@
     <string name="diagnostics_multiple_failures">%1$d 条任务链遇到问题，请查看诊断详情。</string>
     <string name="components_color">颜色 %1$s</string>
     <string name="components_slider">滑块</string>
+    <string name="search_skipped_dirs">跳过 %1$d 个无法读取的目录，结果不完整</string>
 </resources>

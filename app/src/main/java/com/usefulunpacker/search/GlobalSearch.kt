@@ -37,27 +37,42 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
             searchSourcePassword = null
             searchSourceResolver = null
         }
+        // Capture archive context per dialog: another tab's search may replace the globals.
+        val sourceArchive = searchSourceArchive
+        val sourceFormat = searchSourceFormat
+        val sourceCacheBase = searchSourceCacheBase
+        val sourcePassword = searchSourcePassword
+        val sourceResolver = searchSourceResolver?.toMap()
         var searchMode = 0 // 0=filename, 1=content
         var searchDir = startDir ?: currentDir
         // Synchronized collections: written by the worker thread, read by the
         // UI thread (resultAdapter.refresh / stats). Individual ops are safe;
         // iteration (toList) still needs an explicit synchronized block.
-        val results = java.util.Collections.synchronizedList(mutableListOf<SearchResult>())
+        var results = java.util.Collections.synchronizedList(mutableListOf<SearchResult>())
         var searchThread: Thread? = null
         var searchChain: OperationTrace? = null
         lateinit var searchDialog: AlertDialog
         var currentLimit = 200
-        val seenFiles = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+        var seenFiles = java.util.Collections.synchronizedSet(mutableSetOf<String>())
         // 已经走过的**目录**（canonical path）。两个作用：
         //  ① 「继续扫描」跳过走过的目录 —— 否则每次续扫都从根重新走一遍，
         //     内容搜索等于把整棵树重读一次（续扫 N 次 = N 倍 I/O）；
         //  ② 软链成环时不会无限打转（从 `/` 起搜就有 `/sdcard` 这类链接）。
-        val seenDirs = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+        var seenDirs = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+        var unreadableDirs = java.util.Collections.synchronizedSet(mutableSetOf<String>())
         var queryText = ""
         var currentMaxFileSize = Long.MAX_VALUE
         var useRegex = false
         var caseSensitive = false
         var fileFilter = ""
+
+        fun resetSearchBuffers() {
+            results = java.util.Collections.synchronizedList(mutableListOf<SearchResult>())
+            seenFiles = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+            seenDirs = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+            unreadableDirs = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+            currentLimit = 200
+        }
 
         // ─── XML-based UI ───
         val view = layoutInflater.inflate(R.layout.dialog_global_search, null)
@@ -96,12 +111,6 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         btnContent.setOnClickListener { selectMode(1) }
         selectMode(0)
 
-        btnChangeDir.setOnClickListener {
-            showFolderPicker(this, searchDir, false) { d ->
-                searchDir = d
-                tvDir.text = getString(R.string.search_scope, d.path)
-            }
-        }
         btnClear.setOnClickListener { etQuery.setText("") }
 
         // Results adapter — uses snapshot to avoid threading crashes
@@ -132,21 +141,40 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         }
 
         listResults.adapter = resultAdapter
+        btnChangeDir.setOnClickListener {
+            showFolderPicker(this, searchDir, false) { picked ->
+                if (picked != searchDir) {
+                    if (searchThread?.isAlive == true) searchChain?.cancelled()
+                    searchThread?.interrupt()
+                    searchThread = null
+                    searchChain = null
+                    resetSearchBuffers()
+                    searchProgress.stopAnim()
+                    searchProgress.visibility = View.GONE
+                    btnContinue.visibility = View.GONE
+                    resultAdapter.refresh()
+                    tvStats.text = getString(R.string.search_empty)
+                }
+                searchDir = picked
+                tvDir.text = getString(R.string.search_scope, picked.path)
+            }
+        }
         listResults.onItemClickListener = OnItemClickListener { _, _, pos, _ ->
             val r = resultAdapter.getItem(pos) as SearchResult
             if (r.file.path.isEmpty()) return@OnItemClickListener
             // Keep the search dialog open: the file preview closes back into
             // the search, so the user can keep clicking results without
             // re-typing the query.
-            val fmt = searchSourceFormat
-            val cacheBase = searchSourceCacheBase
-            if (r.file.length() == 0L && fmt != null && cacheBase != null) {
+            val fmt = sourceFormat
+            val cacheBase = sourceCacheBase
+            if (r.file.length() == 0L && fmt != null && cacheBase != null &&
+                r.file.absolutePath.startsWith(cacheBase.absolutePath + File.separator)) {
                 val relPath = r.file.absolutePath.removePrefix(cacheBase.absolutePath + "/")
                 // Resolve the archive + password the cached placeholder came from.
                 // Batch search stores a per-path resolver; single-archive search
                 // falls back to the three source globals.
-                val src = searchSourceResolver?.get(relPath)
-                    ?: searchSourceArchive?.let { SearchExtractSource(it, relPath, cacheBase, searchSourcePassword ?: "") }
+                val src = sourceResolver?.get(relPath)
+                    ?: sourceArchive?.let { SearchExtractSource(it, relPath, cacheBase, sourcePassword ?: "") }
                     ?: return@OnItemClickListener
                 // Lock first, then the dual progress dialog (consistent with extractAll).
                 val opH = tryStartOperation(this, fmt)
@@ -226,39 +254,57 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
             caseSensitive = cbCaseSensitive.isChecked
             fileFilter = etFileFilter.text.toString().trim()
             if (!isContinue) {
-                synchronized(results) { results.clear() }
-                synchronized(seenFiles) { seenFiles.clear() }
-                synchronized(seenDirs) { seenDirs.clear() }
-                currentLimit = 200
+                // A cancelled worker may finish an in-flight read. Give the new query
+                // fresh buffers so its late writes cannot enter the next query's results.
+                resetSearchBuffers()
             } else currentLimit += 200
             resultAdapter.refresh()
             searchProgress.visibility = View.VISIBLE
             searchProgress.startAnim()
             btnContinue.visibility = View.GONE
             tvStats.text = if (isContinue) getString(R.string.continue_scan) else getString(R.string.search_scanning)
+            val runResults = results
+            val runSeenFiles = seenFiles
+            val runSeenDirs = seenDirs
+            val runDir = searchDir
+            val runLimit = currentLimit
+            val runRegex = useRegex
+            val runCaseSensitive = caseSensitive
+            val runFileFilter = fileFilter
+            val runUnreadableDirs = unreadableDirs
             val scanned = intArrayOf(0)
+            _searchIntent.trace.chain?.let { dialogChainTabs[it] = activeTab.tabId }
             searchChain = _searchIntent.trace
+            var runFinished = false // UI-thread state; queued poll updates cannot replace a final message.
             searchThread = thread {
                 val t = Thread.currentThread()
                 // Only lowercase a PLAIN-TEXT query for case-insensitive matching.
                 // A regex pattern must be kept verbatim (lowercasing it corrupts
                 // \p{Lu}, [A-Z], character classes, etc.); IGNORE_CASE is applied
                 // separately when compiling the regex.
-                val searchQuery = if (caseSensitive || useRegex) query else query.lowercase()
-                walkSearch(searchQuery, searchDir, mode, results, currentLimit, maxFileSize, scanned,
-                    seenFiles, seenDirs, useRegex, caseSensitive, fileFilter)
+                val searchQuery = if (runCaseSensitive || runRegex) query else query.lowercase()
+                val completed = walkSearch(searchQuery, runDir, mode, runResults, runLimit, maxFileSize, scanned,
+                    runSeenFiles, runSeenDirs, runRegex, runCaseSensitive, runFileFilter, runUnreadableDirs)
                 runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread;
                     // A newer search may have started while this one was
                     // interrupted — only publish results if we're still the
                     // current search thread.
                     if (searchThread !== t) return@runFeatureOnUiThread
+                    runFinished = true
                     searchProgress.stopAnim()
                     searchProgress.visibility = View.GONE
+                    if (!completed) {
+                        btnContinue.visibility = View.GONE
+                        tvStats.text = getString(if (t.isInterrupted) R.string.msg_cancelled else R.string.diagnostics_failure)
+                        resultAdapter.refresh()
+                        return@runFeatureOnUiThread
+                    }
                     val hasMore = results.size >= currentLimit && results.size < 10000
                     btnContinue.visibility = if (hasMore) View.VISIBLE else View.GONE
-                    tvStats.text = getString(R.string.search_result_stats, results.size, scanned[0])
+                    tvStats.text = getString(R.string.search_result_stats, results.size, scanned[0]) +
+                        if (runUnreadableDirs.isNotEmpty()) "\n" + getString(R.string.search_skipped_dirs, runUnreadableDirs.size) else ""
                     resultAdapter.refresh()
-                    if (results.isEmpty()) toast(getString(R.string.msg_no_results))
+                    if (results.isEmpty() && runUnreadableDirs.isEmpty()) toast(getString(R.string.msg_no_results))
                 }
             }
             // Periodically update stats while searching — capture the thread
@@ -274,7 +320,7 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
                     if (cur != lastScanned) {
                         lastScanned = cur
                         runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread;
-                            if (searchThread === watched) {
+                            if (searchThread === watched && !runFinished) {
                                 tvStats.text = getString(R.string.search_progress_stats, cur, results.size)
                             }
                         }
@@ -404,12 +450,13 @@ internal fun MainActivity.walkSearch(
         query: String, startDir: File, mode: Int, results: MutableList<SearchResult>, limit: Int,
         maxFileSize: Long, scanned: IntArray,
         seenFiles: MutableSet<String>, seenDirs: MutableSet<String>,
-        useRegex: Boolean = false, caseSensitive: Boolean = false, fileFilter: String = ""
-    ) {
+        useRegex: Boolean = false, caseSensitive: Boolean = false, fileFilter: String = "", unreadableDirs: MutableSet<String> = mutableSetOf()
+    ): Boolean {
     val _intentScope = com.usefulunpacker.AppDiagnostics.enterIntent("search")
+    val trace = AppDiagnostics.begin("search")
     try {
-        val trace = AppDiagnostics.begin("search")
         // Iterative DFS — deeply nested trees can't overflow the call stack.
+        var rootUnreadable = false
         val stack = ArrayDeque<File>()
         stack.add(startDir)
         val filterExtensions = if (fileFilter.isNotEmpty()) {
@@ -418,9 +465,10 @@ internal fun MainActivity.walkSearch(
         val regex = if (useRegex) {
             try {
                 if (caseSensitive) Regex(query) else Regex(query, RegexOption.IGNORE_CASE)
-            } catch (e: Exception) { com.usefulunpacker.AppDiagnostics.failure("GlobalSearch", e);
+            } catch (e: Exception) {
+                trace.fail(FailureCode.INVALID_RESULT, "Invalid search pattern")
                 runFeatureOnUiThread { if (isFinishing || isDestroyed) return@runFeatureOnUiThread; failureNotice(getString(R.string.err_invalid_regex, e.message ?: "")) }
-                return
+                return false
             }
         } else null
         
@@ -432,7 +480,9 @@ internal fun MainActivity.walkSearch(
             if (dirKey in seenDirs) continue
             val children = dir.listFiles()
             if (children == null) {
-                trace.fail(FailureCode.IO, "Cannot read directory ${dir.path}")
+                unreadableDirs.add(dir.absolutePath)
+                if (dir == startDir) rootUnreadable = true
+                trace.note("Cannot read directory ${dir.path}")
                 continue
             }
             // ⚠️ **走完才登记**。若在 `add` 之后被 limit 截断，那个目录只扫了一半，
@@ -505,10 +555,18 @@ internal fun MainActivity.walkSearch(
             }
             if (finished) seenDirs.add(dirKey)
         }
+        when {
+            Thread.currentThread().isInterrupted -> trace.cancelled()
+            rootUnreadable -> trace.fail(FailureCode.IO, "Cannot read the search root")
+            unreadableDirs.isNotEmpty() -> trace.fail(FailureCode.PARTIAL_FAILURE,
+                "Skipped ${unreadableDirs.size} unreadable directories; results are incomplete")
+            else -> trace.success()
+        }
+        return !rootUnreadable && !Thread.currentThread().isInterrupted
     } catch (intentCancelled: java.util.concurrent.CancellationException) {
-        _intentScope.trace.cancelled(); throw intentCancelled
+        trace.cancelled(); throw intentCancelled
     } catch (intentFailure: Exception) {
-        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
+        trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
         throw intentFailure
     } finally { com.usefulunpacker.AppDiagnostics.leaveIntent(_intentScope) }
     }

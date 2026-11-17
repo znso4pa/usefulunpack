@@ -841,4 +841,5 @@
     <string name="diagnostics_multiple_failures">%1$d 件のタスクで問題が発生しました。診断を確認してください。</string>
     <string name="components_color">色 %1$s</string>
     <string name="components_slider">スライダー</string>
+    <string name="search_skipped_dirs">読み取れないディレクトリ %1$d 件をスキップしました。結果は不完全です</string>
 </resources>

@@ -841,4 +841,5 @@
     <string name="diagnostics_multiple_failures">%1$d 條任務鏈遇到問題，請查看診斷詳情。</string>
     <string name="components_color">色彩 %1$s</string>
     <string name="components_slider">滑桿</string>
+    <string name="search_skipped_dirs">略過 %1$d 個無法讀取的目錄，結果不完整</string>
 </resources>

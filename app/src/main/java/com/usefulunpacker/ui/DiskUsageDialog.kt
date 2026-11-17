@@ -51,6 +51,7 @@ internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternal
     fun px(v: Int) = (v * density).toInt()
 
     val cancelled = AtomicBoolean(false)
+    var handingOffResult = false // UI thread: replacing progress with results is not a cancel.
 
     val tvPath = textView(act, startDir.absolutePath, 11.5f, C["tertiary"]!!).apply {
         setSingleLine(true)
@@ -78,7 +79,10 @@ internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternal
     // ⚠️ 取消只能从 `also` 进来：`setOnDismissListener` 只有一个槽位，
     // `keepTabBarTappable` 里 `resetPagerInputOnDialogDismiss` 已经占用了它，
     // 再自己设一次就会把「关掉弹窗后 ViewPager 还能滑」那条修复顶掉（真机踩过两次）。
-    dlg.keepTabsTappable() { cancelled.set(true) }
+    dlg.keepTabsTappable {
+        cancelled.set(true)
+        if (!handingOffResult && _intentScope.trace.chain?.isCancelled() != true) _intentScope.trace.cancelled()
+    }
     dlg.show()
 
     thread {
@@ -93,7 +97,16 @@ internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternal
             },
             isCancelled = { cancelled.get() },
         )
-        val scan = scanner.scan(startDir)
+        val scanStep = AppDiagnostics.begin("scan_directories")
+        val scan = try { scanner.scan(startDir) }
+        catch (e: java.util.concurrent.CancellationException) { scanStep.cancelled(); throw e }
+        catch (e: Exception) { scanStep.fail(FailureCode.IO, "Directory scan failed", e); throw e }
+        when {
+            scan == null -> scanStep.cancelled()
+            scan.deniedDirs > 0 -> scanStep.fail(FailureCode.PARTIAL_FAILURE,
+                "Skipped ${scan.deniedDirs} unreadable directories; disk totals are incomplete")
+            else -> scanStep.success()
+        }
         act.runFeatureOnUiThread {
             if (act.isFinishing || act.isDestroyed) return@runFeatureOnUiThread
             if (scan == null) {
@@ -105,6 +118,7 @@ internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternal
             }
             // 扫完了、但用户已经把扫描窗口关掉 → 结果丢弃，别硬弹一个新窗口。
             if (!dlg.isShowing) return@runFeatureOnUiThread
+            handingOffResult = true
             dlg.dismiss()
             showDiskResult(act, scan, ownerTabId)
         }
@@ -277,8 +291,9 @@ private fun diskColumn(act: MainActivity, title: String, pane: View): LinearLayo
     }
 }
 
-private fun showDiskResult(act: MainActivity, scan: DiskScan, ownerTabId: Int) {
-    if (act.tabs.none { it.tabId == ownerTabId }) return
+private fun showDiskResult(act: MainActivity, scan: DiskScan, ownerTabId: Int,
+                           navigation: List<DiskNode> = listOf(scan.root)) {
+    if (act.isFinishing || act.isDestroyed || act.tabs.none { it.tabId == ownerTabId }) return
     val density = act.resources.displayMetrics.density
     fun px(v: Int) = (v * density).toInt()
 
@@ -287,7 +302,9 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan, ownerTabId: Int) {
     val wide = isRoomy(act)
 
     /** 钻取栈：栈顶就是当前看的目录。用栈而不是给节点存 parent —— 扫描器不必为 UI 记账。 */
-    val stack = ArrayDeque<DiskNode>().apply { addLast(scan.root) }
+    val stack = ArrayDeque<DiskNode>().apply {
+        addAll(navigation.ifEmpty { listOf(scan.root) })
+    }
 
     val tvPath = textView(act, "", 12f, C["primary"]!!).apply {
         setSingleLine(true)
@@ -482,7 +499,7 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan, ownerTabId: Int) {
         }
     }
 
-    val dialog = com.usefulunpacker.UuDialogBuilder(act)
+    val dialog = com.usefulunpacker.UuDialogBuilder(act, keepChainOpen = false)
         .setTitle(act.getString(R.string.disk_usage))
         .setView(root)
         .setPositiveButton(act.getString(R.string.action_close), null)
@@ -502,18 +519,22 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan, ownerTabId: Int) {
     // `configChanges` —— Activity 不重建，`reapplyDialogPlacements` 只重算几何、不重拼
     // 视图树。真机：横屏开着的结果页转竖屏后仍是双栏 + 480dp 浮动卡（与 hub 当年
     // 「竖屏显示横屏骨架」同一个坑）。方向一变就关掉重开 —— 扫描结果还在内存里，不重扫。
+    var rebuildPending = false
     val skeletonWatch = object : android.content.ComponentCallbacks {
         override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
             // ⚠️ 判断必须推迟到下一帧：这个回调到达时 Activity 的 `resources` 还是**旧方向**
             // 的配置（实测转竖屏时 `isRoomy(act)` 仍返回 true），在这里判会直接 return、
             // 骨架永远不重拼。post 之后 resources 已经换好。
             act.window?.decorView?.post {
-                if (isRoomy(act) == wide) return@post
-                if (dlg?.isShowing == true) dlg?.dismiss()
+                if (act.isFinishing || act.isDestroyed || dlg?.isShowing != true || rebuildPending ||
+                    act.tabs.none { it.tabId == ownerTabId } || isRoomy(act) == wide) return@post
+                rebuildPending = true
+                val savedNavigation = stack.toList()
+                dlg?.dismiss()
                 // 再等一帧才开新窗口：`belowTabs` 的 `applySize` 读的是 Activity 根视图
                 // 的**当前高度**，而转屏这一帧它还是旧方向的值 —— 读早了会开出一个只占
                 // 半屏的窗口（真机：竖屏单栏骨架对了，但窗口只有上半屏高）。
-                act.window?.decorView?.post { showDiskResult(act, scan, ownerTabId) }
+                act.window?.decorView?.post { showDiskResult(act, scan, ownerTabId, savedNavigation) }
             }
         }
 
@@ -527,5 +548,5 @@ private fun showDiskResult(act: MainActivity, scan: DiskScan, ownerTabId: Int) {
         also = { act.application.unregisterComponentCallbacks(skeletonWatch) },
     )
     dialog.show()
-    render(scan.root)
+    render(stack.last())
 }

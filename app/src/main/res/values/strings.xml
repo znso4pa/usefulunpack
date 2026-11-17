@@ -849,4 +849,5 @@
     <string name="diagnostics_multiple_failures">%1$d tasks encountered problems. Open diagnostics for details.</string>
     <string name="components_color">Color %1$s</string>
     <string name="components_slider">Slider</string>
+    <string name="search_skipped_dirs">Skipped %1$d unreadable directories; results are incomplete</string>
 </resources>

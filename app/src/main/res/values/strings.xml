@@ -830,13 +830,13 @@
     <string name="home_disk_sub">%1$s of %2$s used</string>
 
     <!-- Shared controls and persistent diagnostics -->
-    <string name="diagnostics_title">Logs and diagnostics</string>
+    <string name="diagnostics_title">📋 Logs and diagnostics</string>
     <string name="diagnostics_empty">No diagnostic records yet</string>
     <string name="diagnostics_failure">An operation encountered a problem. Open diagnostics for details.</string>
     <string name="diagnostics_view">View log</string>
     <string name="diagnostics_share">Share log</string>
     <string name="diagnostics_storage_failed">The log could not be saved. Showing the memory copy.</string>
-    <string name="components_title">UI components</string>
+    <string name="components_title">🧩 UI components</string>
     <string name="components_primary">Primary action</string>
     <string name="components_secondary">Secondary action</string>
     <string name="components_danger">Dangerous action</string>

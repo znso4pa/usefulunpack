@@ -822,13 +822,13 @@
     <string name="home_disk_sub">已用 %1$s，共 %2$s</string>
 
     <!-- Shared controls and persistent diagnostics -->
-    <string name="diagnostics_title">日誌與診斷</string>
+    <string name="diagnostics_title">📋 日誌與診斷</string>
     <string name="diagnostics_empty">暫無診斷紀錄</string>
     <string name="diagnostics_failure">操作遇到問題，請查看診斷詳情。</string>
     <string name="diagnostics_view">查看日誌</string>
     <string name="diagnostics_share">分享日誌</string>
     <string name="diagnostics_storage_failed">日誌儲存失敗，目前顯示記憶體紀錄。</string>
-    <string name="components_title">通用元件</string>
+    <string name="components_title">🧩 通用元件</string>
     <string name="components_primary">主要操作</string>
     <string name="components_secondary">次要操作</string>
     <string name="components_danger">危險操作</string>

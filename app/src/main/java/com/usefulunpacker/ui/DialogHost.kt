@@ -9,10 +9,9 @@ internal fun MainActivity.setDialogDimmed(owner: Any, dimmed: Boolean) {
     if (dialogDimOwners.isNotEmpty()) {
         dim.bringToFront()
         findViewById<View>(R.id.touchShield)?.bringToFront()
-        dim.visibility = View.VISIBLE
-    } else dim.postOnAnimation {
-        if (dialogDimOwners.isEmpty()) dim.visibility = View.GONE
     }
+    val motion = dialogScrimMotion ?: DialogScrimMotion(dim).also { dialogScrimMotion = it }
+    motion.setDimmed(dialogDimOwners.isNotEmpty(), animate = !isFinishing && !isDestroyed)
 }
 
 internal fun MainActivity.configureTabSafeDrawer() {
@@ -66,6 +65,21 @@ internal fun prepareDialogWindow(dlg: android.app.Dialog) {
     decor.alpha = 1f
     var frames = 0
     var lastViewport: Pair<Int, Int>? = null
+    var attachmentGeneration = 0
+    var root = activity.findViewById<View>(R.id.root)
+    val viewportListener = View.OnLayoutChangeListener { view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+        if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+            val generation = attachmentGeneration
+            view.post {
+                if (generation == attachmentGeneration && !activity.isFinishing && !activity.isDestroyed &&
+                    dlg.isShowing && decor.isAttachedToWindow && view.width > 0 && view.height > 0) {
+                    lastViewport = view.width to view.height
+                    DialogMotion.reset(dlg)
+                    activity.applyPresentationGeometry(dlg)
+                }
+            }
+        }
+    }
     var firstDraw = DialogFirstDrawGate()
     val firstFrame = object : android.view.ViewTreeObserver.OnPreDrawListener {
         override fun onPreDraw(): Boolean {
@@ -95,10 +109,11 @@ internal fun prepareDialogWindow(dlg: android.app.Dialog) {
         }
     }
     decor.setOnApplyWindowInsetsListener { view, insets ->
+        val generation = attachmentGeneration
         view.post {
             val root = activity.findViewById<View>(R.id.root)
             val viewport = root?.let { it.width to it.height }
-            if (!activity.isFinishing && !activity.isDestroyed && dlg.isShowing && view.isAttachedToWindow && viewport != lastViewport) {
+            if (generation == attachmentGeneration && !activity.isFinishing && !activity.isDestroyed && dlg.isShowing && view.isAttachedToWindow && viewport != lastViewport) {
                 lastViewport = viewport
                 DialogMotion.reset(dlg)
                 activity.applyPresentationGeometry(dlg)
@@ -108,6 +123,10 @@ internal fun prepareDialogWindow(dlg: android.app.Dialog) {
     }
     decor.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
         override fun onViewAttachedToWindow(v: View) {
+            attachmentGeneration++
+            styleDialogSurface(dlg)
+            root = activity.findViewById(R.id.root)
+            root?.addOnLayoutChangeListener(viewportListener)
             frames = 0
             firstDraw = DialogFirstDrawGate()
             lastViewport = null
@@ -116,7 +135,10 @@ internal fun prepareDialogWindow(dlg: android.app.Dialog) {
             activity.rootDialogToTab(dlg, ownerTabId = openingTabId)
             activity.syncRootedDialogs()
             if (openingTabId != null && activity.tabs.none { it.tabId == openingTabId }) {
-                v.post { if (dlg.isShowing) dlg.dismiss() }
+                val generation = attachmentGeneration
+                v.post {
+                    if (generation == attachmentGeneration && dlg.isShowing && v.isAttachedToWindow) dlg.dismiss()
+                }
             }
             val entry = activity.rootedDialogs.firstOrNull { it.dlg === dlg }
             if (entry?.hidden != true) {
@@ -126,6 +148,8 @@ internal fun prepareDialogWindow(dlg: android.app.Dialog) {
             android.util.Log.d("UuDialogHost", "phase=attached window=${System.identityHashCode(dlg).toString(16)} owner=${entry?.ownerTabId} shield=${entry?.hidden != true}")
         }
         override fun onViewDetachedFromWindow(v: View) {
+            attachmentGeneration++
+            root?.removeOnLayoutChangeListener(viewportListener)
             if (v.viewTreeObserver.isAlive) v.viewTreeObserver.removeOnPreDrawListener(firstFrame)
             DialogMotion.reset(dlg)
             activity.setDialogDimmed(dlg, false)
@@ -195,7 +219,9 @@ private fun MainActivity.applyCenteredDialogGeometry(dlg: android.app.Dialog) {
     val window = dlg.window ?: return
     if (dlg.isShowing && !window.decorView.isAttachedToWindow) return
     val root = findViewById<View>(R.id.root) ?: return
+    if (root.width <= 0 || root.height <= 0) return
     val safeTop = findViewById<View>(R.id.dividerTabBar)?.bottom ?: 0
+    if (root.height <= safeTop) return
     val attrs = window.attributes
     val original = centeredSizes.getOrPut(dlg) { attrs.width to attrs.height }
     val y = safeTop / 2
@@ -353,7 +379,15 @@ internal fun MainActivity.setRootedDialogHidden(dlg: android.app.Dialog, hidden:
 internal fun MainActivity.dismissRootedDialogsFor(tabId: Int) {
     val doomed = rootedDialogs.filter { it.ownerTabId == tabId }
     rootedDialogs.removeAll { it.ownerTabId == tabId }
-    doomed.forEach { com.usefulunpacker.observedAttempt("DialogHost") { it.dlg.dismiss() } }
+    doomed.forEach { entry ->
+        try { com.usefulunpacker.observedAttempt("DialogHost") { entry.dlg.dismiss() } }
+        finally {
+            // A framework dismissal failure must not leave the closed tab's Activity shield.
+            releaseContentBlock(entry.dlg)
+            setDialogDimmed(entry.dlg, false)
+        }
+    }
+    syncRootedDialogs()
 }
 
 /**
@@ -486,6 +520,9 @@ private fun MainActivity.applyDialogGeometry(
         // 可用高度取**父窗口当前的实际高度**（root 会被输入法压矮），不是屏幕高度 ——
         // 拿 displayMetrics 算出来的高度在键盘弹出后就是超的，超出的那截收不到触摸。
         val rootH = findViewById<View>(R.id.root)?.height ?: 0
+        // Startup may show a dialog before the Activity's first layout. Keep natural size;
+        // the root layout listener will size it when the viewport actually exists.
+        if (rootH <= topInset) return
         val availH = (rootH - topInset - (2 * 20f * density).toInt()).coerceAtLeast(1)
         if (!fitContent) {
             // 长内容：给**面板**（AlertDialog 的 android.R.id.content 第一层子）设精确高度，

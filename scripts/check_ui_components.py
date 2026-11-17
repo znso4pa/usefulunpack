@@ -93,6 +93,17 @@ theme = ET.parse(root / "app/src/main/res/values/themes.xml")
 style = theme.find("style[@name='Theme.UsefulUnpack.Dialog']")
 if style.find("item[@name='android:backgroundDimEnabled']").text != "false":
     failures.append("Dialog theme: DialogHost owns the content-only scrim; system dim must stay disabled")
+for name in ("android:background", "android:windowBackground"):
+    if style.find(f"item[@name='{name}']").text != "@android:color/transparent":
+        failures.append(f"Dialog theme: {name} must stay transparent behind the single rounded panel")
+# The home page is fixed; only its recent/bookmark child containers may scroll.
+home_layout = ET.parse(root / "app/src/main/res/layout/folder_view.xml")
+home = next(element for element in home_layout.iter() if element.get(android + "id") == "@+id/homeRoot")
+if home.tag != "FrameLayout":
+    failures.append("folder_view.xml: the home outer panel must not scroll")
+grid = next(element for element in home.iter() if element.get(android + "id") == "@+id/homeGrid")
+if grid.get(android + "layout_height") != "match_parent":
+    failures.append("folder_view.xml: homeGrid must fill the fixed home viewport")
 if failures:
     print("\n".join(failures))
     sys.exit(1)

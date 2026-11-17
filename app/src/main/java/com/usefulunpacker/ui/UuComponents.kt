@@ -480,10 +480,22 @@ class UuProgressDialog(ctx: Context) : android.app.ProgressDialog(ctx) {
     }
 }
 
+/** One opaque rounded surface. Transparent hosts cannot expose square corners during motion. */
+internal fun styleDialogSurface(dialog: android.app.Dialog) {
+    dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+    val content = dialog.findViewById<ViewGroup>(android.R.id.content) ?: return
+    content.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+    content.clipChildren = false
+    content.clipToPadding = false
+    (dialog.window?.decorView as? ViewGroup)?.clipChildren = false
+    val panel = content.getChildAt(0) ?: return
+    panel.setBackgroundResource(R.drawable.dialog_bg_rounded)
+    panel.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
+    panel.clipToOutline = true
+    panel.elevation = dialog.context.resources.getDimension(R.dimen.dialog_surface_elevation)
+}
+
 private fun styleDialog(dialog: AlertDialog, positiveStyle: ActionStyle) {
-    // The host window may be a scrim; title, content and buttons need one opaque panel.
-    (dialog.findViewById<ViewGroup>(android.R.id.content)?.getChildAt(0))?.background =
-        roundedBg(UuMetrics.px(dialog.context, R.dimen.corner_dialog), dialog.context.getColor(R.color.bg_surface_dim))
     dialog.findViewById<TextView>(android.R.id.message)?.let { UuMetrics.text(it) }
     for (which in listOf(AlertDialog.BUTTON_POSITIVE, AlertDialog.BUTTON_NEGATIVE, AlertDialog.BUTTON_NEUTRAL)) {
         dialog.getButton(which)?.let { UuMetrics.action(it, if (which == AlertDialog.BUTTON_POSITIVE) positiveStyle else ActionStyle.TEXT) }

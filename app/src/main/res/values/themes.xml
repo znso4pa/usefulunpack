@@ -33,8 +33,8 @@
 
     <!-- Dialog theme — dark consistent surface -->
     <style name="Theme.UsefulUnpack.Dialog" parent="Theme.AppCompat.DayNight.Dialog.Alert">
-        <item name="android:background">@color/bg_surface_dim</item>
-        <item name="android:windowBackground">@drawable/dialog_bg_rounded</item>
+        <item name="android:background">@android:color/transparent</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
         <!-- DialogHost dims only the content below the independent tab strip. -->
         <item name="android:backgroundDimEnabled">false</item>
         <item name="android:windowAnimationStyle">@null</item>

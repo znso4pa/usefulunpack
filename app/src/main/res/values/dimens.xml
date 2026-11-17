@@ -41,4 +41,5 @@
     <dimen name="home_list_row_height">58dp</dimen>
     <dimen name="home_tag_max_width">100dp</dimen>
     <dimen name="home_tag_max_width_wide">180dp</dimen>
+    <dimen name="dialog_surface_elevation">6dp</dimen>
 </resources>

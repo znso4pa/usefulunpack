@@ -547,6 +547,7 @@ class MainActivity : AppCompatActivity() {
         if (bytes < GIB_F) "${(bytes / MIB_F).toInt()}m" else giB(bytes)
 
     override fun onDestroy() {
+        dialogScrimMotion?.dispose()
         try { currentMediaPlayer?.release() } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("MainActivity", failureCause);}
         currentMediaPlayer = null
         // 清理编辑临时文件
@@ -838,7 +839,7 @@ class MainActivity : AppCompatActivity() {
         // 免责声明和别的弹窗同性质：护盾挡住除 tab 栏以外的一切 + 固定在本 tab。
         // 首启那一次仍然是一道**闸门**（setCancelable(false)：不接受不放行），
         // 但触摸语义和其它弹窗统一，不再单独做成完全模态。
-        dlg.belowTabs()
+        dlg.keepTabsTappable()
     }
 
     internal var bgImageLauncher: androidx.activity.result.ActivityResultLauncher<String>? = null
@@ -875,6 +876,7 @@ class MainActivity : AppCompatActivity() {
      */
     internal val shieldHolders = mutableSetOf<android.app.Dialog>()
     internal val dialogDimOwners = mutableSetOf<Any>()
+    internal var dialogScrimMotion: DialogScrimMotion? = null
     internal val dialogChainTabs = java.util.WeakHashMap<IntentChain, Int>()
     internal val drawerOpenTabs = mutableSetOf<Int>()
     internal var syncingDrawerTab = false

@@ -340,6 +340,14 @@ private fun runCompress(
     val outName = when {
         isMvPackKey(fmt) -> mvPackedName(dir, fmt)
         fmt == "ksd" -> "${dir.nameWithoutExtension}.$ext"
+        // LPK derives its keys from the FILE NAME, so the pack has to come back
+        // under the name the engine looks for. Extraction appends `_extracted`
+        // to the folder, and the original extension is already part of that
+        // name — strip the suffix and keep the rest verbatim.
+        fmt == "lpk" -> {
+            val base = dir.name.removeSuffix("_extracted")
+            if (base.uppercase().endsWith(".LPK")) base else "$base.lpk"
+        }
         else -> "${dir.name}.$ext"
     }
     val outDir = dir.parentFile ?: currentDir
@@ -498,6 +506,10 @@ fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password
             // for the user to supply is the key.
             "rpgmvp", "rpgmvo", "rpgmvm" -> RgssCore.rgssMvEncrypt("", src.path, outFile.path, password) != null
             "ksd" -> KsdCore.ksdCompress("", src.path, outFile.path, level.toString()) != null
+            // LPK: `password` carries the optional per-archive key pair
+            // ("0x12345678:0x9abcdef0"). Only archives the engine keys through
+            // SCRIPT.LPK need one; SCRIPT.LPK itself takes an empty string.
+            "lpk" -> LpkCore.lpkCreateArchive("", src.path, outFile.path, password)
             "zip" -> ZipCore.zipCompress("", src.path, outFile.path, level.toString(), password, splitStr)
             "7z" -> SevenZCore.szCompress("", src.path, outFile.path, level.toString(), password, splitStr)
             "tar", "tgz", "tbz2", "txz", "tzst" -> TarCore.tarCompress("", src.path, outFile.path, fmt, level.toString())

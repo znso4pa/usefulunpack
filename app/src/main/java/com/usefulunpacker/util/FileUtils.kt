@@ -694,6 +694,15 @@ val MAGICS: List<Pair<ByteArray, String>> = listOf(
     // CatSystem2's KIF archives (`.int`); the index key still comes from the
     // game's exe, which the native side looks for next to the archive.
     byteArrayOf(0x4B, 0x49, 0x46, 0x00) to "int",
+    // BGI/Ethornell `.arc`: the 4-byte "Pack" alone is far too generic, so the
+    // magic runs to 12 bytes ("Pack" + "File    "). The v2 layout ("BURI" +
+    // "KO ARC20") is not sniffed — those files keep their extension, and a
+    // 4-byte prefix would collide with unrelated data.
+    "PackFile    ".toByteArray(Charsets.US_ASCII) to "bgi",
+    // Lucifen `.lpk`. Four bytes is weak, but the native reader immediately
+    // checks the flag byte at +4, so a false sniff fails loudly instead of
+    // producing nonsense entries.
+    byteArrayOf(0x4C, 0x50, 0x4B, 0x31) to "lpk",
     // RPG Maker RGSS: "RGSSAD\0" + the version byte (1 = XP, 2 = VX, 3 = VX Ace),
     // so a game using a non-standard archive name still opens. All three map to
     // the one read key — the parser reads the header.

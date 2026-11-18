@@ -2625,6 +2625,9 @@ pub const SIGNATURES: &[Sig] = &[
     Sig { magics: &[b"XP3\r\n \n\x1a\x8b\x67"], label: "XP3 archive", confidence: CONFIDENCE_HIGH, validate: validate_xp3 },
     // POSIX/GNU tar: "ustar" at archive offset 257 + header checksum.
     Sig { magics: &[b"ustar"], label: "POSIX tar archive", confidence: CONFIDENCE_MEDIUM, validate: validate_tar },
+    // BGI/Ethornell `.arc`: "Pack" + "File    " (12 bytes). The second half is
+    // what makes this safe to sniff — "Pack" on its own is 4 bytes of English.
+    Sig { magics: &[b"PackFile    "], label: "BGI/Ethornell archive", confidence: CONFIDENCE_HIGH, validate: validate_bgi },
     // PNG: full 16-byte magic incl. IHDR chunk header (binwalk parity).
     Sig { magics: &[b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"], label: "PNG image", confidence: CONFIDENCE_HIGH, validate: validate_png },
     // JPEG: binwalk's three magic variants (JFIF APP0 / EXIF APP1 / DQT).
@@ -2781,6 +2784,64 @@ fn validate_ypf(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
     if count == 0 || count > 100_000 { return None; }
     if hdr_len < 0x20 || (off + hdr_len as u64) > file_len { return None; }
     Some(HitInfo { size: None, count: Some(count) })
+}
+
+/// BGI/Ethornell `.arc` validator.
+///
+/// Magic: `Pack` + `File    ` (12 bytes) — the 4-byte `Pack` alone is far too
+/// generic to sniff on. The index is plaintext, so this does real structural
+/// work: the count must fit the file, and every sampled record's name has to be
+/// a sane CP932 string while its offset/size stay inside the file. That is what
+/// separates a real archive from text that happens to start with "Pack".
+fn validate_bgi(f: &mut File, off: u64, file_len: u64) -> Option<HitInfo> {
+    if file_len.saturating_sub(off) < 0x10 {
+        return None;
+    }
+    let mut h = [0u8; 0x10];
+    if !read_at(f, off, &mut h) {
+        return None;
+    }
+    if &h[0..4] != b"Pack" || &h[4..12] != b"File    " {
+        return None;
+    }
+    let count = u32le(&h, 12) as u64;
+    if count == 0 || count > 0xfffff {
+        return None;
+    }
+    let index_len = count * 0x20;
+    if off + 0x10 + index_len > file_len {
+        return None;
+    }
+    // Walking a 1M-entry index would cost 32 MB of reads per hit. Sample the
+    // first 64 records for the structural check and only derive a hit size
+    // when the whole index is small enough to be read in one go.
+    let sample = count.min(64) as usize;
+    let mut rec = vec![0u8; sample * 0x20];
+    if !read_at(f, off + 0x10, &mut rec) {
+        return None;
+    }
+    let base = off + 0x10 + index_len;
+    let mut max_end = base;
+    for i in 0..sample {
+        let r = &rec[i * 0x20..(i + 1) * 0x20];
+        let name = &r[..0x10];
+        let end = name.iter().position(|&b| b == 0).unwrap_or(0x10);
+        if end == 0 {
+            return None; // empty name: not a real record
+        }
+        if name[..end].iter().any(|&b| b < 0x20) {
+            return None; // control bytes in a file name
+        }
+        let rel = u32le(r, 0x10) as u64;
+        let size = u32le(r, 0x14) as u64;
+        let at = base + rel;
+        if at > file_len || at + size > file_len {
+            return None;
+        }
+        max_end = max_end.max(at + size);
+    }
+    let size = if count <= 65_536 { Some(max_end - off) } else { None };
+    Some(HitInfo { size, count: Some(count as u32) })
 }
 
 /// PF6/PF8 (Artemis/Malie) archive validator.
@@ -3786,8 +3847,46 @@ mod tests {
     fn signature_counts_match_the_kotlin_footer() {
         let sigs = SIGNATURES.len() as u32;
         let patterns: u32 = SIGNATURES.iter().map(|s| s.magics.len() as u32).sum();
-        assert_eq!(sigs, 118);
-        assert_eq!(patterns, 203);
+        assert_eq!(sigs, 119);
+        assert_eq!(patterns, 204);
+    }
+
+    /// BGI/Ethornell: `Pack` + `File    ` + a plaintext index. The validator
+    /// must reject a text file that merely starts with "Pack", and must catch a
+    /// record whose offset/size runs past the end of the file.
+    #[test]
+    fn bgi_validates() {
+        let mut blob = vec![0u8; 0x10 + 0x20 * 2];
+        blob[0..4].copy_from_slice(b"Pack");
+        blob[4..12].copy_from_slice(b"File    ");
+        blob[12..16].copy_from_slice(&2u32.to_le_bytes());
+        // record 0: "a.txt" at rel 0, 4 bytes
+        blob[0x10..0x15].copy_from_slice(b"a.txt");
+        blob[0x10 + 0x10..0x10 + 0x14].copy_from_slice(&0u32.to_le_bytes());
+        blob[0x10 + 0x14..0x10 + 0x18].copy_from_slice(&4u32.to_le_bytes());
+        // record 1: "b.bin" at rel 4, 3 bytes
+        blob[0x30..0x35].copy_from_slice(b"b.bin");
+        blob[0x30 + 0x10..0x30 + 0x14].copy_from_slice(&4u32.to_le_bytes());
+        blob[0x30 + 0x14..0x30 + 0x18].copy_from_slice(&3u32.to_le_bytes());
+        blob.extend_from_slice(b"AAAABBB");
+        let p = tmp("ok.arc", &blob);
+        let mut f = File::open(&p).unwrap();
+        let len = blob.len() as u64;
+        let hit = validate_bgi(&mut f, 0, len).expect("real archive must validate");
+        assert_eq!(hit.count, Some(2));
+        assert_eq!(hit.size, Some(len));
+
+        // A text file starting with "Pack" but no "File    " is not a hit.
+        let p2 = tmp("fake.arc", b"Pack some random text that is not an archive");
+        let mut f2 = File::open(&p2).unwrap();
+        assert!(validate_bgi(&mut f2, 0, 40).is_none());
+
+        // An entry pointing past EOF must be rejected.
+        let mut bad = blob.clone();
+        bad[0x10 + 0x14..0x10 + 0x18].copy_from_slice(&0xffffu32.to_le_bytes());
+        let p3 = tmp("oob.arc", &bad);
+        let mut f3 = File::open(&p3).unwrap();
+        assert!(validate_bgi(&mut f3, 0, bad.len() as u64).is_none());
     }
 
     /// RGSS: 7-byte magic + a legal version byte, plus the v3 index sanity.

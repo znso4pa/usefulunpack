@@ -89,6 +89,8 @@ val FORMAT_COLORS = mapOf(
     "rpgmvm" to 0xFFb26500.toInt(),
     "rpa" to 0xFF2ecc71.toInt(),
     "int" to 0xFF34495e.toInt(),
+    "bgi" to 0xFF6d4c41.toInt(),
+    "lpk" to 0xFF00897b.toInt(),
     "zip" to 0xFF3498db.toInt(),
     "7z" to 0xFF8e44ad.toInt(),
     "rar" to 0xFFc0392b.toInt(),
@@ -124,6 +126,11 @@ fun formatOfName(name: String): String? {
         "rpa", "rpi" -> "rpa"
         // CatSystem2 (KIF): the engine writes `.int` for its archives.
         "int" -> "int"
+        // BGI/Ethornell and Lucifen both use short, generic extensions; the
+        // native readers reject anything that is not really theirs, so the
+        // extension is a hint rather than a promise.
+        "arc" -> "bgi"
+        "lpk" -> "lpk"
         "iso" -> "iso"
         "ypf" -> "ypf"
         // All three RGSS container versions read through one key: the parser
@@ -167,7 +174,7 @@ val ARCHIVE_EXTS = setOf(
     "xp3", "pfs", "pf6", "pf8", "nsa", "sar", "iso", "ypf", "zip", "7z", "rar", "lz4",
     "gz", "bz2", "xz", "zst", "lzma", "tar", "tgz", "tbz2", "txz", "tzst", "ksd", "br",
     "rgssad", "rgss2a", "rgss3a", "rpgmvp", "rpgmvo", "rpgmvm", "png_", "ogg_", "m4a_",
-    "rpa", "rpi", "int",
+    "rpa", "rpi", "int", "arc", "lpk",
 )
 
 // 归档模式格式选择器：格式 key → 显示标签
@@ -177,6 +184,8 @@ val FORMAT_LABELS = mapOf(
     "rpgmv" to "RPG Maker MV/MZ",
     "rpa" to "RPA (.rpa/.rpi)",
     "int" to "INT (.int, CatSystem2)",
+    "lpk" to "Lucifen (.lpk)",
+    "bgi" to "BGI/Ethornell (.arc)",
     "zip" to "ZIP", "7z" to "7z", "rar" to "RAR", "lz4" to "LZ4",
     "tar" to "TAR (.tar/.tgz/.tar.gz/.tbz2/.txz)", "gz" to "GZIP (.gz)", "bz2" to "BZIP2 (.bz2)",
     "xz" to "XZ (.xz)", "zst" to "ZSTD (.zst)", "lzma" to "LZMA (.lzma)",
@@ -186,14 +195,14 @@ val FORMAT_LABELS = mapOf(
 // 归档模式格式选择器分组顺序（表头用 string 资源，格式 key 列表）
 val FORMAT_GROUPS = listOf(
     Pair(R.string.format_group_generic, listOf("zip", "7z", "rar", "lz4", "tar", "gz", "bz2", "xz", "zst", "lzma", "br")),
-    Pair(R.string.format_group_other, listOf("xp3", "pfs", "nsa", "iso", "ypf", "ksd", "rgss", "rpgmv", "rpa", "int")),
+    Pair(R.string.format_group_other, listOf("xp3", "pfs", "nsa", "iso", "ypf", "ksd", "rgss", "rpgmv", "rpa", "int", "bgi", "lpk")),
 )
 
 // 压缩模式格式选择器分组（zip/7z + tar 变体 = 归档打包；单流 = 单文件压缩）
 val COMPRESS_GROUPS = listOf(
     Pair(R.string.format_group_generic, listOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")),
     Pair(R.string.format_group_single, listOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "br", "ksd")),
-    Pair(R.string.format_group_other, listOf("xp3", "pfs", "pf6", "nsa", "iso", "ypf", "rgssad", "rgss2a", "rgss3a", "rpgmvp", "rpgmvo", "rpgmvm")),
+    Pair(R.string.format_group_other, listOf("xp3", "pfs", "pf6", "nsa", "iso", "ypf", "rgssad", "rgss2a", "rgss3a", "rpgmvp", "rpgmvo", "rpgmvm", "lpk")),
 )
 
 // 压缩输出扩展名（dir.name + 该扩展名）
@@ -203,6 +212,9 @@ val COMPRESS_EXT = mapOf(
     "rpgmvp" to "rpgmvp", "rpgmvo" to "rpgmvo", "rpgmvm" to "rpgmvm",
     "rpa" to "rpa",
     "int" to "int",
+    // LPK 的密钥由**文件名**派生，所以产物名必须和游戏里的原名一致；
+    // CompressionDialogs 里专门为它去掉了 `_extracted` 后缀。
+    "lpk" to "lpk",
     "zip" to "zip", "7z" to "7z",
     "tar" to "tar", "tgz" to "tar.gz", "tbz2" to "tar.bz2", "txz" to "tar.xz", "tzst" to "tar.zst",
     "gz" to "gz", "bz2" to "bz2", "xz" to "xz", "zst" to "zst", "lzma" to "lzma", "lz4" to "lz4",
@@ -218,7 +230,7 @@ val SINGLE_FILE_COMPRESS = setOf("gz", "bz2", "xz", "zst", "lzma", "lz4", "br", 
 // 批量"合并为一个压缩包"可用格式（多条目归档，排除单文件格式）
 val MERGE_COMPRESS_GROUPS = listOf(
     Pair(R.string.format_group_generic, listOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")),
-    Pair(R.string.format_group_other, listOf("xp3", "pfs", "pf6", "nsa", "iso", "ypf", "rgssad", "rgss2a", "rgss3a", "rpa", "int")),
+    Pair(R.string.format_group_other, listOf("xp3", "pfs", "pf6", "nsa", "iso", "ypf", "rgssad", "rgss2a", "rgss3a", "rpa", "int", "lpk")),
 )
 
 // 压缩模式格式选择器：格式 key → 显示标签
@@ -226,6 +238,7 @@ val COMPRESS_LABELS = mapOf(
     "xp3" to "XP3 (.xp3)", "pfs" to "PFS/PF8 (.pfs)", "pf6" to "PF6 (.pfs)", "nsa" to "NSA (.nsa/.sar)", "iso" to "ISO (.iso)", "ypf" to "YPF (.ypf)",
     "rpa" to "RPA (.rpa)",
     "int" to "INT (.int, CatSystem2)",
+    "lpk" to "Lucifen (.lpk)",
     "rgssad" to "RGSS XP (.rgssad)", "rgss2a" to "RGSS VX (.rgss2a)", "rgss3a" to "RGSS VX Ace (.rgss3a)",
     "zip" to "ZIP (.zip)", "7z" to "7z (.7z)",
     "tar" to "TAR (.tar)", "tgz" to "TAR.GZ (.tar.gz)", "tbz2" to "TAR.BZ2 (.tar.bz2)",

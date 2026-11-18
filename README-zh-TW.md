@@ -4,7 +4,7 @@
 
 輕量級 Android 檔案管理器 & 歸檔打包/解壓工具
 
-支援 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**RPA**（Ren'Py）、**INT**（CatSystem2）、**ISO 9660** 光碟映像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支援打包與解壓），Rust 原生核心。
+支援 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**RPA**（Ren'Py）、**INT**（CatSystem2）、**BGI/Ethornell**（`.arc`）、**Lucifen**（`.lpk`）、**ISO 9660** 光碟映像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支援打包與解壓），Rust 原生核心。
 
 ---
 
@@ -18,6 +18,8 @@
 | 📜 **NSA/SAR** | 解壓 NScripter `.nsa` / `.sar` 封包（LZSS + SPB） |
 | 📦 **YPF** | 解壓 YU-RIS `.ypf` 封包，三層自適應邊界檢測 |
 | 🐍 **INT** | 解壓 CatSystem2（KIF）`.int`：條目名逐條置換、位移/大小與內容走 Blowfish，**金鑰來自遊戲 exe 的 key_code / v_code / v_code2 資源**，所以 .int 旁邊要有那個 exe；沒有 exe 明確報錯不猜 |
+| 🏗️ **BGI/Ethornell** | 解壓 `.arc` 封包：經典的 `Pack`+`File    ` 佈局與 Buriko 的 `BURI`+`KO ARC20` 都由封包頭自動區分，不必使用者選擇。`DSC FORMAT 1.00` 條目（帶金鑰的規範 Huffman）就地解碼。**唯讀格式，不封裝** —— 參考實作無法寫入，DSC 編碼器也從未公開 |
+| 🔐 **Lucifen LPK** | 解壓並封裝 Lucifen 引擎 `.lpk`。金鑰由**檔案名稱**派生，所以封裝出來的包必須用遊戲期望的原名；索引是加密的字母 trie，條目還可能再疊 LZSS / 整體混淆 / 標頭加密。整包前綴只存在**索引裡一份**，不在每個條目重複，所以條目記錄的 size 是還原後的長度、不是磁碟上的位元組數。常數有**兩套**，由封包頭自動偵測。資料包逐檔加密：金鑰對取自同目錄 `SCRIPT.LPK`，缺少時會**掃描遊戲目錄暴力還原**（每個候選都要通過真實索引結構校驗）。**可封裝，但不做壓縮** —— 引擎的 LZSS 編碼器從未公開，寫錯會靜默產出壞檔 |
 | 🐍 **RPA** | 解壓 + 封裝 Ren'Py `.rpa` / `.rpi`；索引是 zlib 壓縮的 Python pickle，RPA-1.0 / 2.0 / 3.0 三種形態（另相容 RPA-3.2 / 4.0 與 ALT-1.0），條目名為 UTF-8；**封裝寫出 RPA-3.0，pickle 協定 2**（Python 2 時代的 Ren'Py 6.x 與現代引擎都能讀取），可編輯腳本；ZiX-12A/B 需要遊戲自帶的 `renpy/loader.pyo`，明確報錯不猜 |
 | 🎮 **RPG Maker MV/MZ** | 解碼 + 回封逐檔混淆素材（回封需自填金鑰）：`.rpgmvp` 圖片、`.rpgmvo` 音訊、`.rpgmvm` 影片（以及 MZ 的 `.png_` / `.ogg_` / `.m4a_`）；16 位元組檔頭可從檔案自身還原，**不需金鑰**（檔案沒有副檔名時也認得出，靠內容判斷型別）；回封金鑰接受 32 位十六進位（原樣使用）或任意文字（依 RPG Maker 的規則做 MD5）；**每個格式只收自己的類型：`.rpgmvp` 收 `.png`、`.rpgmvo` 收 `.ogg`、`.rpgmvm` 收 `.m4a`**，其餘一律擋下，因為引擎是依副檔名選解碼器的；產物依真實副檔名命名，可直接進圖片 / 音訊預覽；批次模式一次解碼整個資料夾 |
 | 🎮 **RGSS** | 解壓 + 封包 RPG Maker 加密封包：`.rgssad`（XP）、`.rgss2a`（VX）、`.rgss3a`（VX Ace）；版面依封包標頭自動辨識，三種副檔名互相都能開啟；檔名 UTF-8 / Shift-JIS；可編輯腳本；**封包產物預設命名為 `Game.<ext>`**（RPG Maker 只認這個名字），封包選項裡可關 |
@@ -69,7 +71,7 @@
 | 📤 **分享** | 長按任意檔案 → **分享**：經 FileProvider + `ACTION_SEND` 交給其他應用——無需聯網權限、無需改 manifest |
 | 💾 **還原上次工作階段** | 設定 → **其餘設定** →「還原上次工作階段」：啟動時重開上次的視窗/目錄**以及開啟著的歸檔預覽**（最多 3 個分頁，超出彈 toast）。回收站設定也歸入其餘設定 |
 | 🎨 **UI 全面重構** | 統一設計令牌（圓角/間距/字型/行高）、所有預覽的 **⋮ 溢出選單**、平板/橫屏對話框限寬、**寬屏主從佈局**（≥600dp 檔案列表在左 + 視窗內預覽在右） |
-| 🦀 **Rust 核心** | 每種格式獨立 `.so`，互不干擾（20 種格式，含簽名掃描） |
+| 🦀 **Rust 核心** | 每種格式獨立 `.so`，互不干擾（26 個原生核心，含簽名掃描與影音轉換） |
 | 🔒 **最小權限** | 僅儲存權限 |
 
 ## 多視窗常見問題（FAQ）
@@ -130,6 +132,8 @@ bash build.sh
          libarchive_rgss_core.so → RGSS (XP/VX/VX Ace) + MV/MZ 散素材
          libarchive_rpa_core.so  → RPA (Ren'Py)
          libarchive_int_core.so  → INT (CatSystem2)
+         libarchive_bgi_core.so  → BGI/Ethornell (.arc)
+         libarchive_lpk_core.so  → Lucifen (.lpk)
          libarchive_rgss_core.so → RGSS (RPG Maker XP/VX/VX Ace)
          libarchive_zip_core.so  → ZIP
          libarchive_sevenz_core.so → 7z

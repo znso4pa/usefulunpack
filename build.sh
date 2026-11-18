@@ -50,6 +50,8 @@ CRATES=(
     "archive_rgss-core:rgss_core"
     "archive_rpa-core:rpa_core"
     "archive_int-core:int_core"
+    "archive_bgi-core:bgi_core"
+    "archive_lpk-core:lpk_core"
     "archive_audio-core:audio_core"
     "archive_video-core:video_core"
 )

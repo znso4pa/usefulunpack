@@ -4,7 +4,7 @@
 
 轻量级 Android 文件管理器 & 归档打包/解压工具
 
-支持 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**RPA**（Ren'Py）、**INT**（CatSystem2）、**ISO 9660** 光盘镜像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支持打包与解压），Rust 原生核心。
+支持 **XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**RPA**（Ren'Py）、**INT**（CatSystem2）、**BGI/Ethornell**（`.arc`）、**Lucifen**（`.lpk`）、**ISO 9660** 光盘镜像，以及 **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** 等通用格式（均支持打包与解压），Rust 原生核心。
 
 ---
 
@@ -18,6 +18,8 @@
 | 📜 **NSA/SAR** | 解压 NScripter `.nsa` / `.sar` 封包（LZSS + SPB），**封包**（stored / LZSS） |
 | 📦 **YPF** | 解压 YU-RIS `.ypf` 封包，三层自适应边界检测 |
 | 🐍 **INT** | 解压 CatSystem2（KIF）`.int`：条目名逐条置换、偏移/大小与载荷走 Blowfish，**密钥来自游戏 exe 的 key_code / v_code / v_code2 资源**，所以 .int 旁边要有那个 exe；无 exe 明确报错不猜 |
+| 🏗️ **BGI/Ethornell** | 解压 `.arc` 封包：经典的 `Pack`+`File    ` 布局与 Buriko 的 `BURI`+`KO ARC20` 都由包头自动区分，不用用户选。`DSC FORMAT 1.00` 条目（带密钥的规范 Huffman）就地解码。**只读格式，不封包** —— 参考实现写不了，DSC 编码器也从未公开 |
+| 🔐 **Lucifen LPK** | 解压并封包 Lucifen 引擎 `.lpk`。密钥由**文件名**派生，所以打出来的包必须用游戏期望的原名；索引是加密的字母 trie，条目还可能再叠 LZSS / 整体混淆 / 头部加密。整包前缀只存在**索引里一份**，不在每个条目重复，所以条目记录的 size 是还原后的长度、不是磁盘上的字节数。常量有**两套**，由包头自动探测。数据包按文件逐个加密：密钥对取自同目录 `SCRIPT.LPK`，缺失时会**扫描游戏目录暴力恢复**（每个候选都要通过真实索引结构校验）。**可封包，但不做压缩** —— 引擎的 LZSS 编码器从未公开，写错会静默产出坏文件 |
 | 🐍 **RPA** | 解压 + 封包 Ren'Py `.rpa` / `.rpi`；索引是 zlib 压缩的 Python pickle，RPA-1.0 / 2.0 / 3.0 三种形态（另兼容 RPA-3.2 / 4.0 与 ALT-1.0），条目名为 UTF-8；**封包写出 RPA-3.0，pickle 协议 2**（Python 2 时代的 Ren'Py 6.x 与现代引擎都能读），可编辑脚本；ZiX-12A/B 需要游戏自带的 `renpy/loader.pyo`，明确报错不猜 |
 | 🎮 **RGSS** | 解压 + 打包 RPG Maker 加密归档：`.rgssad`（XP）、`.rgss2a`（VX）、`.rgss3a`（VX Ace）；布局按包头自动识别，三种扩展名互相都能打开；文件名 UTF-8 / Shift-JIS；可编辑脚本；**封包产物默认命名为 `Game.<ext>`**（RPG Maker 只认这个名字），封包选项里可关 |
 | 🎮 **RPG Maker MV/MZ** | 解码 + 回封逐文件混淆素材（回封需自填密钥）：`.rpgmvp` 图片、`.rpgmvo` 音频、`.rpgmvm` 视频（以及 MZ 的 `.png_` / `.ogg_` / `.m4a_`）；16 字节文件头可从文件自身还原，**无需密钥**（文件没有扩展名时也认得出来，靠内容判断类型）；回封密钥接受 32 位十六进制（原样使用）或任意文本（按 RPG Maker 的规则做 MD5）；**每个格式只收自己的类型：`.rpgmvp` 收 `.png`、`.rpgmvo` 收 `.ogg`、`.rpgmvm` 收 `.m4a`**，其余一律拦住，因为引擎是按扩展名选解码器的；产物按真实扩展名命名，可直接进图片 / 音频预览；批量模式一次解码整个文件夹 |
@@ -74,7 +76,7 @@
 | 🔄 **自动刷新** | 后台监听当前目录，文件列表自动同步——重命名/移动/删除/解压/压缩及外部改动（adb push、USB）无需退出重进 |
 | ✂️ **精确切割** | 签名扫描的切割/解压按验证出的归档大小（zip/rar/7z/zstd/lz4/iso）精确切取——夹在其它文件中间的归档（如 `mp4 + zip + mp4`）能干净提出，不带尾部数据，解压成功 |
 | 📲 **APK 安装** | 点 APK 调系统安装器（FileProvider + PackageInstaller 兜底）；安装前可选保留副本（部分系统安装器装完会删除安装包） |
-| 🦀 **Rust 核心** | 每种格式独立 `.so`，互不干扰（20 种格式，含签名扫描） |
+| 🦀 **Rust 核心** | 每种格式独立 `.so`，互不干扰（26 个原生核心，含签名扫描与音视频转换） |
 | 🔒 **最小权限** | 仅存储权限 |
 
 ## 多窗口常见问题（FAQ）
@@ -135,6 +137,8 @@ bash build.sh
          libarchive_rgss_core.so → RGSS (XP/VX/VX Ace) + MV/MZ 散素材
          libarchive_rpa_core.so  → RPA (Ren'Py)
          libarchive_int_core.so  → INT (CatSystem2)
+         libarchive_bgi_core.so  → BGI/Ethornell (.arc)
+         libarchive_lpk_core.so  → Lucifen (.lpk)
          libarchive_zip_core.so  → ZIP
          libarchive_sevenz_core.so → 7z
          libarchive_rar_core.so  → RAR
@@ -175,6 +179,8 @@ XOR 密钥（0xFF / 0xC9）按文件首条目自动判断。
 | **RGSS（RPG Maker）** | 布局对照 [uuksu/RPGMakerDecrypter](https://github.com/uuksu/RPGMakerDecrypter)（MIT）、[mkxp-z `crypto/rgssad.cpp`](https://github.com/mkxp-z/mkxp-z)（BSD-3-Clause）、[rpgm-archive-decrypter-lib](https://github.com/RPG-Maker-Translation-Tools/rpgm-archive-decrypter-lib)（Apache-2.0/MIT）；crates.io 上无同类 crate，解析器为自研 | 公开规范 / MIT / BSD-3-Clause / Apache-2.0 |
 | **RPA（Ren'Py）** | [Ren'Py 官方读取实现 `renpy/loader.py`](https://github.com/renpy/renpy/blob/master/renpy/loader.py) 与[官方写入器 `launcher/game/archiver.rpy`](https://github.com/renpy/renpy/blob/master/launcher/game/archiver.rpy)（布局与固定密钥均以官方实现为准，解析器为自研纯 Rust）；对账工具 unrpa / rpatool | MIT |
 | **INT（CatSystem2 / KIF）** | [arc_unpacker 的 CatSystem2 解码器与真实样本](https://github.com/vn-tools/arc_unpacker/tree/master/tests/dec/cat_system)（GPL-3.0，仅作参考阅读；样本 + 13 个期望输出用于逐字节对账）、[GARbro `ArcINT`](https://github.com/morkt/GARbro)（MIT）；Blowfish / MT19937 为标准算法，自带测试向量 | 公开格式 / MIT / GPL-3.0（参考） |
+| **BGI/Ethornell（`.arc`）** | [GARbro `ArcBGI`](https://github.com/morkt/GARbro/blob/master/ArcFormats/Ethornell/ArcBGI.cs)（MIT）—— DSC 的 Huffman 树构造与 BSE 头部的 LCG 逐行移植，解析器为自研 Rust。用 [arc_unpacker](https://github.com/vn-tools/arc_unpacker) 那份独立 C++ 实现的公开样本交叉验证过：`setupforgallery` 解出的字节与期望文件完全一致，三张图像样本的宽高、位深与像素长度也全部吻合。这一步抓出一个真 bug —— 解压循环必须由声明的输出大小驱动，而不是 0x18 处的计数字段 | MIT |
+| **Lucifen（`.lpk`）** | [GARbro `ArcLPK`](https://github.com/morkt/GARbro/blob/master/ArcFormats/Lucifen/ArcLPK.cs)（MIT）—— 密钥调度、索引解密、trie 遍历与 `gameinit.sob` 密钥扫描按参考实现移植，解析器与写入器均为自研 Rust。第二套常量与目录密钥扫描取自 [UBTL/Lucifen-Tools](https://github.com/UBTL/Lucifen-Tools)（MIT）。用自建 fixture 验证（双向往返 + 完整解码链），**并对真实游戏验证过** —— 后者抓到一个 fixture 漏掉的前缀长度计算 bug，现已由专门的回归测试守住 | MIT |
 | **ISO 9660** | [isomage crate](https://crates.io/crates/isomage) | MIT |
 | **ZIP** | [zip crate](https://crates.io/crates/zip) | MIT |
 | **7z** | [sevenz-rust crate](https://crates.io/crates/sevenz-rust) | MIT / Apache-2.0 |

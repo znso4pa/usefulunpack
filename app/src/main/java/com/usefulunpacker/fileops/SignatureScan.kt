@@ -91,10 +91,16 @@ internal val ARCHIVE_LABELS = mapOf(
     // archive at byte 0, so they are also in NEEDS_CARVE below).
     "Ren'Py archive" to "rpa",
     "CatSystem2 INT archive" to "int",
+    "BGI/Ethornell archive" to "bgi",
+    // Lucifen LPK is deliberately absent: its index key is derived from the
+    // archive's own FILE NAME, so a carved copy (renamed to a synthetic temp
+    // name) can never be opened. Offering the hit would only promise an open
+    // that always bounces — the same reasoning that keeps `int` out of the
+    // nested-open set.
 )
 
 /** Formats whose native readers require the archive at byte 0 (must carve first). */
-private val NEEDS_CARVE = setOf("7z", "gz", "bz2", "xz", "zst", "lzma", "lz4", "xp3", "tar", "pfs", "rgss", "rpa", "int")
+private val NEEDS_CARVE = setOf("7z", "gz", "bz2", "xz", "zst", "lzma", "lz4", "xp3", "tar", "pfs", "rgss", "rpa", "int", "bgi")
 
 /** rars scans only the first 8 MiB for an embedded RAR signature. */
 private const val RAR_SCAN_LIMIT = 8L * 1024 * 1024
@@ -271,8 +277,8 @@ fun carveTo(
  *  signatures carry most of the patterns: bzip2 9, lzma 36 (4 props × 9 dict
  *  prefixes), lh0-lh7 8, the RPA headers 5, mp3 4, Mach-O 4, zlib 4, pcap 4,
  *  EXT 3, ksd/jpeg 3, gif/pf6+pf8/ttf/ico-ish 2-3, everything else 1. */
-private const val SCAN_SIG_COUNT = 118
-private const val SCAN_PATTERN_COUNT = 203
+private const val SCAN_SIG_COUNT = 119
+private const val SCAN_PATTERN_COUNT = 204
 
 /** binwalk-style scan dialog (Rust scan-core + byte-level progress bar). */
 internal fun MainActivity.showSignatureScan(f: File) {

@@ -1185,8 +1185,10 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
         val nestedFmt = formatOfName(entry.path)
         // `int` is deliberately absent: its index key comes from the game's exe,
         // which a carved-out temp copy has no access to — the nested-open would
-        // only ever bounce. `rpa` needs nothing external, so it is here.
-        if (nestedFmt != null && nestedFmt in setOf("zip", "7z", "rar", "xp3", "pfs", "nsa", "iso", "ypf", "rgss", "rpgmv", "rpa")) {
+        // only ever bounce. `lpk` is absent for the same reason (a data archive
+        // needs the sibling SCRIPT.LPK for its per-file key). `rpa` and `bgi`
+        // need nothing external, so they are here.
+        if (nestedFmt != null && nestedFmt in setOf("zip", "7z", "rar", "xp3", "pfs", "nsa", "iso", "ypf", "rgss", "rpgmv", "rpa", "bgi")) {
             com.usefulunpacker.UuDialogBuilder(this)
                 .setTitle(getString(R.string.nested_archive_title))
                 .setMessage(getString(R.string.nested_archive_msg, entry.path, archive.name))
@@ -1297,6 +1299,8 @@ internal fun MainActivity.listEntriesJson(
         "nsa" -> NsaCore.nsaListEntries(src.absolutePath)
         "rpa" -> RpaCore.rpaListEntries(src.absolutePath)
         "int" -> IntCore.intListEntries(src.absolutePath)
+        "bgi" -> BgiCore.bgiListEntries(src.absolutePath)
+        "lpk" -> LpkCore.lpkListEntries(src.absolutePath)
         "iso" -> IsoCore.isoListEntries(src.absolutePath)
         "ypf" -> YpfCore.ypfListEntries(src.absolutePath)
         "rgss" -> RgssCore.rgssListEntries(src.absolutePath)

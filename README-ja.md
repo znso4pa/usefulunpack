@@ -4,7 +4,7 @@
 
 軽量 Android ファイルマネージャー & アーカイブ圧縮・解凍ツール
 
-**XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**RPA**（Ren'Py）、**INT**（CatSystem2）、**ISO 9660**、および **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** などの汎用形式（圧縮/解凍対応）。Rust ネイティブコア。
+**XP3**（吉里吉里）、**PFS**（Artemis）、**NSA/SAR**（NScripter）、**YPF**（YU-RIS）、**RGSS**（RPG Maker XP/VX/VX Ace）、**KSD**（吉里吉里2）、**RPA**（Ren'Py）、**INT**（CatSystem2）、**BGI/Ethornell**（`.arc`）、**Lucifen**（`.lpk`）、**ISO 9660**、および **ZIP**、**7z**、**RAR**、**TAR**、**GZIP**、**BZIP2**、**XZ**、**ZSTD**、**LZMA**、**LZ4** などの汎用形式（圧縮/解凍対応）。Rust ネイティブコア。
 
 ---
 
@@ -18,6 +18,8 @@
 | 📜 **NSA/SAR** | NScripter `.nsa` / `.sar` を解凍（LZSS + SPB） |
 | 📦 **YPF** | YU-RIS `.ypf` を3層検出で解凍 |
 | 🐍 **INT** | CatSystem2（KIF）`.int` の解凍：エントリー名は個別に置換、オフセット/サイズと内容は Blowfish。**鍵はゲーム exe 内の key_code / v_code / v_code2 リソース由来**のため、.int の隣に exe が必要。exe が無ければ推測せずエラー |
+| 🏗️ **BGI/Ethornell** | `.arc` アーカイブを解凍。クラシックな `Pack`+`File    ` と Buriko の `BURI`+`KO ARC20` をヘッダから自動判別するので、選択の必要はありません。`DSC FORMAT 1.00` のエントリ（鍵付き正規ハフマン）もその場で展開します。**読み取り専用（再封不可）** —— 参考実装も書き込み非対応で、DSC エンコーダは公開されていません |
+| 🔐 **Lucifen LPK** | Lucifen エンジンの `.lpk` を解凍・再封します。鍵は**ファイル名**から導出されるため、封入したアーカイブはエンジンが探す元の名前でなければ読まれません。索引は暗号化された文字トライで、エントリには LZSS / 全体難読化 / ヘッダ暗号化が重なることがあります。アーカイブ全体のプレフィックスは**索引に 1 回だけ**格納され、各エントリには繰り返されません。したがってエントリの size は復元後の長さであり、ディスク上のバイト数ではありません。定数は**2 系統**あり、ヘッダから自動判別します。データアーカイブはファイル別鍵で、同フォルダの `SCRIPT.LPK` から取得しますが、無い場合は**ゲームフォルダを走査して復元**します（各候補は実際の索引構造で検証）。**再封は可能ですが圧縮はしません** —— エンジンの LZSS エンコーダは公開されておらず、誤ったストリームは静かに壊れたファイルを生みます |
 | 🐍 **RPA** | Ren'Py `.rpa` / `.rpi` の解凍 + 圧縮。インデックスは zlib 圧縮の Python pickle で RPA-1.0 / 2.0 / 3.0 の3形態（RPA-3.2 / 4.0 と ALT-1.0 にも対応）。名前は UTF-8。**圧縮は RPA-3.0 を pickle プロトコル 2 で書き出し**、Python 2 時代の Ren'Py 6.x でも現行エンジンでも読めます。スクリプト編集可。ZiX-12A/B はゲーム付属の `renpy/loader.pyo` が必要なため明確にエラー |
 | 🎮 **RPG Maker MV/MZ** | ファイルごとに難読化された素材の復号 + 再難読化（再封包は鍵の入力が必要）：`.rpgmvp` 画像、`.rpgmvo` 音声、`.rpgmvm` 動画（MZ の `.png_` / `.ogg_` / `.m4a_` も対応）。16 バイトのヘッダーはファイル自身から復元できるため**鍵は不要**（副ファイル名が無い場合も内容から判別）。再封包の鍵は 32 桁の 16 進数（そのまま使用）か任意テキスト（RPG Maker と同じく MD5 化）を受け付ける。**形式ごとに型は 1 種類のみ：`.rpgmvp` は `.png`、`.rpgmvo` は `.ogg`、`.rpgmvm` は `.m4a`** —— エンジンが拡張子でローダを選ぶため、それ以外は拒否。鍵不要。出力は実拡張子で命名されるのでそのまま画像 / 音声プレビューが開ける。一括モードでフォルダ全体をまとめて復号 |
 | 🎮 **RGSS** | RPG Maker 暗号化アーカイブの解凍 + 圧縮：`.rgssad`（XP）、`.rgss2a`（VX）、`.rgss3a`（VX Ace）。レイアウトはヘッダーから自動判別。ファイル名は UTF-8 / Shift-JIS。スクリプト編集可。**封包出力は既定で `Game.<ext>` という名前にする**（RPG Maker が開くのはこの名前だけ）。圧縮オプションで無効化可 |
@@ -112,6 +114,8 @@ bash build.sh
          libarchive_rgss_core.so → RGSS (XP/VX/VX Ace) + MV/MZ 素材
          libarchive_rpa_core.so  → RPA (Ren'Py)
          libarchive_int_core.so  → INT (CatSystem2)
+         libarchive_bgi_core.so  → BGI/Ethornell (.arc)
+         libarchive_lpk_core.so  → Lucifen (.lpk)
          libarchive_rgss_core.so → RGSS (RPG Maker XP/VX/VX Ace)
          libarchive_zip_core.so  → ZIP
          libarchive_sevenz_core.so → 7z

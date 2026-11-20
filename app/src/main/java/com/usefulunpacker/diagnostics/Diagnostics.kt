@@ -171,15 +171,19 @@ class OperationTrace internal constructor(
     fun note(message: String) { event(safe(message)) }
     /** Typed metadata is trusted: secret redaction must never mutate chain IDs, states or codes. */
     internal fun event(message: String, failed: Boolean = false) { AppDiagnostics.store?.append(id, feature, line(message), failed) }
-    fun fail(code: FailureCode, detail: String, cause: Throwable? = null): AppFailure {
+    fun fail(
+        code: FailureCode, detail: String, cause: Throwable? = null,
+        notifyUser: Boolean = true,
+    ): AppFailure {
         val failure = AppFailure(code, stage, safe(detail), id)
         if (code != FailureCode.CLEANUP && AppDiagnostics.isCancellationRequested()) {
             cancelled()
             return failure
         }
         chain?.failure(code, stage)
-        event("STEP_END state=FAILED elapsed_ms=${(System.nanoTime() - started) / 1_000_000} code=$code: ${safe(detail)}\n${safe(cause?.stackTraceToString().orEmpty())}", true)
-        AppDiagnostics.publish(failure)
+        val state = if (code == FailureCode.PARTIAL_FAILURE) "PARTIAL_FAILURE" else "FAILED"
+        event("STEP_END state=$state elapsed_ms=${(System.nanoTime() - started) / 1_000_000} code=$code: ${safe(detail)}\n${safe(cause?.stackTraceToString().orEmpty())}", true)
+        if (notifyUser) AppDiagnostics.publish(failure)
         return failure
     }
     fun cancelled() { chain?.cancel(); event("STEP_END state=CANCELLED elapsed_ms=${(System.nanoTime() - started) / 1_000_000} code=CANCELLED") }

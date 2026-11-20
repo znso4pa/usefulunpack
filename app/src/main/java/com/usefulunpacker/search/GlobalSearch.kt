@@ -559,7 +559,7 @@ internal fun MainActivity.walkSearch(
             Thread.currentThread().isInterrupted -> trace.cancelled()
             rootUnreadable -> trace.fail(FailureCode.IO, "Cannot read the search root")
             unreadableDirs.isNotEmpty() -> trace.fail(FailureCode.PARTIAL_FAILURE,
-                "Skipped ${unreadableDirs.size} unreadable directories; results are incomplete")
+                "Skipped ${unreadableDirs.size} unreadable directories; results are incomplete", notifyUser = false)
             else -> trace.success()
         }
         return !rootUnreadable && !Thread.currentThread().isInterrupted

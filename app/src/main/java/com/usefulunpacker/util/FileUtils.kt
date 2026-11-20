@@ -612,9 +612,8 @@ private fun passwordFormatOf(f: File): String? {
 }
 
 /**
- * Detects whether an archive (or volume set) needs a password. Covers the
- * password-capable formats zip/7z/rar (single or split). Exceptions are
- * swallowed — a broken file is simply "not password protected".
+ * Password preflight is advisory. An unreadable header leaves the lock badge
+ * unknown; the listing/extraction that actually needs the archive reports the error.
  */
 fun isPasswordProtected(f: File): Boolean {
     return try {
@@ -623,7 +622,17 @@ fun isPasswordProtected(f: File): Boolean {
             "7z" -> szVolumesNeedsPassword(f.path)
             else -> zipVolumesNeedsPassword(f.path)
         }
-    } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("FileUtils", failureCause); false }
+    } catch (e: java.util.concurrent.CancellationException) {
+        throw e
+    } catch (e: InterruptedException) {
+        Thread.currentThread().interrupt()
+        throw java.util.concurrent.CancellationException("Password probe interrupted").apply { initCause(e) }
+    } catch (e: Exception) {
+        val trace = AppDiagnostics.begin("password_probe")
+        trace.note("Password state unavailable (${e.javaClass.simpleName}): ${e.message.orEmpty()}")
+        trace.skipped()
+        false
+    }
 }
 
 /**

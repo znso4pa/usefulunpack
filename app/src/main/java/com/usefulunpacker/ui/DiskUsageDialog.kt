@@ -104,7 +104,7 @@ internal fun MainActivity.showDiskUsage(startDir: File = Environment.getExternal
         when {
             scan == null -> scanStep.cancelled()
             scan.deniedDirs > 0 -> scanStep.fail(FailureCode.PARTIAL_FAILURE,
-                "Skipped ${scan.deniedDirs} unreadable directories; disk totals are incomplete")
+                "Skipped ${scan.deniedDirs} unreadable directories; disk totals are incomplete", notifyUser = false)
             else -> scanStep.success()
         }
         act.runFeatureOnUiThread {

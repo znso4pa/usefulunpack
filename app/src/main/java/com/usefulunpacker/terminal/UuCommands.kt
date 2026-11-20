@@ -1090,7 +1090,8 @@ internal object UuCommands {
                                 val dst = File(staging, n)
                                 if (src.isDirectory) src.copyRecursively(dst) else src.copyTo(dst)
                             }
-                            val outF = uniqueFile(outDir, "archive.$ext")
+                            val outF = if (fmt == "lpk") File(outDir, "archive.$ext") else uniqueFile(outDir, "archive.$ext")
+                            if (outF.exists()) return Result(ctx.text(R.string.cli_exists, outF.path), 1)
                             val ok = compressDispatch(staging, outF, fmt, level, pw, ctx.prefs
                                 ?: throw IllegalStateException("prefs required"),
                                 if (batchSplit > 0) batchSplit * 1024 * 1024 else null, enc)
@@ -1108,7 +1109,13 @@ internal object UuCommands {
                         for (srcPath in pos) {
                             val src = UuText.resolve(ctx.cwd, srcPath)
                             if (!src.exists()) { failCount++; continue }
-                            val outF = uniqueFile(outDir, src.name + "." + ext)
+                            val outF = if (fmt == "lpk") File(outDir, lpkPackedName(src.name))
+                                else uniqueFile(outDir, src.name + "." + ext)
+                            if (outF.exists()) {
+                                AppDiagnostics.begin("pack_output").fail(FailureCode.IO, "LPK output already exists")
+                                failCount++
+                                continue
+                            }
                             val wrap = src.isFile && fmt in setOf("zip", "7z", "tar", "tgz", "tbz2", "txz", "tzst")
                             val wrapDir = if (wrap) File(ctx.cacheDir, "uu_pack/wrap_${System.nanoTime()}") else null
                             try {
@@ -1191,8 +1198,11 @@ internal object UuCommands {
         try {
             if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
             // 拿到槽位后再解析产物名（不变量：排队中的两次打包不能在入队时撞名）。
-            val outFile = if (pos.size >= 2) UuText.resolve(ctx.cwd, pos[1])
-                          else uniqueFile(defaultOut(ctx), src.name + "." + COMPRESS_EXT[fmt])
+            val outFile = when {
+                pos.size >= 2 -> UuText.resolve(ctx.cwd, pos[1])
+                fmt == "lpk" -> File(defaultOut(ctx), lpkPackedName(src.name))
+                else -> uniqueFile(defaultOut(ctx), src.name + "." + COMPRESS_EXT[fmt])
+            }
             if (outFile.exists()) return Result(ctx.text(R.string.cli_exists, outFile.path), 1)
             outFile.parentFile?.mkdirs()
 

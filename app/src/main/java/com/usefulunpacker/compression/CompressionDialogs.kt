@@ -344,10 +344,7 @@ private fun runCompress(
         // under the name the engine looks for. Extraction appends `_extracted`
         // to the folder, and the original extension is already part of that
         // name — strip the suffix and keep the rest verbatim.
-        fmt == "lpk" -> {
-            val base = dir.name.removeSuffix("_extracted")
-            if (base.uppercase().endsWith(".LPK")) base else "$base.lpk"
-        }
+        fmt == "lpk" -> lpkPackedName(dir.name)
         else -> "${dir.name}.$ext"
     }
     val outDir = dir.parentFile ?: currentDir
@@ -377,7 +374,16 @@ private fun runCompress(
         try {
             // 产物名在【拿到槽位之后】解析：入队时解析的话，排队中的第二次封包
             // 会和第一次拿到同一个名字，后完成者覆盖先完成者（产物丢失）。
-            val outFile = resolvePfsOutName(uniqueFile(outDir, outName), artemisNaming)
+            val outFile = if (fmt == "lpk") File(outDir, outName) else resolvePfsOutName(uniqueFile(outDir, outName), artemisNaming)
+            if (fmt == "lpk" && outFile.exists()) {
+                AppDiagnostics.begin("pack_output").fail(FailureCode.IO, "LPK output already exists")
+                activity.runFeatureOnUiThread {
+                    if (activity.isFinishing || activity.isDestroyed) return@runFeatureOnUiThread
+                    prog.dismiss()
+                    UuNotice.makeText(activity, activity.getString(R.string.cli_exists, outFile.path), Toast.LENGTH_LONG).show()
+                }
+                return@thread
+            }
             // RPG Maker only opens `Game.<ext>`, so resolve that name here
             // rather than writing something the game silently ignores.
             val (finalFile, renamed) = resolveRgssOutName(outFile, gameNaming, ext)
@@ -535,4 +541,10 @@ fun compressDispatch(src: File, outFile: File, fmt: String, level: Int, password
         false
     }
     }
+}
+
+/** LPK derives its key from the final filename. Never add a collision suffix. */
+internal fun lpkPackedName(sourceName: String): String {
+    val base = sourceName.removeSuffix("_extracted")
+    return if (base.endsWith(".lpk", ignoreCase = true)) base else "$base.lpk"
 }

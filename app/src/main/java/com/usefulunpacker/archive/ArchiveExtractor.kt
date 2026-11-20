@@ -62,6 +62,9 @@ fun schedulerKeyOf(fmtKey: String): String = when (fmtKey) {
  *  `handle.release()` in its finally. Delete/scan flows intentionally stay on
  *  the legacy OperationLock (see OpScheduler docs). */
 fun tryStartOperation(activity: AppCompatActivity, fmtKey: String): OpScheduler.OpHandle =
+    tryStartOperation(fmtKey)
+
+internal fun tryStartOperation(fmtKey: String): OpScheduler.OpHandle =
     OpScheduler.obtain(schedulerKeyOf(fmtKey))
 
 /** Atomically reserves every native library used by a composite flow, using one global slot. */

@@ -17,6 +17,9 @@
          ACTION_VIEW handler for content:// package archives -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- The opt-in MCP listener binds to the device loopback interface. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:allowBackup="true"
         android:name=".App"

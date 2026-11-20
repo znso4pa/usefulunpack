@@ -82,7 +82,7 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 🛡️ **Tap Debounce** | 800ms cooldown prevents accidental duplicate dialogs |
 | 🌙 **Dark Theme** | Eye-friendly dark theme matching ZArchiver's color scheme |
 | 🦀 **Rust Core** | JNI-powered native `.so` — one per format for isolation (17 formats incl. signature scan) |
-| 🔒 **Minimal Permissions** | Only requests storage access |
+| 🔒 **Minimal Permissions** | Storage access for file operations. The optional local MCP endpoint uses the loopback interface. |
 
 ## Multi-Window FAQ
 
@@ -124,6 +124,10 @@ Signature scan details (parser + size-skip semantics, following the approach of 
   <img src="screenshots/screenshot_03.jpg" width="45%" />
   <img src="screenshots/screenshot_04.jpg" width="45%" />
 </p>
+
+## Local MCP
+
+Start Local MCP in Settings and choose a workspace. An agent on the same Android device can connect using Streamable HTTP and run archive jobs. See the [connection settings and UUT example](docs/local-mcp.md).
 
 ## Installation
 

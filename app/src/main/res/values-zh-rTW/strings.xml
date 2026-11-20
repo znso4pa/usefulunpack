@@ -842,4 +842,14 @@
     <string name="components_color">色彩 %1$s</string>
     <string name="components_slider">滑桿</string>
     <string name="search_skipped_dirs">略過 %1$d 個無法讀取的目錄，結果不完整</string>
+    <string name="mcp_title">📡 本機 MCP</string>
+    <string name="mcp_choose">選擇目錄</string>
+    <string name="mcp_start_default">以預設目錄啟動</string>
+    <string name="mcp_explain">Agent 只能在所選目錄內操作。使用預設目錄或選擇共享儲存空間根目錄時，實際使用 %1$s 子目錄。關閉應用程式後連接埠停止。</string>
+    <string name="mcp_endpoint">位址：%1$s\n工作目錄：%2$s</string>
+    <string name="mcp_copy">複製連線設定</string>
+    <string name="mcp_stop">停止</string>
+    <string name="mcp_choose_error">請選擇共享儲存空間中可讀寫的目錄。</string>
+    <string name="mcp_start_error">無法啟動本機連接埠。</string>
+    <string name="mcp_stop_error">無法停止本機連接埠。</string>
 </resources>

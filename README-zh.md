@@ -77,7 +77,7 @@
 | ✂️ **精确切割** | 签名扫描的切割/解压按验证出的归档大小（zip/rar/7z/zstd/lz4/iso）精确切取——夹在其它文件中间的归档（如 `mp4 + zip + mp4`）能干净提出，不带尾部数据，解压成功 |
 | 📲 **APK 安装** | 点 APK 调系统安装器（FileProvider + PackageInstaller 兜底）；安装前可选保留副本（部分系统安装器装完会删除安装包） |
 | 🦀 **Rust 核心** | 每种格式独立 `.so`，互不干扰（26 个原生核心，含签名扫描与音视频转换） |
-| 🔒 **最小权限** | 仅存储权限 |
+| 🔒 **最小权限** | 文件操作使用存储权限，可选的本机 MCP 端口使用设备回环接口 |
 
 ## 多窗口常见问题（FAQ）
 
@@ -109,6 +109,10 @@
   <img src="screenshots/screenshot_03.jpg" width="45%" />
   <img src="screenshots/screenshot_04.jpg" width="45%" />
 </p>
+
+## 本地 MCP
+
+在设置中选择工作目录并开启本机端口，同一台 Android 设备上的 Agent 可以连接并提交解包、复制与封包任务。见[连接配置和 UUT 示例](docs/local-mcp.md)。
 
 ## 安装
 

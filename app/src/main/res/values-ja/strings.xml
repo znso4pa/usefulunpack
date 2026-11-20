@@ -842,4 +842,14 @@
     <string name="components_color">色 %1$s</string>
     <string name="components_slider">スライダー</string>
     <string name="search_skipped_dirs">読み取れないディレクトリ %1$d 件をスキップしました。結果は不完全です</string>
+    <string name="mcp_title">📡 ローカル MCP</string>
+    <string name="mcp_choose">フォルダを選択</string>
+    <string name="mcp_start_default">既定のフォルダで開始</string>
+    <string name="mcp_explain">エージェントは選択したフォルダ内で操作できます。既定のフォルダまたは共有ストレージのルートを選ぶと、サブフォルダ %1$s を使用します。アプリを閉じると停止します。</string>
+    <string name="mcp_endpoint">アドレス：%1$s\n作業フォルダ：%2$s</string>
+    <string name="mcp_copy">接続設定をコピー</string>
+    <string name="mcp_stop">停止</string>
+    <string name="mcp_choose_error">共有ストレージの読み書き可能なフォルダを選んでください。</string>
+    <string name="mcp_start_error">ローカルポートを起動できませんでした。</string>
+    <string name="mcp_stop_error">ローカルポートを停止できませんでした。</string>
 </resources>

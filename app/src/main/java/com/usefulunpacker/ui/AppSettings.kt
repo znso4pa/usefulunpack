@@ -348,6 +348,7 @@ internal fun MainActivity.settings() {
         R.string.settings_other to { showOtherSettings() },
         R.string.diagnostics_title to { showDiagnostics() },
         R.string.components_title to { showComponentCatalog() },
+        R.string.mcp_title to { showLocalMcp() },
         R.string.settings_help to { showHelpDialog() },
         R.string.settings_disclaimer to { showDisclaimer(fromSettings = true) }
     )

@@ -546,7 +546,11 @@ class MainActivity : AppCompatActivity() {
     private fun memFmt(bytes: Long): String =
         if (bytes < GIB_F) "${(bytes / MIB_F).toInt()}m" else giB(bytes)
 
+    internal var localMcp: McpListener? = null
+    internal var localMcpStarting = false
+
     override fun onDestroy() {
+        stopLocalMcp()
         dialogScrimMotion?.dispose()
         try { currentMediaPlayer?.release() } catch (failureCause: Exception) { com.usefulunpacker.AppDiagnostics.failure("MainActivity", failureCause);}
         currentMediaPlayer = null

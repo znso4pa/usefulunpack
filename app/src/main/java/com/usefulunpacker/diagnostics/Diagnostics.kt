@@ -107,6 +107,8 @@ class DiagnosticStore(
         return (memory.values.reversed() + disk).distinctBy { it.id }.take(maxFiles)
     }
 
+    internal fun current(id: String): DiagnosticEntry? = synchronized(entries) { entries[id] }
+
     fun flush() { writer.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS) }
     fun close() { flush(); writer.shutdown() }
 }

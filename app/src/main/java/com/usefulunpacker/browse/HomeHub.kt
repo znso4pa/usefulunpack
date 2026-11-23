@@ -75,34 +75,14 @@ internal fun MainActivity.enterBrowserAt(tab: TabState, dir: File) {
  */
 internal fun isRoomy(act: MainActivity): Boolean {
     val cfg = act.resources.configuration
-    return cfg.screenWidthDp >= 600 &&
+    return cfg.screenWidthDp >= 560 &&
         cfg.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
 }
 
-/**
- * 列表窗口（最近归档 / 书签）在**宽屏下的固定高度**（dp）—— 约 2.8 行书签（行高 ~42dp），
- * 底下那半行用 [FadeCard] 的渐隐收住。
- *
- * ⚠️ 宽屏这两个窗口是**定高**的，**不随剩余空间延伸**：窗口大小固定、条目多了在窗口内部
- * 滚动。曾经用 `weight=1` 让它们吃满剩余高度，结果窗口一直长到屏幕底部、条目反而被切掉
- * （真机反例），而且「只有 1 条时被拉成一条巨行」也是同一类问题。
- * 剩余高度交给上面的 hero 区吸收（它仍是 `weight=1`），整页照样铺满、页脚不被挤掉。
- *
- * Portrait uses the shared single-row height instead of the landscape multi-row height.
- *
- * ⚠️ **这个高度里替「磁盘占用横条」让出了一份**：横屏的 hero 区是 `weight=1`（吃剩余高度），
- * 任何新增的定高块都只能从它身上抠 —— 磁盘条（49.6dp 实体 + 16dp 间距 ≈ 66dp）一加，
- * 真机上 hero 从 ~146dp 直接塌到 **80dp**，两张卡被压成一条（用户原话「文件浏览和终端的框
- * 都变小了」）。所以磁盘条的成本**记在这两个列表栏目头上**：184 − 66 = 118。
- * 列表本来就是窗口内滚动，压矮只是少显示一行；hero 是这一页的主体，不能被挤。
- * 以后再往这一列加块，先问一句「这笔高度谁来付」。
- */
-private const val LIST_CARD_H = 118
+/** 列表卡底部渐隐的最大高度（dp）。 */
+private const val LIST_FADE_H = 18
 
-/** 列表卡底部渐隐的高度（dp）。半行文字的高度 —— 够把「被切的那一行」收进暗部。 */
-private const val LIST_FADE_H = 22
-
-/** One shared height keeps a portrait list viewport and each of its rows aligned. */
+/** One shared minimum height keeps a list viewport and each of its rows aligned. */
 private fun homeListRowHeight(act: MainActivity) = act.resources.getDimensionPixelSize(R.dimen.home_list_row_height)
 
 /** 无壁纸时的页面实底 #303030（= `homeRoot` 的 XML 底 `bg_file_list`，同色所以不闪）。 */
@@ -159,9 +139,11 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
     val cardBg = C["surface_dim"]!!
     val dimBg = C["surface_dim"]!!
     val roomy = isRoomy(act)
+    val spacious = roomy && act.resources.configuration.screenHeightDp >= 520
 
-    // The outer home panel never scrolls. Portrait lists each expose one 58dp row;
-    // their own scroll containers retain access to the remaining entries.
+    // The outer home panel never scrolls; hero cards and list viewports share vertical
+    // space proportionally so neither balloons on tall portrait screens nor collapses
+    // on short landscape screens, while each list scrolls its own entries internally.
     container.removeAllViews()
     container.orientation = LinearLayout.VERTICAL
     // 页面底色（见类注释）：有壁纸 → 透 root 的壁纸；无壁纸 → 实底 #303030。
@@ -169,51 +151,54 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
     // ⚠️ 纵向间距见类注释那条：首项 `marginTop`、末项自身 `paddingBottom`，**不要**用
     // `container` 的纵向 padding 或任何 `marginBottom` —— 它们不计入 `mTotalLength`，
     // 会被权重块吃掉、把后面的页脚挤出容器。横向 padding 无此问题（权重只吃纵向）。
-    container.setPadding(act.dp(if (roomy) 40 else 18), 0, act.dp(if (roomy) 40 else 18), 0)
+    val hPad = act.dp(if (spacious) 36 else if (roomy) 20 else 18)
+    container.setPadding(hPad, 0, hPad, 0)
 
     // ── 命令面板：点击整条 → 全局搜索 ─────────────────────────────
     val palette = LinearLayout(act).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        if (roomy) setPadding(act.dp(20), act.dp(14), act.dp(18), act.dp(14)) else setPadding(act.dp(14), act.dp(8), act.dp(12), act.dp(8))
-        background = roundedBg(act.dp(if (roomy) 16 else 14), dimBg, act.dp(1), C["accent_line"]!!)
+        if (spacious) setPadding(act.dp(20), act.dp(12), act.dp(18), act.dp(12))
+        else setPadding(act.dp(14), act.dp(8), act.dp(12), act.dp(8))
+        background = roundedBg(act.dp(if (spacious) 16 else 14), dimBg, act.dp(1), C["accent_line"]!!)
         // 首项的上间距：原来在 container 的 padding-top 里，见上面的注释（纵向只能用 margin）。
         // Keep the search label and button at their natural text height.
         layoutParams = LinearLayout.LayoutParams(
             MATCH, WRAP,
         ).apply {
-            topMargin = act.dp(if (roomy) 24 else 8)
+            topMargin = act.dp(if (spacious) 18 else 8)
         }
-        minimumHeight = act.dp(48)
+        minimumHeight = act.dp(if (spacious) 48 else 42)
         foreground = ripple(C["ripple"]!!)
         isClickable = true
         isFocusable = true
         setOnClickListener { act.globalSearch() }
     }
-    palette.addView(iconView(act, R.drawable.ic_search, act.dp(if (roomy) 22 else 19), C["accent"]!!))
+    palette.addView(iconView(act, R.drawable.ic_search, act.dp(if (spacious) 22 else 19), C["accent"]!!))
     palette.addView(textView(
-        act, act.getString(R.string.home_palette_hint), if (roomy) 15f else 13.5f, C["hint"]!!,
+        act, act.getString(R.string.home_palette_hint), if (spacious) 15f else 13.5f, C["hint"]!!,
     ).apply {
-        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = act.dp(if (roomy) 14 else 11) }
+        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = act.dp(if (spacious) 14 else 11) }
         // 搜索框惯例：单行，窄屏截断而不是折行把整条撑高。
         maxLines = 1
         ellipsize = android.text.TextUtils.TruncateAt.END
     })
     palette.addView(textView(
-        act, act.getString(R.string.msg_search_global), if (roomy) 12f else 10.5f, C["accent"]!!,
+        act, act.getString(R.string.msg_search_global), if (spacious) 12f else 10.5f, C["accent"]!!,
     ).apply {
         background = GradientDrawable().apply {
-            cornerRadius = act.dp(if (roomy) 7 else 6).toFloat(); setStroke(act.dp(1), C["stroke_white_20"]!!)
+            cornerRadius = act.dp(if (spacious) 7 else 6).toFloat(); setStroke(act.dp(1), C["stroke_white_20"]!!)
         }
-        setPadding(act.dp(if (roomy) 11 else 8), act.dp(4), act.dp(if (roomy) 11 else 8), act.dp(4))
+        setPadding(act.dp(if (spacious) 11 else 8), act.dp(4), act.dp(if (spacious) 11 else 8), act.dp(4))
     })
     // 整条 = 一个「全局搜索」入口（点哪都是打开全局搜索），读成一句。
     palette.mergeIntoA11yNode(act.getString(R.string.home_palette_hint))
     container.addView(palette)
 
     // ── 两张 hero 卡 ─────────────────────────────────────────────
-    // 宽屏：并排两张、横向内容，`weight=1` 吃剩余高度把整屏撑起来（定稿的样子）。
-    // Portrait stacks both cards and shares spare height after their natural content.
+    // 宽屏：并排两张、横向内容，与下方列表区按比例分剩余高度。
+    // 竖屏：上下叠放，与下方两张列表卡按设计稿比例（1 : 1 : 1.75 : 1.75）共同分配剩余高度，
+    // 避免主卡在竖屏下膨胀成巨型空盒子而列表被压成一行细缝。
     val browseTag = if (tab.currentDir == Environment.getExternalStorageDirectory()) {
         act.getString(R.string.home_storage_root)
     } else {
@@ -225,12 +210,11 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         act.getString(R.string.home_terminal_desc),
         act.getString(R.string.home_cmds_tag, UuCommands.cmdCount), true, cardBg, roomy) { act.terminalPanel.show() }
     if (roomy) {
-        container.addView(equalRow(act, browseHero, termHero, gapDp = 18),
-            LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = act.dp(22) })
+        container.addView(equalRow(act, browseHero, termHero, gapDp = if (spacious) 18 else 12),
+            LinearLayout.LayoutParams(MATCH, 0, 1.05f).apply { topMargin = act.dp(if (spacious) 16 else 8) })
     } else {
-        // Two cards retain natural content height and share spare screen height.
-        container.addView(browseHero, LinearLayout.LayoutParams(MATCH, WRAP, 1f).apply { topMargin = act.dp(6) })
-        container.addView(termHero, LinearLayout.LayoutParams(MATCH, WRAP, 1f).apply { topMargin = act.dp(6) })
+        container.addView(browseHero, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = act.dp(8) })
+        container.addView(termHero, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = act.dp(8) })
     }
 
     // ── 快捷入口：搜索 / 回收站 / 根目录 / 设置 ───────────────────
@@ -251,13 +235,13 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
             act.getString(R.string.home_q_settings_sub), dimBg, roomy) { act.settings() },
     )
     fun miniRow(cells: List<View>, topMarginDp: Int) = container.addView(
-        equalRow(act, *cells.toTypedArray(), gapDp = if (roomy) 14 else 9),
+        equalRow(act, *cells.toTypedArray(), gapDp = if (spacious) 14 else 9),
         // Compact rows keep their natural text height.
         LinearLayout.LayoutParams(MATCH, WRAP)
             .apply { topMargin = act.dp(topMarginDp) },
     )
     if (roomy) {
-        miniRow(minis, 20)
+        miniRow(minis, if (spacious) 16 else 8)
     } else {
         miniRow(minis.subList(0, 2), 8)
         miniRow(minis.subList(2, 4), 8)
@@ -271,37 +255,35 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
     container.addView(
         diskUsageBar(act, roomy),
         LinearLayout.LayoutParams(MATCH, WRAP)
-            .apply { topMargin = act.dp(if (roomy) 16 else 8) },
+            .apply { topMargin = act.dp(if (spacious) 14 else 8) },
     )
 
     // ── 最近打开的归档 │ 书签 ───────────────────────────────────
-    // 宽屏：双栏并排，两个窗口**定高**（[LIST_CARD_H]）。
-    // Portrait exposes exactly one row in each independently scrolling list.
+    // 宽屏：双栏并排，与上方 heroRow 按比例共享剩余高度，每个卡片内部独立滚动。
+    // 竖屏：两张列表卡各占一行，与两张 hero 卡按比例共享剩余高度，每个卡片内部独立滚动。
     val (recentsCap, recentsCard) = homeRecentsParts(act, tab, cardBg, roomy)
     val (bmsCap, bmsCard) = homeBookmarksParts(act, tab, cardBg, roomy)
+    recentsCard.minimumHeight = homeListRowHeight(act)
+    bmsCard.minimumHeight = homeListRowHeight(act)
     if (roomy) {
-        // 两个列表窗口**定高**（见 [LIST_CARD_H]）→ 整块 `wrap_content`，剩余高度留给上面的
-        // hero 区吸收（它仍是 `weight=1`），整页照样铺满整屏。
-        // 两列用 `WRAP` 高而不是 `MATCH`：本行是 wrap，若子项全 `MATCH` 会把行高算成 0。
         fun col(cap: View, card: View) = LinearLayout(act).apply {
             orientation = LinearLayout.VERTICAL
             addView(cap)   // 沿用 sectionCap 自己的 layoutParams（左右各 2dp 的微调）
-            addView(card, LinearLayout.LayoutParams(MATCH, act.dp(LIST_CARD_H)).apply { topMargin = act.dp(10) })
+            addView(card, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = act.dp(if (spacious) 8 else 4) })
         }
         val cols = LinearLayout(act).apply { orientation = LinearLayout.HORIZONTAL }
-        cols.addView(col(recentsCap, recentsCard), LinearLayout.LayoutParams(0, WRAP, 1.5f).apply { marginEnd = act.dp(20) })
-        cols.addView(col(bmsCap, bmsCard), LinearLayout.LayoutParams(0, WRAP, 1f))
-        container.addView(cols, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = act.dp(22) })
+        cols.addView(col(recentsCap, recentsCard), LinearLayout.LayoutParams(0, MATCH, 1.5f).apply { marginEnd = act.dp(if (spacious) 20 else 12) })
+        cols.addView(col(bmsCap, bmsCard), LinearLayout.LayoutParams(0, MATCH, 1f))
+        container.addView(cols, LinearLayout.LayoutParams(MATCH, 0, 1.15f).apply { topMargin = act.dp(if (spacious) 16 else 8) })
     } else {
-        // Small headers sit outside the fixed one-row viewports.
         container.addView(recentsCap, LinearLayout.LayoutParams(MATCH, WRAP).apply {
             setMargins(act.dp(2), act.dp(8), act.dp(2), 0)
         })
-        container.addView(recentsCard, LinearLayout.LayoutParams(MATCH, homeListRowHeight(act)).apply { topMargin = act.dp(4) })
+        container.addView(recentsCard, LinearLayout.LayoutParams(MATCH, 0, 1.75f).apply { topMargin = act.dp(4) })
         container.addView(bmsCap, LinearLayout.LayoutParams(MATCH, WRAP).apply {
             setMargins(act.dp(2), act.dp(8), act.dp(2), 0)
         })
-        container.addView(bmsCard, LinearLayout.LayoutParams(MATCH, homeListRowHeight(act)).apply { topMargin = act.dp(4) })
+        container.addView(bmsCard, LinearLayout.LayoutParams(MATCH, 0, 1.75f).apply { topMargin = act.dp(4) })
     }
 
     // ── 页脚 ─────────────────────────────────────────────────────
@@ -309,19 +291,18 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         act,
         act.getString(R.string.home_foot_fmt, ARCHIVE_EXTS.size) + " · " +
             act.getString(R.string.home_foot_local),
-        if (roomy) 12f else 11f, C["tertiary"]!!,
+        if (spacious) 12f else 11f, C["tertiary"]!!,
     ).apply {
         gravity = Gravity.CENTER
         // ⚠️ 末项的下间距**必须做成自己的 paddingBottom，不能是 marginBottom**：
         // `LinearLayout` 第一遍测量只累加 `marginTop + childHeight`，`marginBottom`
         // 不计入 → 权重块把它吃掉 → 页脚整块溢出容器被裁（横屏真机实测）。
         // 写成自身 padding 就是 childHeight 的一部分，一定被计入。
-        // Footer keeps its natural text height; spare height goes to the hero cards.
-        setPadding(0, 0, 0, if (roomy) act.dp(20) else 0)
+        setPadding(0, 0, 0, act.dp(if (spacious) 16 else 8))
         layoutParams = LinearLayout.LayoutParams(
             MATCH, WRAP,
         ).apply {
-            topMargin = act.dp(if (roomy) 16 else 8)
+            topMargin = act.dp(if (spacious) 12 else 6)
         }
     })
 }
@@ -340,6 +321,7 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
  * 扫描要一分钟，主界面不该等它。真正的分解在点进去之后。
  */
 private fun diskUsageBar(act: MainActivity, roomy: Boolean): View {
+    val spacious = roomy && act.resources.configuration.screenHeightDp >= 520
     val (used, total) = externalStorageUsage()
     val sub = if (total > 0) {
         act.getString(R.string.home_disk_sub, fmt(used), fmt(total))
@@ -350,18 +332,18 @@ private fun diskUsageBar(act: MainActivity, roomy: Boolean): View {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         // A full-height touch target remains available without a weighted text budget.
-        minimumHeight = act.resources.getDimensionPixelSize(R.dimen.touch_target)
+        minimumHeight = act.dp(if (spacious) 48 else 42)
         setPadding(
-            act.dp(if (roomy) 18 else 12),
-            act.dp(if (roomy) 15 else 0),
-            act.dp(if (roomy) 16 else 12),
-            act.dp(if (roomy) 15 else 0),
+            act.dp(if (spacious) 18 else 12),
+            act.dp(if (spacious) 12 else 6),
+            act.dp(if (spacious) 16 else 12),
+            act.dp(if (spacious) 12 else 6),
         )
     }
-    line.addView(iconView(act, R.drawable.ic_disk, act.dp(if (roomy) 20 else 16), C["accent"]!!))
-    line.addView(primaryText(act, act.getString(R.string.home_disk), if (roomy) 14.5f else 13f, bold = true).apply {
+    line.addView(iconView(act, R.drawable.ic_disk, act.dp(if (spacious) 20 else 16), C["accent"]!!))
+    line.addView(primaryText(act, act.getString(R.string.home_disk), if (spacious) 14f else 13f, bold = true).apply {
         setSingleLine(true)
-    }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = act.dp(if (roomy) 12 else 9) })
+    }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = act.dp(if (spacious) 12 else 9) })
 
     if (roomy && total > 0) {
         // 横屏专有：把「已用 / 共」画成一条双段条。竖屏没有这个余地（整条才 ~37dp 高），
@@ -369,11 +351,11 @@ private fun diskUsageBar(act: MainActivity, roomy: Boolean): View {
         line.addView(
             capacityStrip(act, used, total),
             LinearLayout.LayoutParams(0, act.dp(7), 1f)
-                .apply { marginStart = act.dp(20); marginEnd = act.dp(20) },
+                .apply { marginStart = act.dp(if (spacious) 20 else 12); marginEnd = act.dp(if (spacious) 20 else 12) },
         )
     }
 
-    line.addView(textView(act, sub, if (roomy) 12f else 11f, C["tertiary"]!!).apply {
+    line.addView(textView(act, sub, if (spacious) 12f else 11f, C["tertiary"]!!).apply {
         setSingleLine(true)
         ellipsize = android.text.TextUtils.TruncateAt.END
     }, LinearLayout.LayoutParams(if (roomy) WRAP else 0, WRAP, if (roomy) 0f else 1f)
@@ -381,7 +363,7 @@ private fun diskUsageBar(act: MainActivity, roomy: Boolean): View {
     line.addView(iconView(act, R.drawable.ic_chevron_right, act.dp(14), C["tertiary"]!!))
 
     return FrameLayout(act).apply {
-        background = roundedBg(act.dp(if (roomy) 16 else 14), C["surface_dim"]!!, act.dp(1), C["hairline"]!!)
+        background = roundedBg(act.dp(if (spacious) 16 else 14), C["surface_dim"]!!, act.dp(1), C["hairline"]!!)
         foreground = ripple(C["ripple"]!!)
         isClickable = true
         isFocusable = true
@@ -431,7 +413,7 @@ private fun homeRecentsParts(act: MainActivity, tab: TabState, cardBg: Int, room
     // 装不下时在卡片内滚动 —— 窗口尺寸不随内容/剩余空间变（行若用 weight 平分：1 条时
     // 被拉成巨行、10 条时被压扁）。高度由调用处给。
     val radius = act.dp(if (roomy) 16 else 14)
-    val card = FadeCard(act, act.dp(if (roomy) LIST_FADE_H else 4), radius).apply {
+    val card = FadeCard(act, act.dp(LIST_FADE_H), radius).apply {
         background = roundedBg(radius, cardBg, act.dp(1), C["hairline"]!!)
         clipToOutline = true
     }
@@ -527,7 +509,7 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
     // 与「最近」同一套：卡片定高（宽屏 [LIST_CARD_H] / 竖屏 [homeListRowHeight]）、行高固定、
     // 装不下时在卡片内滚动。高度由调用处给。
     val radius = act.dp(if (roomy) 16 else 14)
-    val card = FadeCard(act, act.dp(if (roomy) LIST_FADE_H else 4), radius).apply {
+    val card = FadeCard(act, act.dp(LIST_FADE_H), radius).apply {
         background = roundedBg(radius, cardBg, act.dp(1), C["hairline"]!!)
         clipToOutline = true
     }
@@ -616,9 +598,10 @@ private class FadeCard(
         val h = height
         val w = width
         if (h <= 0 || w <= 0) return
+        val effectiveFade = minOf(fadePx, h / 3).coerceAtLeast(1)
         if (shaderForHeight != h) {
             shaderForHeight = h
-            val top = (h - fadePx).coerceAtLeast(0).toFloat()
+            val top = (h - effectiveFade).coerceAtLeast(0).toFloat()
             paint.shader = LinearGradient(
                 0f, top, 0f, h.toFloat(),
                 intArrayOf(0x00000000, 0x99000000.toInt()), null, Shader.TileMode.CLAMP,
@@ -630,7 +613,7 @@ private class FadeCard(
         path.reset()
         path.addRoundRect(rect, radiusPx.toFloat(), radiusPx.toFloat(), Path.Direction.CW)
         canvas.clipPath(path)
-        canvas.drawRect(0f, (h - fadePx).coerceAtLeast(0).toFloat(), w.toFloat(), h.toFloat(), paint)
+        canvas.drawRect(0f, (h - effectiveFade).coerceAtLeast(0).toFloat(), w.toFloat(), h.toFloat(), paint)
         canvas.restore()
     }
 }

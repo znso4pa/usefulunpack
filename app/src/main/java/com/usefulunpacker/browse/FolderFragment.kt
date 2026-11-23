@@ -281,51 +281,21 @@ class FolderFragment : Fragment() {
             } else {
                 act2.navTab(tab, tab.currentDir)
             }
+            act2.applyLayer(tab)
             act2.syncMultiBar(tab)
         }
-
-        // Wide screens: split the tab into file list (left) + preview (right).
-        applyWidePreviewPane(root, tab)
 
         return root
     }
 
-    /** On wide screens, pin the in-tab preview to the right of the split
-     *  guideline so the file list remains visible (master-detail). On phones
-     *  the preview overlays the full list, as before.
-     *
-     *  **Both** panes are adjusted here, not just `previewRoot`. Pinning only
-     *  the preview left `panel` spanning full width *underneath* it: the two
-     *  panes physically overlapped in the right 45%, and only `previewRoot`'s
-     *  opaque background hid that. Once a wallpaper is set, `applyBackdropInTree`
-     *  clears that background (`panel`/`previewRoot` are in the
-     *  `BACKDROP_TRANSPARENT` table) and both transparent lists drew over each
-     *  other in the overlap band. Ending `panel` at the guideline removes the
-     *  overlap instead of masking it, so it cannot reappear. */
-    private fun applyWidePreviewPane(root: View, tab: TabState) {
-        val act = activity as MainActivity
-        val wide = act.resources.getBoolean(R.bool.is_wide)
-        val parent = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
-
-        val pl = tab.previewRoot.layoutParams as androidx.constraintlayout.widget.ConstraintLayout.LayoutParams
-        pl.startToStart = if (wide) R.id.guidelineSplit else parent
-        pl.endToEnd = parent
-        tab.previewRoot.layoutParams = pl
-
-        val panel = root.findViewById<View>(R.id.panel) ?: return
-        val ll = panel.layoutParams as androidx.constraintlayout.widget.ConstraintLayout.LayoutParams
-        // Left pane stops at the split when it is in use; full width otherwise.
-        ll.endToEnd = if (wide) R.id.guidelineSplit else parent
-        panel.layoutParams = ll
-    }
-
     private fun buildBatchBar(root: View): LinearLayout {
         val act = activity as MainActivity
+        val gap = requireContext().dp(4)
         val batchBar = LinearLayout(requireContext()).apply {
             tag = "batchBar"
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(C["surface_dim"]!!); visibility = View.GONE
-            setPadding(12, 6, 12, 6)
+            setPadding(requireContext().dp(12), requireContext().dp(6), requireContext().dp(12), requireContext().dp(6))
             layoutParams = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams(
                 androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.MATCH_PARENT,
                 androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.WRAP_CONTENT).apply {
@@ -335,7 +305,14 @@ class FolderFragment : Fragment() {
             }
         }
         val tvBatchCount = TextView(requireContext()).apply { setTextColor(C["primary"]!!); textSize = 12f }
-        fun b(text: String, style: ActionStyle) = UuButton(requireContext()).apply { this.text = text; actionStyle = style }
+        fun b(text: String, style: ActionStyle) = UuButton(requireContext()).apply {
+            this.text = text
+            actionStyle = style
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { marginStart = gap }
+        }
         // Emoji lives in the string resource (one leading glyph per item) — never
         // concatenate another here or the button shows doubled icons. The tag
         // drives mode-based visibility in syncMultiBar (text matching broke when
@@ -351,6 +328,7 @@ class FolderFragment : Fragment() {
         val batchScroll = com.usefulunpacker.UuHorizontalScrollView(requireContext()).apply {
             isHorizontalScrollBarEnabled = false
             isVerticalScrollBarEnabled = false
+            isFillViewport = true
             // Inner row fills the scroll area and right-aligns its buttons (the
             // count label stays pinned to the left). On a narrow screen the row
             // overflows and scrolls instead of overflowing the bar.

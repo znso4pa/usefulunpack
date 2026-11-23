@@ -154,13 +154,34 @@ class UuIconButton @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? 
     var actionStyle: ActionStyle = ActionStyle.TEXT
         set(value) { field = value; applyStyle() }
     init { applyStyle() }
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); applyStyle(); UuMetrics.ensureTarget(this) }
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        applyStyle()
+        val target = UuMetrics.px(context, R.dimen.touch_target)
+        val lp = layoutParams
+        if (lp != null) {
+            minimumWidth = if (lp.width in 1 until target) lp.width else target
+            minimumHeight = if (lp.height in 1 until target) lp.height else target
+        }
+    }
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (w <= 0 || h <= 0) return
+        val minDim = minOf(w, h)
+        val iconPx = context.dp(if (minDim >= context.dp(44)) 22 else 18)
+        val padX = ((w - iconPx) / 2).coerceAtLeast(context.dp(4))
+        val padY = ((h - iconPx) / 2).coerceAtLeast(context.dp(4))
+        if (paddingLeft != padX || paddingTop != padY || paddingRight != padX || paddingBottom != padY) {
+            setPadding(padX, padY, padX, padY)
+        }
+    }
     private fun applyStyle() {
         val ctx = context
         minimumWidth = UuMetrics.px(ctx, R.dimen.touch_target)
         minimumHeight = UuMetrics.px(ctx, R.dimen.touch_target)
+        scaleType = ImageView.ScaleType.FIT_CENTER
         val padding = UuMetrics.px(ctx, R.dimen.space_md)
-        setPadding(padding, padding, padding, padding)
+        if (width <= 0 || height <= 0) setPadding(padding, padding, padding, padding)
         background = if (actionStyle == ActionStyle.PRIMARY) roundedBg(ctx.dp(8), ctx.getColor(R.color.accent)) else ripple(ctx.getColor(R.color.ripple_light))
         imageTintList = ColorStateList(arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
             intArrayOf(ctx.getColor(R.color.text_disabled), ctx.getColor(when (actionStyle) {
@@ -279,10 +300,11 @@ class UuChoiceCell(ctx: Context) : androidx.appcompat.widget.AppCompatTextView(c
         minHeight = UuMetrics.px(context, R.dimen.touch_target)
         gravity = if (listMode) Gravity.CENTER_VERTICAL or Gravity.START else Gravity.CENTER
         maxLines = if (listMode) 1 else 2
-        minLines = if (listMode) 1 else 2
+        minLines = 1
         ellipsize = if (listMode) android.text.TextUtils.TruncateAt.MIDDLE else android.text.TextUtils.TruncateAt.END
-        val p = UuMetrics.px(context, R.dimen.space_md)
-        setPadding(p, p, p, p)
+        val hPad = UuMetrics.px(context, if (listMode) R.dimen.space_md else R.dimen.space_sm)
+        val vPad = UuMetrics.px(context, R.dimen.space_sm)
+        setPadding(hPad, vPad, hPad, vPad)
         setOnClickListener { AppDiagnostics.invokeCallback(trace, onClick) }
     }
 }

@@ -214,6 +214,8 @@ private fun MainActivity.applyPresentationGeometry(dialog: android.app.Dialog) {
 
 private val centeredSizes = java.util.WeakHashMap<android.app.Dialog, Pair<Int, Int>>()
 
+private const val DIALOG_CENTERED_MAX_W_DP = 440
+
 private fun MainActivity.applyCenteredDialogGeometry(dlg: android.app.Dialog) {
     if (isFinishing || isDestroyed) return
     val window = dlg.window ?: return
@@ -230,19 +232,30 @@ private fun MainActivity.applyCenteredDialogGeometry(dlg: android.app.Dialog) {
     }
     fun pixels(value: Int) = (value * resources.displayMetrics.density).toInt()
     val maxHeight = (root.height - safeTop - pixels(32)).coerceAtLeast(1)
-    val maxWidth = minOf(root.width - pixels(32), resources.getDimensionPixelSize(R.dimen.dialog_max_width)).coerceAtLeast(1)
+    val maxWidth = minOf(
+        root.width - pixels(32),
+        pixels(DIALOG_CENTERED_MAX_W_DP),
+        resources.getDimensionPixelSize(R.dimen.dialog_max_width),
+    ).coerceAtLeast(1)
+    val width = if (original.first > 0) original.first.coerceAtMost(maxWidth) else maxWidth
     val decor = window.decorView
-    // Re-measure natural content when the viewport grows after the IME is hidden.
-    decor.measure(View.MeasureSpec.makeMeasureSpec(maxWidth, View.MeasureSpec.AT_MOST),
-        View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST))
-    fun bounded(originalSize: Int, measured: Int, limit: Int): Int = when {
-        originalSize > 0 -> originalSize.coerceAtMost(limit)
-        originalSize == android.view.ViewGroup.LayoutParams.MATCH_PARENT || measured >= limit -> limit
-        else -> originalSize // Restore WRAP_CONTENT so changing progress/messages can still grow.
+    // Undo any previous capped-height panel mutation before re-measuring natural content
+    // at the target width (EXACTLY width prevents DecorView's 65%/95% minWidth hijack).
+    resetDialogPanelForWrap(dlg)
+    decor.measure(
+        View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST),
+    )
+    val cappedHeight = original.second == android.view.ViewGroup.LayoutParams.MATCH_PARENT ||
+        (original.second > 0 && original.second >= maxHeight) ||
+        decor.measuredHeight >= maxHeight
+    val height = when {
+        original.second > 0 -> original.second.coerceAtMost(maxHeight)
+        cappedHeight -> maxHeight
+        else -> android.view.ViewGroup.LayoutParams.WRAP_CONTENT
     }
-    val width = bounded(original.first, decor.measuredWidth, maxWidth)
-    val height = bounded(original.second, decor.measuredHeight, maxHeight)
     if (window.attributes.width != width || window.attributes.height != height) window.setLayout(width, height)
+    if (cappedHeight) fitDialogPanel(dlg)
 }
 
 /**
@@ -487,14 +500,15 @@ private fun MainActivity.applyDialogGeometry(
     val density = dm.density
     val topInset = findViewById<View>(R.id.dividerTabBar)?.bottom
         ?: (50f * density).toInt()
+    val rootW = findViewById<View>(R.id.root)?.width?.takeIf { it > 0 } ?: dm.widthPixels
     val landscape = resources.configuration.orientation ==
         android.content.res.Configuration.ORIENTATION_LANDSCAPE
     val sheetW = if (landscape) {
         (DIALOG_LANDSCAPE_W_DP * density).toInt()
-            .coerceAtMost(dm.widthPixels - (2 * 16f * density).toInt())
+            .coerceAtMost(rootW - (2 * 16f * density).toInt())
     } else {
-        minOf(dm.widthPixels, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
-    }
+        minOf(rootW, resources.getDimensionPixelSize(R.dimen.dialog_max_width))
+    }.coerceAtLeast(1)
 
     // Window dim/animation policy is configured once by prepareDialogWindow.
     // Reapplying window attributes from pre-draw/insets would keep requesting another layout.
@@ -535,14 +549,19 @@ private fun MainActivity.applyDialogGeometry(
             fitDialogPanel(dlg)
             return
         }
-        // 短内容贴自身高度（1 条的回收站不该开成 near-full-screen）。先量再定 EXACT 高。
+        // 短内容贴自身高度（1 条的回收站不该开成 near-full-screen）。
+        // 先还原成 WRAP_CONTENT 再以 EXACTLY(sheetW) 测真实高度：
+        // 1. 避免 AT_MOST 下被 DecorView 的 windowMinWidthMajor/Minor（65%/95% 屏宽）劫持；
+        // 2. 避免从横屏（曾被 availH 封顶并 fitDialogPanel）转回竖屏时留在 MATCH_PARENT。
+        resetDialogPanelForWrap(dlg)
         val decor = w.decorView
         decor.measure(
-            View.MeasureSpec.makeMeasureSpec(sheetW, View.MeasureSpec.AT_MOST),
+            View.MeasureSpec.makeMeasureSpec(sheetW, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(availH, View.MeasureSpec.AT_MOST))
         val measured = decor.measuredHeight
         val height = if (measured in 1 until availH) measured else availH
         if (w.attributes.width != sheetW || w.attributes.height != height) w.setLayout(sheetW, height)
+        fitDialogPanel(dlg)
     }
     // The shared pre-draw gate calls this again before revealing a newly attached window.
     applySize()
@@ -596,6 +615,62 @@ private fun MainActivity.reapplyDialogPlacementsNow() {
  * 竖屏仍走 dialog_max_width 的贴底大窗，见 [belowTabBar]。
  */
 private const val DIALOG_LANDSCAPE_W_DP = 480f
+
+/**
+ * 测量自然内容高度前，把 [fitDialogPanel] 改过的 MATCH_PARENT / weight=1 还原为 WRAP_CONTENT，
+ * 同时清掉对话框主题的 minimumWidth，保证转屏或键盘收起后能重新测出真实的自然高度。
+ */
+private fun MainActivity.resetDialogPanelForWrap(dlg: android.app.Dialog) {
+    val decor = dlg.window?.decorView ?: return
+    if (decor.minimumWidth != 0) decor.minimumWidth = 0
+    val content = decor.findViewById<android.view.ViewGroup>(android.R.id.content) ?: return
+    (content.layoutParams as? android.widget.FrameLayout.LayoutParams)?.let { clp ->
+        if (clp.height != android.view.ViewGroup.LayoutParams.WRAP_CONTENT) {
+            clp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            content.layoutParams = clp
+        }
+    }
+    val panel = content.getChildAt(0) ?: return
+    (panel.layoutParams as? android.widget.FrameLayout.LayoutParams)?.let { lp ->
+        if (lp.width != android.view.ViewGroup.LayoutParams.MATCH_PARENT ||
+            lp.height != android.view.ViewGroup.LayoutParams.WRAP_CONTENT) {
+            lp.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            lp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            lp.gravity = android.view.Gravity.CENTER
+            panel.layoutParams = lp
+        }
+    }
+    val ll = panel as? android.widget.LinearLayout ?: return
+    var contentChild: android.view.View? = null
+    var bestCount = -1
+    for (i in 0 until ll.childCount) {
+        val c = ll.getChildAt(i)
+        val clp = c.layoutParams as? android.widget.LinearLayout.LayoutParams ?: continue
+        val n = descendants(c)
+        if (n > bestCount) { bestCount = n; contentChild = c }
+        if (n == 0 && clp.weight != 0f) {
+            clp.weight = 0f; c.layoutParams = clp
+        }
+    }
+    contentChild?.let { c ->
+        (c.layoutParams as? android.widget.LinearLayout.LayoutParams)?.let { clp ->
+            if (clp.weight != 0f || clp.height != android.view.ViewGroup.LayoutParams.WRAP_CONTENT) {
+                clp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+                clp.weight = 0f
+                c.layoutParams = clp
+            }
+        }
+        val holder = c as? android.view.ViewGroup ?: return@let
+        for (k in 0 until holder.childCount) {
+            val v = holder.getChildAt(k)
+            val vlp = v.layoutParams as? android.widget.FrameLayout.LayoutParams ?: continue
+            if (vlp.height != android.view.ViewGroup.LayoutParams.WRAP_CONTENT) {
+                vlp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+                v.layoutParams = vlp
+            }
+        }
+    }
+}
 
 /**
  * 把 AlertDialog 的**面板**设成精确高度并居中（不碰窗口的 LayoutParams）。

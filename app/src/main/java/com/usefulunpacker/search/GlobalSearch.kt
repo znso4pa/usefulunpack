@@ -91,6 +91,17 @@ internal fun MainActivity.globalSearch(startDir: File? = null, tempDir: File? = 
         val cbRegex = view.findViewById<CheckBox>(R.id.cbRegex)
         val cbCaseSensitive = view.findViewById<CheckBox>(R.id.cbCaseSensitive)
         val etFileFilter = view.findViewById<EditText>(R.id.etFileFilter)
+        val searchOptions = view.findViewById<View>(R.id.searchOptions)
+
+        view.addOnLayoutChangeListener { v, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            val h = bottom - top
+            if (h > 0 && h != oldBottom - oldTop) {
+                val targetVis = if (h < dp(440)) View.GONE else View.VISIBLE
+                if (searchOptions != null && searchOptions.visibility != targetVis) {
+                    v.post { if (searchOptions.visibility != targetVis) searchOptions.visibility = targetVis }
+                }
+            }
+        }
 
         tvDir.text = getString(R.string.search_scope, searchDir.path)
         btnChangeDir.text = getString(R.string.action_change)

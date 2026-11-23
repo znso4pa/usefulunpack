@@ -303,10 +303,11 @@ class MainActivity : AppCompatActivity() {
             actionStyle = ActionStyle.PRIMARY
             setImageResource(R.drawable.ic_add_folder)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams(64, 64).apply {
+            val sizePx = dp(48)
+            layoutParams = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams(sizePx, sizePx).apply {
                 bottomToBottom = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
                 startToStart = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
-                setMargins(24, 0, 0, 72)
+                setMargins(dp(16), 0, 0, dp(56))
             }
             onUserIntent("create_directory") {
                 val inp = com.usefulunpacker.UuTextField(this@MainActivity).apply {
@@ -409,9 +410,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        // 清单声明了 configChanges：旋转不重建视图树，终端层按像素算的
-        // 顶部偏移（状态栏高度横竖屏不同）必须手动重算。
+        // 清单声明了 configChanges：旋转不重建视图树，归档预览的单栏/左右双栏约束
+        // 在这里按新方向重同步。
+        tabs.forEach { tab ->
+            if (tab.viewsBound) applyLayer(tab)
+        }
+        // 终端层与进度浮层按像素算的顶部偏移和卡片宽度必须手动重算。
         _terminalPanel?.relayout()
+        OpOverlay.relayout(this)
         // 主界面（hub）的骨架同样是「拼一次就留着」的 —— 横竖屏是两套布局
         //（isRoomy 一分为二），不重拼就一直是旧方向那套（真机：竖屏显示横屏骨架）。
         // 见 browse/HomeHub.kt 的 refreshHubs。
@@ -959,10 +965,11 @@ internal class TabStripAdapter(private val act: MainActivity) :
             gravity = Gravity.CENTER
             visibility = View.GONE
         }
+        val closeSz = (28 * act.resources.displayMetrics.density).toInt()
         root.addView(icon)
         root.addView(label, LinearLayout.LayoutParams(WRAP, WRAP))
         root.addView(badge, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = (2 * act.resources.displayMetrics.density).toInt() })
-        root.addView(close, LinearLayout.LayoutParams(WRAP, WRAP))
+        root.addView(close, LinearLayout.LayoutParams(closeSz, closeSz))
         return VH(root, badge)
     }
 

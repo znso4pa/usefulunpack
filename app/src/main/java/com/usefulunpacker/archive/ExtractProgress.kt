@@ -129,6 +129,39 @@ object OpOverlay {
         return status + dp(activity, 106)
     }
 
+    /** Responsive card width: fits phones in portrait without overflowing and stays compact on tablets/landscape. */
+    private fun cardWidth(activity: AppCompatActivity): Int {
+        val rootW = activity.findViewById<View>(R.id.root)?.width?.takeIf { it > 0 }
+            ?: activity.resources.displayMetrics.widthPixels
+        return minOf(
+            rootW - dp(activity, 32),
+            dp(activity, 440),
+            activity.resources.getDimensionPixelSize(R.dimen.dialog_max_width),
+        ).coerceAtLeast(1)
+    }
+
+    fun relayout(activity: AppCompatActivity) {
+        val host = activity.findViewById<ViewGroup>(R.id.op_overlay_host) ?: return
+        host.post {
+            if (activity.isFinishing || activity.isDestroyed) return@post
+            val spacer = host.getChildAt(0)
+            (spacer?.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+                val top = topInset(activity)
+                if (lp.height != top) { lp.height = top; spacer.layoutParams = lp }
+            }
+            val scrim = host.getChildAt(1) as? FrameLayout ?: return@post
+            val cards = scrim.findViewById<LinearLayout>(R.id.op_overlay_cards) ?: return@post
+            val targetW = cardWidth(activity)
+            for (i in 0 until cards.childCount) {
+                val wrap = cards.getChildAt(i) as? ViewGroup ?: continue
+                val inner = wrap.getChildAt(0) ?: continue
+                (inner.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+                    if (lp.width != targetW) { lp.width = targetW; inner.layoutParams = lp }
+                }
+            }
+        }
+    }
+
     private fun ensureHost(activity: AppCompatActivity): ViewGroup? {
         if (activity.isFinishing || activity.isDestroyed) return null
         val content = activity.findViewById<ViewGroup>(android.R.id.content) ?: return null
@@ -175,12 +208,13 @@ object OpOverlay {
                 gravity = android.view.Gravity.CENTER_HORIZONTAL
             }
             scrim.addView(cards, FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER))
         }
 
         val density = activity.resources.displayMetrics.density
         val wrap = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
             setPadding(dp(activity, 12), dp(activity, 6), dp(activity, 12), dp(activity, 6))
         }
         val inner = LinearLayout(activity).apply {
@@ -207,7 +241,7 @@ object OpOverlay {
             cancelBtn.visibility = View.GONE
         }
         wrap.addView(inner, LinearLayout.LayoutParams(
-            activity.resources.getDimensionPixelSize(R.dimen.dialog_max_width),
+            cardWidth(activity),
             ViewGroup.LayoutParams.WRAP_CONTENT))
         // Tag carries the owner for per-tab visibility switches.
         wrap.tag = ownerTabId

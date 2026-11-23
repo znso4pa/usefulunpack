@@ -55,7 +55,7 @@ fun showFormatPicker(
                         dialogRef?.dismiss()
                         onPick(fmt)
                     },
-                    LinearLayout.LayoutParams(0, WRAP, 1f).apply {
+                    LinearLayout.LayoutParams(0, MATCH, 1f).apply {
                         val m = dp(3)
                         marginStart = m; marginEnd = m; topMargin = m; bottomMargin = m
                     },

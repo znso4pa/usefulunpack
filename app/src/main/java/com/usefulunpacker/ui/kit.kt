@@ -158,42 +158,43 @@ internal fun heroCard(
     ).apply {
         cornerRadius = d(if (roomy) 20 else 17).toFloat()
     }
-    val box = if (roomy) d(66) else d(46)
-    val glyph = if (roomy) d(34) else d(24)
+    val spacious = roomy && ctx.resources.configuration.screenHeightDp >= 520
+    val box = if (spacious) d(62) else d(46)
+    val glyph = if (spacious) d(32) else d(24)
 
     val row = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        if (roomy) setPadding(d(30), 0, d(30), 0) else setPadding(d(14), d(9), d(12), d(9))
+        if (spacious) setPadding(d(26), d(10), d(24), d(10)) else setPadding(d(14), d(8), d(12), d(8))
     }
     row.addView(iconView(ctx, iconRes, glyph, C["accent"]!!).apply {
         background = GradientDrawable().apply {
-            cornerRadius = d(if (roomy) 18 else 13).toFloat(); setColor(C["accent_soft"]!!)
+            cornerRadius = d(if (spacious) 17 else 13).toFloat(); setColor(C["accent_soft"]!!)
         }
         layoutParams = LinearLayout.LayoutParams(box, box)
     })
     val textCol = LinearLayout(ctx).apply {
         orientation = LinearLayout.VERTICAL
-        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = d(if (roomy) 22 else 14) }
+        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = d(if (spacious) 20 else 14) }
     }
-    textCol.addView(primaryText(ctx, title, if (roomy) 20f else 16.5f, bold = true))
-    textCol.addView(secondaryText(ctx, desc, if (roomy) 13.5f else 12f).apply {
-        layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = d(if (roomy) 9 else 5) }
+    textCol.addView(primaryText(ctx, title, if (spacious) 19f else 16f, bold = true))
+    textCol.addView(secondaryText(ctx, desc, if (spacious) 13f else 11.5f).apply {
+        layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = d(if (spacious) 7 else 4) }
         // 保险：极端窄屏也不让描述把卡片撑成 5 行（横向内容通常 1–2 行）。
         maxLines = 2
         ellipsize = android.text.TextUtils.TruncateAt.END
     })
     row.addView(textCol)
     if (tag != null) {
-        row.addView(textView(ctx, tag, if (roomy) 11f else 10f, C["accent"]!!).apply {
+        row.addView(textView(ctx, tag, if (spacious) 11f else 10f, C["accent"]!!).apply {
             background = GradientDrawable().apply {
                 cornerRadius = d(99).toFloat(); setColor(C["accent_soft"]!!)
             }
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             maxWidth = ctx.resources.getDimensionPixelSize(if (roomy) R.dimen.home_tag_max_width_wide else R.dimen.home_tag_max_width)
-            setPadding(d(if (roomy) 11 else 9), d(5), d(if (roomy) 11 else 9), d(5))
-            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = d(14) }
+            setPadding(d(if (spacious) 11 else 9), d(5), d(if (spacious) 11 else 9), d(5))
+            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = d(12) }
         })
     }
 
@@ -202,8 +203,9 @@ internal fun heroCard(
         foreground = ripple(C["ripple"]!!)
         isClickable = true
         isFocusable = true
+        minimumHeight = d(if (spacious) 78 else 58)
         layoutParams = FrameLayout.LayoutParams(MATCH, WRAP)
-        addView(row)
+        addView(row, FrameLayout.LayoutParams(MATCH, MATCH, Gravity.CENTER_VERTICAL))
         // 整卡 = 一个 a11y 单元（图标 / 标题 / 描述 / 角标合成一句）。
         mergeIntoA11yNode(if (tag != null) "$title，$desc，$tag" else "$title，$desc")
         setOnClickListener { onClick() }
@@ -221,34 +223,35 @@ internal fun miniCard(
     onClick: () -> Unit,
 ): LinearLayout {
     fun d(v: Int) = ctx.dp(v)
+    val spacious = roomy && ctx.resources.configuration.screenHeightDp >= 520
     return LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        if (roomy) setPadding(d(16), d(18), d(16), d(18)) else setPadding(d(11), d(9), d(11), d(9))
-        background = roundedBg(d(if (roomy) 16 else 14), bg, d(1), C["hairline"]!!)
+        if (spacious) setPadding(d(15), d(14), d(15), d(14)) else setPadding(d(11), d(8), d(11), d(8))
+        background = roundedBg(d(if (spacious) 16 else 14), bg, d(1), C["hairline"]!!)
         foreground = ripple(C["ripple"]!!)
         isClickable = true
         isFocusable = true
         // 返回的就是 LinearLayout，布局参数必须是同一族 —— 原先给的是
         // FrameLayout.LayoutParams（调用处都会覆盖，所以从没出过事）。
         layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
-        addView(iconView(ctx, iconRes, d(if (roomy) 22 else 18), C["accent"]!!).apply {
+        addView(iconView(ctx, iconRes, d(if (spacious) 21 else 18), C["accent"]!!).apply {
             background = GradientDrawable().apply {
-                cornerRadius = d(if (roomy) 13 else 11).toFloat(); setColor(C["accent_soft"]!!)
+                cornerRadius = d(if (spacious) 12 else 11).toFloat(); setColor(C["accent_soft"]!!)
             }
-            layoutParams = LinearLayout.LayoutParams(d(if (roomy) 44 else 36), d(if (roomy) 44 else 36))
+            layoutParams = LinearLayout.LayoutParams(d(if (spacious) 42 else 36), d(if (spacious) 42 else 36))
                 .apply { gravity = Gravity.CENTER }
         })
         val names = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        names.addView(primaryText(ctx, title, if (roomy) 14.5f else 13f, bold = true).apply {
+        names.addView(primaryText(ctx, title, if (spacious) 14f else 13f, bold = true).apply {
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         })
-        names.addView(textView(ctx, sub, if (roomy) 11f else 10f, C["tertiary"]!!).apply {
+        names.addView(textView(ctx, sub, if (spacious) 11f else 10f, C["tertiary"]!!).apply {
             layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = d(2) }
             setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
         })
-        addView(names, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = d(if (roomy) 14 else 11) })
+        addView(names, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = d(if (spacious) 13 else 11) })
         // 整卡 = 一个 a11y 单元（图标 / 标题 / 说明合成一句）。
         mergeIntoA11yNode("$title，$sub")
         setOnClickListener { onClick() }

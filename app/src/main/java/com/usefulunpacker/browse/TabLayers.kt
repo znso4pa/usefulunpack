@@ -40,10 +40,29 @@ internal fun MainActivity.applyLayer(tab: TabState) {
     if (!tab.viewsBound) return
     val home = tab.homeVisible
     val preview = !home && tab.previewActive
+    val splitPreview = preview && isRoomy(this)
     tab.homeRoot?.visibility = vis(home)
-    tab.panel?.visibility = vis(!home)
+    tab.panel?.visibility = vis(!home && (!preview || splitPreview))
     tab.previewRoot.visibility = vis(preview)
     tab.pathBar?.visibility = vis(!home)
+
+    val parent = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+    (tab.previewRoot.layoutParams as? androidx.constraintlayout.widget.ConstraintLayout.LayoutParams)?.let { pl ->
+        val targetStart = if (splitPreview) R.id.guidelineSplit else parent
+        if (pl.startToStart != targetStart || pl.endToEnd != parent) {
+            pl.startToStart = targetStart
+            pl.endToEnd = parent
+            tab.previewRoot.layoutParams = pl
+        }
+    }
+    (tab.panel?.layoutParams as? androidx.constraintlayout.widget.ConstraintLayout.LayoutParams)?.let { ll ->
+        val targetEnd = if (splitPreview) R.id.guidelineSplit else parent
+        if (ll.endToEnd != targetEnd) {
+            ll.endToEnd = targetEnd
+            tab.panel?.layoutParams = ll
+        }
+    }
+
     // 选择态 UI（底栏 / FAB / 批量条）只在浏览器层有意义：进 hub 或预览时收掉，
     // 否则回到浏览器会带着上一次的选中残留。
     if (home || preview) {

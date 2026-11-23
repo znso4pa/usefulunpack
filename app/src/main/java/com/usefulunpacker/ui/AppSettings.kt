@@ -333,7 +333,7 @@ internal fun MainActivity.showGeneralSettings() {
         }
         com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.settings_general))
-            .setView(body)
+            .setView(com.usefulunpacker.UuScrollView(this).apply { addView(body) })
             .setPositiveButton(getString(R.string.action_close), null)
             .show().also { keepTabBarTappable(it) }
     }
@@ -386,7 +386,7 @@ internal fun MainActivity.showOtherSettings() {
     }
     com.usefulunpacker.UuDialogBuilder(act)
         .setTitle(getString(R.string.settings_other))
-        .setView(container)
+        .setView(com.usefulunpacker.UuScrollView(act).apply { addView(container) })
         .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
             prefs.edit().putBoolean("restore_session", switchRestore.isChecked).apply()
         }
@@ -482,7 +482,7 @@ internal fun MainActivity.showRecycleBinSettings() {
 
     com.usefulunpacker.UuDialogBuilder(this)
         .setTitle(getString(R.string.title_recycle_bin))
-        .setView(container)
+        .setView(com.usefulunpacker.UuScrollView(this).apply { addView(container) })
         .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
             prefs.edit().putBoolean("recycle_bin_enabled", switchEnabled.isChecked).apply()
             prefs.edit().putInt("recycle_bin_auto_clean_days", autoCleanDays).apply()
@@ -562,7 +562,7 @@ internal fun MainActivity.showUISettings() {
 
         com.usefulunpacker.UuDialogBuilder(this)
             .setTitle(getString(R.string.settings_ui))
-            .setView(body)
+            .setView(com.usefulunpacker.UuScrollView(this).apply { addView(body) })
             .setPositiveButton(getString(R.string.action_confirm)) { _, _ ->
                 prefs.edit().putInt("bg_image_alpha", seekAlpha.progress).apply()
                 prefs.getString("bg_image_uri", null)?.let { applyBackgroundImage(Uri.parse(it)) }

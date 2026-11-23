@@ -138,8 +138,15 @@ internal object UutParser {
             for (op in OPS) {
                 val i = indexOfOp(condRaw, op)
                 if (i <= 0) continue
+                val rawName = condRaw.substring(0, i).trim()
+                val cleanName = if (rawName.startsWith("\${") && rawName.endsWith("}") && rawName.length > 3) {
+                    rawName.substring(2, rawName.length - 1).trim()
+                } else {
+                    rawName.removePrefix("$")
+                }
+                val normalizedOp = if (op == "==") "=" else op
                 return UutCond.VarCmp(
-                    condRaw.substring(0, i).trim().removePrefix("$"), op,
+                    cleanName, normalizedOp,
                     condRaw.substring(i + op.length).trim().trim('"', '\'')
                 )
             }
@@ -169,7 +176,9 @@ internal object UutParser {
                 if (cmd.isEmpty()) throw UutParseException(lineNo, "if has no command after then")
                 return UutStmt.IfInline(lineNo, parseCond(cond, lineNo), cmd)
             }
-            val cond = parseCond(rest, lineNo)
+            // 兼容模型把块式 if 写成 `if <cond> then` 换行跟块体的习惯；若无后续 end 仍会抛缺少 end
+            val cleanCond = if (rest.endsWith(" then")) rest.removeSuffix(" then").trim() else rest
+            val cond = parseCond(cleanCond, lineNo)
             val (thenBody, term) = parseBlock(inBlock = true)
             if (term == null) throw UutParseException(lineNo, "if needs 'end'")
             var elseBody: List<UutStmt> = emptyList()
@@ -205,7 +214,8 @@ internal object UutParser {
             val inIdx = rest.indexOf(" in ")
             if (inIdx <= 0) throw UutParseException(lineNo, "for needs 'in'")
             val varName = rest.substring(0, inIdx).trim()
-            val patterns = rest.substring(inIdx + " in ".length).trim()
+            val rawPatterns = rest.substring(inIdx + " in ".length).trim()
+            val patterns = rawPatterns.removeSuffix("; do").removeSuffix(" do").trim()
             if (patterns.isEmpty()) throw UutParseException(lineNo, "for has no patterns")
             val (body, term) = parseBlock(inBlock = true)
             // 用终止符判断，不再回看 lines[idx-1]：块式 if 的 end 也是
@@ -226,6 +236,10 @@ internal object UutParser {
                 val raw = stripComment(lines[idx].trim())
                 idx++
                 if (raw.isEmpty()) continue
+                if (raw == "fi" || raw == "done") {
+                    throw UutParseException(lineNo, "Use 'end' instead of '$raw' to close an if/for/while block")
+                }
+                if (inBlock && (raw == "do" || raw == "then")) continue
                 if (raw == "end" || raw == "else") {
                     if (inBlock) return out to raw
                     throw UutParseException(
@@ -257,7 +271,8 @@ internal object UutParser {
                     raw.startsWith("if ") -> out.add(parseIf(lineNo, raw.removePrefix("if ").trim()))
                     raw.startsWith("for ") -> out.add(parseFor(lineNo, raw.removePrefix("for ").trim()))
                     raw.startsWith("while ") -> {
-                        val cond = parseCond(raw.removePrefix("while ").trim(), lineNo)
+                        val cleanWhile = raw.removePrefix("while ").trim().removeSuffix("; do").removeSuffix(" do").trim()
+                        val cond = parseCond(cleanWhile, lineNo)
                         val (body, term) = parseBlock(inBlock = true)
                         if (term != "end") throw UutParseException(lineNo, "while needs 'end'")
                         out.add(UutStmt.While(lineNo, cond, body))
@@ -310,6 +325,24 @@ internal object UutParser {
         while (i < text.length) {
             val c = text[i]
             val next = if (i + 1 < text.length) text[i + 1] else ' '
+            // `${name}` / `${1}` / `${?}` 花括号变量替换语法兼容
+            if (c == '$' && next == '{') {
+                val close = text.indexOf('}', i + 2)
+                if (close > i + 2) {
+                    val key = text.substring(i + 2, close)
+                    if (key == "?") {
+                        sb.append(vars["?"] ?: "0")
+                        i = close + 1
+                        continue
+                    } else if (key.all { it.isDigit() } ||
+                        ((key[0].isLetter() || key[0] == '_') && key.all { it.isLetterOrDigit() || it == '_' })
+                    ) {
+                        sb.append(vars[key] ?: "")
+                        i = close + 1
+                        continue
+                    }
+                }
+            }
             // `$?` = 上一条命令的退出码（单字符名字，不与命名变量规则冲突）
             if (c == '$' && next == '?') {
                 sb.append(vars["?"] ?: "0")
@@ -411,8 +444,8 @@ internal object UutParser {
         return line
     }
 
-    /** 条件里可用的运算符（双字符在前，"<=" 不能被拆成 "<"）。 */
-    val OPS = listOf("!=", "<=", ">=", "=", "<", ">")
+    /** 条件里可用的运算符（双字符在前，"<=" 不能被拆成 "<"，"==" 兼容归一化为 "="）。 */
+    val OPS = listOf("!=", "<=", ">=", "==", "=", "<", ">")
 
     /**
      * `set n = $n + 1` 的算术：`<整数> <op> <整数>`（op ∈ + - * /）。
@@ -436,7 +469,7 @@ internal object UutParser {
      * 由执行器报错；不静默判假）。
      */
     fun compareValues(left: String, op: String, right: String): Boolean? = when (op) {
-        "=" -> left == right
+        "=", "==" -> left == right
         "!=" -> left != right
         else -> {
             val a = left.trim().toLongOrNull()

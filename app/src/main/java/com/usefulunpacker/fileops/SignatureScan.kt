@@ -100,13 +100,13 @@ internal val ARCHIVE_LABELS = mapOf(
 )
 
 /** Formats whose native readers require the archive at byte 0 (must carve first). */
-private val NEEDS_CARVE = setOf("7z", "gz", "bz2", "xz", "zst", "lzma", "lz4", "xp3", "tar", "pfs", "rgss", "rpa", "int", "bgi")
+internal val NEEDS_CARVE = setOf("7z", "gz", "bz2", "xz", "zst", "lzma", "lz4", "xp3", "tar", "pfs", "rgss", "rpa", "int", "bgi")
 
 /** rars scans only the first 8 MiB for an embedded RAR signature. */
-private const val RAR_SCAN_LIMIT = 8L * 1024 * 1024
+internal const val RAR_SCAN_LIMIT = 8L * 1024 * 1024
 
 /** non-archive hit label → file extension when saving the segment. */
-private val EXT_FOR_LABEL = mapOf(
+internal val EXT_FOR_LABEL = mapOf(
     "PNG image" to "png",
     "JPEG image" to "jpg",
     "GIF image" to "gif",
@@ -203,7 +203,7 @@ private val EXT_FOR_LABEL = mapOf(
 
 /** Archive hit label → file extension for a raw dd carve (so the carved file
  *  keeps a recognizable extension instead of a generic .bin). */
-private val ARCHIVE_EXT_FOR_LABEL = mapOf(
+internal val ARCHIVE_EXT_FOR_LABEL = mapOf(
     "7-zip archive" to "7z",
     "ZIP archive" to "zip",
     "RAR archive" to "rar",

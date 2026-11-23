@@ -19,6 +19,10 @@
 
     <!-- The opt-in MCP listener binds to the device loopback interface. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -43,6 +47,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".McpForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Share APK files with the system package installer via content:// URIs -->
         <provider

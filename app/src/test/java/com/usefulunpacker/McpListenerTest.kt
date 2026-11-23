@@ -259,6 +259,254 @@ class McpListenerTest {
         assertEquals("folder.lpk", lpkPackedName("folder"))
     }
 
+    @Test fun persistentPortAndTokenSurviveRestartAndFallBackWhenPortIsOccupied() {
+        val root = tmp.newFolder()
+        val workspace = McpWorkspace(root)
+        val savedToken = generateMcpToken()
+        var chosenPort = 0
+
+        McpTasks { _, _ -> }.use { tasks1 ->
+            McpListener(McpProtocol(workspace, tasks1, "test"), tasks1, root, preferredPort = 0, fixedToken = savedToken).use { first ->
+                chosenPort = first.port
+                assertEquals(savedToken, first.token)
+                assertEquals(200, request(URI(first.url), savedToken, "ping").first)
+
+                // While 'first' holds chosenPort, a second listener requesting the same preferredPort falls back cleanly.
+                McpTasks { _, _ -> }.use { occupiedTasks ->
+                    McpListener(McpProtocol(workspace, occupiedTasks, "test"), occupiedTasks, root, preferredPort = chosenPort, fixedToken = savedToken).use { fallback ->
+                        assertNotEquals(chosenPort, fallback.port)
+                        assertEquals(savedToken, fallback.token)
+                    }
+                }
+            }
+        }
+
+        // After closing 'first', restarting with preferredPort + fixedToken rebinds the exact same endpoint and token.
+        McpTasks { _, _ -> }.use { tasks2 ->
+            McpListener(McpProtocol(workspace, tasks2, "test"), tasks2, root, preferredPort = chosenPort, fixedToken = savedToken).use { second ->
+                assertEquals(chosenPort, second.port)
+                assertEquals(savedToken, second.token)
+                assertEquals("http://127.0.0.1:$chosenPort/mcp", second.url)
+                assertEquals(200, request(URI(second.url), savedToken, "ping").first)
+            }
+        }
+    }
+
+    @Test fun runUutEnforcesCompileTimeChecksAndReturnsSelfHealingDiagnostics() {
+        val root = tmp.newFolder()
+        val workspace = McpWorkspace(root)
+        val tasks = McpTasks(McpArchiveWorker(workspace)::execute)
+        McpListener(McpProtocol(workspace, tasks, "test"), tasks, root).use { listener ->
+            // 1. Top-level 'grep' instead of 'uu grep' returns line, expectedUsage and fixHint on run_uut directly.
+            val topLevelGrep = call(listener, "run_uut", JSONObject().put("script", "echo ok\ngrep pattern dir"))
+            assertTrue(topLevelGrep.getBoolean("isError"))
+            val grepDiag = topLevelGrep.getJSONObject("structuredContent")
+            assertFalse(grepDiag.getBoolean("valid"))
+            assertEquals(2, grepDiag.getInt("line"))
+            assertTrue(grepDiag.getString("expectedUsage").contains("uu grep"))
+            assertTrue(grepDiag.getString("fixHint").contains("uu "))
+
+            // 2. Invalid flag or missing positional arg inside a loop with $vars is caught BEFORE queueing.
+            val badFlag = call(listener, "run_uut", JSONObject().put("script", "for f in *.ks\n  uu sed \"a\" \"b\"\nend"))
+            assertTrue(badFlag.getBoolean("isError"))
+            val sedDiag = badFlag.getJSONObject("structuredContent")
+            assertFalse(sedDiag.getBoolean("valid"))
+            assertEquals(2, sedDiag.getInt("line"))
+            assertTrue(sedDiag.getString("expectedUsage").contains("uu sed"))
+
+            // 3. 'fi' or 'done' gives a clear block-closing fixHint.
+            val badFi = call(listener, "run_uut", JSONObject().put("script", "if a = 1\n  echo hi\nfi"))
+            assertTrue(badFi.getBoolean("isError"))
+            assertEquals(3, badFi.getJSONObject("structuredContent").getInt("line"))
+            assertTrue(badFi.getJSONObject("structuredContent").getString("fixHint").contains("end"))
+
+            // 4. dryRun on run_uut validates without executing.
+            val dry = call(listener, "run_uut", JSONObject()
+                .put("script", "if \${x} == \"1\" then\n  uu mkdir out_dry\nend")
+                .put("dryRun", true)).getJSONObject("structuredContent")
+            assertTrue(dry.getBoolean("valid"))
+            assertTrue(dry.getBoolean("dryRun"))
+            assertFalse(root.resolve("out_dry").exists())
+        }
+    }
+
+    @Test fun serverDeduplicatesInFlightAndIdempotentSubmissionsSupportsWaitMsAndTaskList() {
+        val root = tmp.newFolder()
+        root.resolve("a.txt").writeText("hello")
+        val workspace = McpWorkspace(root)
+        val started = CountDownLatch(1)
+        val proceed = CountDownLatch(1)
+        var executions = 0
+        val worker = McpArchiveWorker(workspace)
+        val tasks = McpTasks { task, cmd ->
+            executions++
+            if (cmd.output == "slow.txt") {
+                started.countDown()
+                check(proceed.await(3, TimeUnit.SECONDS))
+            }
+            worker.execute(task, cmd)
+        }
+        McpListener(McpProtocol(workspace, tasks, "test"), tasks, root).use { listener ->
+            // 1. Implicit fingerprint deduplication while a task is in-flight (no idempotencyKey passed).
+            val first = call(listener, "run_uu", JSONObject()
+                .put("argv", JSONArray(listOf("cp", "a.txt", "slow.txt"))))
+                .getJSONObject("structuredContent")
+            assertFalse(first.getBoolean("deduplicated"))
+            assertTrue(started.await(3, TimeUnit.SECONDS))
+
+            val retryInFlight = call(listener, "run_uu", JSONObject()
+                .put("argv", JSONArray(listOf("cp", "a.txt", "slow.txt"))))
+                .getJSONObject("structuredContent")
+            assertTrue(retryInFlight.getBoolean("deduplicated"))
+            assertEquals(first.getString("taskId"), retryInFlight.getString("taskId"))
+
+            // 2. task_list finds the active task after a simulated client timeout.
+            val runningList = call(listener, "task_list", JSONObject().put("state", "RUNNING"))
+                .getJSONObject("structuredContent").getJSONArray("tasks")
+            assertEquals(1, runningList.length())
+            assertEquals(first.getString("taskId"), runningList.getJSONObject(0).getString("taskId"))
+
+            proceed.countDown()
+            val finished = call(listener, "task_status", JSONObject()
+                .put("taskId", first.getString("taskId"))
+                .put("waitMs", 3000)).getJSONObject("structuredContent")
+            assertEquals("SUCCESS", finished.getString("state"))
+            assertEquals(1, executions)
+
+            // 3. Explicit idempotencyKey deduplicates even after task completion, and waitMs completes in one trip.
+            val keyed1 = call(listener, "run_uu", JSONObject()
+                .put("argv", JSONArray(listOf("cp", "a.txt", "fast.txt")))
+                .put("idempotencyKey", "copy-fast-1")
+                .put("waitMs", 3000)).getJSONObject("structuredContent")
+            assertEquals("SUCCESS", keyed1.getString("state"))
+            assertFalse(keyed1.getBoolean("deduplicated"))
+
+            val keyed2 = call(listener, "run_uu", JSONObject()
+                .put("argv", JSONArray(listOf("cp", "a.txt", "fast.txt")))
+                .put("idempotencyKey", "copy-fast-1")
+                .put("waitMs", 3000)).getJSONObject("structuredContent")
+            assertTrue(keyed2.getBoolean("deduplicated"))
+            assertEquals(keyed1.getString("taskId"), keyed2.getString("taskId"))
+            assertEquals(2, executions)
+        }
+    }
+
+    @Test fun guiToolsExposeSignatureScanCarvingDeepFileInspectionAndAppSettings() {
+        val root = tmp.newFolder()
+        // 1. Create a host file containing a 16-byte prefix followed by an embedded PNG image (32x16).
+        val pngHeader = byteArrayOf(
+            0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+            0x00, 0x00, 0x00, 0x20, // width = 32
+            0x00, 0x00, 0x00, 0x10, // height = 16
+        )
+        val hostBytes = ByteArray(16) { 0x41 } + pngHeader
+        root.resolve("bundle.dat").writeBytes(hostBytes)
+        root.resolve("sprite.png").writeBytes(pngHeader)
+
+        val workspace = McpWorkspace(root)
+        val tasks = McpTasks { _, _ -> }
+        val protocol = McpProtocol(
+            workspace,
+            tasks,
+            "test",
+            signatureScanner = { _ ->
+                listOf(
+                    ScanHit(offset = 16L, label = "PNG image", size = pngHeader.size.toLong()),
+                    ScanHit(offset = 1024L, label = "XP3 archive", size = 4096L, fileCount = 12, note = "cxdec"),
+                )
+            },
+        )
+        McpListener(protocol, tasks, root).use { listener ->
+            // scan_signatures returns rich GUI metadata and carves hit 0 to an output file.
+            val scanRes = call(listener, "scan_signatures", JSONObject()
+                .put("path", "bundle.dat")
+                .put("carveHitIndex", 0)
+                .put("output", "carved.png")).getJSONObject("structuredContent")
+            assertEquals(2, scanRes.getInt("totalHits"))
+            val hit1 = scanRes.getJSONArray("hits").getJSONObject(1)
+            assertEquals("f1", hit1.getString("fd"))
+            assertEquals("0x400", hit1.getString("hexOffset"))
+            assertEquals("xp3", hit1.getString("format"))
+            assertTrue(hit1.getBoolean("needsCarve"))
+            assertTrue(hit1.getBoolean("canExtract"))
+            assertEquals("cxdec", hit1.getString("note"))
+            assertEquals("carved.png", scanRes.getJSONObject("carved").getString("output"))
+            assertArrayEquals(pngHeader, root.resolve("carved.png").readBytes())
+
+            // inspect_file reports PNG dimensions, kind="image", and hex preview.
+            val inspectedPng = call(listener, "inspect_file", JSONObject().put("path", "sprite.png"))
+                .getJSONObject("structuredContent")
+            assertEquals("image", inspectedPng.getString("kind"))
+            assertEquals("png", inspectedPng.getJSONObject("imageInfo").getString("format"))
+            assertEquals(32, inspectedPng.getJSONObject("imageInfo").getInt("width"))
+            assertEquals(16, inspectedPng.getJSONObject("imageInfo").getInt("height"))
+            assertTrue(inspectedPng.getString("hexPreview").contains("89 50 4E 47"))
+
+            // app_settings reads and updates preferences with validation.
+            val updated = call(listener, "app_settings", JSONObject()
+                .put("action", "set")
+                .put("key", "zip_encoding")
+                .put("value", "SHIFT-JIS")).getJSONObject("structuredContent")
+            assertEquals("SHIFT-JIS", updated.getString("value"))
+            val fetched = call(listener, "app_settings", JSONObject().put("key", "zip_encoding"))
+                .getJSONObject("structuredContent")
+            assertEquals("SHIFT-JIS", fetched.getString("value"))
+        }
+    }
+
+    @Test fun taskJournalPersistsReceiptsCleansStaleStagingAndRecoversInterruptedTasks() {
+        val root = tmp.newFolder()
+        root.resolve("a.txt").writeText("hello")
+        val staleDir = root.resolve(".uu-mcp-leftover-123").apply { mkdir() }
+        staleDir.resolve("partial.tmp").writeText("junk")
+        val journal = root.resolve(MCP_JOURNAL_FILE)
+
+        // Simulate a previous process that crashed while a task was RUNNING.
+        val priorJournal = JSONArray().put(
+            JSONObject()
+                .put("taskId", "chain-crashed-1")
+                .put("state", "RUNNING")
+                .put("totalSteps", 2)
+                .put("completedSteps", 1)
+                .put("exitCode", 0)
+                .put("summary", "uut (2 steps): x; c")
+                .put("idempotencyKey", "prev-job")
+        )
+        journal.writeText(priorJournal.toString())
+
+        val workspace = McpWorkspace(root)
+        val activeCounts = mutableListOf<Int>()
+        val tasks = McpTasks(
+            journalFile = journal,
+            onActiveCountChanged = { activeCounts.add(it) },
+            execute = McpArchiveWorker(workspace)::execute,
+        )
+        McpListener(McpProtocol(workspace, tasks, "test"), tasks, root).use { listener ->
+            // 1. Stale staging directory was cleaned up, while the journal file itself remained intact.
+            assertFalse(staleDir.exists())
+            assertTrue(journal.isFile)
+
+            // 2. The crashed RUNNING task was recovered as INTERRUPTED and is queryable via task_status / task_list.
+            val recovered = call(listener, "task_status", JSONObject().put("taskId", "chain-crashed-1"))
+                .getJSONObject("structuredContent")
+            assertEquals("INTERRUPTED", recovered.getString("state"))
+            assertEquals(1, recovered.getInt("exitCode"))
+            assertTrue(recovered.getString("error").contains("interrupted"))
+
+            // 3. New task executes, updates journal on disk, and notifies active count transitions (1 -> 0).
+            val job = call(listener, "run_uu", JSONObject()
+                .put("argv", JSONArray(listOf("cp", "a.txt", "b.txt")))
+                .put("waitMs", 3000)).getJSONObject("structuredContent")
+            assertEquals("SUCCESS", job.getString("state"))
+            assertTrue(1 in activeCounts)
+            assertEquals(0, activeCounts.last())
+
+            val persisted = JSONArray(journal.readText())
+            assertEquals(2, persisted.length())
+        }
+    }
+
     private fun awaitTask(listener: McpListener, taskId: String): JSONObject {
         val id = JSONObject().put("taskId", taskId)
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)

@@ -15,20 +15,38 @@ import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
+internal const val DEFAULT_MCP_PORT = 17380
+
 /** Single-message HTTP/1.1 connections. Bound to the IPv4 loopback before accepting any traffic. */
 internal class McpListener(
     private val protocol: McpProtocol,
     private val tasks: McpTasks,
     val directory: java.io.File,
+    preferredPort: Int = 0,
+    fixedToken: String? = null,
 ) : AutoCloseable {
     private val server = ServerSocket().apply {
-        try { bind(InetSocketAddress(InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1)), 0), 8) }
-        catch (e: IOException) { close(); throw e }
+        try {
+            val loopback = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
+            reuseAddress = true
+            if (preferredPort in 1..65535) {
+                try {
+                    bind(InetSocketAddress(loopback, preferredPort), 8)
+                } catch (_: IOException) {
+                    bind(InetSocketAddress(loopback, 0), 8)
+                }
+            } else {
+                bind(InetSocketAddress(loopback, 0), 8)
+            }
+        } catch (e: IOException) {
+            close()
+            throw e
+        }
     }
     val running: Boolean get() = !server.isClosed
-    private val port = server.localPort
+    val port: Int = server.localPort
     val url = "http://127.0.0.1:$port/mcp"
-    val token: String = ByteArray(32).also(SecureRandom()::nextBytes).joinToString("") { "%02x".format(it) }
+    val token: String = fixedToken?.takeIf { it.length >= 32 } ?: generateMcpToken()
     private val authorization = "Bearer $token".toByteArray(Charsets.US_ASCII)
     private val sockets = mutableSetOf<Socket>()
     private val deadlines = ScheduledThreadPoolExecutor(1).apply { removeOnCancelPolicy = true }
@@ -188,3 +206,6 @@ internal class McpListener(
 
     private class InvalidHttp(val status: Int) : Exception()
 }
+
+internal fun generateMcpToken(): String =
+    ByteArray(32).also(SecureRandom()::nextBytes).joinToString("") { "%02x".format(it) }

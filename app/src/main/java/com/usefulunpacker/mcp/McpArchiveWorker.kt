@@ -139,7 +139,7 @@ internal class McpArchiveWorker(
         verifyNoSymlinksIn(source.parentFile!!, task)
         val selected = command.entries.joinToString("\n")
         val effectivePrefs = prefs ?: throw McpInputException("Archive preferences unavailable")
-        runArchive(task, format, extractAccessors(format).cancel) {
+        runArchive(task, format, extractAccessors(format)) {
             if (!staged.mkdir()) throw McpInputException("Could not create extraction directory")
             val outcome = extractByFormat(format, source.path, staged.path, selected, effectivePrefs, command.password)
             task.checkCancelled()
@@ -172,7 +172,7 @@ internal class McpArchiveWorker(
         }
         val effectivePrefs = prefs ?: throw McpInputException("Archive preferences unavailable")
         val level = defaultCompressLevel(effectivePrefs, format)
-        runArchive(task, format, compressAccessors(format).cancel) {
+        runArchive(task, format, compressAccessors(format)) {
             val ok = compressDispatch(source, staged, format, level, command.password, effectivePrefs, splitOverride = 0, enc = command.enc)
             task.checkCancelled()
             if (!ok || !staged.isFile || staged.length() == 0L) {
@@ -182,7 +182,7 @@ internal class McpArchiveWorker(
         }
     }
 
-    private fun runArchive(task: McpTask, format: String, cancel: () -> Unit, block: () -> Unit) {
+    private fun runArchive(task: McpTask, format: String, accessors: ProgressAccessors, block: () -> Unit) {
         task.checkCancelled()
         val handle = tryStartOperation(format)
         try {
@@ -191,14 +191,28 @@ internal class McpArchiveWorker(
             task.checkCancelled()
             task.bindNativeCancel {
                 handle.markCancelRequested()
-                try { observedAttempt("mcp_native_cancel", cancel) }
+                try { observedAttempt("mcp_native_cancel", accessors.cancel) }
                 catch (_: LinkageError) {
                     AppDiagnostics.begin("mcp_native_cancel").fail(FailureCode.UNSUPPORTED, "Native cancellation is unavailable")
+                }
+            }
+            task.bindProgress {
+                try {
+                    org.json.JSONObject()
+                        .put("format", format)
+                        .put("bytes", accessors.getCount())
+                        .put("totalBytes", accessors.getTotal())
+                        .put("fileCount", accessors.getFileCount())
+                        .put("fileTotal", accessors.getFileTotal())
+                        .put("currentFile", accessors.getName().orEmpty())
+                } catch (_: LinkageError) {
+                    null
                 }
             }
             task.checkCancelled()
             block()
         } finally {
+            task.bindProgress(null)
             task.bindNativeCancel(null)
             handle.release()
         }
@@ -678,7 +692,7 @@ internal class McpArchiveWorker(
         val beforeFiles = if (cmdName in setOf("x", "c", "cp", "mv", "rn", "mkdir", "set", "cso", "audio", "video", "enc", "mvdec", "rmd", "add", "dd", "sed", "tr", "img", "b64")) {
             state.cwd.listFiles()?.map { it.name to it.lastModified() }?.toMap().orEmpty()
         } else emptyMap()
-        val tempCache = File(workspace.root, ".uu-mcp-cache-${task.trace.id}-${System.nanoTime()}")
+        val tempCache = File(workspace.root, ".uu-mcp-cache-${task.taskId}-${System.nanoTime()}")
         val res = try {
             UuCommands.dispatch(expanded, buildUuCtx(task, state.cwd, tempCache))
         } finally {

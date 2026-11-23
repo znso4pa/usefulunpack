@@ -286,7 +286,7 @@ internal data class McpCommand(
         }
 
         private fun extractSecrets(cmdName: String, subArgs: List<String>): List<String> {
-            if (cmdName !in setOf("l", "cat", "x", "c", "set", "rmd", "add", "diff")) return emptyList()
+            if (cmdName !in setOf("l", "cat", "grep", "x", "c", "set", "rmd", "add", "diff")) return emptyList()
             val out = ArrayList<String>()
             var i = 0
             while (i < subArgs.size) {
@@ -304,22 +304,47 @@ internal data class McpCommand(
             return out
         }
 
+        private fun valueFlagsOf(cmdName: String): Set<String> = when (cmdName) {
+            "x", "l" -> setOf("-p", "-o", "--pre")
+            "c" -> setOf("-p", "-f", "-l", "-b", "-e", "--post")
+            "cat" -> setOf("-e", "-p")
+            "grep" -> setOf("-p")
+            "du" -> setOf("-d", "-n")
+            "set" -> setOf("-p", "-f")
+            "rmd", "add", "diff" -> setOf("-p")
+            "mvdec", "video", "tr" -> setOf("-o")
+            "audio" -> setOf("-o", "--rate", "--ch", "--depth", "--br", "--q")
+            "cmp" -> setOf("-n")
+            "strings" -> setOf("-e", "-n")
+            "img" -> setOf("-o", "-q")
+            else -> emptySet()
+        }
+
+        private fun boolFlagsOf(cmdName: String): Set<String> = when (cmdName) {
+            "l" -> setOf("-a", "-j", "-t", "-S")
+            "grep" -> setOf("-i")
+            "cp", "mv", "rm", "dd", "tr" -> setOf("-f")
+            "c" -> setOf("-c", "-s")
+            "audio" -> setOf("--vbr")
+            "cmp" -> setOf("-l", "-s")
+            "strings" -> setOf("-a")
+            "sed" -> setOf("-i", "--bytes")
+            "b64" -> setOf("-d")
+            "run" -> setOf("-k")
+            else -> emptySet()
+        }
+
+        private fun minPositionalOf(cmdName: String): Int = when (cmdName) {
+            "fmt", "help", "docs", "tree", "fd" -> 0
+            "grep", "cp", "mv", "rn", "audio", "rmd", "add", "diff", "dd", "cmp", "tr", "img" -> 2
+            "set", "enc", "sed" -> 3
+            else -> 1
+        }
+
         internal fun extractStaticPathsForUu(cmdName: String, subArgs: List<String>): List<String> {
-            val valueFlags = when (cmdName) {
-                "x", "l" -> setOf("-p", "-o", "--pre")
-                "c" -> setOf("-p", "-f", "-l", "-b", "-e", "--post")
-                "cat" -> setOf("-e", "-p")
-                "du" -> setOf("-d", "-n")
-                "set", "rmd", "add", "diff" -> setOf("-p")
-                "mvdec" -> setOf("-o")
-                "audio" -> setOf("-o", "--rate", "--ch", "--depth", "--br")
-                "video" -> setOf("-o")
-                "cmp" -> setOf("-n")
-                "strings" -> setOf("-e", "-n")
-                "tr" -> setOf("-o")
-                "img" -> setOf("-o", "-q")
-                else -> emptySet()
-            }
+            val valueFlags = valueFlagsOf(cmdName)
+            val boolFlags = boolFlagsOf(cmdName)
+            val allowedFlags = valueFlags + boolFlags
             val pos = ArrayList<String>()
             val flagPaths = ArrayList<String>()
             var i = 0
@@ -327,16 +352,36 @@ internal data class McpCommand(
                 val tok = subArgs[i]
                 when {
                     tok in valueFlags -> {
-                        val v = subArgs.getOrNull(i + 1) ?: throw McpInputException("Missing value for flag $tok")
+                        val v = subArgs.getOrNull(i + 1)
+                            ?: throw McpInputException("Missing value for flag $tok (usage: ${UuCommands.usageFor(cmdName)})")
                         if (tok == "-o") flagPaths.add(v)
                         i += 2
                     }
-                    tok.startsWith('-') -> i++
+                    tok in boolFlags -> i++
+                    tok.startsWith('-') && !tok.startsWith('$') -> {
+                        // In sed/grep, a search/replace pattern could legitimately start with '-';
+                        // for all other commands (or double-dash flags like --output), reject unknown flags.
+                        val allowDashPositional = cmdName in setOf("grep", "sed") && !tok.startsWith("--")
+                        if (allowDashPositional) {
+                            pos.add(tok)
+                            i++
+                        } else {
+                            val hint = if (allowedFlags.isEmpty()) "no flags supported"
+                            else "supported flags: ${allowedFlags.joinToString(", ")}"
+                            throw McpInputException("Unknown flag '$tok' for 'uu $cmdName' ($hint; usage: ${UuCommands.usageFor(cmdName)})")
+                        }
+                    }
                     else -> {
                         pos.add(tok)
                         i++
                     }
                 }
+            }
+            val minPos = minPositionalOf(cmdName)
+            if (pos.size < minPos) {
+                throw McpInputException(
+                    "Too few arguments for 'uu $cmdName' (got ${pos.size}, need at least $minPos; usage: ${UuCommands.usageFor(cmdName)})"
+                )
             }
             val acceptsFd = cmdName in setOf("info", "l", "cat", "hash", "cp", "x", "hex", "dd", "strings", "tr", "guess", "fd")
             val candidates: List<String> = when (cmdName) {
@@ -506,7 +551,19 @@ internal data class McpCommand(
                     val head = stage[0]
                     if (i == 0) {
                         if (!UutParser.commandAllowed(head) && head != "continue") {
-                            throw McpInputException("Line $lineNo: command not allowed in UUT: $head")
+                            val hint = when {
+                                UuCommands.isKnownCommand(head) ->
+                                    "Line $lineNo: '$head' is a uu subcommand; write 'uu $head ...' instead (usage: ${UuCommands.usageFor(head)})"
+                                head in setOf("export", "let", "local") ->
+                                    "Line $lineNo: '$head' is not supported in UUT; use 'set <name> = <value>' instead"
+                                head == "exit" ->
+                                    "Line $lineNo: 'exit' is not supported in UUT; use 'return [code]' instead"
+                                head in PIPE_FILTERS ->
+                                    "Line $lineNo: '$head' can only be used as a pipe filter after '|'"
+                                else ->
+                                    "Line $lineNo: command not allowed in UUT: $head (allowed top-level commands: uu, ls, cd, pwd, help, echo)"
+                            }
+                            throw McpInputException(hint)
                         }
                         when (head) {
                             "uu" -> {
@@ -514,7 +571,7 @@ internal data class McpCommand(
                                     ?: throw McpInputException("Line $lineNo: expected a uu subcommand")
                                 if (!sub.startsWith('$')) {
                                     if (!UuCommands.isKnownCommand(sub)) {
-                                        throw McpInputException("Line $lineNo: unknown uu command: $sub")
+                                        throw McpInputException("Line $lineNo: unknown uu command '$sub' (call command_help for all 39 uu commands)")
                                     }
                                     try {
                                         secrets.addAll(extractSecrets(sub, stage.drop(2)))

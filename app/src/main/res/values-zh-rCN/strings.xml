@@ -853,8 +853,11 @@
     <string name="mcp_explain">Agent 只能在所选目录内操作。使用默认目录或选择共享存储根目录时，实际使用 %1$s 子目录。关闭应用后端口停止。</string>
     <string name="mcp_endpoint">地址：%1$s\n工作目录：%2$s</string>
     <string name="mcp_copy">复制连接配置</string>
+    <string name="mcp_rotate_token">重置会话令牌</string>
     <string name="mcp_stop">停止</string>
     <string name="mcp_choose_error">请选择共享存储中可读写的目录。</string>
     <string name="mcp_start_error">无法启动本地端口。</string>
     <string name="mcp_stop_error">无法停止本地端口。</string>
+    <string name="mcp_notif_starting">正在启动本地 MCP 服务…</string>
+    <string name="mcp_notif_running">监听中 %1$s · %2$d 个活动任务</string>
 </resources>

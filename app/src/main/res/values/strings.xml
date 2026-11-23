@@ -856,8 +856,11 @@
     <string name="mcp_explain">The agent can work in the selected folder. Starting with the default, or selecting the shared-storage root, uses the %1$s subfolder. The endpoint stops when this app closes.</string>
     <string name="mcp_endpoint">Address: %1$s\nWorkspace: %2$s</string>
     <string name="mcp_copy">Copy connection settings</string>
+    <string name="mcp_rotate_token">Rotate session token</string>
     <string name="mcp_stop">Stop</string>
     <string name="mcp_choose_error">Choose a readable and writable folder in shared storage.</string>
     <string name="mcp_start_error">Could not start the local endpoint.</string>
     <string name="mcp_stop_error">Could not stop the local endpoint.</string>
+    <string name="mcp_notif_starting">Starting local MCP endpoint…</string>
+    <string name="mcp_notif_running">Listening on %1$s · %2$d active</string>
 </resources>

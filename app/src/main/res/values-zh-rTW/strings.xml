@@ -848,8 +848,11 @@
     <string name="mcp_explain">Agent 只能在所選目錄內操作。使用預設目錄或選擇共享儲存空間根目錄時，實際使用 %1$s 子目錄。關閉應用程式後連接埠停止。</string>
     <string name="mcp_endpoint">位址：%1$s\n工作目錄：%2$s</string>
     <string name="mcp_copy">複製連線設定</string>
+    <string name="mcp_rotate_token">重設工作階段權杖</string>
     <string name="mcp_stop">停止</string>
     <string name="mcp_choose_error">請選擇共享儲存空間中可讀寫的目錄。</string>
     <string name="mcp_start_error">無法啟動本機連接埠。</string>
     <string name="mcp_stop_error">無法停止本機連接埠。</string>
+    <string name="mcp_notif_starting">正在啟動本機 MCP 服務…</string>
+    <string name="mcp_notif_running">監聽中 %1$s · %2$d 個活動任務</string>
 </resources>

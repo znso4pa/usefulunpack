@@ -77,6 +77,10 @@ internal object UuCommands {
     /** 某命令的 usage 行（缺参时回显用法而不是弹无法收敛的选择器）。 */
     private fun usageOf(cmd: String): String = table.first { it.name == cmd }.usage
 
+    internal fun usageFor(cmd: String): String =
+        if (cmd == "run") "uu run [-k] <file.uut> [args...]"
+        else table.firstOrNull { it.name == cmd }?.usage ?: "uu $cmd"
+
     /** x/c 不加路径时的默认输出位置（单独路径，产品要求）。 */
     private fun defaultOut(ctx: Ctx): File = (ctx.defaultOutDir ?: ctx.cwd).apply { mkdirs() }
 

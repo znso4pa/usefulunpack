@@ -515,4 +515,31 @@ class UutParserTest {
         assertEquals("*.zip", loop.rawPatterns)
         assertEquals(1, loop.body.size)
     }
+
+    @Test
+    fun syntaxToleranceSupportsBracedVarsDoubleEqualsAndTrailingThenDo() {
+        val vars = mapOf("1" to "a.zip", "dir" to "out", "?" to "0")
+        assertEquals("a.zip0/out_ok/0", UutParser.expandVars("\${1}0/\${dir}_ok/\${?}", vars))
+
+        val src = """
+            if ${'$'}{dir} == "out" then
+              for f in *.zip do
+                while ${'$'}{n} < 2 do
+                  echo ${'$'}{f}
+                end
+              end
+            end
+        """.trimIndent()
+        val ast = UutParser.parse(src)
+        assertEquals(1, ast.size)
+        val blkIf = ast[0] as UutStmt.If
+        val cmp = blkIf.cond as UutCond.VarCmp
+        assertEquals("dir", cmp.name)
+        assertEquals("=", cmp.op)
+        assertEquals("out", cmp.value)
+        val loop = blkIf.thenBody.single() as UutStmt.For
+        assertEquals("*.zip", loop.rawPatterns)
+        val wh = loop.body.single() as UutStmt.While
+        assertEquals("n", (wh.cond as UutCond.VarCmp).name)
+    }
 }

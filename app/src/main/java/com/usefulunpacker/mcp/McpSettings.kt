@@ -60,11 +60,11 @@ private fun MainActivity.startLocalMcp(directory: File? = null) {
         featureThread {
             try {
                 val workspace = openMcpWorkspace(Environment.getExternalStorageDirectory(), directory)
-                val worker = McpArchiveWorker(workspace, prefs)
+                val worker = McpArchiveWorker(workspace, prefs, strFnOf(this))
                 val tasks = McpTasks(worker::execute)
                 val listener = try {
                     val version = packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
-                    McpListener(McpProtocol(workspace, tasks, version), tasks, workspace.root)
+                    McpListener(McpProtocol(workspace, tasks, version, prefs), tasks, workspace.root)
                 } catch (e: Exception) {
                     tasks.close()
                     throw e

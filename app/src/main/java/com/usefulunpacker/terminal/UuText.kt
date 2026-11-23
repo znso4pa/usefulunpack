@@ -96,7 +96,23 @@ internal object UuText {
 
     // ─── 路径 ────────────────────────────────────────────────────────────
 
-    /** 相对会话 cwd 解析；绝对路径原样返回。 */
-    fun resolve(cwd: File, p: String): File =
-        if (p.startsWith("/")) File(p) else File(cwd, p)
+    private val confinedWorkspace = ThreadLocal<McpWorkspace?>()
+
+    /** Binds [workspace] to the current thread so every [resolve] call enforces sandbox boundaries. */
+    fun <T> withWorkspace(workspace: McpWorkspace, block: () -> T): T {
+        val prev = confinedWorkspace.get()
+        confinedWorkspace.set(workspace)
+        return try {
+            block()
+        } finally {
+            if (prev == null) confinedWorkspace.remove() else confinedWorkspace.set(prev)
+        }
+    }
+
+    /** 相对会话 cwd 解析；若当前线程绑定了 MCP 工作区，则强制校验不越出工作区且不含软链。 */
+    fun resolve(cwd: File, p: String): File {
+        val ws = confinedWorkspace.get()
+        if (ws != null) return ws.resolveFrom(cwd, p)
+        return if (p.startsWith("/")) File(p) else File(cwd, p)
+    }
 }

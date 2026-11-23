@@ -13,8 +13,12 @@ internal class McpTask(val trace: OperationTrace, val total: Int) {
     @Volatile private var cancelled = false
     private var cancelNative: (() -> Unit)? = null
     private val outputs = mutableListOf<String>()
+    private val stdout = StringBuilder()
+    private var completedSteps = 0
+    private var exitCode = 0
     private var error: String? = null
     private var cleanupFailed = false
+    internal var uutState: Any? = null
 
     @Synchronized fun start(): Boolean {
         if (cancelled) return false
@@ -42,7 +46,26 @@ internal class McpTask(val trace: OperationTrace, val total: Int) {
     @Synchronized fun publish(output: String, move: () -> Unit) {
         checkCancelled()
         move()
-        outputs.add(output)
+        if (output.isNotEmpty() && output !in outputs) outputs.add(output)
+    }
+
+    @Synchronized fun recordOutput(output: String) {
+        if (output.isNotEmpty() && output !in outputs) outputs.add(output)
+    }
+
+    @Synchronized fun appendStdout(text: String) {
+        if (text.isEmpty() || stdout.length >= MCP_REQUEST_LIMIT) return
+        if (stdout.isNotEmpty() && !stdout.endsWith("\n")) stdout.append('\n')
+        val remaining = (MCP_REQUEST_LIMIT - stdout.length).coerceAtLeast(0)
+        stdout.append(text.take(remaining))
+    }
+
+    @Synchronized fun markStepDone() {
+        completedSteps++
+    }
+
+    @Synchronized fun recordExitCode(code: Int) {
+        exitCode = code
     }
 
     @Synchronized fun cleanupFailed() { cleanupFailed = true }
@@ -55,12 +78,14 @@ internal class McpTask(val trace: OperationTrace, val total: Int) {
             cleanupFailed -> "PARTIAL_FAILURE"
             else -> "SUCCESS"
         }
+        if (state == "FAILED" && exitCode == 0) exitCode = 1
         when (state) {
             "CANCELLED" -> trace.cancelled()
             "FAILED" -> trace.fail(FailureCode.COMMAND, failure ?: "Task failed")
             "PARTIAL_FAILURE" -> Unit // Cleanup logged its own failure.
             else -> trace.success()
         }
+        uutState = null
         trace.release()
     }
 
@@ -68,8 +93,11 @@ internal class McpTask(val trace: OperationTrace, val total: Int) {
 
     @Synchronized fun snapshot(): JSONObject = JSONObject()
         .put("taskId", trace.id).put("chainId", trace.id).put("state", state)
-        .put("completedSteps", outputs.size).put("totalSteps", total)
-        .put("outputs", JSONArray(outputs)).put("cleanupFailed", cleanupFailed)
+        .put("completedSteps", maxOf(completedSteps, outputs.size)).put("totalSteps", total)
+        .put("outputs", JSONArray(outputs))
+        .put("stdout", stdout.toString())
+        .put("exitCode", exitCode)
+        .put("cleanupFailed", cleanupFailed)
         .apply { error?.let { put("error", it) } }
 }
 
@@ -81,7 +109,8 @@ internal class McpTasks(private val execute: (McpTask, McpCommand) -> Unit) : Au
 
     @Synchronized fun submit(commands: List<McpCommand>, script: Boolean): JSONObject {
         if (closed) throw McpInputException("MCP listener is stopping")
-        val trace = AppDiagnostics.startChain(if (script) "mcp_uut" else "mcp_uu", commands.map { it.password })
+        val secrets = commands.flatMap { it.secrets + listOfNotNull(it.password.takeIf(String::isNotEmpty)) }.distinct()
+        val trace = AppDiagnostics.startChain(if (script) "mcp_uut" else "mcp_uu", secrets)
         trace.retain()
         val task = McpTask(trace, commands.size)
         records[trace.id] = task
@@ -112,10 +141,12 @@ internal class McpTasks(private val execute: (McpTask, McpCommand) -> Unit) : Au
                 try {
                     for ((index, command) in commands.withIndex()) {
                         task.checkCancelled()
-                        val step = AppDiagnostics.begin("${index + 1}_${command.action.cliName}")
+                        val stepLabel = command.name.ifEmpty { command.action?.cliName ?: "step" }
+                        val step = AppDiagnostics.begin("${index + 1}_$stepLabel")
                         AppDiagnostics.withTrace(step) {
                             try {
                                 execute(task, command)
+                                task.markStepDone()
                                 step.success()
                             } catch (e: McpInputException) {
                                 step.fail(FailureCode.INVALID_RESULT, e.message ?: "Invalid input")

@@ -1289,6 +1289,11 @@ internal fun MainActivity.previewFileEntry(archive: File, entry: ArchiveEntry, f
  */
 internal fun MainActivity.listEntriesJson(
     format: String, src: File, pwd: String, nestedOnly: Boolean, onError: ((String) -> Unit)? = null
+): String? = listEntriesJson(format, src, pwd, nestedOnly, prefs, onError)
+
+internal fun listEntriesJson(
+    format: String, src: File, pwd: String, nestedOnly: Boolean,
+    prefs: android.content.SharedPreferences? = null, onError: ((String) -> Unit)? = null
 ): String? {
     val trace = AppDiagnostics.begin("list_entries", listOf(pwd))
     var notApplicable = false
@@ -1308,7 +1313,7 @@ internal fun MainActivity.listEntriesJson(
         // The encoding is process-global native state, so it must be re-applied
         // on every listing — not just once per process.
         "zip" -> {
-            ZipCore.zipSetEncoding(prefs.getString("zip_encoding", "UTF-8") ?: "UTF-8")
+            ZipCore.zipSetEncoding(prefs?.getString("zip_encoding", "UTF-8") ?: "UTF-8")
             val vols = resolveZipVolumes(src)
             if (vols.size > 1) ZipCore.zipListEntriesVolumes(volumeJoin(vols)) else ZipCore.zipListEntries(src.absolutePath)
         }
@@ -1348,6 +1353,9 @@ internal fun MainActivity.listEntriesJson(
     // message already names the format, so drop the redundant prefix.
     trace.fail(FailureCode.IO, e.message ?: e.javaClass.simpleName, e)
     onError?.invoke((e.message ?: "").removePrefix("listEntries: "))
+    null
+} catch (e: LinkageError) {
+    trace.fail(FailureCode.UNSUPPORTED, "Native archive library unavailable")
     null
 }
     }

@@ -548,3 +548,22 @@ internal fun lpkPackedName(sourceName: String): String {
     val base = sourceName.removeSuffix("_extracted")
     return if (base.endsWith(".lpk", ignoreCase = true)) base else "$base.lpk"
 }
+
+/**
+ * Normalizes a user/CLI/MCP XP3 encryption scheme name to the canonical token
+ * [Xp3Core.xp3CreateArchive] expects, or null if unrecognized.
+ */
+internal fun normalizeXp3PackEnc(v: String): String? = when (v.trim().lowercase()) {
+    "" -> ""
+    "cxdec" -> "cxdec"
+    "hashcrypt", "crypt:hashcrypt" -> "crypt:HashCrypt"
+    "fatecrypt", "crypt:fatecrypt", "fsn" -> "crypt:FateCrypt"
+    "appliquecrypt", "crypt:appliquecrypt" -> "crypt:AppliqueCrypt"
+    "flyingshinecrypt", "crypt:flyingshinecrypt" -> "crypt:FlyingShineCrypt"
+    "alteredpinkcrypt", "crypt:alteredpinkcrypt" -> "crypt:AlteredPinkCrypt"
+    "dameganecrypt", "crypt:dameganecrypt" -> "crypt:DameganeCrypt"
+    "natsupochicrypt", "crypt:natsupochicrypt" -> "crypt:NatsupochiCrypt"
+    "okibacrypt", "crypt:okibacrypt" -> "crypt:OkibaCrypt"
+    "dieselminecrypt", "crypt:dieselminecrypt" -> "crypt:DieselmineCrypt"
+    else -> null
+}

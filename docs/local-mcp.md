@@ -11,27 +11,37 @@
 }
 ```
 
-端口仅监听设备回环地址，默认关闭。每次启动会分配新端口和令牌。关闭设置弹窗后服务继续运行，直到点击「停止」、Activity 销毁或系统结束进程。客户端退出或 HTTP 断连不取消已接收的任务。停止服务会取消仍在队列中或运行中的任务，已发布的文件保留。若客户端在另一台设备或独立容器中，它的 `127.0.0.1` 不指向手机。 如果通过 USB 在电脑上调试，可用 `adb forward tcp:PORT tcp:PORT`，两处都填平板显示的端口，然后使用原连接配置。调试结束后，用 `adb forward --remove tcp:PORT` 移除转发。
+端口仅监听设备回环地址，默认关闭。每次启动会分配新端口和令牌。关闭设置弹窗后服务继续运行，直到点击「停止」、Activity 销毁或系统结束进程。客户端退出或 HTTP 断连不取消已接收的任务。停止服务会取消仍在队列中或运行中的任务，已发布的文件保留。若客户端在另一台设备或独立容器中，它的 `127.0.0.1` 不指向手机。如果通过 USB 在电脑上调试，可用 `adb forward tcp:PORT tcp:PORT`，两处都填平板显示的端口，然后使用原连接配置。调试结束后，用 `adb forward --remove tcp:PORT` 移除转发。
 
 | 工具 | 参数 | 用法 |
 |---|---|---|
-| `command_help` | 无 | 查看这次连接支持的命令和格式 |
+| `command_help` | 无 | 查看全部 39 条 `uu` 命令（及 `uu run`）、完整 `.uut` 脚本语法、全部解包/封包格式、XP3 加密方案与文本编码 |
+| `archive_list` | `path`，可选 `password`、`after` | 不解包直接列出归档条目、总大小、格式与 XP3 加密状态；超 128 项时用 `nextAfter` 翻页 |
 | `workspace_list` | `path`，可选 `after` | 列出相对目录。根目录用 `.`，下一页使用前一页的 `nextAfter` |
-| `read_text` / `write_text` | `path`，写入时另加 `text` | 读取或新建小型 UTF-8 文件。写入不覆盖已有文件 |
-| `run_uu` | `argv` | 传参数数组，如 `["x","source.zip","extracted"]` |
-| `validate_uut` / `run_uut` | `path` | 验证或提交工作目录下的 UTF-8 脚本文件 |
-| `task_status` / `task_cancel` / `task_log` | `taskId` | 查询状态、取消或取得有限长度的诊断预览 |
+| `read_text` | `path`，可选 `encoding`、`offset`、`limit` | 读取最多 2 MiB 的文本文件（单页最多 64 KiB 字符）。默认 `auto` 自动识别 `UTF-8`、`SHIFT-JIS`、`GBK`、`UTF-16` 与 BOM |
+| `write_text` | `path`、`text`，可选 `encoding`、`bom`、`overwrite` | 写入或覆写文本文件。`overwrite=true` 且 `encoding=auto` 时自动保持原文件的编码与 BOM |
+| `run_uu` | `argv` | 执行任意 `uu` 命令（全部 39 条子命令 + `uu run`），如 `["x","game.xp3","extracted","scenario/first.ks"]` 或 `["sed","旧","新","extracted/a.ks","-i"]` |
+| `validate_uut` | `path` 或 `script` | 校验工作区 `.uut` 脚本文件或内联 `.uut` 脚本语法与路径边界 |
+| `run_uut` | `path` 或 `script`，可选 `args`、`keepGoing` | 提交并执行完整 `.uut` 脚本，支持传入位置参数 `$1..$n` 与 `-k`（`keepGoing`） |
+| `task_status` / `task_cancel` / `task_log` | `taskId` | 查询状态（含 `stdout`、`exitCode`、`outputs`）、取消任务或取得本地诊断日志 |
 
-`run_uu` 和 `run_uut` 返回同一个任务 ID 和诊断链 ID。状态为 `QUEUED`、`RUNNING`、`CANCELLING` 或终态 `SUCCESS`、`FAILED`、`CANCELLED`、`PARTIAL_FAILURE`。用 `outputs` 查看已经发布的产物。客户端在请求超时后应先确认已有任务，重复提交会产生新任务。
+`run_uu` 和 `run_uut` 返回同一个任务 ID 和诊断链 ID。状态为 `QUEUED`、`RUNNING`、`CANCELLING` 或终态 `SUCCESS`、`FAILED`、`CANCELLED`、`PARTIAL_FAILURE`。用 `outputs` 查看已发布的产物、用 `stdout` 查看命令或脚本的标准输出。客户端在请求超时后应先确认已有任务，重复提交会产生新任务。
 
-示例 `translate.uut`，假定 `translation.txt` 是已准备好的本地译文。
+推荐将多步解包、探查、转码、替换与回包流程写成 **`.uut` 脚本** 提交（`validate_uut` → `run_uut`）。示例 `translate.uut`：
 
 ```text
-uu x source.zip extracted
-uu cp -f translation.txt extracted/dialogue.txt
-uu c extracted translated.zip
+set fmt = $(uu info $1)
+if $fmt = xp3
+  uu x $1 extracted
+  for f in extracted/*.ks
+    uu sed "Hello" "你好" $f -i
+  end
+  uu c -e cxdec extracted translated.xp3
+else
+  uu x $1 extracted
+  uu cp -f translation.txt extracted/dialogue.txt
+  uu c extracted translated.zip
+end
 ```
 
-脚本每行一条字面量命令，支持引号、注释和最多 32 条命令，任一步失败即停。首版解包支持 ZIP、BGI ARC 和 LPK，封包支持 ZIP 和 LPK。原生操作沿用应用的格式队列。封包要求显式提供最终文件名，LPK 应使用引擎期望的名称；用不同的输出目录避免和原包同路径。保留原文件的文本编码与 BOM，非 UTF-8 译文可以作为文件放入工作目录后使用 `uu cp -f` 应用。
-
-MCP 端的脚本只暴露上述命令子集。交互终端仍支持完整 UUT 语法。协议支持 JSON 响应以及 2025-03-26、2025-06-18 和 2025-11-25 版本协商，客户端须能通过 HTTP 发送 Authorization 请求头。没有 SSE 连接的客户端可用 `task_status` 轮询。日志保存在本机，可在设置的「日志与诊断」中打开对应链。
+MCP 端完整支持 **全部 39 条 `uu` 命令**（`fmt / help / docs / info / l / cat / hash / grep / cp / mv / rn / rm / mkdir / tree / du / stat / x / c / set / scan / cso / audio / video / enc / mvdec / rmd / add / find / diff / hex / dd / cmp / strings / sed / tr / guess / img / fd / b64`）与 **`uu run`**，以及完整的 **UUT 脚本语言**（`set` 变量、`$(...)` 命令捕获、整数算术、`if / elif / else / end`、`if [not] exist`、`for ... in <通配 | 1..N | $(...)> ... end`、`while ... end`、`break / continue / return`、`$1..$n / $argc / $args / $?`、`&& / || / ;` 串联、`| grep/head/tail/wc/sort` 管道、`> / >>` 重定向，以及 `uu / ls / cd / pwd / help / echo` 内建命令）。所有路径均在工作区沙箱内解析，禁止符号链接越界和任意系统 shell 命令。

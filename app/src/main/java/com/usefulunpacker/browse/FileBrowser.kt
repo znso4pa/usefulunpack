@@ -98,14 +98,10 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
         // the SAME dir — clearing there would wipe cross-tab selections on
         // every tab open/close and every auto-refresh.
         if (tab.multiSelectMode && prevDir != dir) exitMultiSelect(tab)
-        tab.selectedFile = null
-        tab.bottomBar.visibility = View.GONE
-        tab.fabExtract.visibility = View.GONE
-        tab.btnExtract.text = getString(R.string.msg_extract_title)
-        tab.btnExtract.setOnClickListener { extract(tab) }
-        // btnFolderNext lives on this tab's bottom bar; only touch it when
-        // this is the active tab (its view is attached).
-        if (activeTab === tab) tab.btnFolderNext?.visibility = View.GONE
+        val prevSelected = if (sameDir && !tab.multiSelectMode) tab.selectedFile else null
+        if (!sameDir || tab.multiSelectMode) {
+            clearSelectedFileUi(tab)
+        }
         saveSession()
         restartDirObserverFor(tab)
         tab.tvPath.text = tab.displayPath().absolutePath
@@ -153,6 +149,11 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
                     tab.tvEmpty.visibility = View.VISIBLE
                 } else tab.tvEmpty.visibility = View.GONE
                 val newPaths = files.map { it.absolutePath }
+                if (prevSelected != null) {
+                    val kept = files.firstOrNull { it.absolutePath == prevSelected.absolutePath }
+                    if (kept != null && !tab.multiSelectMode) restoreSelectedFileUi(tab, kept)
+                    else clearSelectedFileUi(tab)
+                }
                 // 列表内容没变就别换 adapter：换一次闪一次，还把滚动位置丢掉
                 //（FileObserver 的自动刷新经常是同内容重扫）。
                 if (prevPaths == null || prevPaths != newPaths) {
@@ -197,6 +198,43 @@ internal fun MainActivity.navTab(tab: TabState, dir: File) {
             }
         }
     }
+
+internal fun MainActivity.clearSelectedFileUi(tab: TabState) {
+    tab.selectedFile = null
+    tab.bottomBar.visibility = View.GONE
+    tab.fabExtract.visibility = View.GONE
+    tab.btnExtract.text = getString(R.string.msg_extract_title)
+    tab.btnExtract.setOnClickListener { extract(tab) }
+    if (activeTab === tab) tab.btnFolderNext?.visibility = View.GONE
+}
+
+internal fun MainActivity.restoreSelectedFileUi(tab: TabState, f: File) {
+    val isCompress = prefs.getInt("work_mode", 0) == 1
+    if (f.isDirectory) {
+        if (isCompress && tab.pickerCallback == null) {
+            tab.selectedFile = f
+            tab.tvSelected.text = getString(R.string.folder_selected, f.name)
+            tab.bottomBar.visibility = View.VISIBLE
+            tab.fabExtract.visibility = View.GONE
+            tab.btnExtract.text = getString(R.string.msg_compress_title)
+            tab.btnExtract.setOnClickListener { showCompressFormatPicker(this, f, prefs, tab.currentDir, tab) { navTab(tab, tab.currentDir) } }
+            if (activeTab === tab) tab.btnFolderNext?.visibility = View.VISIBLE
+            tab.progress.visibility = View.GONE
+        } else {
+            clearSelectedFileUi(tab)
+        }
+        return
+    }
+    val ext = f.name.lowercase().substringAfterLast('.')
+    val volumeFmt = isVolumeFile(f)
+    val isApk = ext == "apk"
+    val isArchive = !isApk && (ext in ARCHIVE_EXTS || volumeFmt != null || detectFormatByMagic(f) != null)
+    if (isArchive && !isCompress || isApk || ext == "cso" || ext == "ciso" || (!isArchive && isCompress)) {
+        select(tab, f)
+    } else {
+        clearSelectedFileUi(tab)
+    }
+}
 
 internal fun MainActivity.extract() = extract(activeTab)
 

@@ -91,6 +91,10 @@ internal object UuCommands {
     /** 主界面终端卡的角标用（「uu · N 条命令」）—— 和 `uu help` 的表同一份。 */
     val cmdCount: Int get() = table.size
 
+    /** Single source of truth for MCP command discovery and validation. */
+    internal fun commandList(): List<Cmd> = table
+    internal fun isKnownCommand(name: String): Boolean = name == "run" || table.any { it.name == name }
+
     /**
      * 命令表。新增命令只加这一行 —— `uu help` 会自动跟上。
      * 摘要/用法暂用英文，与 `COMPRESS_LABELS` 的既有做法一致（帮助文本不进资源数组，
@@ -148,8 +152,11 @@ internal object UuCommands {
 
     /** @param argv 已切分的参数（含命令名本身）。 */
     fun dispatch(argv: List<String>, ctx: Ctx): Result {
-        val secrets = listOfNotNull(ctx.password) + argv.windowed(2).filter { it[0] in setOf("-p", "--password", "-k", "--key") }.map { it[1] }
         val name = argv.firstOrNull()?.takeIf { token -> table.any { it.name == token } } ?: "unknown"
+        val hasPwFlag = name in setOf("l", "cat", "x", "c", "set", "rmd", "add", "diff")
+        val secrets = listOfNotNull(ctx.password) +
+            if (hasPwFlag) argv.drop(1).windowed(2).filter { it[0] in setOf("-p", "--password", "-k", "--key") }.map { it[1] }
+            else emptyList()
         val _intentScope = AppDiagnostics.enterIntent("uu_$name", secrets)
         try {
         val trace = AppDiagnostics.begin("command", secrets)
@@ -215,6 +222,8 @@ internal object UuCommands {
                 Kind.B64 -> b64(args, ctx)
             }
         } catch (e: java.util.concurrent.CancellationException) {
+            throw e
+        } catch (e: McpInputException) {
             throw e
         } catch (e: Exception) {
             // UI retains the actionable message; diagnostics avoid echoed argv/payloads.
@@ -767,8 +776,7 @@ internal object UuCommands {
     }
 
     private fun listEntriesJsonFor(ctx: Ctx, fmt: String, f: File, pwd: String): String? {
-        val host = ctx.activity ?: return null
-        return host.listEntriesJson(fmt, f, pwd, nestedOnly = false) { lastListError = it }
+        return listEntriesJson(fmt, f, pwd, nestedOnly = false, prefs = ctx.prefs ?: ctx.activity?.prefs) { lastListError = it }
     }
 
     /** Why the last listing failed, when the native layer said so. */
@@ -972,20 +980,7 @@ internal object UuCommands {
      * users are most likely to type. The other schemes have no alias; see
      * `archive_xp3crypt_core::Scheme::alias`.
      */
-    internal fun normalizePackEnc(v: String): String? = when (v.trim().lowercase()) {
-        "" -> ""
-        "cxdec" -> "cxdec"
-        "hashcrypt" -> "crypt:HashCrypt"
-        "fatecrypt", "fsn" -> "crypt:FateCrypt"
-        "appliquecrypt" -> "crypt:AppliqueCrypt"
-        "flyingshinecrypt" -> "crypt:FlyingShineCrypt"
-        "alteredpinkcrypt" -> "crypt:AlteredPinkCrypt"
-        "dameganecrypt" -> "crypt:DameganeCrypt"
-        "natsupochicrypt" -> "crypt:NatsupochiCrypt"
-        "okibacrypt" -> "crypt:OkibaCrypt"
-        "dieselminecrypt" -> "crypt:DieselmineCrypt"
-        else -> null
-    }
+    internal fun normalizePackEnc(v: String): String? = normalizeXp3PackEnc(v)
 
     /**
      * `uu c <src...> [out] [-c|-s] [-f key] [level] [splitMB] [-e scheme] [-p pw]`。

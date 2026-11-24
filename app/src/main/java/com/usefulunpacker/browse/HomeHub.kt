@@ -154,7 +154,7 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
     val hPad = act.dp(if (spacious) 36 else if (roomy) 20 else 18)
     container.setPadding(hPad, 0, hPad, 0)
 
-    // ── 命令面板：点击整条 → 全局搜索 ─────────────────────────────
+    // ── Agent 入口 ───────────────────────────────────────────────
     val palette = LinearLayout(act).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -162,19 +162,19 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         else setPadding(act.dp(14), act.dp(8), act.dp(12), act.dp(8))
         background = roundedBg(act.dp(if (spacious) 16 else 14), dimBg, act.dp(1), C["accent_line"]!!)
         // 首项的上间距：原来在 container 的 padding-top 里，见上面的注释（纵向只能用 margin）。
-        // Keep the search label and button at their natural text height.
+        // Keep the label at its natural text height.
         layoutParams = LinearLayout.LayoutParams(
             MATCH, WRAP,
         ).apply {
             topMargin = act.dp(if (spacious) 18 else 8)
         }
-        minimumHeight = act.dp(if (spacious) 48 else 42)
+        minimumHeight = act.resources.getDimensionPixelSize(R.dimen.touch_target)
         foreground = ripple(C["ripple"]!!)
         isClickable = true
         isFocusable = true
-        setOnClickListener { act.globalSearch() }
+        setOnClickListener { act.showAgent() }
     }
-    palette.addView(iconView(act, R.drawable.ic_search, act.dp(if (spacious) 22 else 19), C["accent"]!!))
+    palette.addView(iconView(act, R.drawable.ic_agent, act.dp(if (spacious) 22 else 19), C["accent"]!!))
     palette.addView(textView(
         act, act.getString(R.string.home_palette_hint), if (spacious) 15f else 13.5f, C["hint"]!!,
     ).apply {
@@ -183,15 +183,6 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
         maxLines = 1
         ellipsize = android.text.TextUtils.TruncateAt.END
     })
-    palette.addView(textView(
-        act, act.getString(R.string.msg_search_global), if (spacious) 12f else 10.5f, C["accent"]!!,
-    ).apply {
-        background = GradientDrawable().apply {
-            cornerRadius = act.dp(if (spacious) 7 else 6).toFloat(); setStroke(act.dp(1), C["stroke_white_20"]!!)
-        }
-        setPadding(act.dp(if (spacious) 11 else 8), act.dp(4), act.dp(if (spacious) 11 else 8), act.dp(4))
-    })
-    // 整条 = 一个「全局搜索」入口（点哪都是打开全局搜索），读成一句。
     palette.mergeIntoA11yNode(act.getString(R.string.home_palette_hint))
     container.addView(palette)
 

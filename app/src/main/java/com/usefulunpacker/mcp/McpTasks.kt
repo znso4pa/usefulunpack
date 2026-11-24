@@ -210,9 +210,10 @@ internal class McpTask(
 internal class McpTasks(
     private val journalFile: File? = null,
     private val onActiveCountChanged: ((Int) -> Unit)? = null,
+    private val agentFeature: String? = null,
     private val execute: (McpTask, McpCommand) -> Unit,
 ) : AutoCloseable {
-    constructor(execute: (McpTask, McpCommand) -> Unit) : this(null, null, execute)
+    constructor(execute: (McpTask, McpCommand) -> Unit) : this(null, null, null, execute)
     private val records = LinkedHashMap<String, McpTask>()
     private val worker = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(4))
     private var closed = false
@@ -324,7 +325,7 @@ internal class McpTasks(
             val byActiveFingerprint = records.values.lastOrNull { !it.done() && it.fingerprint == fingerprint }
             if (byActiveFingerprint != null) return@synchronized byActiveFingerprint to true
 
-            val trace = AppDiagnostics.startChain(if (script) "mcp_uut" else "mcp_uu", secrets)
+            val trace = AppDiagnostics.startChain(agentFeature ?: if (script) "mcp_uut" else "mcp_uu", secrets)
             trace.retain()
             val fresh = McpTask(
                 trace = trace,

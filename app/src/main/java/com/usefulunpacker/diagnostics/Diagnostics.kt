@@ -31,11 +31,13 @@ class DiagnosticStore(
         private set
 
     private val dirty = LinkedHashSet<String>()
+    private val retiredAgentSessions = mutableSetOf<String>()
     private var draining = false
 
     fun append(id: String, stage: String, message: String, failed: Boolean = false) {
         require(id.matches(Regex("[A-Za-z0-9_-]+")))
         synchronized(entries) {
+            if (stage in retiredAgentSessions) return
             val previous = entries[id]
             val combined = (previous?.text ?: "") + "${System.currentTimeMillis()} $message\n"
             val marker = "[earlier diagnostic entries truncated]\n".take(maxChars)
@@ -129,6 +131,28 @@ class DiagnosticStore(
     }
 
     fun flush() { writer.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS) }
+
+    /** Remove a session's live and on-disk traces, including writes already queued for disk. */
+    internal fun deleteAgentSession(feature: String) {
+        require(feature.matches(Regex("agent_session_[a-f0-9]{32}")))
+        val deletion = synchronized(entries) {
+            retiredAgentSessions.add(feature)
+            val owned = entries.values.filter { it.feature == feature }.map { it.id }
+            owned.forEach { id -> entries.remove(id); dirty.remove(id) }
+            writer.submit {
+                if (directory.exists()) {
+                    val files = directory.listFiles { file -> file.extension == "log" }
+                        ?: throw IOException("Cannot list diagnostic directory")
+                    files.forEach { file ->
+                        val header = file.bufferedReader(Charsets.UTF_8).use { it.readLine() }
+                        if (header == "feature=$feature") java.nio.file.Files.deleteIfExists(file.toPath())
+                    }
+                }
+            }
+        }
+        deletion.get()
+    }
+
     fun close() { flush(); writer.shutdown() }
 }
 

@@ -629,6 +629,7 @@ class MainActivity : AppCompatActivity() {
                         action(0, R.string.action_terminal) { terminalPanel.show() }
                         action(1, R.string.msg_search_global) { globalSearch() }
                         action(2, R.string.nav_bookmarks) { drawer.open() }
+                        action(4, R.string.agent_title) { showAgent() }
                         action(3, R.string.settings) { settings() }
                         show()
                     }

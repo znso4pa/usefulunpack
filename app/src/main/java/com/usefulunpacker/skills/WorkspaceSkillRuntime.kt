@@ -143,16 +143,29 @@ internal class WorkspaceSkillRuntime(
         usesTasks: Boolean,
         action: () -> JSONObject,
     ): AppSkillResult {
-        val scope = if (tool in setOf(Tool.ARCHIVE_LIST, Tool.SCAN, Tool.INSPECT_FILE, Tool.WRITE)) {
+        val agentTrace = AppDiagnostics.currentTrace()?.takeIf { it.feature.startsWith("agent_session_") }
+        val scope = if (agentTrace == null && tool in setOf(Tool.ARCHIVE_LIST, Tool.SCAN, Tool.INSPECT_FILE, Tool.WRITE)) {
             val password = args.opt("password") as? String
             AppDiagnostics.enterIntent("mcp_$stage", secrets = listOfNotNull(password), newChain = true)
         } else null
+        val trace = scope?.trace ?: agentTrace
+        val previousFailure = trace?.chain?.firstFailure()
+        fun failure(code: FailureCode, detail: String, causeType: String? = null): AppFailure {
+            if (agentTrace != null) {
+                val explanation = if (causeType == null) detail else "$detail ($causeType)"
+                return agentTrace.fail(code, explanation, notifyUser = false)
+            }
+            return recordMcpFailure(stage, code, detail, causeType).also(::rememberRequestLog)
+        }
         try {
             val result = action()
-            val toolFailed = scope?.trace?.chain?.failureStatus() == ChainStatus.FAILED
-            scope?.trace?.chain?.firstFailure()?.let { (code, failedStage) ->
-                result.withMcpFailure(AppFailure(code, failedStage, "", scope.trace.id)
-                    .also(::rememberRequestLog))
+            val firstFailure = trace?.chain?.firstFailure()?.takeIf { it != previousFailure }
+            val toolFailed = firstFailure != null && trace?.chain?.failureStatus() == ChainStatus.FAILED
+            if (trace != null && firstFailure != null) {
+                val (code, failedStage) = firstFailure
+                val fault = AppFailure(code, failedStage, "", trace.id)
+                if (agentTrace == null) rememberRequestLog(fault)
+                result.withMcpFailure(fault)
             }
             if (toolFailed) result.put("error", "Tool operation failed. See local diagnostics.")
             if (usesTasks) {
@@ -169,23 +182,20 @@ internal class WorkspaceSkillRuntime(
             // The response can guide the caller with its own input. The log only records trusted metadata.
             val detail = e.diagnosticDetail ?: if (scriptLine == null) "Tool rejected the input or result"
                 else "UUT validation failed at line $scriptLine"
-            val failure = recordMcpFailure(stage, e.errorCode, detail)
-            return AppSkillResult(data.withMcpFailure(failure.also(::rememberRequestLog)), true)
+            return AppSkillResult(data.withMcpFailure(failure(e.errorCode, detail)), true)
         } catch (e: LinkageError) {
-            val failure = recordMcpFailure(stage, FailureCode.UNSUPPORTED, "Native archive library unavailable", e.javaClass.simpleName)
             return AppSkillResult(JSONObject().put("error", "Native archive library unavailable.")
-                .withMcpFailure(failure.also(::rememberRequestLog)), true)
+                .withMcpFailure(failure(FailureCode.UNSUPPORTED, "Native archive library unavailable", e.javaClass.simpleName)), true)
         } catch (e: java.util.concurrent.CancellationException) {
-            scope?.trace?.let { trace ->
+            trace?.let {
                 trace.cancelled()
-                rememberLogId(trace.id)
+                if (agentTrace == null) rememberLogId(trace.id)
             }
             return AppSkillResult(JSONObject().put("error", "Tool cancelled").put("errorCode", "CANCELLED")
-                .put("stage", stage).apply { scope?.let { put("logId", it.trace.id) } }, true)
+                .put("stage", stage).apply { trace?.let { put("logId", it.id) } }, true)
         } catch (e: Exception) {
-            val failure = recordMcpFailure(stage, FailureCode.IO, "Tool operation failed", e.javaClass.simpleName)
             return AppSkillResult(JSONObject().put("error", "Tool operation failed. See local diagnostics.")
-                .withMcpFailure(failure.also(::rememberRequestLog)), true)
+                .withMcpFailure(failure(FailureCode.IO, "Tool operation failed", e.javaClass.simpleName)), true)
         } finally {
             scope?.let(AppDiagnostics::leaveIntent)
         }

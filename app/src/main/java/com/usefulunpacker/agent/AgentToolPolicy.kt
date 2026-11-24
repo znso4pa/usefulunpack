@@ -65,7 +65,12 @@ internal data class AgentTool(val name: String, val schema: JSONObject, val read
                     "array" -> value is JSONArray && (0 until value.length()).all { value.opt(it) is String }
                     else -> false
                 }
-            }
+            } && (name != "RUN_UU" || !callsScriptFile(input.getJSONArray("argv")))
+    }
+
+    private fun callsScriptFile(argv: JSONArray): Boolean {
+        val start = if (argv.opt(0) == "uu") 1 else 0
+        return argv.opt(start) == "run"
     }
 }
 

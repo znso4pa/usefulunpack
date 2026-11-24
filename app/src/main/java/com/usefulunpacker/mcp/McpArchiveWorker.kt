@@ -631,6 +631,9 @@ internal class McpArchiveWorker(
         parentState: McpUutState,
         depth: Int,
     ): UuCommands.Result {
+        if (task.trace?.feature?.startsWith("agent_session_") == true) {
+            throw mcpInputError("The in-app Agent can only execute UUT text shown for approval")
+        }
         if (depth >= MCP_UUT_MAX_DEPTH) {
             return UuCommands.Result("Maximum UUT nesting depth ($MCP_UUT_MAX_DEPTH) exceeded", 1)
         }
@@ -699,6 +702,11 @@ internal class McpArchiveWorker(
             UuCommands.globSkipIndices(listOf("uu") + argvWithoutUu),
         ).drop(1)
         val cmdName = expanded.firstOrNull().orEmpty()
+        // The legacy dispatcher derives child paths and may walk directories after resolving argv.
+        // Check the workspace tree before handing it to those operations.
+        if (task.trace?.feature?.startsWith("agent_session_") == true) {
+            workspace.verifyTree(workspace.root, task::checkCancelled)
+        }
         val beforeFiles = if (cmdName in setOf("x", "c", "cp", "mv", "rn", "mkdir", "set", "cso", "audio", "video", "enc", "mvdec", "rmd", "add", "dd", "sed", "tr", "img", "b64")) {
             state.cwd.listFiles()?.map { it.name to it.lastModified() }?.toMap().orEmpty()
         } else emptyMap()

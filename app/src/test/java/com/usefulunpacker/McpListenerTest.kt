@@ -15,6 +15,47 @@ import java.util.concurrent.TimeUnit
 class McpListenerTest {
     @get:Rule val tmp = TemporaryFolder()
 
+    @Test fun skillRuntimeWorksWithoutListenerAndMcpUsesTheSameArchiveContract() {
+        val root = tmp.newFolder()
+        val workspace = McpWorkspace(root)
+        val tasks = McpTasks { task, command ->
+            check(command.action == McpCommand.Action.PACK)
+            check(command.source == "-source")
+            check(command.format == "zip")
+            task.publish(command.output) { workspace.resolve(command.output).writeText("packed") }
+        }
+        val runtime = WorkspaceSkillRuntime(workspace, tasks)
+        val toolNames = runtime.skills().map { it.name }
+        assertTrue(toolNames.containsAll(listOf("COMPRESS", "EXTRACT", "SCAN", "UU_HASH")))
+        assertEquals(toolNames.size, toolNames.toSet().size)
+        try {
+            val write = runtime.invokeSkill("WRITE_TEXT",
+                JSONObject().put("path", "-source").put("text", "contents"))
+            assertFalse(write.isError)
+            val input = JSONObject().put("source", "-source").put("output", "-local.zip").put("waitMs", 3000)
+            val local = runtime.invokeSkill("COMPRESS", input)
+            assertFalse(local.isError)
+            assertEquals("SUCCESS", local.data.getString("state"))
+            assertEquals("packed", root.resolve("-local.zip").readText())
+
+            val bad = runtime.invokeSkill("EXTRACT", JSONObject().put("archive", "input.zip")
+                .put("output", "out").put("entries", JSONArray().put("first\nsecond")))
+            assertTrue(bad.isError)
+            assertEquals("INVALID_RESULT", bad.data.getString("errorCode"))
+            assertTrue(bad.data.has("logId"))
+
+            McpListener(McpProtocol(runtime, "test"), tasks, root).use { listener ->
+                val remote = call(listener, "skill_call", JSONObject().put("skill", "COMPRESS")
+                    .put("input", JSONObject(input.toString()).put("output", "-remote.zip")))
+                assertFalse(remote.getBoolean("isError"))
+                assertEquals("SUCCESS", remote.getJSONObject("structuredContent").getString("state"))
+                assertEquals("packed", root.resolve("-remote.zip").readText())
+            }
+        } finally {
+            tasks.close()
+        }
+    }
+
     @Test fun clientDiscoversToolsAndRunsAWorkspaceScriptOverHttp() {
         val root = tmp.newFolder()
         val workspace = McpWorkspace(root)

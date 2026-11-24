@@ -126,7 +126,7 @@ internal class McpForegroundService : Service() {
                     val listener = try {
                         val version = packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
                         McpListener(
-                            McpProtocol(workspace, tasks, version, prefs),
+                            McpProtocol(WorkspaceSkillRuntime(workspace, tasks, prefs), version),
                             tasks,
                             workspace.root,
                             preferredPort = preferredPort,

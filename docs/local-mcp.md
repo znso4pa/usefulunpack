@@ -15,7 +15,7 @@
 
 | 工具 | 参数 | 用法 |
 |---|---|---|
-| `skill_list` / `skill_call` | `skill`、可选 `input` | 列出共享技能目录并按技能名调用；应用内 Agent 与 MCP 使用同一套 `AppSkillRuntime` 接口 |
+| `skill_list` / `skill_call` | `skill`、可选 `input` | 列出共享技能目录并按技能名调用。后续应用内 Agent 可直接调用同一运行时 |
 | `COMPRESS` | `source`、`output`，可选 `format`、`password`、`encryption`、`waitMs`、`idempotencyKey` | 把文件或目录打成归档；省略 `format` 时从输出扩展名推断 |
 | `EXTRACT` | `archive`、`output`，可选 `entries`、`password`、`waitMs`、`idempotencyKey` | 解包归档，可按条目选择性解包 |
 | `SCAN` | `path`，可选 `carveHitIndex`、`output`、`overwrite` | 扫描文件中的归档/媒体签名，或将指定命中切出为文件 |
@@ -30,6 +30,8 @@
 | `task_status` / `task_cancel` / `task_log` | `taskId` | 查询状态（含 `stdout`、`exitCode`、`outputs`）、取消任务或取得本地诊断日志 |
 
 `skill_list` 返回规范技能名、说明和输入 Schema。现有 MCP 工具各有对应技能名；全部 `uu` 子命令另以 `UU_<命令名>` 暴露，例如 `UU_HASH`、`UU_SCAN`、`UU_C`。新客户端可用 `skill_call` 统一调用，旧 MCP 工具名与 `run_uu` 保留兼容。
+
+`COMPRESS` 和 `EXTRACT` 使用工作区相对路径。文件名和条目名按原值处理。任务提交后可以用返回的 `taskId` 查询进度和产物。
 
 统一调用示例：
 

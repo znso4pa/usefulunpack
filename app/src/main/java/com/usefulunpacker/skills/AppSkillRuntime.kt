@@ -9,8 +9,10 @@ internal data class AppSkillDefinition(
     val inputSchema: JSONObject,
 )
 
-/** Implementations own authorization, workspace bounds, scheduling, cancellation and diagnostics. */
+internal data class AppSkillResult(val data: JSONObject, val isError: Boolean = false)
+
+/** Executes app skills within the selected workspace. Call from a worker thread. */
 internal interface AppSkillRuntime {
     fun skills(): List<AppSkillDefinition>
-    fun invokeSkill(name: String, input: JSONObject): JSONObject
+    fun invokeSkill(name: String, input: JSONObject): AppSkillResult
 }

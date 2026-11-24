@@ -13,6 +13,8 @@ import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.util.Locale
 import java.util.TreeMap
+import com.usefulunpacker.skills.AppSkillDefinition
+import com.usefulunpacker.skills.AppSkillRuntime
 
 internal const val MCP_PROTOCOL_VERSION = "2025-11-25"
 internal val MCP_PROTOCOL_VERSIONS = setOf(MCP_PROTOCOL_VERSION, "2025-06-18", "2025-03-26")
@@ -36,12 +38,17 @@ internal class McpProtocol(
     private val prefs: SharedPreferences? = null,
     private val archiveLister: ((format: String, file: File, password: String) -> Pair<String, String>)? = null,
     private val signatureScanner: ((file: File) -> List<ScanHit>)? = null,
-) {
+) : AppSkillRuntime {
     private val requestLogIds = LinkedHashSet<String>()
     private val memorySettings = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
     private enum class Tool(val wireName: String, val detail: String, val key: String = "", val kind: String = "string") {
         HELP("command_help", "Show all 39 uu commands, full .uut script syntax, supported archive formats, XP3 schemes and text encodings."),
+        SKILL_LIST("skill_list", "List the complete app skill catalog, including archive operations and every uu command."),
+        SKILL_CALL("skill_call", "Invoke any app skill by its stable name from skill_list. Pass arguments as an object.", "skill", "string"),
+        COMPRESS("COMPRESS", "Pack a file or directory into a supported archive format. Format may be inferred from the output extension.", "source"),
+        EXTRACT("EXTRACT", "Extract an archive into a workspace directory, optionally selecting entries.", "archive"),
+        SCAN("SCAN", "Scan a workspace file for embedded archive and media signatures, or carve a selected hit.", "path"),
         ARCHIVE_LIST("archive_list", "List entries in an archive without extracting it. Supports optional password and after cursor.", "path"),
         SCAN_SIGNATURES("scan_signatures", "Scan a file for embedded archive/media signatures with full GUI metadata (offset, hexOffset, label, format, extension, needsCarve, canExtract, size, fileCount, note), or carve a hit to an output file.", "path"),
         INSPECT_FILE("inspect_file", "Deep GUI-level inspection of a workspace file or archive: detects format by extension and magic, XP3 encryption scheme, text encoding & BOM, TJS2 bytecode, image dimensions (PNG/JPEG/GIF/WebP/BMP), RPG Maker MV/MZ header, and hex/ASCII header preview.", "path"),
@@ -56,6 +63,15 @@ internal class McpProtocol(
         LIST("workspace_list", "List workspace files. Use . for the root and after to continue a truncated result.", "path"),
         READ("read_text", "Read a text file (up to 2 MiB on disk, 64 KiB chars per page). Auto-detects UTF-8, SHIFT-JIS, GBK and UTF-16, or accepts an explicit encoding, offset and limit.", "path"),
         WRITE("write_text", "Write a text file in UTF-8, SHIFT-JIS, GBK or UTF-16. Preserves existing encoding and BOM when overwrite is true unless overridden.", "path");
+
+        val skillId: String?
+            get() = when (this) {
+                SKILL_LIST, SKILL_CALL, SCAN_SIGNATURES -> null
+                COMPRESS -> "COMPRESS"
+                EXTRACT -> "EXTRACT"
+                SCAN -> "SCAN"
+                else -> wireName.uppercase(Locale.ROOT)
+            }
 
         fun schema(): JSONObject {
             val properties = JSONObject()
@@ -75,6 +91,32 @@ internal class McpProtocol(
                 properties.put("carveHitIndex", JSONObject().put("type", "integer"))
                 properties.put("output", JSONObject().put("type", "string"))
                 properties.put("overwrite", JSONObject().put("type", "boolean"))
+            }
+            if (this == SCAN) {
+                properties.put("carveHitIndex", JSONObject().put("type", "integer"))
+                properties.put("output", JSONObject().put("type", "string"))
+                properties.put("overwrite", JSONObject().put("type", "boolean"))
+            }
+            if (this == COMPRESS) {
+                properties.put("output", JSONObject().put("type", "string"))
+                properties.put("format", JSONObject().put("type", "string"))
+                properties.put("password", JSONObject().put("type", "string"))
+                properties.put("encryption", JSONObject().put("type", "string"))
+                properties.put("idempotencyKey", JSONObject().put("type", "string"))
+                properties.put("waitMs", JSONObject().put("type", "integer"))
+                required.put("output")
+            }
+            if (this == EXTRACT) {
+                properties.put("output", JSONObject().put("type", "string"))
+                properties.put("entries", JSONObject().put("type", "array").put("items", JSONObject().put("type", "string")))
+                properties.put("password", JSONObject().put("type", "string"))
+                properties.put("idempotencyKey", JSONObject().put("type", "string"))
+                properties.put("waitMs", JSONObject().put("type", "integer"))
+                required.put("output")
+            }
+            if (this == SKILL_CALL) {
+                properties.put("input", JSONObject().put("type", "object"))
+                required.put("skill")
             }
             if (this == INSPECT_FILE) {
                 properties.put("hexBytes", JSONObject().put("type", "integer"))
@@ -151,7 +193,7 @@ internal class McpProtocol(
                 params.optString("protocolVersion").takeIf { it in MCP_PROTOCOL_VERSIONS } ?: MCP_PROTOCOL_VERSION)
                 .put("serverInfo", JSONObject().put("name", "UsefulUnpack").put("version", version))
                 .put("capabilities", JSONObject().put("tools", JSONObject()))
-                .put("instructions", "Use workspace-relative paths. All 39 uu commands (plus uu run) are available via run_uu. Prefer writing and running .uut scripts via validate_uut and run_uut for multi-step workflows, variables, loops, conditionals, pipes and redirections. Call command_help for the full uu command table and .uut syntax. Poll task_status for queued work, stdout and outputs.")
+                .put("instructions", "Use workspace-relative paths. Call skill_list to discover the shared app skills and skill_call to invoke one. Prefer COMPRESS, EXTRACT and SCAN for archive operations. All 39 uu commands are also individually listed as UU_* skills and remain available through run_uu. Use validate_uut and run_uut for multi-step scripts. Poll task_status for progress, stdout and outputs.")
             "ping" -> JSONObject()
             "tools/list" -> JSONObject().put("tools", JSONArray(Tool.entries.map { it.schema() }))
             "tools/call" -> {
@@ -167,11 +209,17 @@ internal class McpProtocol(
     }
 
     private fun handleTool(tool: Tool, args: JSONObject): JSONObject {
-        val scope = if (tool in setOf(Tool.ARCHIVE_LIST, Tool.SCAN_SIGNATURES, Tool.INSPECT_FILE, Tool.WRITE)) {
-            val password = if (tool == Tool.ARCHIVE_LIST) args.opt("password") as? String else null
-            AppDiagnostics.enterIntent("mcp_${tool.wireName}", secrets = listOfNotNull(password), newChain = true)
+        val requestedSkill = if (tool == Tool.SKILL_CALL) args.optString("skill").uppercase(Locale.ROOT) else ""
+        val skillName = if (tool == Tool.SKILL_CALL) {
+            skills().firstOrNull { it.name == requestedSkill }?.name?.lowercase(Locale.ROOT) ?: "skill_call"
+        } else ""
+        val scope = if (tool in setOf(Tool.ARCHIVE_LIST, Tool.SCAN_SIGNATURES, Tool.SCAN, Tool.INSPECT_FILE,
+                Tool.WRITE, Tool.COMPRESS, Tool.EXTRACT, Tool.SKILL_CALL)) {
+            val feature = if (tool == Tool.SKILL_CALL) skillName.lowercase(Locale.ROOT) else tool.skillId?.lowercase(Locale.ROOT) ?: tool.wireName
+            val password = args.opt("password") as? String ?: args.optJSONObject("input")?.opt("password") as? String
+            AppDiagnostics.enterIntent("mcp_$feature", secrets = listOfNotNull(password), newChain = true)
         } else null
-        val stage = tool.wireName
+        val stage = if (tool == Tool.SKILL_CALL) skillName else tool.wireName
         try {
             val result = call(tool, args)
             val toolFailed = scope?.trace?.chain?.failureStatus() == ChainStatus.FAILED
@@ -225,6 +273,11 @@ internal class McpProtocol(
 
     private fun call(tool: Tool, args: JSONObject): JSONObject {
         val allowed = when (tool) {
+            Tool.SKILL_LIST -> emptySet()
+            Tool.SKILL_CALL -> setOf("skill", "input")
+            Tool.COMPRESS -> setOf("source", "output", "format", "password", "encryption", "idempotencyKey", "waitMs")
+            Tool.EXTRACT -> setOf("archive", "output", "entries", "password", "idempotencyKey", "waitMs")
+            Tool.SCAN -> setOf("path", "carveHitIndex", "output", "overwrite")
             Tool.LIST -> setOf("path", "after")
             Tool.ARCHIVE_LIST -> setOf("path", "password", "after")
             Tool.SCAN_SIGNATURES -> setOf("path", "carveHitIndex", "output", "overwrite")
@@ -244,6 +297,44 @@ internal class McpProtocol(
         fun argument(key: String = tool.key): String = args.opt(key) as? String
             ?: throw McpInputException("Expected string argument $key")
         return when (tool) {
+            Tool.SKILL_LIST -> skillList()
+            Tool.SKILL_CALL -> {
+                val input = if (!args.has("input")) JSONObject() else args.optJSONObject("input")
+                    ?: throw mcpInputError("Skill input must be an object")
+                invokeSkill(argument("skill"), input)
+            }
+            Tool.COMPRESS -> {
+                val argv = buildList {
+                    add("c")
+                    if (args.has("password")) addAll(listOf("-p", argument("password")))
+                    if (args.has("format")) addAll(listOf("-f", argument("format")))
+                    if (args.has("encryption")) addAll(listOf("-e", argument("encryption")))
+                    add(argument("source")); add(argument("output"))
+                }
+                submitUu(argv, args)
+            }
+            Tool.EXTRACT -> {
+                val argv = buildList {
+                    add("x")
+                    if (args.has("password")) addAll(listOf("-p", argument("password")))
+                    add(argument("archive")); add(argument("output"))
+                    val entries = if (!args.has("entries")) null else args.optJSONArray("entries")
+                        ?: throw mcpInputError("Archive entries must be an array")
+                    if (entries != null) {
+                        if (entries.length() > 16) throw mcpInputError("At most 16 archive entries may be selected")
+                        for (index in 0 until entries.length()) {
+                            add(entries.opt(index) as? String ?: throw mcpInputError("Archive entries must be strings"))
+                        }
+                    }
+                }
+                submitUu(argv, args)
+            }
+            Tool.SCAN -> scanSignaturesTool(
+                argument("path"),
+                if (args.has("carveHitIndex")) intArgument(args, "carveHitIndex", 0, 10_000) else null,
+                if (args.has("output")) argument("output") else null,
+                if (args.has("overwrite")) boolArgument(args, "overwrite") else false,
+            )
             Tool.HELP -> {
                 val allCommands = UuCommands.commandList().map { "${it.usage} — ${it.summary}" } +
                     "uu run [-k] <file.uut> [args...] — Run a UUT script inside the workspace"
@@ -257,6 +348,7 @@ internal class McpProtocol(
                         "AlteredPinkCrypt", "DameganeCrypt", "NatsupochiCrypt", "OkibaCrypt", "DieselmineCrypt",
                     )))
                     .put("textEncodings", JSONArray(TEXT_ENCODINGS.toList()))
+                    .put("skillApi", "Discover named operations with skill_list and call them with skill_call. Archive operations use COMPRESS, EXTRACT and SCAN. Each uu command also has a UU_* skill.")
                     .put("uutSyntax", JSONArray(listOf(
                         "set <var> = <value> | set <var> = $(uu ...) | set <n> = \$n + 1",
                         "if <var> =|!=|<|>|<=|>= <val> then <cmd> | if [not] exist <path> ... elif ... else ... end",
@@ -291,15 +383,11 @@ internal class McpProtocol(
             )
             Tool.RUN -> {
                 val argv = args.optJSONArray("argv") ?: throw mcpInputError("Expected argv array")
-                if (argv.length() == 0) throw mcpInputError("Expected non-empty argv array")
-                if (argv.length() > 64) throw mcpInputError("Too many command arguments")
-                val command = McpCommand.parse(List(argv.length()) {
-                    argv.opt(it) as? String ?: throw mcpInputError("Expected string command arguments")
-                })
-                validatePaths(listOf(command))
-                val key = if (args.has("idempotencyKey")) argument("idempotencyKey") else ""
-                val waitMs = if (args.has("waitMs")) intArgument(args, "waitMs", 0, MCP_MAX_WAIT_MS) else 0
-                tasks.submit(listOf(command), script = false, idempotencyKey = key, waitMs = waitMs)
+                if (argv.length() == 0) throw mcpInputError("Expected non-empty command arguments")
+                val command = List(argv.length()) {
+                    argv.opt(it) as? String ?: throw mcpInputError("Command arguments must be strings")
+                }
+                submitUu(command, args)
             }
             Tool.VALIDATE, Tool.SCRIPT -> {
                 val hasPath = args.has("path")
@@ -378,6 +466,67 @@ internal class McpProtocol(
                 if (args.has("overwrite")) boolArgument(args, "overwrite") else false,
             )
         }
+    }
+
+    override fun skills(): List<AppSkillDefinition> {
+        val toolSkills = Tool.entries.mapNotNull { tool ->
+            val name = tool.skillId ?: return@mapNotNull null
+            AppSkillDefinition(name, tool.detail, tool.schema().getJSONObject("inputSchema"))
+        }
+        val uuSkills = (UuCommands.commandList().map { it.name to "${it.usage} — ${it.summary}" } +
+            ("run" to "uu run [-k] <file.uut> [args...] — Execute a UUT file from this workspace"))
+            .map { (command, description) ->
+                val properties = JSONObject()
+                    .put("args", JSONObject().put("type", "array")
+                        .put("items", JSONObject().put("type", "string")))
+                    .put("idempotencyKey", JSONObject().put("type", "string"))
+                    .put("waitMs", JSONObject().put("type", "integer"))
+                val schema = JSONObject().put("type", "object").put("properties", properties)
+                    .put("required", JSONArray().put("args")).put("additionalProperties", false)
+                AppSkillDefinition("UU_${command.uppercase(Locale.ROOT)}", description, schema)
+            }
+        return toolSkills + uuSkills
+    }
+
+    override fun invokeSkill(name: String, input: JSONObject): JSONObject {
+        val normalized = name.trim().uppercase(Locale.ROOT)
+        val definition = skills().firstOrNull { it.name == normalized }
+            ?: throw mcpInputError("Unknown skill name")
+        val tool = Tool.entries.firstOrNull { it.skillId == definition.name }
+        if (tool != null) return call(tool, input)
+
+        val commandName = normalized.removePrefix("UU_").lowercase(Locale.ROOT)
+        if (!UuCommands.isKnownCommand(commandName)) throw mcpInputError("Unknown skill name")
+        val args = input.optJSONArray("args") ?: throw mcpInputError("Expected skill args array")
+        if (args.length() > 63) throw mcpInputError("Too many command arguments")
+        val argv = buildList {
+            add(commandName)
+            for (index in 0 until args.length()) {
+                add(args.opt(index) as? String ?: throw mcpInputError("Command arguments must be strings"))
+            }
+        }
+        return submitUu(argv, input)
+    }
+
+    private fun skillList(): JSONObject {
+        val definitions = skills()
+        return JSONObject().put("skills", JSONArray(definitions.map { definition ->
+            JSONObject().put("name", definition.name)
+                .put("description", definition.description)
+                .put("inputSchema", definition.inputSchema)
+        })).put("count", definitions.size)
+    }
+
+    private fun submitUu(argv: List<String>, options: JSONObject): JSONObject {
+        if (argv.isEmpty()) throw mcpInputError("Expected a uu command")
+        if (argv.size > 64) throw mcpInputError("Too many command arguments")
+        val command = McpCommand.parse(argv)
+        validatePaths(listOf(command))
+        val idempotencyKey = if (options.has("idempotencyKey")) {
+            options.opt("idempotencyKey") as? String ?: throw mcpInputError("idempotencyKey must be a string")
+        } else ""
+        val waitMs = if (options.has("waitMs")) intArgument(options, "waitMs", 0, MCP_MAX_WAIT_MS) else 0
+        return tasks.submit(listOf(command), script = false, idempotencyKey = idempotencyKey, waitMs = waitMs)
     }
 
     private fun intArgument(args: JSONObject, key: String, min: Int, max: Int): Int {

@@ -11,8 +11,8 @@ android {
         applicationId "com.usefulunpacker"
         minSdk 26
         targetSdk 34
-        versionCode 35
-        versionName "6.7.0"
+        versionCode 36
+        versionName "7.0.0"
     }
 
     signingConfigs {

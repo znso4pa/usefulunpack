@@ -15,6 +15,10 @@
 
 | 工具 | 参数 | 用法 |
 |---|---|---|
+| `skill_list` / `skill_call` | `skill`、可选 `input` | 列出共享技能目录并按技能名调用；应用内 Agent 与 MCP 使用同一套 `AppSkillRuntime` 接口 |
+| `COMPRESS` | `source`、`output`，可选 `format`、`password`、`encryption`、`waitMs`、`idempotencyKey` | 把文件或目录打成归档；省略 `format` 时从输出扩展名推断 |
+| `EXTRACT` | `archive`、`output`，可选 `entries`、`password`、`waitMs`、`idempotencyKey` | 解包归档，可按条目选择性解包 |
+| `SCAN` | `path`，可选 `carveHitIndex`、`output`、`overwrite` | 扫描文件中的归档/媒体签名，或将指定命中切出为文件 |
 | `command_help` | 无 | 查看全部 39 条 `uu` 命令（及 `uu run`）、完整 `.uut` 脚本语法、全部解包/封包格式、XP3 加密方案与文本编码 |
 | `archive_list` | `path`，可选 `password`、`after` | 不解包直接列出归档条目、总大小、格式与 XP3 加密状态；超 128 项时用 `nextAfter` 翻页 |
 | `workspace_list` | `path`，可选 `after` | 列出相对目录。根目录用 `.`，下一页使用前一页的 `nextAfter` |
@@ -24,6 +28,24 @@
 | `validate_uut` | `path` 或 `script` | 校验工作区 `.uut` 脚本文件或内联 `.uut` 脚本语法与路径边界 |
 | `run_uut` | `path` 或 `script`，可选 `args`、`keepGoing` | 提交并执行完整 `.uut` 脚本，支持传入位置参数 `$1..$n` 与 `-k`（`keepGoing`） |
 | `task_status` / `task_cancel` / `task_log` | `taskId` | 查询状态（含 `stdout`、`exitCode`、`outputs`）、取消任务或取得本地诊断日志 |
+
+`skill_list` 返回规范技能名、说明和输入 Schema。现有 MCP 工具各有对应技能名；全部 `uu` 子命令另以 `UU_<命令名>` 暴露，例如 `UU_HASH`、`UU_SCAN`、`UU_C`。新客户端可用 `skill_call` 统一调用，旧 MCP 工具名与 `run_uu` 保留兼容。
+
+统一调用示例：
+
+```json
+{
+  "name": "skill_call",
+  "arguments": {
+    "skill": "COMPRESS",
+    "input": {
+      "source": "translated",
+      "output": "translated.zip",
+      "format": "zip"
+    }
+  }
+}
+```
 
 `run_uu` 和 `run_uut` 返回同一个任务 ID 和诊断链 ID。状态为 `QUEUED`、`RUNNING`、`CANCELLING` 或终态 `SUCCESS`、`FAILED`、`CANCELLED`、`PARTIAL_FAILURE`、`INTERRUPTED`。用 `outputs` 查看已发布的产物、用 `stdout` 查看命令或脚本的标准输出。客户端在请求超时后应先确认已有任务，重复提交会产生新任务。
 

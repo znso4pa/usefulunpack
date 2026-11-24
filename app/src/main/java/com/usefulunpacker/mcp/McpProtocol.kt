@@ -37,6 +37,7 @@ internal class McpProtocol(
     private val archiveLister: ((format: String, file: File, password: String) -> Pair<String, String>)? = null,
     private val signatureScanner: ((file: File) -> List<ScanHit>)? = null,
 ) {
+    private val requestLogIds = LinkedHashSet<String>()
     private val memorySettings = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
     private enum class Tool(val wireName: String, val detail: String, val key: String = "", val kind: String = "string") {
@@ -51,7 +52,7 @@ internal class McpProtocol(
         STATUS("task_status", "Read the task state, chain ID, stdout, exitCode, live progress and published output paths. Pass optional waitMs (0..15000) to long-poll.", "taskId"),
         TASK_LIST("task_list", "List active and recent tasks (newest first), optionally filtered by state. Use after a client timeout to recover the taskId without resubmitting."),
         CANCEL("task_cancel", "Request cancellation of a queued or running task.", "taskId"),
-        LOG("task_log", "Read the bounded local diagnostic log for this task.", "taskId"),
+        LOG("task_log", "Read the diagnostic log for a task ID or a logId returned by the current listener.", "taskId"),
         LIST("workspace_list", "List workspace files. Use . for the root and after to continue a truncated result.", "path"),
         READ("read_text", "Read a text file (up to 2 MiB on disk, 64 KiB chars per page). Auto-detects UTF-8, SHIFT-JIS, GBK and UTF-16, or accepts an explicit encoding, offset and limit.", "path"),
         WRITE("write_text", "Write a text file in UTF-8, SHIFT-JIS, GBK or UTF-16. Preserves existing encoding and BOM when overwrite is true unless overridden.", "path");
@@ -142,7 +143,7 @@ internal class McpProtocol(
         val method = message.getString("method")
         if (id == null) {
             return if (method == "notifications/initialized" || method == "notifications/cancelled") McpResponse(202)
-            else McpResponse(400)
+            else error(JSONObject.NULL, -32600, "Unsupported notification", 400)
         }
         val params = message.optJSONObject("params") ?: JSONObject()
         val result = when (method) {
@@ -158,21 +159,68 @@ internal class McpProtocol(
                     ?: return error(id, -32602, "Unknown tool")
                 val args = params.optJSONObject("arguments")
                 if (params.has("arguments") && args == null) return error(id, -32602, "Expected an arguments object")
-                try {
-                    toolResult(call(tool, args ?: JSONObject()))
-                } catch (e: McpInputException) {
-                    toolResult(buildInputErrorPayload(tool, e.message ?: "Invalid input"), true)
-                } catch (e: LinkageError) {
-                    AppDiagnostics.begin("mcp_tool").fail(FailureCode.UNSUPPORTED, "Native archive library unavailable")
-                    toolResult(JSONObject().put("error", "Native archive library unavailable."), true)
-                } catch (e: Exception) {
-                    AppDiagnostics.begin("mcp_tool").fail(FailureCode.IO, "Could not complete ${tool.wireName}", e)
-                    toolResult(JSONObject().put("error", "Tool operation failed. See local diagnostics."), true)
-                }
+                handleTool(tool, args ?: JSONObject())
             }
             else -> return error(id, -32601, "Method not found")
         }
         return McpResponse(200, envelope(id).put("result", result))
+    }
+
+    private fun handleTool(tool: Tool, args: JSONObject): JSONObject {
+        val scope = if (tool in setOf(Tool.ARCHIVE_LIST, Tool.SCAN_SIGNATURES, Tool.INSPECT_FILE, Tool.WRITE)) {
+            val password = if (tool == Tool.ARCHIVE_LIST) args.opt("password") as? String else null
+            AppDiagnostics.enterIntent("mcp_${tool.wireName}", secrets = listOfNotNull(password), newChain = true)
+        } else null
+        val stage = tool.wireName
+        try {
+            val result = call(tool, args)
+            val toolFailed = scope?.trace?.chain?.failureStatus() == ChainStatus.FAILED
+            scope?.trace?.chain?.firstFailure()?.let { (code, failedStage) ->
+                result.withMcpFailure(AppFailure(code, failedStage, "", scope.trace.id)
+                    .also(::rememberRequestLog))
+            }
+            if (toolFailed) result.put("error", "Tool operation failed. See local diagnostics.")
+            if (tool in setOf(Tool.RUN, Tool.SCRIPT, Tool.STATUS, Tool.TASK_LIST, Tool.CANCEL)) {
+                tasks.historyFailure()?.let {
+                    rememberRequestLog(it)
+                    result.put("historyError", JSONObject().put("error", it.detail).withMcpFailure(it))
+                }
+            }
+            return toolResult(result, toolFailed)
+        } catch (e: McpInputException) {
+            val message = e.message ?: "Invalid input"
+            val data = buildInputErrorPayload(tool, AppDiagnostics.redact(message).take(2048))
+            val scriptLine = data.optInt("line").takeIf { it > 0 }
+            // The response can guide the caller with its own input. The log only records trusted metadata.
+            val detail = e.diagnosticDetail ?: if (scriptLine == null) "Tool rejected the input or result"
+                else "UUT validation failed at line $scriptLine"
+            val failure = recordMcpFailure(stage, e.errorCode, detail)
+            return toolResult(data.withMcpFailure(failure.also(::rememberRequestLog)), true)
+        } catch (e: LinkageError) {
+            val failure = recordMcpFailure(stage, FailureCode.UNSUPPORTED, "Native archive library unavailable", e.javaClass.simpleName)
+            return toolResult(JSONObject().put("error", "Native archive library unavailable.")
+                .withMcpFailure(failure.also(::rememberRequestLog)), true)
+        } catch (e: java.util.concurrent.CancellationException) {
+            scope?.trace?.cancelled()
+            return toolResult(JSONObject().put("error", "Tool cancelled").put("errorCode", "CANCELLED")
+                .put("stage", stage).apply { scope?.let { put("logId", it.trace.id) } }, true)
+        } catch (e: Exception) {
+            val failure = recordMcpFailure(stage, FailureCode.IO, "Tool operation failed", e.javaClass.simpleName)
+            return toolResult(JSONObject().put("error", "Tool operation failed. See local diagnostics.")
+                .withMcpFailure(failure.also(::rememberRequestLog)), true)
+        } finally {
+            scope?.let(AppDiagnostics::leaveIntent)
+        }
+    }
+
+    private fun rememberRequestLog(failure: AppFailure): Unit = synchronized(requestLogIds) {
+        requestLogIds.add(failure.logId)
+        if (requestLogIds.size > 40) requestLogIds.remove(requestLogIds.first())
+    }
+
+    fun transportError(status: Int, message: String, code: FailureCode = FailureCode.INVALID_RESULT): McpResponse {
+        val failure = recordMcpFailure("transport", code, "HTTP $status: $message").also(::rememberRequestLog)
+        return McpResponse(status, JSONObject().put("error", message).withMcpFailure(failure))
     }
 
     private fun call(tool: Tool, args: JSONObject): JSONObject {
@@ -192,7 +240,7 @@ internal class McpProtocol(
             Tool.HELP -> emptySet()
             else -> setOf(tool.key)
         }
-        if (args.keys().asSequence().any { it !in allowed }) throw McpInputException("Unexpected tool arguments")
+        if (args.keys().asSequence().any { it !in allowed }) throw mcpInputError("Unexpected tool arguments")
         fun argument(key: String = tool.key): String = args.opt(key) as? String
             ?: throw McpInputException("Expected string argument $key")
         return when (tool) {
@@ -242,11 +290,11 @@ internal class McpProtocol(
                 if (args.has("value")) args.opt("value")?.toString().orEmpty() else null,
             )
             Tool.RUN -> {
-                val argv = args.optJSONArray("argv") ?: throw McpInputException("Expected argv array")
-                if (argv.length() == 0) throw McpInputException("Expected non-empty argv array")
-                if (argv.length() > 64) throw McpInputException("Too many command arguments")
+                val argv = args.optJSONArray("argv") ?: throw mcpInputError("Expected argv array")
+                if (argv.length() == 0) throw mcpInputError("Expected non-empty argv array")
+                if (argv.length() > 64) throw mcpInputError("Too many command arguments")
                 val command = McpCommand.parse(List(argv.length()) {
-                    argv.opt(it) as? String ?: throw McpInputException("Expected string command arguments")
+                    argv.opt(it) as? String ?: throw mcpInputError("Expected string command arguments")
                 })
                 validatePaths(listOf(command))
                 val key = if (args.has("idempotencyKey")) argument("idempotencyKey") else ""
@@ -256,26 +304,26 @@ internal class McpProtocol(
             Tool.VALIDATE, Tool.SCRIPT -> {
                 val hasPath = args.has("path")
                 val hasScript = args.has("script")
-                if (!hasPath && !hasScript) throw McpInputException("Expected string argument path")
-                if (hasPath && hasScript) throw McpInputException("Provide either path or script, not both")
+                if (!hasPath && !hasScript) throw mcpInputError("Expected string argument path")
+                if (hasPath && hasScript) throw mcpInputError("Provide either path or script, not both")
                 val scriptText = if (hasPath) {
                     val scriptFile = workspace.resolve(argument("path"))
                     if (!scriptFile.isFile || !scriptFile.extension.equals("uut", ignoreCase = true)) {
-                        throw McpInputException("Expected a workspace .uut file")
+                        throw mcpInputError("Expected a workspace .uut file")
                     }
                     readUtf8Script(scriptFile)
                 } else {
                     argument("script").also {
                         if (it.toByteArray(Charsets.UTF_8).size > MCP_REQUEST_LIMIT) {
-                            throw McpInputException("Script exceeds 64 KiB")
+                            throw mcpInputError("Script exceeds 64 KiB")
                         }
                     }
                 }
                 val scriptArgs = if (tool == Tool.SCRIPT && args.has("args")) {
-                    val arr = args.optJSONArray("args") ?: throw McpInputException("Expected args array")
-                    if (arr.length() > 32) throw McpInputException("Too many script arguments")
+                    val arr = args.optJSONArray("args") ?: throw mcpInputError("Expected args array")
+                    if (arr.length() > 32) throw mcpInputError("Too many script arguments")
                     List(arr.length()) {
-                        arr.opt(it) as? String ?: throw McpInputException("Expected string script arguments")
+                        arr.opt(it) as? String ?: throw mcpInputError("Expected string script arguments")
                     }
                 } else emptyList()
                 val keepGoing = if (tool == Tool.SCRIPT && args.has("keepGoing")) {
@@ -306,10 +354,13 @@ internal class McpProtocol(
             )
             Tool.CANCEL -> tasks.cancel(argument())
             Tool.LOG -> {
-                val task = tasks.get(argument())
-                val entry = AppDiagnostics.store?.current(task.taskId)
-                    ?: throw McpInputException("The task log is unavailable or has rotated")
-                JSONObject().put("chainId", task.taskId).put("log", entry.text.takeLast(8192))
+                val id = argument()
+                if (!synchronized(requestLogIds) { id in requestLogIds } && !tasks.canReadLog(id)) {
+                    throw mcpInputError("Unknown or expired log ID")
+                }
+                val entry = AppDiagnostics.store?.readEntry(id)?.takeIf { it.feature.startsWith("mcp_") }
+                    ?: throw mcpInputError("The task log is unavailable or has rotated")
+                JSONObject().put("chainId", id).put("log", entry.text.takeLast(8192))
                     .put("truncated", entry.text.length > 8192)
             }
             Tool.LIST -> listDirectory(argument(), if (args.has("after")) argument("after") else "")
@@ -345,43 +396,28 @@ internal class McpProtocol(
         args.opt(key) as? Boolean ?: throw McpInputException("Expected boolean argument $key")
 
     private fun listArchive(path: String, password: String, after: String): JSONObject {
-        if (password.length > 1024 || '\u0000' in password) throw McpInputException("Invalid password")
+        if (password.length > 1024 || '\u0000' in password) throw mcpInputError("Invalid password")
         val file = workspace.resolve(path)
-        if (!file.isFile) throw McpInputException("Archive input does not exist")
+        if (!file.isFile) throw mcpInputError("Archive input does not exist")
         Files.newDirectoryStream(file.parentFile!!.toPath()).use { entries ->
             for (entry in entries) {
-                if (Files.isSymbolicLink(entry)) throw McpInputException("Archive directory contains a symbolic link")
+                if (Files.isSymbolicLink(entry)) throw mcpInputError("Archive directory contains a symbolic link")
             }
         }
         val format = isVolumeFile(file) ?: detectFormat(file) ?: detectFormatByMagic(file)
-            ?: throw McpInputException("Unsupported archive format")
-        val scope = AppDiagnostics.enterIntent("mcp_archive_list", secrets = listOf(password), newChain = true)
-        val (rawJson, xp3Enc) = try {
-            val lister = archiveLister
-            if (lister != null) {
-                lister(format, file, password).also { scope.trace.success() }
-            } else {
-                val handle = tryStartOperation(format)
-                try {
-                    if (!handle.await()) throw McpInputException("Archive listing was cancelled")
-                    var err = ""
-                    val json = listEntriesJson(format, file, password, nestedOnly = false, prefs = prefs) { err = it }
-                        ?: throw McpInputException(err.ifEmpty { "Could not list archive entries" })
-                    val enc = if (format == "xp3") xp3SchemeToken(format, file) else ""
-                    scope.trace.success()
-                    json to enc
-                } finally {
-                    handle.release()
-                }
+            ?: throw mcpInputError("Unsupported archive format")
+        val lister = archiveLister
+        val (rawJson, xp3Enc) = if (lister != null) lister(format, file, password) else {
+            val handle = tryStartOperation(format)
+            try {
+                if (!handle.await()) throw java.util.concurrent.CancellationException()
+                var err = ""
+                val json = listEntriesJson(format, file, password, nestedOnly = false, prefs = prefs) { err = it }
+                    ?: throw McpInputException(err.ifEmpty { "Could not list archive entries" }, FailureCode.IO)
+                json to if (format == "xp3") xp3SchemeToken(format, file) else ""
+            } finally {
+                handle.release()
             }
-        } catch (e: McpInputException) {
-            scope.trace.fail(FailureCode.INVALID_RESULT, e.message ?: "Archive listing failed")
-            throw e
-        } catch (e: LinkageError) {
-            scope.trace.fail(FailureCode.UNSUPPORTED, "Native archive library unavailable")
-            throw McpInputException("Native archive library unavailable.")
-        } finally {
-            AppDiagnostics.leaveIntent(scope)
         }
         val allEntries = parseEntries(rawJson)
         val totalBytes = allEntries.sumOf { if (it.isDirectory) 0L else it.size }
@@ -415,7 +451,7 @@ internal class McpProtocol(
 
     private fun listDirectory(path: String, after: String): JSONObject {
         val folder = workspace.resolve(path, allowRoot = true)
-        if (!folder.isDirectory) throw McpInputException("Directory does not exist")
+        if (!folder.isDirectory) throw mcpInputError("Directory does not exist")
         val page = TreeMap<String, Boolean>()
         val limit = 128
         var next = false
@@ -438,7 +474,7 @@ internal class McpProtocol(
     }
 
     private fun readBoundedBytes(file: File, maxBytes: Int, limitLabel: String): ByteArray {
-        if (!file.isFile) throw McpInputException("Text file does not exist")
+        if (!file.isFile) throw mcpInputError("Text file does not exist")
         return file.inputStream().use { input ->
             val buffer = ByteArray(maxBytes + 1)
             var size = 0
@@ -455,17 +491,17 @@ internal class McpProtocol(
     private fun readUtf8Script(file: File): String {
         val bytes = readBoundedBytes(file, MCP_REQUEST_LIMIT, "64 KiB")
         return try { Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString() }
-        catch (_: java.nio.charset.CharacterCodingException) { throw McpInputException("File must be UTF-8") }
+        catch (_: java.nio.charset.CharacterCodingException) { throw mcpInputError("File must be UTF-8") }
     }
 
     private fun readTextTool(path: String, encodingArg: String, offset: Int, limit: Int): JSONObject {
         val file = workspace.resolve(path)
         val bytes = readBoundedBytes(file, MCP_TEXT_FILE_LIMIT, "2 MiB")
-        if (isTjsBytecode(bytes)) throw McpInputException("File is compiled TJS2 bytecode, not text")
+        if (isTjsBytecode(bytes)) throw mcpInputError("File is compiled TJS2 bytecode, not text")
         val resolvedEncoding = if (encodingArg.trim().equals("auto", ignoreCase = true) || encodingArg.isBlank()) {
             if (bytes.isEmpty()) "UTF-8"
             else detectBomEncoding(bytes) ?: textEncodingOf(bytes)
-                ?: throw McpInputException("File does not appear to be text; specify encoding explicitly")
+                ?: throw mcpInputError("File does not appear to be text; specify encoding explicitly")
         } else {
             normalizeMcpEncoding(encodingArg)
         }
@@ -488,9 +524,9 @@ internal class McpProtocol(
     ): JSONObject {
         val output = workspace.resolve(path)
         val exists = output.exists()
-        if (exists && (!overwrite || !output.isFile)) throw McpInputException("The output already exists")
-        val parent = output.parentFile ?: throw McpInputException("Output has no parent directory")
-        if (!parent.isDirectory) throw McpInputException("Create the output's parent directory first")
+        if (exists && (!overwrite || !output.isFile)) throw mcpInputError("The output already exists")
+        val parent = output.parentFile ?: throw mcpInputError("Output has no parent directory")
+        if (!parent.isDirectory) throw mcpInputError("Create the output's parent directory first")
         val existingSample = if (exists) readPrefix(output, 64 * 1024L) else null
         val targetEncoding = if (encodingArg.trim().equals("auto", ignoreCase = true) || encodingArg.isBlank()) {
             if (existingSample != null && existingSample.isNotEmpty()) {
@@ -502,31 +538,23 @@ internal class McpProtocol(
         val targetBom = (bomArg ?: (existingSample != null && hasBom(existingSample))) &&
             targetEncoding in setOf("UTF-8", "UTF-16")
         val encodedBytes = encodeText(text, targetEncoding, targetBom)
-        val scope = AppDiagnostics.enterIntent("mcp_write_text", newChain = true)
+        val trace = checkNotNull(AppDiagnostics.currentTrace())
+        val temp = Files.createTempFile(parent.toPath(), ".uu-mcp-", ".tmp").toFile()
         try {
-            val temp = Files.createTempFile(parent.toPath(), ".uu-mcp-", ".tmp").toFile()
-            try {
-                temp.writeBytes(encodedBytes)
-                if (workspace.resolve(path) != output) throw McpInputException("Output path changed")
-                if (overwrite) Files.move(temp.toPath(), output.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
-                else Files.move(temp.toPath(), output.toPath())
-                scope.trace.success()
-            } finally {
-                // The temp name exists only if publication did not move it away.
-                deleteOutputChecked(temp)
-            }
-            return JSONObject()
-                .put("chainId", scope.trace.id)
-                .put("output", path)
-                .put("encoding", targetEncoding)
-                .put("bom", targetBom)
-                .put("cleanupFailed", scope.trace.chain?.onlyCleanupFailed() == true)
-        } catch (e: Exception) {
-            scope.trace.fail(FailureCode.IO, "Could not publish workspace text")
-            throw McpInputException("Could not publish text. See chain ${scope.trace.id}.")
+            temp.writeBytes(encodedBytes)
+            if (workspace.resolve(path) != output) throw mcpInputError("Output path changed")
+            if (overwrite) Files.move(temp.toPath(), output.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+            else Files.move(temp.toPath(), output.toPath())
+            trace.success()
         } finally {
-            AppDiagnostics.leaveIntent(scope)
+            deleteOutputChecked(temp)
         }
+        return JSONObject()
+            .put("chainId", trace.id)
+            .put("output", path)
+            .put("encoding", targetEncoding)
+            .put("bom", targetBom)
+            .put("cleanupFailed", trace.chain?.onlyCleanupFailed() == true)
     }
 
     private fun validatePaths(commands: List<McpCommand>) {
@@ -544,13 +572,10 @@ internal class McpProtocol(
         overwrite: Boolean,
     ): JSONObject {
         val file = workspace.resolve(path)
-        if (!file.isFile) throw McpInputException("Scan target does not exist")
+        if (!file.isFile) throw mcpInputError("Scan target does not exist")
         val hits = signatureScanner?.invoke(file) ?: run {
-            val raw = try {
-                ScanCore.scanFile(file.absolutePath)
-            } catch (_: LinkageError) {
-                throw McpInputException("Native signature scanner library unavailable.")
-            }
+            val raw = ScanCore.scanFile(file.absolutePath)
+                ?: throw mcpInputError("Signature scan did not return a result", FailureCode.IO)
             enrichScanHits(file, parseScanHits(raw))
         }
         val hitsJson = JSONArray()
@@ -598,10 +623,10 @@ internal class McpProtocol(
             val targetRel = outputRel?.takeIf { it.isNotBlank() }
                 ?: "${path}_0x${"%x".format(hit.offset)}.$ext"
             val dest = workspace.resolve(targetRel)
-            if (dest == file) throw McpInputException("Carve output must be different from the source file")
-            if (dest.exists() && (!overwrite || !dest.isFile)) throw McpInputException("The output already exists")
-            val parent = dest.parentFile ?: throw McpInputException("Output has no parent directory")
-            if (!parent.isDirectory) throw McpInputException("Create the output's parent directory first")
+            if (dest == file) throw mcpInputError("Carve output must be different from the source file")
+            if (dest.exists() && (!overwrite || !dest.isFile)) throw mcpInputError("The output already exists")
+            val parent = dest.parentFile ?: throw mcpInputError("Output has no parent directory")
+            if (!parent.isDirectory) throw mcpInputError("Create the output's parent directory first")
             val temp = Files.createTempFile(parent.toPath(), ".uu-mcp-carve-", ".tmp").toFile()
             var carvedBytes = 0L
             try {
@@ -626,7 +651,7 @@ internal class McpProtocol(
 
     private fun inspectFileTool(path: String, hexBytes: Int): JSONObject {
         val file = workspace.resolve(path)
-        if (!file.exists()) throw McpInputException("File does not exist")
+        if (!file.exists()) throw mcpInputError("File does not exist")
         if (file.isDirectory) {
             val childCount = file.list()?.count { !it.startsWith(".uu-mcp-") } ?: 0
             return JSONObject()
@@ -760,7 +785,7 @@ internal class McpProtocol(
 
     private fun appSettingsTool(actionRaw: String, keyRaw: String, valueRaw: String?): JSONObject {
         val action = actionRaw.trim().lowercase(Locale.ROOT).ifEmpty { "get" }
-        if (action !in setOf("get", "set")) throw McpInputException("action must be 'get' or 'set'")
+        if (action !in setOf("get", "set")) throw mcpInputError("action must be 'get' or 'set'")
         val validKeys = setOf(
             "zip_encoding", "text_encoding", "zip_level", "sz_level", "generic_level",
             "compress_split_size", "parallel_threads", "sort_mode",
@@ -789,13 +814,13 @@ internal class McpProtocol(
         }
 
         if (action == "set") {
-            if (key.isEmpty()) throw McpInputException("key is required when action is 'set'")
-            val rawVal = valueRaw ?: throw McpInputException("value is required when action is 'set'")
+            if (key.isEmpty()) throw mcpInputError("key is required when action is 'set'")
+            val rawVal = valueRaw ?: throw mcpInputError("value is required when action is 'set'")
             when (key) {
                 "zip_encoding" -> {
                     val norm = normalizeMcpEncoding(rawVal)
                     if (norm !in setOf("UTF-8", "SHIFT-JIS", "GBK")) {
-                        throw McpInputException("zip_encoding supports UTF-8, SHIFT-JIS or GBK")
+                        throw mcpInputError("zip_encoding supports UTF-8, SHIFT-JIS or GBK")
                     }
                     putStr("zip_encoding", norm)
                 }
@@ -810,19 +835,19 @@ internal class McpProtocol(
                 "sz_level" -> {
                     val lv = rawVal.toIntOrNull()
                     if (lv == null || lv !in setOf(0, 3, 6, 9, 12)) {
-                        throw McpInputException("sz_level must be one of 0, 3, 6, 9, 12")
+                        throw mcpInputError("sz_level must be one of 0, 3, 6, 9, 12")
                     }
                     putInt(key, lv)
                 }
                 "compress_split_size" -> {
                     val bytes = rawVal.toLongOrNull()
-                    if (bytes == null || bytes < 0L) throw McpInputException("compress_split_size must be >= 0 bytes")
+                    if (bytes == null || bytes < 0L) throw mcpInputError("compress_split_size must be >= 0 bytes")
                     putLong(key, bytes)
                 }
                 "parallel_threads" -> {
                     val th = rawVal.toIntOrNull()
                     if (th == null || th !in setOf(0, 1, 2, 4, 8)) {
-                        throw McpInputException("parallel_threads must be one of 0 (auto), 1, 2, 4, 8")
+                        throw mcpInputError("parallel_threads must be one of 0 (auto), 1, 2, 4, 8")
                     }
                     putInt(key, th)
                     try {
@@ -886,6 +911,11 @@ internal class McpProtocol(
         .put("structuredContent", data).put("isError", failed)
 
     private fun envelope(id: Any) = JSONObject().put("jsonrpc", "2.0").put("id", id)
-    private fun error(id: Any, code: Int, message: String, status: Int = 200) =
-        McpResponse(status, envelope(id).put("error", JSONObject().put("code", code).put("message", message)))
+    private fun error(id: Any, code: Int, message: String, status: Int = 200): McpResponse {
+        val failure = recordMcpFailure("protocol", FailureCode.INVALID_RESULT, "JSON-RPC $code: $message")
+            .also(::rememberRequestLog)
+        return McpResponse(status, envelope(id).put("error", JSONObject()
+            .put("code", code).put("message", message)
+            .put("data", JSONObject().withMcpFailure(failure))))
+    }
 }

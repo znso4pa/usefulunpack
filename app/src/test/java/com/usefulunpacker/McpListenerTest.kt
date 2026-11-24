@@ -493,6 +493,9 @@ class McpListenerTest {
             assertEquals("INTERRUPTED", recovered.getString("state"))
             assertEquals(1, recovered.getInt("exitCode"))
             assertTrue(recovered.getString("error").contains("interrupted"))
+            assertEquals("INTERRUPTED", recovered.getString("errorCode"))
+            assertEquals("mcp_task_recovery", recovered.getString("stage"))
+            assertTrue(recovered.getString("logId").isNotEmpty())
 
             // 3. New task executes, updates journal on disk, and notifies active count transitions (1 -> 0).
             val job = call(listener, "run_uu", JSONObject()
@@ -504,6 +507,61 @@ class McpListenerTest {
 
             val persisted = JSONArray(journal.readText())
             assertEquals(2, persisted.length())
+        }
+    }
+
+    @Test fun errorsLinkAgentResponsesToLocalLogsWithoutSavingInput() {
+        val root = tmp.newFolder()
+        val dir = tmp.newFolder()
+        val previous = AppDiagnostics.store
+        val recorded = mutableSetOf<String>()
+        val store = DiagnosticStore(dir, onNewFailure = { id, feature ->
+            assertTrue(feature.startsWith("mcp_"))
+            recorded.add(id)
+        })
+        AppDiagnostics.store = store
+        try {
+            val workspace = McpWorkspace(root)
+            val worker = McpArchiveWorker(workspace)
+            val tasks = McpTasks { task, command -> worker.execute(task, command) }
+            McpListener(McpProtocol(workspace, tasks, "test"), tasks, root).use { listener ->
+                val denied = request(URI(listener.url), "", "tools/list")
+                assertEquals(401, denied.first)
+                assertEquals("mcp_transport", JSONObject(denied.second).getString("stage"))
+
+                val response = call(listener, "run_uut",
+                    JSONObject().put("script", "uu unknown private-script-marker"))
+                assertTrue(response.getBoolean("isError"))
+                val detail = response.getJSONObject("structuredContent")
+                assertEquals("INVALID_RESULT", detail.getString("errorCode"))
+                val logId = detail.getString("logId")
+                val log = call(listener, "task_log", JSONObject().put("taskId", logId))
+                    .getJSONObject("structuredContent").getString("log")
+                assertTrue(log.contains("step=mcp_run_uut"))
+                assertFalse(log.contains("private-script-marker"))
+                assertTrue(recorded.contains(logId))
+                val missing = call(listener, "read_text", JSONObject().put("path", "private-file-marker.txt"))
+                    .getJSONObject("structuredContent")
+                val missingLog = call(listener, "task_log", JSONObject().put("taskId", missing.getString("logId")))
+                    .getJSONObject("structuredContent").getString("log")
+                assertTrue(missingLog.contains("Text file does not exist"))
+                assertFalse(missingLog.contains("private-file-marker"))
+                store.flush()
+                val reopened = DiagnosticStore(dir)
+                try { assertEquals(logId, reopened.readEntry(logId)?.id) }
+                finally { reopened.close() }
+
+                val script = "uu cp missing.txt out.txt | wc > bad.txt\necho finished"
+                val receipt = call(listener, "run_uut", JSONObject().put("script", script)
+                    .put("keepGoing", true).put("waitMs", 3000))
+                    .getJSONObject("structuredContent")
+                assertEquals("PARTIAL_FAILURE", receipt.getString("state"))
+                assertEquals(receipt.getString("taskId"), receipt.getString("logId"))
+                assertFalse(root.resolve("bad.txt").exists())
+            }
+        } finally {
+            AppDiagnostics.store = previous
+            store.close()
         }
     }
 

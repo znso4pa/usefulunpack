@@ -853,6 +853,7 @@
     <string name="mcp_choose_error">共有ストレージの読み書き可能なフォルダを選んでください。</string>
     <string name="mcp_start_error">ローカルポートを起動できませんでした。</string>
     <string name="mcp_stop_error">ローカルポートを停止できませんでした。</string>
+    <string name="mcp_previous_error">前回の MCP でエラーが発生しました。ログを確認してください。</string>
     <string name="mcp_notif_starting">ローカル MCP を起動しています…</string>
     <string name="mcp_notif_running">待機中 %1$s · 実行中 %2$d 件</string>
 </resources>

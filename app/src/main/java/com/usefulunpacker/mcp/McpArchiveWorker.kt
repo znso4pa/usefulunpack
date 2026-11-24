@@ -46,11 +46,17 @@ internal class McpArchiveWorker(
                     if (r.returned) {
                         state.returned = true
                         if (r.exit != 0) {
-                            throw McpInputException(r.error.ifEmpty { "Script returned exit code ${r.exit}" })
+                            val detail = "Script returned exit code ${r.exit}"
+                            throw McpInputException(r.error.ifEmpty { detail }, FailureCode.COMMAND, detail)
                         }
-                    } else if (r.exit != 0 && !command.keepGoing) {
+                    } else if (r.exit != 0) {
                         val line = if (r.stoppedLine > 0) r.stoppedLine else stmtLine(command.uutStmt)
-                        throw McpInputException(r.error.ifEmpty { "Line $line: command failed (exit ${r.exit})" })
+                        if (!command.keepGoing) {
+                            val detail = "Command at line $line exited with code ${r.exit}"
+                            throw McpInputException("Line $line: ${r.error.ifEmpty { detail }}", FailureCode.COMMAND, detail)
+                        }
+                        AppDiagnostics.begin("uut_line_$line").fail(FailureCode.PARTIAL_FAILURE,
+                            "Command exited with code ${r.exit}; continuing as requested")
                     }
                 }
                 else -> {
@@ -59,7 +65,8 @@ internal class McpArchiveWorker(
                     task.recordExitCode(out.exitCode)
                     if (out.text.isNotEmpty()) task.appendStdout(out.text)
                     if (out.exitCode != 0) {
-                        throw McpInputException(out.text.ifEmpty { "uu ${command.name} failed (exit ${out.exitCode})" })
+                        throw McpInputException(out.text.ifEmpty { "uu ${command.name} failed (exit ${out.exitCode})" },
+                            FailureCode.COMMAND, "Command exited with code ${out.exitCode}")
                     }
                 }
             }
@@ -70,13 +77,13 @@ internal class McpArchiveWorker(
         val action = checkNotNull(command.action)
         val source = workspace.resolveFrom(cwd, command.source)
         val output = workspace.resolveFrom(cwd, command.output)
-        val parent = output.parentFile ?: throw McpInputException("Output has no parent directory")
-        if (!parent.isDirectory) throw McpInputException("Create the output's parent directory first")
+        val parent = output.parentFile ?: throw mcpInputError("Output has no parent directory")
+        if (!parent.isDirectory) throw mcpInputError("Create the output's parent directory first")
         if (source == output || output.toPath().startsWith(source.toPath())) {
-            throw McpInputException("The output must be outside the source")
+            throw mcpInputError("The output must be outside the source")
         }
         if (output.exists() && (!command.overwrite || !output.isFile)) {
-            throw McpInputException("The output already exists")
+            throw mcpInputError("The output already exists")
         }
 
         // Use the final filename for native formats whose keys depend on that name,
@@ -95,7 +102,7 @@ internal class McpArchiveWorker(
                 McpCommand.Action.EXTRACT -> extract(task, command, source, staged)
                 McpCommand.Action.PACK -> pack(task, command, source, staged, packFormat)
                 McpCommand.Action.COPY -> {
-                    if (!source.isFile) throw McpInputException("Copy requires a regular source file")
+                    if (!source.isFile) throw mcpInputError("Copy requires a regular source file")
                     source.inputStream().use { input ->
                         staged.outputStream().use { out ->
                             val buffer = ByteArray(64 * 1024)
@@ -111,7 +118,7 @@ internal class McpArchiveWorker(
             }
             val publishedRel = workspace.relativePath(output)
             task.publish(publishedRel) {
-                if (workspace.resolveFrom(cwd, command.output) != output) throw McpInputException("Output path changed")
+                if (workspace.resolveFrom(cwd, command.output) != output) throw mcpInputError("Output path changed")
                 if (command.overwrite) Files.move(staged.toPath(), output.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
                 else Files.move(staged.toPath(), output.toPath())
             }
@@ -125,22 +132,22 @@ internal class McpArchiveWorker(
         Files.newDirectoryStream(dir.toPath()).use { entries ->
             for (entry in entries) {
                 task.checkCancelled()
-                if (Files.isSymbolicLink(entry)) throw McpInputException("Archive directory contains a symbolic link")
+                if (Files.isSymbolicLink(entry)) throw mcpInputError("Archive directory contains a symbolic link")
             }
         }
     }
 
     private fun extract(task: McpTask, command: McpCommand, source: File, staged: File) {
-        if (!source.isFile) throw McpInputException("Archive input does not exist")
+        if (!source.isFile) throw mcpInputError("Archive input does not exist")
         val format = isVolumeFile(source) ?: detectFormat(source) ?: detectFormatByMagic(source)
-            ?: throw McpInputException("Unsupported archive format")
+            ?: throw mcpInputError("Unsupported archive format")
         if (format !in FORMAT_LABELS.keys) throw McpInputException("Unsupported archive format: $format")
         // Multi-volume sets and sidecar-keyed formats (XP3 cxdec, INT exe, LPK SCRIPT.LPK) read adjacent files.
         verifyNoSymlinksIn(source.parentFile!!, task)
         val selected = command.entries.joinToString("\n")
-        val effectivePrefs = prefs ?: throw McpInputException("Archive preferences unavailable")
+        val effectivePrefs = prefs ?: throw mcpInputError("Archive preferences unavailable")
         runArchive(task, format, extractAccessors(format)) {
-            if (!staged.mkdir()) throw McpInputException("Could not create extraction directory")
+            if (!staged.mkdir()) throw mcpInputError("Could not create extraction directory")
             val outcome = extractByFormat(format, source.path, staged.path, selected, effectivePrefs, command.password)
             task.checkCancelled()
             if (!outcome.counts.ok || outcome.counts.total <= 0) {
@@ -152,12 +159,12 @@ internal class McpArchiveWorker(
 
     private fun pack(task: McpTask, command: McpCommand, source: File, staged: File, format: String) {
         if (command.enc.isNotEmpty() && format != "xp3") {
-            throw McpInputException("Encryption scheme (-e) is only supported for XP3")
+            throw mcpInputError("Encryption scheme (-e) is only supported for XP3")
         }
         if (format in SINGLE_FILE_COMPRESS) {
             if (!source.isFile) throw McpInputException("Format $format requires a single source file")
             if (format == "ksd" && !source.name.endsWith(".txt", ignoreCase = true)) {
-                throw McpInputException("KSD packing requires a .txt source file")
+                throw mcpInputError("KSD packing requires a .txt source file")
             }
             if (mvExtMismatch(source, format)) {
                 throw McpInputException("Format $format requires a .${mvRequiredExt(format)} source file")
@@ -170,7 +177,7 @@ internal class McpArchiveWorker(
             source.parentFile?.let { verifyNoSymlinksIn(it, task) }
             staged.parentFile?.let { verifyNoSymlinksIn(it, task) }
         }
-        val effectivePrefs = prefs ?: throw McpInputException("Archive preferences unavailable")
+        val effectivePrefs = prefs ?: throw mcpInputError("Archive preferences unavailable")
         val level = defaultCompressLevel(effectivePrefs, format)
         runArchive(task, format, compressAccessors(format)) {
             val ok = compressDispatch(source, staged, format, level, command.password, effectivePrefs, splitOverride = 0, enc = command.enc)
@@ -520,22 +527,25 @@ internal class McpArchiveWorker(
                 val res = runStage(task, stage, state, depth)
                 text = res.text
                 exit = res.exitCode
+                if (exit != 0) break
             } else {
                 val filtered = UuCommands.pipeFilter(stage, text)
                     ?: return 2 to "Pipe stage only supports grep, head, tail, wc, sort"
                 text = filtered.first
                 exit = filtered.second
+                if (exit != 0) break
             }
         }
         if (redir != null) {
+            if (exit != 0) return exit to text
             val outFile = workspace.resolveFrom(state.cwd, redir.first)
-            val parent = outFile.parentFile ?: throw McpInputException("Output has no parent directory")
-            if (!parent.isDirectory) throw McpInputException("Create the output's parent directory first")
+            val parent = outFile.parentFile ?: throw mcpInputError("Output has no parent directory")
+            if (!parent.isDirectory) throw mcpInputError("Create the output's parent directory first")
             val payload = if (text.isEmpty()) "" else text + "\n"
             if (redir.second) outFile.appendText(payload, Charsets.UTF_8)
             else outFile.writeText(payload, Charsets.UTF_8)
             task.recordOutput(workspace.relativePath(outFile))
-            return exit to if (exit != 0) text else ""
+            return 0 to ""
         }
         if (text.isNotEmpty()) {
             if (sink != null) sink(text) else task.appendStdout(text)
@@ -573,7 +583,7 @@ internal class McpArchiveWorker(
                 val nextDir = when {
                     arg == null || arg.isEmpty() -> workspace.root
                     arg == ".." -> {
-                        if (state.cwd == workspace.root) throw McpInputException("Cannot cd above workspace root")
+                        if (state.cwd == workspace.root) throw mcpInputError("Cannot cd above workspace root")
                         state.cwd.parentFile ?: workspace.root
                     }
                     else -> workspace.resolveFrom(state.cwd, arg)

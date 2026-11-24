@@ -853,6 +853,7 @@
     <string name="mcp_choose_error">請選擇共享儲存空間中可讀寫的目錄。</string>
     <string name="mcp_start_error">無法啟動本機連接埠。</string>
     <string name="mcp_stop_error">無法停止本機連接埠。</string>
+    <string name="mcp_previous_error">上次開啟 MCP 有錯誤，請查看日誌。</string>
     <string name="mcp_notif_starting">正在啟動本機 MCP 服務…</string>
     <string name="mcp_notif_running">監聽中 %1$s · %2$d 個活動任務</string>
 </resources>

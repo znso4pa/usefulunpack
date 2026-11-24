@@ -36,6 +36,9 @@ internal class McpTask(
     private var completedSteps = 0
     private var exitCode = 0
     private var error: String? = null
+    private var restoredFailure: Pair<String, String>? = null
+    private var restoredLogId: String? = null
+    val logId: String get() = restoredLogId ?: taskId
     private var cleanupFailed = false
     internal var uutState: Any? = null
 
@@ -67,6 +70,17 @@ internal class McpTask(
                 for (i in 0 until arr.length()) {
                     arr.optString(i).takeIf { it.isNotEmpty() }?.let(task.outputs::add)
                 }
+            }
+            val code = obj.optString("errorCode")
+            val stage = obj.optString("stage")
+            if (wasActive) {
+                val failure = recordMcpFailure("task_recovery", FailureCode.INTERRUPTED,
+                    "A previous MCP task was interrupted when the host process terminated", ownChain = true)
+                task.restoredFailure = failure.code.name to failure.stage
+                task.restoredLogId = failure.logId
+            } else if (code.isNotEmpty() && stage.isNotEmpty()) {
+                task.restoredFailure = code to stage
+                task.restoredLogId = obj.optString("logId").takeIf { it.isNotEmpty() }
             }
             task.stdout.append(obj.optString("stdout"))
             task.doneLatch.countDown()
@@ -133,24 +147,28 @@ internal class McpTask(
         state = when {
             cancelled -> "CANCELLED"
             failure != null -> "FAILED"
+            trace?.chain?.failureStatus() == ChainStatus.FAILED -> "FAILED"
             cleanupFailed -> "PARTIAL_FAILURE"
-            else -> "SUCCESS"
+            else -> trace?.chain?.failureStatus()?.name ?: "SUCCESS"
         }
         if (state == "FAILED" && exitCode == 0) exitCode = 1
         when (state) {
             "CANCELLED" -> trace?.cancelled()
-            "FAILED" -> trace?.fail(FailureCode.COMMAND, failure ?: "Task failed")
+            "FAILED" -> if (trace?.chain?.firstFailure() == null) {
+                trace?.fail(FailureCode.COMMAND, "Task failed")
+            }
             "PARTIAL_FAILURE" -> Unit // Cleanup logged its own failure.
             else -> trace?.success()
         }
         progressSupplier = null
         uutState = null
         trace?.release()
-        doneLatch.countDown()
     }
 
+    fun markSettled() { doneLatch.countDown() }
+
     fun awaitDone(waitMs: Int) {
-        if (waitMs <= 0 || done()) return
+        if (waitMs <= 0) return
         try {
             doneLatch.await(waitMs.coerceAtMost(MCP_MAX_WAIT_MS).toLong(), TimeUnit.MILLISECONDS)
         } catch (_: InterruptedException) {
@@ -176,7 +194,11 @@ internal class McpTask(
                 if (summary.isNotEmpty()) put("summary", summary)
                 if (idempotencyKey.isNotEmpty()) put("idempotencyKey", idempotencyKey)
                 if (liveProgress != null) put("progress", liveProgress)
-                error?.let { put("error", it) }
+                error?.let { put("error", AppDiagnostics.redact(it)) }
+                val fault = trace?.chain?.firstFailure()?.let { (code, stage) -> code.name to stage } ?: restoredFailure
+                if (fault != null) {
+                    put("errorCode", fault.first).put("stage", fault.second).put("logId", logId)
+                }
             }
     }
 
@@ -194,6 +216,7 @@ internal class McpTasks(
     private val records = LinkedHashMap<String, McpTask>()
     private val worker = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(4))
     private var closed = false
+    @Volatile private var journalFailure: AppFailure? = null
 
     init {
         if (journalFile != null) {
@@ -204,37 +227,55 @@ internal class McpTasks(
 
     private fun cleanupStaleStaging(root: File?) {
         if (root == null || !root.isDirectory) return
-        root.listFiles()?.forEach { entry ->
-            val name = entry.name
-            if (name.startsWith(".uu-mcp-") && name != journalFile?.name) {
-                deleteOutputChecked(entry, recursive = entry.isDirectory)
-            }
+        val entries = root.listFiles()
+        if (entries == null) {
+            recordMcpFailure("staging_cleanup", FailureCode.CLEANUP, "Could not scan for interrupted task staging files")
+            return
+        }
+        val stale = entries.filter { it.name.startsWith(".uu-mcp-") && it.name != journalFile?.name }
+        if (stale.isEmpty()) return
+        val scope = AppDiagnostics.enterIntent("mcp_staging_cleanup",
+            newChain = AppDiagnostics.currentTrace()?.feature?.startsWith("mcp_") != true)
+        try {
+            stale.forEach { deleteOutputChecked(it, recursive = it.isDirectory) }
+        } finally {
+            AppDiagnostics.leaveIntent(scope)
         }
     }
 
     @Synchronized private fun loadJournal() {
         val file = journalFile ?: return
-        if (!file.isFile) return
+        if (!file.exists()) return
         try {
             val arr = JSONArray(file.readText(Charsets.UTF_8))
             var changed = false
+            var invalidEntries = 0
             for (i in 0 until arr.length()) {
-                val obj = arr.optJSONObject(i) ?: continue
-                val restored = McpTask.fromJournal(obj) ?: continue
+                val obj = arr.optJSONObject(i)
+                val restored = obj?.let { McpTask.fromJournal(it) }
+                if (obj == null || restored == null) {
+                    invalidEntries++
+                    continue
+                }
                 if (obj.optString("state") != restored.snapshot().optString("state")) changed = true
                 records[restored.taskId] = restored
             }
+            if (invalidEntries > 0) {
+                journalFailure = recordMcpFailure("journal_read", FailureCode.INVALID_RESULT,
+                    "Skipped $invalidEntries invalid task history records", ownChain = true)
+            }
             if (changed) persistJournalLocked()
-        } catch (_: Exception) {
-            // Corrupt or unreadable journal should not block listener startup.
+        } catch (e: Exception) {
+            journalFailure = recordMcpFailure("journal_read", FailureCode.IO,
+                "Task history could not be loaded", e.javaClass.simpleName, ownChain = true)
         }
     }
 
     @Synchronized private fun persistJournalLocked() {
         val file = journalFile ?: return
         val parent = file.parentFile ?: return
-        if (!parent.isDirectory) return
         try {
+            if (!parent.isDirectory) throw java.io.IOException("Journal directory is unavailable")
             val arr = JSONArray()
             records.values.forEach { arr.put(it.toJournalJson()) }
             val temp = Files.createTempFile(parent.toPath(), ".uu-mcp-journal-", ".tmp").toFile()
@@ -242,16 +283,20 @@ internal class McpTasks(
                 temp.writeText(arr.toString(), Charsets.UTF_8)
                 Files.move(temp.toPath(), file.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
             } finally {
-                deleteOutputChecked(temp)
+                Files.deleteIfExists(temp.toPath())
             }
-        } catch (_: Exception) {
-            // Best-effort persistence; failures do not abort running tasks.
+            if (journalFailure?.stage?.endsWith("journal_write") == true) journalFailure = null
+        } catch (e: Exception) {
+            // Keep the worker usable and report each continuous storage failure once.
+            if (journalFailure?.stage?.endsWith("journal_write") != true) {
+                journalFailure = recordMcpFailure("journal_write", FailureCode.IO,
+                    "Task history could not be saved", e.javaClass.simpleName, ownChain = true)
+            }
         }
     }
 
-    private fun notifyActive() {
-        val count = synchronized(this) { records.values.count { !it.done() } }
-        onActiveCountChanged?.invoke(count)
+    @Synchronized private fun notifyActive() {
+        onActiveCountChanged?.invoke(records.values.count { !it.done() })
     }
 
     fun submit(
@@ -262,12 +307,12 @@ internal class McpTasks(
     ): JSONObject {
         val cleanKey = idempotencyKey.trim()
         if (cleanKey.length > 128 || cleanKey.any { it.isISOControl() }) {
-            throw McpInputException("idempotencyKey must be at most 128 printable characters")
+            throw mcpInputError("idempotencyKey must be at most 128 printable characters")
         }
         val secrets = commands.flatMap { it.secrets + listOfNotNull(it.password.takeIf(String::isNotEmpty)) }.distinct()
         val (fingerprint, summary) = fingerprintAndSummarize(commands, script, secrets)
         val (task, deduplicated) = synchronized(this) {
-            if (closed) throw McpInputException("MCP listener is stopping")
+            if (closed) throw mcpInputError("MCP listener is stopping")
             // 1. Explicit idempotencyKey deduplicates across both active and finished tasks.
             val byKey = if (cleanKey.isNotEmpty()) {
                 records.values.lastOrNull { it.idempotencyKey == cleanKey }
@@ -289,19 +334,22 @@ internal class McpTasks(
                 summary = summary,
             )
             records[trace.id] = fresh
-            try {
+            val rejected = try {
                 worker.execute(QueuedTask(fresh, commands))
-            } catch (e: RejectedExecutionException) {
+                false
+            } catch (_: RejectedExecutionException) {
+                trace.fail(FailureCode.COMMAND, "The MCP task queue is full")
                 fresh.finish("The MCP task queue is full")
+                true
             }
             while (records.size > 32) {
                 val oldest = records.entries.firstOrNull { it.value.done() } ?: break
                 records.remove(oldest.key)
             }
             persistJournalLocked()
+            if (rejected) fresh.markSettled() else notifyActive()
             fresh to false
         }
-        if (!deduplicated) notifyActive()
         if (waitMs > 0) task.awaitDone(waitMs)
         return task.snapshot(deduplicated = deduplicated)
     }
@@ -343,13 +391,16 @@ internal class McpTasks(
                                 synchronized(this) { persistJournalLocked() }
                                 step.success()
                             } catch (e: McpInputException) {
-                                step.fail(FailureCode.INVALID_RESULT, e.message ?: "Invalid input")
+                                val line = Regex("^Line (\\d+):").find(e.message.orEmpty())?.groupValues?.get(1)
+                                val detail = e.diagnosticDetail
+                                    ?: if (line == null) "Command rejected or failed" else "UUT command failed at line $line"
+                                step.fail(e.errorCode, detail)
                                 throw e
                             } catch (e: CancellationException) {
                                 step.cancelled()
                                 throw e
                             } catch (e: Exception) {
-                                step.fail(FailureCode.IO, "Command operation failed")
+                                step.fail(FailureCode.IO, "Command operation failed (${e.javaClass.simpleName})")
                                 throw e
                             } catch (e: LinkageError) {
                                 step.fail(FailureCode.UNSUPPORTED, "Native archive library unavailable")
@@ -368,7 +419,7 @@ internal class McpTasks(
                 } finally {
                     task.finish(failure)
                     synchronized(this) { persistJournalLocked() }
-                    notifyActive()
+                    try { notifyActive() } finally { task.markSettled() }
                 }
             }
         } finally {
@@ -376,21 +427,28 @@ internal class McpTasks(
         }
     }
 
+    fun historyFailure(): AppFailure? = journalFailure
+
     @Synchronized fun get(id: String): McpTask =
-        records[id] ?: throw McpInputException("Unknown or expired task ID")
+        records[id] ?: throw mcpInputError("Unknown or expired task ID")
+
+    @Synchronized fun canReadLog(id: String): Boolean =
+        id in records || records.values.any { it.logId == id }
 
     fun cancel(id: String): JSONObject {
         val task = get(id)
-        if (task.cancel()) worker.queue.removeIf { it is QueuedTask && it.task === task }
+        val queued = task.cancel()
+        if (queued) worker.queue.removeIf { it is QueuedTask && it.task === task }
         synchronized(this) { persistJournalLocked() }
-        notifyActive()
+        try { notifyActive() } finally { if (queued) task.markSettled() }
         return task.snapshot()
     }
 
     @Synchronized override fun close() {
         closed = true
-        records.values.forEach { it.cancel() }
+        val queued = records.values.filter { it.cancel() }
         persistJournalLocked()
+        queued.forEach { it.markSettled() }
         worker.queue.clear()
         worker.shutdown()
     }

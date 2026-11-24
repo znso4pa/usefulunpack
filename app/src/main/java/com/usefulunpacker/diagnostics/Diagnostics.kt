@@ -7,7 +7,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.CancellationException
 
-enum class FailureCode { IO, INVALID_RESULT, PARTIAL_FAILURE, UNSUPPORTED, CLEANUP, COMMAND, UNEXPECTED }
+enum class FailureCode { IO, INVALID_RESULT, PARTIAL_FAILURE, UNSUPPORTED, CLEANUP, COMMAND, UNEXPECTED, INTERRUPTED }
 
 data class AppFailure(val code: FailureCode, val stage: String, val detail: String, val logId: String)
 data class DiagnosticEntry(val id: String, val feature: String, val text: String, val failed: Boolean, val live: Boolean = true) {
@@ -21,6 +21,7 @@ class DiagnosticStore(
     private val directory: File,
     private val maxFiles: Int = 40,
     private val maxChars: Int = 64 * 1024,
+    private val onNewFailure: (String, String) -> Unit = { _, _ -> },
     private val onStorageFailure: (String, String?) -> Unit = { _, _ -> },
 ) {
     init { require(maxFiles > 0 && maxChars > 0) }
@@ -40,6 +41,7 @@ class DiagnosticStore(
             val marker = "[earlier diagnostic entries truncated]\n".take(maxChars)
             val text = if (combined.length <= maxChars) combined else marker + combined.takeLast(maxChars - marker.length)
             entries[id] = DiagnosticEntry(id, stage, text, failed || previous?.failed == true)
+            if (failed && previous?.failed != true) onNewFailure(id, stage)
             while (entries.size > maxFiles) {
                 val expired = entries.keys.first()
                 entries.remove(expired); dirty.remove(expired)
@@ -88,17 +90,7 @@ class DiagnosticStore(
         val memory = synchronized(entries) { entries.toMap() }
         val disk = try {
             directory.listFiles { f -> f.extension == "log" }?.sortedByDescending { it.lastModified() }?.take(maxFiles)?.map { f ->
-                val text = f.inputStream().reader(Charsets.UTF_8).use { reader ->
-                    val chars = CharArray(maxChars + 256)
-                    var count = 0
-                    while (count < chars.size) {
-                        val n = reader.read(chars, count, chars.size - count)
-                        if (n < 0) break
-                        count += n
-                    }
-                    String(chars, 0, count)
-                }
-                DiagnosticEntry(f.nameWithoutExtension, text.lineSequence().firstOrNull()?.removePrefix("feature=")?.removePrefix("stage=") ?: "", text, text.lineSequence().drop(1).firstOrNull() == "failed=true", live = false)
+                readDiskEntry(f)
             } ?: emptyList()
         } catch (e: Exception) {
             storageFailed(e)
@@ -107,7 +99,34 @@ class DiagnosticStore(
         return (memory.values.reversed() + disk).distinctBy { it.id }.take(maxFiles)
     }
 
-    internal fun current(id: String): DiagnosticEntry? = synchronized(entries) { entries[id] }
+    private fun readDiskEntry(file: File): DiagnosticEntry {
+        val text = file.inputStream().reader(Charsets.UTF_8).use { reader ->
+            val chars = CharArray(maxChars + 256)
+            var count = 0
+            while (count < chars.size) {
+                val n = reader.read(chars, count, chars.size - count)
+                if (n < 0) break
+                count += n
+            }
+            String(chars, 0, count)
+        }
+        val first = text.lineSequence().firstOrNull().orEmpty()
+        return DiagnosticEntry(file.nameWithoutExtension, first.removePrefix("feature=").removePrefix("stage="),
+            text, text.lineSequence().drop(1).firstOrNull() == "failed=true", live = false)
+    }
+
+    /** A restarted client can fetch a single retained chain without reading all logs. */
+    internal fun readEntry(id: String): DiagnosticEntry? {
+        if (!id.matches(Regex("[A-Za-z0-9_-]{1,80}"))) return null
+        synchronized(entries) { entries[id] }?.let { return it }
+        val file = File(directory, "$id.log")
+        return try {
+            if (file.isFile) readDiskEntry(file) else null
+        } catch (e: IOException) {
+            storageFailed(e, id)
+            throw e
+        }
+    }
 
     fun flush() { writer.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS) }
     fun close() { flush(); writer.shutdown() }
@@ -126,11 +145,19 @@ internal class IntentChain(val id: String, val feature: String) {
     private var cleanupFailed = false
     private val errorCodes = LinkedHashSet<FailureCode>()
     private val failedSteps = LinkedHashSet<String>()
+    private var firstFailure: Pair<FailureCode, String>? = null
+    @Synchronized fun firstFailure(): Pair<FailureCode, String>? = firstFailure
+    @Synchronized fun failureStatus(): ChainStatus? = when {
+        failed -> ChainStatus.FAILED
+        partial || cleanupFailed -> ChainStatus.PARTIAL_FAILURE
+        else -> null
+    }
     @Synchronized fun isEnded(): Boolean = ended
     @Synchronized fun isCancelled(): Boolean = cancelled
     @Synchronized fun onlyCleanupFailed(): Boolean = cleanupFailed && !failed
     @Synchronized fun retain() { refs.incrementAndGet() }
     @Synchronized fun failure(code: FailureCode, stage: String) {
+        if (firstFailure == null) firstFailure = code to stage
         errorCodes.add(code)
         if (failedSteps.size < 16) failedSteps.add(stage)
         when (code) {
@@ -185,7 +212,8 @@ class OperationTrace internal constructor(
         chain?.failure(code, stage)
         val state = if (code == FailureCode.PARTIAL_FAILURE) "PARTIAL_FAILURE" else "FAILED"
         event("STEP_END state=$state elapsed_ms=${(System.nanoTime() - started) / 1_000_000} code=$code: ${safe(detail)}\n${safe(cause?.stackTraceToString().orEmpty())}", true)
-        if (notifyUser) AppDiagnostics.publish(failure)
+        // MCP returns the failure to the caller and uses one persistent reminder in Settings.
+        if (notifyUser && !feature.startsWith("mcp_")) AppDiagnostics.publish(failure)
         return failure
     }
     fun cancelled() { chain?.cancel(); event("STEP_END state=CANCELLED elapsed_ms=${(System.nanoTime() - started) / 1_000_000} code=CANCELLED") }

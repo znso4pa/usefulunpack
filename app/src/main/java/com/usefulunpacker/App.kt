@@ -12,7 +12,10 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         initTokens(this)
-        AppDiagnostics.store = DiagnosticStore(java.io.File(filesDir, "logs"), onStorageFailure = { detail, id ->
+        val prefs = getSharedPreferences("bm", MODE_PRIVATE)
+        AppDiagnostics.store = DiagnosticStore(java.io.File(filesDir, "logs"), onNewFailure = { id, feature ->
+            if (feature.startsWith("mcp_")) prefs.edit().putString(PREF_MCP_FAILURE, id).apply()
+        }, onStorageFailure = { detail, id ->
             // Publish directly: trying to write another log here would recurse on a full disk.
             AppDiagnostics.publish(AppFailure(FailureCode.IO, "diagnostic-storage", detail, id ?: "application"))
         })

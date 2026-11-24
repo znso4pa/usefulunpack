@@ -37,11 +37,13 @@ internal class DiagnosticsUi(private val activity: MainActivity) {
     }
 }
 
-internal fun MainActivity.showDiagnostics(selectedId: String? = null, feature: String? = null) {
+internal fun MainActivity.showDiagnostics(selectedId: String? = null, feature: String? = null, mcpOnly: Boolean = false) {
     thread {
         val store = AppDiagnostics.store
         val allEntries = store?.snapshot().orEmpty()
-        val entries = if (feature == null) allEntries else allEntries.filter { it.feature == feature }
+        val entries = allEntries.filter {
+            (feature == null || it.feature == feature) && (!mcpOnly || it.feature.startsWith("mcp_"))
+        }
         val groups = entries.groupBy { it.feature }.toList()
         runFeatureOnUiThread {
             if (isFinishing || isDestroyed) return@runFeatureOnUiThread

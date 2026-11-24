@@ -73,12 +73,13 @@ object UuNotice {
         AppDiagnostics.begin("user_feedback").fail(if (cleanupOnly) FailureCode.PARTIAL_FAILURE else FailureCode.INVALID_RESULT, text.toString())
         return makeText(context, if (cleanupOnly) context.getText(R.string.diagnostics_cleanup_failed) else text, duration)
     }
-    fun makeText(context: Context, text: CharSequence, duration: Int): Toast {
+    fun makeText(context: Context, text: CharSequence, duration: Int, logId: String? = null): Toast {
         AppDiagnostics.notice(text.toString())
-        val id = AppDiagnostics.currentTrace()?.takeIf { it.chain != null }?.id
+        val id = logId ?: AppDiagnostics.currentTrace()?.takeIf { it.chain != null }?.id
         return Toast.makeText(context, if (id == null) text else "[$id] $text", duration)
     }
-    fun makeText(context: Context, text: Int, duration: Int): Toast = makeText(context, context.getText(text), duration)
+    fun makeText(context: Context, text: Int, duration: Int, logId: String? = null): Toast =
+        makeText(context, context.getText(text), duration, logId)
     fun persistent(anchor: View, message: CharSequence, actionLabel: Int, action: () -> Unit) {
         com.google.android.material.snackbar.Snackbar.make(anchor, message, com.google.android.material.snackbar.Snackbar.LENGTH_INDEFINITE)
             .setActionTextColor(anchor.context.getColor(R.color.accent))

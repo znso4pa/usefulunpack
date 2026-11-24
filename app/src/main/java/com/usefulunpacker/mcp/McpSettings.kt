@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Environment
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import java.io.File
 import org.json.JSONObject
 
@@ -35,11 +36,28 @@ internal fun savedMcpWorkspace(prefs: SharedPreferences): File? =
     prefs.getString(PREF_MCP_WORKSPACE, null)?.takeIf { it.isNotBlank() }?.let(::File)?.takeIf { it.isDirectory }
 
 internal fun MainActivity.showLocalMcp() {
+    val lastFailure = prefs.getString(PREF_MCP_FAILURE, null)
+    if (lastFailure != null && lastFailure != prefs.getString(PREF_MCP_FAILURE_SHOWN, null)) {
+        UuNotice.makeText(this, R.string.mcp_previous_error, Toast.LENGTH_LONG, logId = lastFailure).show()
+        prefs.edit().putString(PREF_MCP_FAILURE_SHOWN, lastFailure).apply()
+    }
     val listener = McpForegroundService.currentListener?.takeIf { it.running }
     if (listener == null) {
         val remembered = savedMcpWorkspace(prefs)
+        val details = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val gutter = resources.getDimensionPixelSize(R.dimen.space_xl)
+            setPadding(gutter, gutter / 2, gutter, gutter / 2)
+            addView(TextView(context).apply {
+                UuMetrics.text(this)
+                text = getString(R.string.mcp_explain, DEFAULT_MCP_WORKSPACE)
+            })
+            if (lastFailure != null) addView(UuActionRow(context).apply {
+                bind(getString(R.string.diagnostics_view), onClick = { showDiagnostics(lastFailure, mcpOnly = true) })
+            })
+        }
         UuDialogBuilder(this).setTitle(R.string.mcp_title)
-            .setMessage(getString(R.string.mcp_explain, DEFAULT_MCP_WORKSPACE))
+            .setView(UuScrollView(this).apply { addView(details) })
             .setNegativeButton(R.string.action_close, null)
             .setNeutralButton(R.string.mcp_choose) { _, _ ->
                 showFolderPicker(this, remembered ?: Environment.getExternalStorageDirectory()) { directory ->
@@ -61,6 +79,9 @@ internal fun MainActivity.showLocalMcp() {
             text = getString(R.string.mcp_endpoint, listener.url, listener.directory.path) +
                 "\nADB: adb forward tcp:${listener.port} tcp:${listener.port}"
             setTextIsSelectable(true)
+        })
+        if (lastFailure != null) addView(UuActionRow(context).apply {
+            bind(getString(R.string.diagnostics_view), onClick = { showDiagnostics(lastFailure, mcpOnly = true) })
         })
         addView(UuActionRow(context).apply {
             bind(getString(R.string.mcp_copy), onClick = {
@@ -124,10 +145,26 @@ internal fun MainActivity.startLocalMcp(directory: File? = null, showDialogOnSta
         }
     }
     McpForegroundService.addStateListener(stateCallback)
-    McpForegroundService.start(this, directory ?: savedMcpWorkspace(prefs))
+    try {
+        McpForegroundService.start(this, directory ?: savedMcpWorkspace(prefs))
+    } catch (e: Exception) {
+        McpForegroundService.removeStateListener(stateCallback)
+        localMcpStarting = false
+        val failure = recordMcpFailure("start", FailureCode.IO, "Could not launch the MCP foreground service", e.javaClass.simpleName)
+        UuNotice.persistent(findViewById(R.id.root), "${getString(R.string.mcp_start_error)} [${failure.logId}]", R.string.diagnostics_view) {
+            showDiagnostics(failure.logId, mcpOnly = true)
+        }
+    }
 }
 
 internal fun MainActivity.stopLocalMcp(clearEnabledPref: Boolean = true) {
     if (clearEnabledPref) prefs.edit().putBoolean(PREF_MCP_ENABLED, false).apply()
-    McpForegroundService.stop(this)
+    try {
+        McpForegroundService.stop(this)
+    } catch (e: Exception) {
+        val failure = recordMcpFailure("stop", FailureCode.IO, "Could not stop the MCP foreground service", e.javaClass.simpleName)
+        UuNotice.persistent(findViewById(R.id.root), "${getString(R.string.mcp_stop_error)} [${failure.logId}]", R.string.diagnostics_view) {
+            showDiagnostics(failure.logId, mcpOnly = true)
+        }
+    }
 }

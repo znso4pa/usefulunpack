@@ -74,16 +74,25 @@ internal class McpForegroundService : Service() {
         if (intent?.action == ACTION_STOP) {
             getSharedPreferences("bm", MODE_PRIVATE).edit().putBoolean(PREF_MCP_ENABLED, false).apply()
             stopListener()
-            stopForegroundCompat()
-            stopSelf()
+            runFeatureStop()
             return START_NOT_STICKY
         }
 
-        ensureChannel()
-        val initialText = currentListener?.let {
-            getString(R.string.mcp_notif_running, it.url, 0)
-        } ?: getString(R.string.mcp_notif_starting)
-        startForegroundCompat(buildNotification(initialText))
+        try {
+            ensureChannel()
+            val initialText = currentListener?.let {
+                getString(R.string.mcp_notif_running, it.url, 0)
+            } ?: getString(R.string.mcp_notif_starting)
+            startForegroundCompat(buildNotification(initialText))
+        } catch (e: Exception) {
+            val failure = recordMcpFailure("start_foreground", FailureCode.IO,
+                "Could not start the MCP foreground notification", e.javaClass.simpleName)
+            lastStartError = getString(R.string.mcp_start_error)
+            lastStartTraceId = failure.logId
+            notifyStateChanged()
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         val explicitDir = intent?.getStringExtra(EXTRA_WORKSPACE)?.takeIf { it.isNotBlank() }?.let(::File)
         startListenerAsync(explicitDir)
@@ -149,8 +158,7 @@ internal class McpForegroundService : Service() {
                     lastStartTraceId = scope.trace.id
                     starting = false
                     notifyStateChanged()
-                    stopForegroundCompat()
-                    stopSelf()
+                    runFeatureStop()
                 }
             }
         } finally {
@@ -158,10 +166,23 @@ internal class McpForegroundService : Service() {
         }
     }
 
+    private fun runFeatureStop() {
+        try { stopForegroundCompat() }
+        catch (e: Exception) {
+            recordMcpFailure("stop_foreground", FailureCode.CLEANUP,
+                "Could not remove the MCP foreground notification", e.javaClass.simpleName)
+        } finally { stopSelf() }
+    }
+
     private fun onActiveTaskCountChanged(activeCount: Int) {
-        updateWakeLock(activeCount > 0)
-        val listener = currentListener ?: return
-        updateNotification(getString(R.string.mcp_notif_running, listener.url, activeCount))
+        try {
+            updateWakeLock(activeCount > 0)
+            val listener = currentListener ?: return
+            updateNotification(getString(R.string.mcp_notif_running, listener.url, activeCount))
+        } catch (e: Exception) {
+            recordMcpFailure("background_status", FailureCode.IO,
+                "Could not update MCP background status", e.javaClass.simpleName)
+        }
     }
 
     @Synchronized private fun updateWakeLock(acquire: Boolean) {
@@ -182,11 +203,17 @@ internal class McpForegroundService : Service() {
     }
 
     private fun stopListener() {
-        updateWakeLock(false)
+        try { updateWakeLock(false) }
+        catch (e: Exception) {
+            recordMcpFailure("stop_wake_lock", FailureCode.CLEANUP, "Could not release the MCP wake lock", e.javaClass.simpleName)
+        }
         val listener = currentListener
         currentListener = null
         if (listener != null) {
-            observedAttempt("mcp_stop") { listener.close() }
+            try { listener.close() }
+            catch (e: Exception) {
+                recordMcpFailure("stop_listener", FailureCode.CLEANUP, "Could not close the MCP listener", e.javaClass.simpleName)
+            }
         }
         notifyStateChanged()
     }

@@ -32,8 +32,10 @@ internal class McpListener(
             if (preferredPort in 1..65535) {
                 try {
                     bind(InetSocketAddress(loopback, preferredPort), 8)
-                } catch (_: IOException) {
+                } catch (e: IOException) {
                     bind(InetSocketAddress(loopback, 0), 8)
+                    recordMcpFailure("listen_port", FailureCode.PARTIAL_FAILURE,
+                        "Preferred loopback port unavailable; using port $localPort", e.javaClass.simpleName)
                 }
             } else {
                 bind(InetSocketAddress(loopback, 0), 8)
@@ -59,7 +61,7 @@ internal class McpListener(
             val client = try { server.accept() }
             catch (e: IOException) {
                 if (!server.isClosed) {
-                    AppDiagnostics.begin("mcp_listener").fail(FailureCode.IO, "Local MCP listener stopped", e)
+                    recordMcpFailure("listener", FailureCode.IO, "Local MCP listener stopped", e.javaClass.simpleName)
                     close()
                 }
                 return
@@ -77,8 +79,16 @@ internal class McpListener(
                             deadlines.schedule({ client.close() }, 20, TimeUnit.SECONDS)
                         }
                         try { client.use { serve(it) } }
-                        catch (_: SocketTimeoutException) { /* An idle client timed out. */ }
-                        catch (_: IOException) { /* Client disconnected, including listener shutdown. */ }
+                        catch (e: SocketTimeoutException) {
+                            if (!server.isClosed) recordMcpFailure("transport", FailureCode.IO, "Request read timed out")
+                        } catch (e: IOException) {
+                            // EOF before a request and normal listener shutdown are not failures.
+                            if (!server.isClosed) recordMcpFailure("transport", FailureCode.IO,
+                                "HTTP exchange interrupted", e.javaClass.simpleName)
+                        } catch (e: Exception) {
+                            if (!server.isClosed) recordMcpFailure("transport", FailureCode.UNEXPECTED,
+                                "Could not process HTTP request", e.javaClass.simpleName)
+                        }
                         finally {
                             timeout.cancel(false)
                             synchronized(sockets) { sockets.remove(client) }
@@ -87,6 +97,7 @@ internal class McpListener(
                 } catch (_: RejectedExecutionException) {
                     sockets.remove(client)
                     client.close()
+                    recordMcpFailure("transport", FailureCode.IO, "MCP connection queue is full")
                 }
             }
         }
@@ -101,10 +112,13 @@ internal class McpListener(
             socket.soTimeout = remaining.toInt()
             return reader.read()
         }
+        val first = read()
+        if (first < 0) return
+        var firstByte = first
         fun line(): String {
             val chars = StringBuilder()
             while (chars.length < 4096) {
-                val byte = read()
+                val byte = if (firstByte >= 0) firstByte.also { firstByte = -1 } else read()
                 if (byte == 13 && read() == 10) return chars.toString()
                 if (byte !in 32..126 && byte != 9) throw InvalidHttp(400)
                 chars.append(byte.toChar())
@@ -156,24 +170,13 @@ internal class McpListener(
             if (denied != null) throw InvalidHttp(denied)
             protocol.handle(body)
         } catch (e: InvalidHttp) {
-            McpResponse(e.status)
+            if (e.status == 405) McpResponse(405) // An optional SSE request can be declined.
+            else protocol.transportError(e.status, httpReason(e.status))
         }
         val payload = response.body?.toString()?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
         socket.getOutputStream().apply {
-            val reason = when (response.status) {
-                200 -> "OK"
-                202 -> "Accepted"
-                400 -> "Bad Request"
-                401 -> "Unauthorized"
-                403 -> "Forbidden"
-                404 -> "Not Found"
-                405 -> "Method Not Allowed"
-                413 -> "Content Too Large"
-                415 -> "Unsupported Media Type"
-                else -> "Request Header Fields Too Large"
-            }
             val headers = buildString {
-                append("HTTP/1.1 ${response.status} $reason\r\nConnection: close\r\nCache-Control: no-store\r\n")
+                append("HTTP/1.1 ${response.status} ${httpReason(response.status)}\r\nConnection: close\r\nCache-Control: no-store\r\n")
                 if (response.status == 401) append("WWW-Authenticate: Bearer\r\n")
                 if (response.status == 405) append("Allow: POST\r\n")
                 if (response.body != null) append("Content-Type: application/json; charset=utf-8\r\n")
@@ -186,13 +189,31 @@ internal class McpListener(
         socket.shutdownOutput()
     }
 
+    private fun httpReason(status: Int): String = when (status) {
+        200 -> "OK"
+        202 -> "Accepted"
+        400 -> "Bad Request"
+        401 -> "Unauthorized"
+        403 -> "Forbidden"
+        404 -> "Not Found"
+        405 -> "Method Not Allowed"
+        413 -> "Content Too Large"
+        415 -> "Unsupported Media Type"
+        else -> "Request Header Fields Too Large"
+    }
+
     override fun close() {
         try {
             synchronized(sockets) {
                 if (server.isClosed) return
                 try {
                     server.close()
-                    sockets.forEach { socket -> observedAttempt("mcp_socket_close") { socket.close() } }
+                    sockets.forEach { socket ->
+                        try { socket.close() }
+                        catch (e: IOException) {
+                            recordMcpFailure("socket_close", FailureCode.CLEANUP, "Could not close MCP connection", e.javaClass.simpleName)
+                        }
+                    }
                 } finally {
                     sockets.clear()
                     workers.shutdownNow()

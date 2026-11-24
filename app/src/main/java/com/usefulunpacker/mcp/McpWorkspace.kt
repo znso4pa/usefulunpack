@@ -4,30 +4,38 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 
-internal class McpInputException(message: String) : IllegalArgumentException(message)
+internal class McpInputException(
+    message: String,
+    val errorCode: FailureCode = FailureCode.INVALID_RESULT,
+    val diagnosticDetail: String? = null,
+) : IllegalArgumentException(message)
+
+/** Only use with server-defined text and metadata. Client input belongs in the response. */
+internal fun mcpInputError(detail: String, code: FailureCode = FailureCode.INVALID_RESULT) =
+    McpInputException(detail, code, diagnosticDetail = detail)
 
 internal const val DEFAULT_MCP_WORKSPACE = "UsefulUnpack-MCP"
 
 internal fun openMcpWorkspace(sharedStorage: File, selected: File?): McpWorkspace {
     val storage = sharedStorage.canonicalFile
-    if (!storage.isDirectory) throw McpInputException("Shared storage is not available")
+    if (!storage.isDirectory) throw mcpInputError("Shared storage is not available")
     val chosen = selected?.canonicalFile ?: storage
     if (!chosen.toPath().startsWith(storage.toPath())) {
-        throw McpInputException("Choose a subdirectory of shared storage")
+        throw mcpInputError("Choose a subdirectory of shared storage")
     }
     val directory = if (chosen == storage) {
         // Selecting the storage root grants access to the dedicated child only.
         McpWorkspace(storage).resolve(DEFAULT_MCP_WORKSPACE).also {
             if (!it.isDirectory && !it.mkdir() && !it.isDirectory) {
-                throw McpInputException("Cannot create the default workspace directory")
+                throw mcpInputError("Cannot create the default workspace directory")
             }
             if (Files.isSymbolicLink(it.toPath()) || it.canonicalFile != it) {
-                throw McpInputException("The default workspace must be a real directory")
+                throw mcpInputError("The default workspace must be a real directory")
             }
         }
     } else chosen
     if (!directory.isDirectory || !directory.canRead() || !directory.canWrite()) {
-        throw McpInputException("Workspace must be a readable and writable directory")
+        throw mcpInputError("Workspace must be a readable and writable directory")
     }
     return McpWorkspace(directory)
 }
@@ -37,18 +45,18 @@ internal class McpWorkspace(directory: File) {
     val root: File = directory.canonicalFile.also { require(it.isDirectory) }
 
     fun resolve(path: String, allowRoot: Boolean = false): File {
-        if (root.canonicalFile != root || !root.isDirectory) throw McpInputException("Workspace is unavailable")
+        if (root.canonicalFile != root || !root.isDirectory) throw mcpInputError("Workspace is unavailable")
         if (allowRoot && path == ".") return root
         val parts = path.split('/')
         if (path.length > 1024 || parts.any { it.isEmpty() || it == "." || it == ".." } ||
             path.any { it == '\\' || it.isISOControl() }) {
-            throw McpInputException("Use a relative workspace path without parent segments")
+            throw mcpInputError("Use a relative workspace path without parent segments")
         }
         var file = root
         for (part in parts) {
             file = File(file, part)
             if (Files.isSymbolicLink(file.toPath()) || file.canonicalFile != file) {
-                throw McpInputException("Symbolic links are outside the supported workspace")
+                throw mcpInputError("Symbolic links are outside the supported workspace")
             }
         }
         return file
@@ -56,33 +64,33 @@ internal class McpWorkspace(directory: File) {
 
     /** Resolves [path] against [cwd] (which must itself lie inside [root]), enforcing sandbox boundaries. */
     fun resolveFrom(cwd: File, path: String): File {
-        if (root.canonicalFile != root || !root.isDirectory) throw McpInputException("Workspace is unavailable")
+        if (root.canonicalFile != root || !root.isDirectory) throw mcpInputError("Workspace is unavailable")
         if (path.length > 1024 || path.any { it == '\\' || it.isISOControl() }) {
-            throw McpInputException("Use a relative workspace path without parent segments")
+            throw mcpInputError("Use a relative workspace path without parent segments")
         }
         if (path.startsWith("/")) {
             if (path == root.path) return root
             if (path.startsWith(root.path + "/")) {
                 return resolve(path.removePrefix(root.path + "/"), allowRoot = true)
             }
-            throw McpInputException("Use a relative workspace path without parent segments")
+            throw mcpInputError("Use a relative workspace path without parent segments")
         }
         val base = when {
             cwd == root -> root
             cwd.path.startsWith(root.path + "/") -> resolve(cwd.path.removePrefix(root.path + "/"), allowRoot = true)
-            else -> throw McpInputException("Current directory is outside the MCP workspace")
+            else -> throw mcpInputError("Current directory is outside the MCP workspace")
         }
         if (path == ".") return base
         val normalized = if (path.startsWith("./")) path.removePrefix("./") else path
         val parts = normalized.split('/')
         if (parts.any { it.isEmpty() || it == "." || it == ".." }) {
-            throw McpInputException("Use a relative workspace path without parent segments")
+            throw mcpInputError("Use a relative workspace path without parent segments")
         }
         var file = base
         for (part in parts) {
             file = File(file, part)
             if (Files.isSymbolicLink(file.toPath()) || file.canonicalFile != file) {
-                throw McpInputException("Symbolic links are outside the supported workspace")
+                throw mcpInputError("Symbolic links are outside the supported workspace")
             }
         }
         return file
@@ -103,7 +111,7 @@ internal class McpWorkspace(directory: File) {
                     children.forEach { nodes.add(it.toFile()) }
                 }
                 !Files.isRegularFile(path, NOFOLLOW_LINKS) ->
-                    throw McpInputException("Input contains a link or a special file")
+                    throw mcpInputError("Input contains a link or a special file")
             }
         }
     }
@@ -164,7 +172,7 @@ internal data class McpCommand(
 
         fun parse(argv: List<String>): McpCommand {
             val args = if (argv.firstOrNull() == "uu") argv.drop(1) else argv
-            val cmdName = args.firstOrNull() ?: throw McpInputException("Expected a uu command")
+            val cmdName = args.firstOrNull() ?: throw mcpInputError("Expected a uu command")
             if (!UuCommands.isKnownCommand(cmdName)) {
                 throw McpInputException("Unknown uu command: $cmdName")
             }
@@ -268,7 +276,7 @@ internal data class McpCommand(
                     if (rest.size != 2) throw McpInputException(action.usage)
                     val resolvedFmt = resolveMcpPackFormat(rest[1], format)
                     if (enc.isNotEmpty() && resolvedFmt != "xp3") {
-                        throw McpInputException("Encryption scheme (-e) is only supported for XP3")
+                        throw mcpInputError("Encryption scheme (-e) is only supported for XP3")
                     }
                     McpCommand(
                         action = action, source = rest[0], output = rest[1],
@@ -293,7 +301,7 @@ internal data class McpCommand(
                 if (subArgs[i] in setOf("-p", "--password", "-k", "--key")) {
                     val secret = subArgs.getOrNull(i + 1)
                     if (subArgs[i] == "-p" && (secret == null || secret.isEmpty() || secret.length > 1024 || '\u0000' in secret)) {
-                        throw McpInputException("Invalid -p password")
+                        throw mcpInputError("Invalid -p password")
                     }
                     if (!secret.isNullOrEmpty()) out.add(secret)
                     i += 2
@@ -428,8 +436,8 @@ internal data class McpCommand(
             } catch (e: UutParseException) {
                 throw McpInputException("Line ${e.line}: ${e.reason}")
             }
-            if (ast.isEmpty()) throw McpInputException("The script is empty")
-            if (ast.size > 64) throw McpInputException("MCP scripts support up to 64 top-level statements")
+            if (ast.isEmpty()) throw mcpInputError("The script is empty")
+            if (ast.size > 64) throw mcpInputError("MCP scripts support up to 64 top-level statements")
             return ast.mapIndexed { idx, stmt ->
                 val paths = ArrayList<String>()
                 val secrets = ArrayList<String>()

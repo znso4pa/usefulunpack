@@ -8,7 +8,9 @@ import org.json.JSONException
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.File
+import java.io.IOException
 import java.nio.ByteBuffer
+import java.util.Locale
 
 internal const val MCP_PROTOCOL_VERSION = "2025-11-25"
 internal val MCP_PROTOCOL_VERSIONS = setOf(MCP_PROTOCOL_VERSION, "2025-06-18", "2025-03-26")
@@ -29,17 +31,29 @@ internal class McpProtocol(
         signatureScanner: ((file: File) -> List<ScanHit>)? = null,
     ) : this(WorkspaceSkillRuntime(workspace, tasks, prefs, archiveLister, signatureScanner), version)
 
-    private val tools = buildList {
-        addAll(runtime.protocolTools())
-        val scan = first { it.name == "SCAN" }
-        add(scan.copy(name = "scan_signatures"))
-        add(AppSkillDefinition("skill_list", "List the shared app skills and their input schemas.",
-            objectSchema(JSONObject())))
-        add(AppSkillDefinition("skill_call", "Invoke a skill by its name from skill_list.",
+    private val entryTools = listOf(
+        AppSkillDefinition("vn_guide", "Read the VN overview when a task calls for it. Reuse its recap for later calls.",
+            objectSchema(JSONObject())),
+        AppSkillDefinition("skill_list", "Discover skill schemas. Use names to retrieve only the skills needed for this task.",
+            objectSchema(JSONObject().put("names", JSONObject().put("type", "array")
+                .put("items", JSONObject().put("type", "string"))))),
+        AppSkillDefinition("skill_call", "Invoke a named skill with its input from skill_list.",
             objectSchema(JSONObject()
                 .put("skill", JSONObject().put("type", "string"))
-                .put("input", JSONObject().put("type", "object")), JSONArray().put("skill"))))
+                .put("input", JSONObject().put("type", "object")), JSONArray().put("skill"))),
+    )
+
+    private val skillTools = runtime.protocolTools()
+    private val tools = buildList {
+        addAll(skillTools)
+        val scan = first { it.name == "SCAN" }
+        add(scan.copy(name = "scan_signatures"))
+        addAll(entryTools)
     }.associateBy { it.name }
+    private val advertisedTools = entryTools + skillTools.filter { it.name in setOf("reference_search", "reference_read") }
+    private val skillCatalog by lazy {
+        runtime.skills().associate { it.name to it.toJson().toString() }
+    }
 
     private fun objectSchema(properties: JSONObject, required: JSONArray = JSONArray()) =
         JSONObject().put("type", "object").put("properties", properties)
@@ -50,10 +64,26 @@ internal class McpProtocol(
 
     private fun callTool(name: String, args: JSONObject): AppSkillResult {
         return when (name) {
-            "skill_list" -> {
+            "vn_guide" -> {
                 if (args.length() != 0) return runtime.invalidSkillCall("Unexpected tool arguments", name)
-                val definitions = runtime.skills()
-                AppSkillResult(JSONObject().put("skills", JSONArray(definitions.map { it.toJson() }))
+                readGuide()
+            }
+            "skill_list" -> {
+                if (args.keys().asSequence().any { it != "names" }) {
+                    return runtime.invalidSkillCall("Unexpected tool arguments", name)
+                }
+                val requested = if (!args.has("names")) null else {
+                    val names = args.optJSONArray("names")
+                        ?: return runtime.invalidSkillCall("Expected an array of skill names", name)
+                    if (names.length() !in 1..16) return runtime.invalidSkillCall("Expected 1 to 16 skill names", name)
+                    List(names.length()) { i ->
+                        val skill = (names.opt(i) as? String)?.trim()?.takeIf { it.length in 1..64 }
+                            ?: return runtime.invalidSkillCall("Invalid skill name", name)
+                        skill.uppercase(Locale.ROOT)
+                    }.toSet()
+                }
+                val definitions = if (requested == null) skillCatalog.values else requested.mapNotNull(skillCatalog::get)
+                AppSkillResult(JSONObject().put("skills", JSONArray(definitions.map(::JSONObject)))
                     .put("count", definitions.size))
             }
             "skill_call" -> {
@@ -100,10 +130,24 @@ internal class McpProtocol(
             "initialize" -> JSONObject().put("protocolVersion",
                 params.optString("protocolVersion").takeIf { it in MCP_PROTOCOL_VERSIONS } ?: MCP_PROTOCOL_VERSION)
                 .put("serverInfo", JSONObject().put("name", "UsefulUnpack").put("version", version))
-                .put("capabilities", JSONObject().put("tools", JSONObject()))
-                .put("instructions", "Use workspace-relative paths. Call skill_list to discover the shared app skills and skill_call to invoke one. Prefer COMPRESS, EXTRACT and SCAN for archive operations. All 39 uu commands are also individually listed as UU_* skills and remain available through run_uu. Use validate_uut and run_uut for multi-step .uut scripts. Poll task_status for progress, stdout and outputs.")
+                .put("capabilities", JSONObject().put("tools", JSONObject()).put("resources", JSONObject()))
+                .put("instructions", "Use guides when requested or when a specific problem needs a reference. Search titles with reference_search and use reference_read for one relevant guide. ${VnGuide.URI} is the optional VN overview. Use workspace-relative paths. Discover only needed skill schemas with skill_list, then use skill_call.")
             "ping" -> JSONObject()
-            "tools/list" -> JSONObject().put("tools", JSONArray(tools.values.map { it.toJson() }))
+            "resources/list" -> JSONObject().put("resources", JSONArray().put(JSONObject()
+                .put("uri", VnGuide.URI).put("name", "vn-guide").put("title", VnGuide.TITLE)
+                .put("description", "Local visual novel workflows, engine markers and archive conventions.")
+                .put("mimeType", "text/markdown")))
+            "resources/templates/list" -> JSONObject().put("resourceTemplates", JSONArray())
+            "resources/read" -> {
+                if (params.opt("uri") != VnGuide.URI) return error(id, -32002, "Resource not found")
+                val guide = readGuide()
+                if (guide.isError) {
+                    return McpResponse(200, envelope(id).put("error", JSONObject().put("code", -32603)
+                        .put("message", guide.data.getString("error")).put("data", guide.data)))
+                }
+                JSONObject().put("contents", JSONArray().put(guide.data))
+            }
+            "tools/list" -> JSONObject().put("tools", JSONArray(advertisedTools.map { it.toJson() }))
             "tools/call" -> {
                 val tool = tools[params.opt("name") as? String]
                     ?: return error(id, -32602, "Unknown tool")
@@ -114,6 +158,14 @@ internal class McpProtocol(
             else -> return error(id, -32601, "Method not found")
         }
         return McpResponse(200, envelope(id).put("result", result))
+    }
+
+    private fun readGuide(): AppSkillResult = try {
+        AppSkillResult(JSONObject().put("uri", VnGuide.URI).put("mimeType", "text/markdown").put("text", VnGuide.text))
+    } catch (_: IOException) {
+        val message = "Packaged VN guide could not be read"
+        val failure = recordMcpFailure("reference_read", FailureCode.IO, message).also(runtime::rememberRequestLog)
+        AppSkillResult(JSONObject().put("error", message).withMcpFailure(failure), isError = true)
     }
 
     fun transportError(status: Int, message: String, code: FailureCode = FailureCode.INVALID_RESULT): McpResponse {

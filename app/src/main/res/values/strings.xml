@@ -453,7 +453,7 @@
     </string-array>
         <string-array name="help_tutorials">
         <item>File Agent\\nOpen File Agent from the Home search field or the More menu. In Conversation settings, choose a workspace and enter your model Base URL and model ID. Test connection sends a short request by itself. Choose Read-only, Archives, File edits or Full local, which also allows UU/UUT. Write actions require confirmation. Each turn has one card with the question, answer and tool results. Expand Activity details for the complete tool list and any reasoning the model returned. Use Switch session to search by title and open, create, rename or delete sessions.</item>
-        <item>Visual novel workflows and local MCP\\nUse Identify engine locally in Conversation settings to check the selected workspace or choose a game folder without a model request. You can also ask the Agent which engine it uses. The Agent checks known markers and cites the paths it found. For localization planning, ask the Agent to inspect the VN project. It looks for existing translations, script source candidates, compiled files and archives using names and paths only. To use an external Agent, start Local MCP from Settings and use the loopback address and token. Keep the token private.</item>
+        <item>Visual novel workflows and local MCP\\nUse Identify engine locally in Conversation settings to check the selected workspace or choose a game folder without a model request. You can also ask the Agent which engine it uses. The Agent checks known markers and cites the paths it found. For localization planning, ask the Agent to inspect the VN project. It looks for existing translations, script source candidates, compiled files and archives using names and paths only. Open Document Hub in Conversation settings to search for optional references. Select one to send to your configured model with your next message. To use an external Agent, start Local MCP from Settings and use the loopback address and token. Read a guide when the user requests it or a specific problem calls for it. Use reference_search for titles and reference_read for one matching guide. Use skill_list with the names you need, then skill_call. Keep the token private.</item>
         <item>Compression settings\nSettings → Compression: levels (zip/7z/generic), split size (zip/7z), ZIP encoding, password; "OK" saves everything at once; the work mode (archive/compress) updates the title bar</item>
         <item>Global search\nTop menu → Global search: filename / content modes; content search first asks for a per-file size cap; tap a result to preview with match highlighting and prev/next jump; tap "Continue scan" when results are truncated</item>
         <item>Search inside an archive\nOpen an archive preview, tap the search icon: text files are unpacked first, then the global search runs over them; tapping a result extracts the real file on demand</item>
@@ -852,6 +852,65 @@
     <string name="agent_session_name">Session name</string>
     <string name="agent_session_rename">Rename session</string>
     <string name="agent_session_name_hint">Leave blank to use the first message as the name.</string>
+    <string name="agent_documents">Document Hub</string>
+    <string name="agent_document_search">Search titles or keywords</string>
+    <string name="agent_documents_no_match">No matching documents</string>
+    <string name="agent_documents_info">Choose one document to send to your configured model with your next message.</string>
+    <string name="agent_document_remove">Remove reference for next message</string>
+    <string name="agent_document_vn">VN localization checklist</string>
+    <string name="agent_document_vn_summary">Engine evidence, existing translations, source candidates and workflow.</string>
+    <string name="agent_document_renpy">Ren’Py scripts and translation</string>
+    <string name="agent_document_renpy_summary">Translation folders, source scripts and RPA entries.</string>
+    <string name="agent_document_tyrano">TyranoScript and KAG scenarios</string>
+    <string name="agent_document_tyrano_summary">Scenario files, control tags, labels and jumps.</string>
+    <string name="agent_document_rpg">RPG Maker MV/MZ translation</string>
+    <string name="agent_document_rpg_summary">Dialogue in JSON, event IDs and control sequences.</string>
+    <string name="agent_document_archive">Unpacking and repack verification</string>
+    <string name="agent_document_archive_summary">Archive entries, selective extraction and output checks.</string>
+    <string name="agent_document_zip_7z_rar">ZIP, 7z and RAR workflows</string>
+    <string name="agent_document_zip_7z_rar_summary">Selective extraction, passwords, split archives and repacking.</string>
+    <string name="agent_document_tar_streams">TAR and compression streams</string>
+    <string name="agent_document_tar_streams_summary">Choose a multi-entry TAR archive or a single-file stream.</string>
+    <string name="agent_document_xp3">XP3 extraction and encrypted repacking</string>
+    <string name="agent_document_xp3_summary">Identify cxdec and known entry filters, then verify plaintext after repacking.</string>
+    <string name="agent_document_ypf">YPF names and payloads</string>
+    <string name="agent_document_ypf_summary">Inspect Shift-JIS names, XOR and zlib payloads before repacking.</string>
+    <string name="agent_document_vn_formats">PFS, RPA, RGSS and LPK repacking</string>
+    <string name="agent_document_vn_formats_summary">Choose the right engine variant, filenames and archive layout.</string>
+    <string name="agent_document_wrappers">Diagnose an unknown archive wrapper</string>
+    <string name="agent_document_wrappers_summary">Inspect signatures and verify suspected XOR or prefix changes.</string>
+    <string name="agent_document_uut_transforms">UUT byte transforms and round trips</string>
+    <string name="agent_document_uut_transforms_summary">Script reversible transforms and verify the restored bytes.</string>
+    <string name="agent_document_byte_offsets">Byte offsets and byte ranges</string>
+    <string name="agent_document_byte_offsets_summary">Check offsets, range lengths, and absolute or relative coordinates.</string>
+    <string name="agent_document_partial_xor">Partial XOR on a byte range</string>
+    <string name="agent_document_partial_xor_summary">Decode a bounded slice and verify unchanged bytes around it.</string>
+    <string name="agent_document_xor_alignment">Repeating XOR and key alignment</string>
+    <string name="agent_document_xor_alignment_summary">Distinguish file offsets, slice offsets and key phases.</string>
+    <string name="agent_document_text_encodings">Text encoding and BOM</string>
+    <string name="agent_document_text_encodings_summary">Identify the source encoding and preserve text structure.</string>
+    <string name="agent_document_entry_names">Archive entry name encoding</string>
+    <string name="agent_document_entry_names_summary">Diagnose filename mojibake separately from payload encoding.</string>
+    <string name="agent_document_format_mismatch">File extension and signature mismatch</string>
+    <string name="agent_document_format_mismatch_summary">Use header evidence and validate candidate formats.</string>
+    <string name="agent_document_checksums">Checksum and partial failures</string>
+    <string name="agent_document_checksums_summary">Find affected entries and verify recovered output.</string>
+    <string name="agent_document_split_volumes">Split archives and missing volumes</string>
+    <string name="agent_document_split_volumes_summary">Find the entry point and verify required companion parts.</string>
+    <string name="agent_document_passwords">Archive passwords</string>
+    <string name="agent_document_passwords_summary">Distinguish protected headers, protected contents and data errors.</string>
+    <string name="agent_document_pack_layout">Archive layout and output names</string>
+    <string name="agent_document_pack_layout_summary">Match root paths, variant and engine naming conventions.</string>
+    <string name="agent_document_embedded_scan">Embedded file scan and carving</string>
+    <string name="agent_document_embedded_scan_summary">Check signature hits before extracting a byte range.</string>
+    <string name="agent_document_nested">Nested archive extraction</string>
+    <string name="agent_document_nested_summary">Inspect and verify one layer at a time.</string>
+    <string name="agent_document_output_collisions">Output collisions and cleanup</string>
+    <string name="agent_document_output_collisions_summary">Use a fresh staging directory and verify published results.</string>
+    <string name="agent_document_script_failures">UUT failures and task recovery</string>
+    <string name="agent_document_script_failures_summary">Validate scripts, check exit codes and inspect task logs.</string>
+    <string name="agent_document_format_read_summary">Listing, extraction and format-specific troubleshooting.</string>
+    <string name="agent_document_format_pack_summary">Extraction, packing and format-specific checks.</string>
     <string name="agent_session_search">Search session names</string>
     <string name="agent_sessions_no_match">No matching sessions</string>
     <string name="agent_sessions_partial">Could not read %1$d sessions · Log %2$s</string>

@@ -13,6 +13,7 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.view.doOnLayout
+import androidx.core.view.isVisible
 import androidx.core.widget.doAfterTextChanged
 import java.io.File
 import java.util.concurrent.CancellationException
@@ -37,6 +38,7 @@ internal fun MainActivity.showAgent() {
     )
     var session = newSession()
     val drafts = mutableMapOf<String, AgentDraft>()
+    var pendingReference: AgentReferenceDocument? = null
     var activeRequest: AgentRequest? = null
     var activeApproval: AlertDialog? = null
     val conversation = agentForm()
@@ -51,6 +53,8 @@ internal fun MainActivity.showAgent() {
     val modelRow = UuActionRow(this)
     val permissionRow = UuActionRow(this)
     val contextRow = UuActionRow(this)
+    val documentsRow = UuActionRow(this)
+    val referenceRow = UuActionRow(this).apply { isVisible = false }
     val labels = listOf(R.string.agent_perm_read, R.string.agent_perm_archive,
         R.string.agent_perm_edit, R.string.agent_perm_full).map(::getString)
     val status = TextView(this).apply {
@@ -73,10 +77,11 @@ internal fun MainActivity.showAgent() {
         setText(R.string.action_cancel)
         visibility = View.GONE
     }
-    val rows = listOf(sessionRow, sessionNameRow, workspaceRow, engineRow, modelRow, permissionRow, contextRow)
+    val rows = listOf(sessionRow, sessionNameRow, workspaceRow, engineRow, modelRow, permissionRow, contextRow,
+        documentsRow, referenceRow)
     sessionRow.maxLines = 2
     sessionRow.ellipsize = android.text.TextUtils.TruncateAt.END
-    val details = agentSection(sessionNameRow, workspaceRow, engineRow, modelRow, permissionRow, contextRow)
+    val details = agentSection(sessionNameRow, workspaceRow, engineRow, modelRow, permissionRow, contextRow, documentsRow)
         .apply { visibility = View.GONE }
     val settings = UuButton(this).apply {
         actionStyle = ActionStyle.TEXT
@@ -99,6 +104,7 @@ internal fun MainActivity.showAgent() {
             topMargin = UuMetrics.px(context, R.dimen.space_xs)
         })
         addSpaced(status, R.dimen.space_sm)
+        addView(referenceRow)
         addSpaced(UuActionBar(context).apply {
             addView(prompt, LinearLayout.LayoutParams(0, WRAP, 1f))
             addView(send, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
@@ -117,6 +123,20 @@ internal fun MainActivity.showAgent() {
     }
 
     settings.setOnClickListener { showSettings(details.visibility != View.VISIBLE) }
+
+    fun setReference(document: AgentReferenceDocument?) {
+        pendingReference = document
+        referenceRow.isVisible = document != null
+        referenceRow.valueText = document?.title(this)
+    }
+
+    referenceRow.bind(getString(R.string.agent_document_remove), onClick = { setReference(null) })
+    documentsRow.bind(getString(R.string.agent_documents), navigation = true, onClick = {
+        showAgentDocumentPicker(ownerTabId) { document ->
+            setReference(document)
+            showSettings(false)
+        }
+    })
 
     var followPending = false
     var followReply: View? = null
@@ -176,6 +196,7 @@ internal fun MainActivity.showAgent() {
     }
 
     fun applySession(next: AgentSession) {
+        if (next.id != session.id) setReference(null)
         session = next
         refreshRows()
     }
@@ -506,6 +527,7 @@ internal fun MainActivity.showAgent() {
             return@setOnClickListener
         }
         val originalSession = session
+        val reference = pendingReference
         val request = AgentRequest()
         val scope = AppDiagnostics.enterIntent(originalSession.feature, newChain = true)
         val trace = scope.trace
@@ -524,6 +546,7 @@ internal fun MainActivity.showAgent() {
                 var answer: String? = null
                 var error: AppFailure? = null
                 var cancelled = false
+                var referenceDelivered = false
                 try {
                     request.checkActive()
                     val running = try {
@@ -553,6 +576,8 @@ internal fun MainActivity.showAgent() {
                             val runtime = WorkspaceSkillRuntime(workspace, tasks, prefs)
                             val response = AgentClient(endpoint, running.model, key, request).complete(
                                 previous, question, runtime, running.permission, running.context,
+                                reference = reference,
+                                onReferenceDelivered = { referenceDelivered = true },
                                 confirm = { approve(it, request) },
                                 deleteFile = { deleteAgentFile(workspace, it) },
                                 onReasoning = { reasoning ->
@@ -607,6 +632,7 @@ internal fun MainActivity.showAgent() {
                         activeRequest = null
                         activeApproval?.dismiss()
                         setBusy(false)
+                        if (referenceDelivered) setReference(null)
                         val saved = updated ?: persisted
                         if (saved != null) {
                             applySession(saved)

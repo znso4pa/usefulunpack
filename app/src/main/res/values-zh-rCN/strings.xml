@@ -443,7 +443,7 @@
     </string-array>
         <string-array name="help_tutorials">
         <item>文件 Agent\\n从首页输入框或更多菜单打开文件 Agent。在会话设置选择工作区，填写模型 Base URL 和模型 ID，再点「测试连接」单独试一次。权限有只读、拆封包、文件删改、完全本地（含 UU/UUT）四档。写操作需要确认。每轮用一张卡片显示提问、回复与工具结果，展开「运行详情」可看全部工具记录和模型返回的思考。点「切换会话」可按名称搜索会话、打开或新建，并可直接重命名或删除当前会话。</item>
-        <item>VN 引擎快查与本地 MCP\\n在会话设置点「本地识别引擎」，可检查当前工作区或选择游戏文件夹，无需请求模型。也可直接问 Agent 使用什么引擎。它会查已知标志文件并给出依据。规划汉化时可让 Agent 检查 VN 项目。它只根据目录和文件名找现有翻译、脚本源码线索、编译文件和归档。外部 Agent 可从设置启动本地 MCP，使用本机地址与令牌连接。请保管好令牌。</item>
+        <item>VN 引擎快查与本地 MCP\\n在会话设置点「本地识别引擎」，可检查当前工作区或选择游戏文件夹，无需请求模型。也可直接问 Agent 使用什么引擎。它会查已知标志文件并给出依据。规划汉化时可让 Agent 检查 VN 项目。它只根据目录和文件名找现有翻译、脚本源码线索、编译文件和归档。可在会话设置打开「文档广场」，搜索并选一份参考文档，下次发送消息时一并交给你配置的模型阅读。外部 Agent 可从设置启动本地 MCP，使用本机地址与令牌连接；用户要求或遇到具体问题时，用 reference_search 搜索标题，再用 reference_read 读取相关的一篇。用 skill_list 的 names 参数查本次需要的技能，再用 skill_call 调用。请保管好令牌。</item>
         <item>压缩设置\n设置 → 压缩：压缩等级（zip/7z/通用）、分卷大小（zip/7z）、ZIP 编码、压缩密码；点“确定”一次性保存；工作模式（归档/压缩）切换后标题栏会更新</item>
         <item>全局搜索\n顶部菜单 → 全局搜索：文件名 / 内容两种模式；内容搜索会先询问单文件大小上限；点结果可预览，匹配处高亮并可前后跳转；结果多时点“继续扫描”</item>
         <item>归档内搜索\n打开归档预览后，点右上角搜索图标：先解出全部文本文件，再进入全局搜索全文检索；点结果按需解出原文件预览</item>
@@ -850,6 +850,65 @@
     <string name="agent_session_name">会话名称</string>
     <string name="agent_session_rename">重命名会话</string>
     <string name="agent_session_name_hint">留空会恢复用首条提问命名。</string>
+    <string name="agent_documents">文档广场</string>
+    <string name="agent_document_search">搜索文档标题或关键词</string>
+    <string name="agent_documents_no_match">没有匹配的文档</string>
+    <string name="agent_documents_info">选一份文档，下次发送消息时会一并交给你配置的模型阅读。</string>
+    <string name="agent_document_remove">移除下轮参考文档</string>
+    <string name="agent_document_vn">VN 汉化检查清单</string>
+    <string name="agent_document_vn_summary">识别引擎、寻找已有翻译和脚本源码，规划汉化步骤。</string>
+    <string name="agent_document_renpy">Ren’Py 脚本与翻译</string>
+    <string name="agent_document_renpy_summary">翻译目录、脚本源码和 RPA 条目。</string>
+    <string name="agent_document_tyrano">TyranoScript 与 KAG 场景</string>
+    <string name="agent_document_tyrano_summary">场景脚本、控制标签、标签名和跳转。</string>
+    <string name="agent_document_rpg">RPG Maker MV/MZ 翻译</string>
+    <string name="agent_document_rpg_summary">JSON 对话、事件 ID 和控制序列。</string>
+    <string name="agent_document_archive">拆封包与产物验证</string>
+    <string name="agent_document_archive_summary">列出条目、选择性解包和检查封包产物。</string>
+    <string name="agent_document_zip_7z_rar">ZIP、7z 与 RAR 拆封包</string>
+    <string name="agent_document_zip_7z_rar_summary">选择性解包、密码、分卷和重新封包。</string>
+    <string name="agent_document_tar_streams">TAR 与单文件压缩流</string>
+    <string name="agent_document_tar_streams_summary">区分多条目 TAR 归档和单文件压缩流。</string>
+    <string name="agent_document_xp3">XP3 解包与加密封包</string>
+    <string name="agent_document_xp3_summary">识别 cxdec 和已知条目过滤器，验证重封后的明文。</string>
+    <string name="agent_document_ypf">YPF 文件名混淆与载荷</string>
+    <string name="agent_document_ypf_summary">检查 Shift-JIS 文件名、XOR 和 zlib 载荷后再封包。</string>
+    <string name="agent_document_vn_formats">PFS、RPA、RGSS 与 LPK 封包</string>
+    <string name="agent_document_vn_formats_summary">按引擎选择变体、产物名称和路径结构。</string>
+    <string name="agent_document_wrappers">识别额外加密与归档包装</string>
+    <string name="agent_document_wrappers_summary">根据签名验证可能的 XOR、前缀和外层变换。</string>
+    <string name="agent_document_uut_transforms">UUT 字节变换与往返验证</string>
+    <string name="agent_document_uut_transforms_summary">用脚本组合可逆变换并比对恢复后的字节。</string>
+    <string name="agent_document_byte_offsets">字节偏移与区间读取</string>
+    <string name="agent_document_byte_offsets_summary">区分绝对和相对偏移，核对长度与边界。</string>
+    <string name="agent_document_partial_xor">部分 XOR 与区间回填</string>
+    <string name="agent_document_partial_xor_summary">只变换指定字节，并核对区间之外的内容。</string>
+    <string name="agent_document_xor_alignment">循环 XOR 与密钥对齐</string>
+    <string name="agent_document_xor_alignment_summary">区分文件起点、切片起点与密钥起点。</string>
+    <string name="agent_document_text_encodings">文本编码、BOM 与换行</string>
+    <string name="agent_document_text_encodings_summary">判断原编码并保留文本结构。</string>
+    <string name="agent_document_entry_names">归档文件名编码与乱码</string>
+    <string name="agent_document_entry_names_summary">分别检查条目名和载荷编码。</string>
+    <string name="agent_document_format_mismatch">后缀与文件签名不一致</string>
+    <string name="agent_document_format_mismatch_summary">根据文件头提出候选，再验证归档结构。</string>
+    <string name="agent_document_checksums">校验失败与部分解包</string>
+    <string name="agent_document_checksums_summary">定位受影响的条目，验证剩余产物。</string>
+    <string name="agent_document_split_volumes">分卷归档与缺卷</string>
+    <string name="agent_document_split_volumes_summary">确认入口卷及所需的同组分卷。</string>
+    <string name="agent_document_passwords">归档密码与加密范围</string>
+    <string name="agent_document_passwords_summary">区分加密头、加密内容和数据错误。</string>
+    <string name="agent_document_pack_layout">封包布局与产物名称</string>
+    <string name="agent_document_pack_layout_summary">匹配根目录、格式变体和引擎命名规则。</string>
+    <string name="agent_document_embedded_scan">内嵌文件的签名扫描和切割</string>
+    <string name="agent_document_embedded_scan_summary">先验证签名命中，再按字节区间切出样本。</string>
+    <string name="agent_document_nested">嵌套归档解包</string>
+    <string name="agent_document_nested_summary">逐层检查归档和产物。</string>
+    <string name="agent_document_output_collisions">同名产物、暂存与清理</string>
+    <string name="agent_document_output_collisions_summary">使用独立暂存目录，检查已发布的文件。</string>
+    <string name="agent_document_script_failures">UUT 失败诊断与任务恢复</string>
+    <string name="agent_document_script_failures_summary">校验脚本，检查退出码和任务日志。</string>
+    <string name="agent_document_format_read_summary">列出条目、解包和格式排障。</string>
+    <string name="agent_document_format_pack_summary">解包、封包和格式专属验证。</string>
     <string name="agent_session_search">搜索会话名称</string>
     <string name="agent_sessions_no_match">没有匹配的会话</string>
     <string name="agent_sessions_partial">有 %1$d 个会话无法读取 · 日志 %2$s</string>

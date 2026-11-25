@@ -224,6 +224,14 @@ XOR key auto-detection (0xFF vs 0xC9) is done per-file on the first entry.
 | **TAR** | [tar crate](https://crates.io/crates/tar) | MIT / Apache-2.0 |
 | **Signature scan** | Magic definitions and validation approach referenced from [binwalk](https://github.com/ReFirmLabs/binwalk) | MIT |
 
+### File Agent Document Hub
+
+The [local Markdown guides](app/src/main/resources/agent-documents) ship with the app and cover every registered extraction and packing format, along with troubleshooting. Select a guide for your next message or let File Agent look up a relevant guide when it encounters a specific problem. Local MCP can search the same catalog and read an individual guide on demand.
+
+Thanks to the documentation authors and maintainers whose references informed these guides. [Ren'Py](https://www.renpy.org/doc/html/translation.html), [TyranoScript](https://tyrano.jp/tag/), [KiriKiri/KAG3](https://krkrz.github.io/krkr2doc/kag3doc/contents/Tags.html), [RPG Maker MV](https://rpgmakerofficial.com/product/MV_Help/page/01_10.html) and [RPG Maker MZ](https://rpgmakerofficial.com/product/MZ_help-en/01_10.html).
+
+The archive guides also draw on published format references and implementations. [7-Zip](https://www.7-zip.org/7z.html), [GARbro](https://github.com/morkt/GARbro) and [YU-RIS unpacker](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker).
+
 ### Core Dependencies
 
 | Crate | License | Usage |

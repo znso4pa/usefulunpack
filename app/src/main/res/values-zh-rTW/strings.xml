@@ -438,7 +438,7 @@
     </string-array>
         <string-array name="help_tutorials">
         <item>檔案 Agent\\n從首頁輸入框或更多選單開啟檔案 Agent。在對話設定選擇工作區，填入模型 Base URL 和模型 ID，再按「測試連線」單獨測試。權限有唯讀、解封與封裝、檔案修改、完全本機（含 UU/UUT）四級。寫入前需要確認。每輪以一張卡片呈現提問、回覆和工具結果，展開「執行詳情」可查看完整記錄及模型傳回的思考。點選「切換對話」可按名稱搜尋、開啟或新增對話，也可以直接重新命名或刪除目前對話。</item>
-        <item>VN 引擎快查與本機 MCP\\n在對話設定點「本機識別引擎」，可檢查目前的工作區或選擇遊戲資料夾，無需請求模型。也可以直接詢問 Agent 使用哪一種引擎。它會檢查已知標誌檔案並列出依據。規劃在地化時可請 Agent 檢查 VN 專案。它只透過目錄和檔名找出現有翻譯、腳本原始碼候選、編譯檔與封包。外部 Agent 可在設定啟動本機 MCP，使用本機位址和權杖連線。請妥善保管權杖。</item>
+        <item>VN 引擎快查與本機 MCP\\n在對話設定點「本機識別引擎」，可檢查目前的工作區或選擇遊戲資料夾，無需請求模型。也可以直接詢問 Agent 使用哪一種引擎。它會檢查已知標誌檔案並列出依據。規劃在地化時可請 Agent 檢查 VN 專案。它只透過目錄和檔名找出現有翻譯、腳本原始碼候選、編譯檔與封包。可在對話設定開啟「文件廣場」，搜尋並選一份參考文件，下次傳送訊息時會一併交給你設定的模型閱讀。外部 Agent 可在設定啟動本機 MCP，使用本機位址和權杖連線；使用者要求或遇到具體問題時，用 reference_search 搜尋標題，再用 reference_read 讀取相關的一篇。用 skill_list 的 names 參數查詢所需技能，再用 skill_call 呼叫。請妥善保管權杖。</item>
         <item>壓縮設定\n設定 → 壓縮：壓縮等級（zip/7z/通用）、分割大小（zip/7z）、ZIP 編碼、壓縮密碼；點「確定」一次儲存；工作模式（封包/壓縮）切換後標題欄會更新</item>
         <item>全域搜尋\n頂部選單 → 全域搜尋：檔名 / 內容兩種模式；內容搜尋會先詢問單檔大小上限；點結果可預覽，匹配處高亮並可前後跳轉；結果多時點「繼續掃描」</item>
         <item>封包內搜尋\n開啟封包預覽後，點右上角搜尋圖示：先解出全部文字檔，再進入全域搜尋全文檢索；點結果按需解出原檔預覽</item>
@@ -845,6 +845,65 @@
     <string name="agent_session_name">對話名稱</string>
     <string name="agent_session_rename">重新命名對話</string>
     <string name="agent_session_name_hint">留空會恢復使用第一個提問命名。</string>
+    <string name="agent_documents">文件廣場</string>
+    <string name="agent_document_search">搜尋文件標題或關鍵字</string>
+    <string name="agent_documents_no_match">找不到符合的文件</string>
+    <string name="agent_documents_info">選一份文件，下次傳送訊息時會一併交給你設定的模型閱讀。</string>
+    <string name="agent_document_remove">移除下一輪的參考文件</string>
+    <string name="agent_document_vn">VN 在地化檢查清單</string>
+    <string name="agent_document_vn_summary">識別引擎、尋找既有翻譯與指令碼原始碼，規劃在地化步驟。</string>
+    <string name="agent_document_renpy">Ren’Py 指令碼與翻譯</string>
+    <string name="agent_document_renpy_summary">翻譯資料夾、指令碼原始碼與 RPA 項目。</string>
+    <string name="agent_document_tyrano">TyranoScript 與 KAG 場景</string>
+    <string name="agent_document_tyrano_summary">場景指令碼、控制標記、標籤與跳轉。</string>
+    <string name="agent_document_rpg">RPG Maker MV/MZ 翻譯</string>
+    <string name="agent_document_rpg_summary">JSON 對話、事件 ID 與控制序列。</string>
+    <string name="agent_document_archive">解包、封包與產物驗證</string>
+    <string name="agent_document_archive_summary">列出項目、選擇性解包及檢查封包產物。</string>
+    <string name="agent_document_zip_7z_rar">ZIP、7z 與 RAR 解包和封包</string>
+    <string name="agent_document_zip_7z_rar_summary">選擇性解包、密碼、分卷與重新封包。</string>
+    <string name="agent_document_tar_streams">TAR 與單檔壓縮串流</string>
+    <string name="agent_document_tar_streams_summary">區分多項目的 TAR 封包及單檔壓縮串流。</string>
+    <string name="agent_document_xp3">XP3 解包與加密封包</string>
+    <string name="agent_document_xp3_summary">辨識 cxdec 和已知項目過濾器，驗證重新封包後的明文。</string>
+    <string name="agent_document_ypf">YPF 檔名混淆與承載資料</string>
+    <string name="agent_document_ypf_summary">檢查 Shift-JIS 檔名、XOR 與 zlib 資料後再封包。</string>
+    <string name="agent_document_vn_formats">PFS、RPA、RGSS 與 LPK 封包</string>
+    <string name="agent_document_vn_formats_summary">依引擎選擇格式變體、產物名稱與路徑結構。</string>
+    <string name="agent_document_wrappers">辨識額外加密與封包外層</string>
+    <string name="agent_document_wrappers_summary">依據簽章驗證可能的 XOR、前置資料及外層變換。</string>
+    <string name="agent_document_uut_transforms">UUT 位元組變換與往返驗證</string>
+    <string name="agent_document_uut_transforms_summary">用指令碼組合可逆變換並比較還原後的位元組。</string>
+    <string name="agent_document_byte_offsets">位元組偏移與範圍讀取</string>
+    <string name="agent_document_byte_offsets_summary">區分絕對和相對偏移，核對長度與邊界。</string>
+    <string name="agent_document_partial_xor">部分 XOR 與範圍回填</string>
+    <string name="agent_document_partial_xor_summary">變換指定範圍，並核對範圍以外的資料。</string>
+    <string name="agent_document_xor_alignment">循環 XOR 與金鑰對齊</string>
+    <string name="agent_document_xor_alignment_summary">區分檔案起點、分段起點與金鑰起點。</string>
+    <string name="agent_document_text_encodings">文字編碼、BOM 與換行</string>
+    <string name="agent_document_text_encodings_summary">判斷來源編碼並保留文字結構。</string>
+    <string name="agent_document_entry_names">封包檔名編碼與亂碼</string>
+    <string name="agent_document_entry_names_summary">分別檢查項目名稱與內容編碼。</string>
+    <string name="agent_document_format_mismatch">副檔名與檔案簽章不符</string>
+    <string name="agent_document_format_mismatch_summary">根據檔頭找出候選格式，再驗證封包結構。</string>
+    <string name="agent_document_checksums">校驗失敗與部分解包</string>
+    <string name="agent_document_checksums_summary">找出受影響的項目並驗證其餘產物。</string>
+    <string name="agent_document_split_volumes">分卷封包與缺少分卷</string>
+    <string name="agent_document_split_volumes_summary">確認入口分卷和所需的同組分卷。</string>
+    <string name="agent_document_passwords">封包密碼與加密範圍</string>
+    <string name="agent_document_passwords_summary">區分加密檔頭、加密內容與資料錯誤。</string>
+    <string name="agent_document_pack_layout">封包結構與產物名稱</string>
+    <string name="agent_document_pack_layout_summary">配合根資料夾、格式變體和引擎命名規則。</string>
+    <string name="agent_document_embedded_scan">內嵌檔案的簽章掃描與切割</string>
+    <string name="agent_document_embedded_scan_summary">先驗證命中，再按位元組範圍切出樣本。</string>
+    <string name="agent_document_nested">巢狀封包解包</string>
+    <string name="agent_document_nested_summary">逐層檢查封包與產物。</string>
+    <string name="agent_document_output_collisions">同名產物、暫存與清理</string>
+    <string name="agent_document_output_collisions_summary">使用獨立暫存資料夾，檢查已發佈的檔案。</string>
+    <string name="agent_document_script_failures">UUT 失敗診斷與工作恢復</string>
+    <string name="agent_document_script_failures_summary">驗證指令碼，檢查結束代碼與工作日誌。</string>
+    <string name="agent_document_format_read_summary">列出項目、解包與格式排障。</string>
+    <string name="agent_document_format_pack_summary">解包、封包與格式專屬驗證。</string>
     <string name="agent_session_search">搜尋對話名稱</string>
     <string name="agent_sessions_no_match">沒有符合的對話</string>
     <string name="agent_sessions_partial">有 %1$d 個對話無法讀取 · 記錄 %2$s</string>

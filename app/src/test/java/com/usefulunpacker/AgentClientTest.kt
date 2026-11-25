@@ -14,6 +14,17 @@ import java.net.SocketException
 import kotlin.concurrent.thread
 
 class AgentClientTest {
+    @Test fun catalogCoversEveryRegisteredReadAndPackFormat() {
+        val documents = AgentReferenceDocument.entries
+        assertTrue(documents.size > 50)
+        assertEquals(FORMAT_LABELS.keys, documents.mapNotNull { it.readFormat }.toSet())
+        assertEquals(COMPRESS_EXT.keys, documents.mapNotNull { it.packFormat }.toSet())
+        assertEquals(documents.size, documents.map { it.id }.toSet().size)
+        assertTrue(documents.all { it.readText().startsWith("# ") })
+        assertTrue(AgentReferenceDocument.PARTIAL_XOR in AgentReferenceDocument.search("部分XOR"))
+        assertTrue(AgentReferenceDocument.BYTE_OFFSETS in AgentReferenceDocument.search("hex offset"))
+    }
+
     @Test fun cancellationReturnsWhileTheConnectionIsClosingAndClosesItOnce() {
         val closing = java.util.concurrent.CountDownLatch(1)
         val allowClose = java.util.concurrent.CountDownLatch(1)
@@ -84,7 +95,7 @@ class AgentClientTest {
             visibleAgentText("{\n  \"path\": \"目录\u2028文件\"\n}", keepNewlines = true))
     }
 
-    @Test fun onlyPermittedMetadataCallsAreDispatched() {
+    @Test fun onlyPermittedMetadataCallsAreDispatchedAndOnlyFirstRequestIncludesReference() {
         val requested = mutableListOf<String>()
         val runtime = object : AppSkillRuntime {
             override fun skills() = listOf("WORKSPACE_LIST", "SCAN", "WRITE_TEXT").map {
@@ -107,7 +118,7 @@ class AgentClientTest {
         ModelServer { path, request ->
             if (path != "/model/v1/chat/completions") return@ModelServer Reply("404 Not Found")
             requests.add(request)
-            val message = if (request.getJSONArray("messages").length() == 2) {
+            val message = if (request.getJSONArray("messages").length() == 3) {
                 JSONObject().put("reasoning_content", "List the workspace first.").put("tool_calls", JSONArray()
                     .put(call("a", "SCAN", JSONObject().put("path", "sample.bin").put("carveHitIndex", 0)))
                     .put(call("b", "WRITE_TEXT", JSONObject().put("path", "target.txt")))
@@ -118,9 +129,13 @@ class AgentClientTest {
             val endpoint = checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/model/v1"))
             val events = mutableListOf<AgentToolEvent>()
             val reasoning = mutableListOf<String>()
+            val selected = AgentReferenceDocument.ARCHIVES
+            var referenceDeliveries = 0
             val result = AgentClient(endpoint, "test-model", "", AgentRequest())
-                .complete(emptyList(), "List my archives", runtime, onReasoning = reasoning::add, onTool = events::add)
+                .complete(emptyList(), "List my archives", runtime, reference = selected,
+                    onReferenceDelivered = { referenceDeliveries++ }, onReasoning = reasoning::add, onTool = events::add)
             assertEquals("Listed one archive.", result)
+            assertEquals(1, referenceDeliveries)
             assertEquals(listOf("List the workspace first."), reasoning)
             assertEquals(listOf("WORKSPACE_LIST"), requested)
             val workspaceEvents = events.filter { it.name == "WORKSPACE_LIST" }
@@ -128,12 +143,107 @@ class AgentClientTest {
             assertEquals(listOf(2), workspaceEvents.map { it.callIndex }.distinct())
             assertEquals(1, workspaceEvents.last().resultCount)
             assertEquals(2, events.count { it.failure != null })
-            assertFalse(requests.remove().getJSONArray("tools").toString().contains("WRITE_TEXT"))
+            val first = requests.remove()
+            val initial = first.getJSONArray("messages")
+            assertEquals(3, initial.length())
+            assertTrue(initial.getJSONObject(1).getString("content").endsWith(selected.readText()))
+            for (other in AgentReferenceDocument.entries.filter { it != selected }) {
+                assertFalse(initial.getJSONObject(1).getString("content").contains(other.readText().lineSequence().first()))
+            }
+            assertFalse(first.getJSONArray("tools").toString().contains("WRITE_TEXT"))
             val messages = requests.remove().getJSONArray("messages").toString()
+            assertFalse(messages.contains(selected.readText().lineSequence().first()))
             assertTrue(messages.contains("archive.zip"))
             assertTrue(messages.contains("List the workspace first."))
             assertTrue(messages.contains("TOOL_NOT_ALLOWED"))
             assertFalse(messages.contains("private-content-marker"))
+        }
+    }
+
+    @Test fun referencesAreOptInAndRejectedRequestsDoNotConsumeTheSelection() {
+        val runtime = object : AppSkillRuntime {
+            override fun skills() = emptyList<AppSkillDefinition>()
+            override fun invokeSkill(name: String, input: JSONObject): AppSkillResult = error("Unexpected tool call")
+        }
+        val requests = java.util.concurrent.LinkedBlockingQueue<JSONObject>()
+        ModelServer { _, request ->
+            requests.add(request)
+            if (request.getString("model") == "blocked") Reply("403 Forbidden")
+            else Reply("200 OK", JSONObject().put("choices", JSONArray().put(
+                JSONObject().put("message", JSONObject().put("content", "OK")))))
+        }.use { server ->
+            val endpoint = checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/v1"))
+            val result = AgentClient(endpoint, "model", "", AgentRequest())
+                .complete(emptyList(), "Hello", runtime, context = "Standing preferences", onTool = {})
+            assertEquals("OK", result)
+            val messages = requests.remove().getJSONArray("messages")
+            assertEquals(3, messages.length())
+            assertTrue(messages.getJSONObject(1).getString("content").endsWith("Standing preferences"))
+            AgentReferenceDocument.entries.forEach {
+                assertFalse(messages.toString().contains(it.readText().lineSequence().first()))
+            }
+            var delivered = false
+            val selected = AgentReferenceDocument.RENPY
+            assertThrows(AgentClientException::class.java) {
+                AgentClient(endpoint, "blocked", "", AgentRequest()).complete(emptyList(), "Hello", runtime,
+                    reference = selected, onReferenceDelivered = { delivered = true }, onTool = {})
+            }
+            assertTrue(requests.remove().getJSONArray("messages").getJSONObject(1).getString("content")
+                .endsWith(selected.readText()))
+            assertFalse(delivered)
+        }
+    }
+
+    @Test fun unresolvedIssueCanFetchOneGuideWithoutReplayingItsText() {
+        val guide = AgentReferenceDocument.PARTIAL_XOR
+        val text = guide.readText()
+        val requests = java.util.concurrent.LinkedBlockingQueue<JSONObject>()
+        val calls = mutableListOf<String>()
+        val runtime = object : AppSkillRuntime {
+            override fun skills() = listOf("REFERENCE_SEARCH", "REFERENCE_READ").map {
+                AppSkillDefinition(it, it, JSONObject())
+            }
+
+            override fun invokeSkill(name: String, input: JSONObject): AppSkillResult {
+                calls.add(name)
+                return if (name == "REFERENCE_SEARCH") {
+                    assertEquals("partial XOR", input.getString("query"))
+                    AppSkillResult(JSONObject().put("documents", JSONArray().put(JSONObject().put("documentId", guide.id))))
+                } else {
+                    assertEquals(guide.id, input.getString("documentId"))
+                    assertTrue(input.getString("reason").isNotBlank())
+                    AppSkillResult(JSONObject().put("documentId", guide.id).put("text", text))
+                }
+            }
+        }
+        fun toolReply(name: String, input: JSONObject, id: String): JSONObject = JSONObject().put("tool_calls", JSONArray()
+            .put(JSONObject().put("id", id).put("type", "function")
+                .put("function", JSONObject().put("name", name).put("arguments", input.toString()))))
+        ModelServer { _, request ->
+            requests.add(request)
+            val reply = when (requests.size) {
+                1 -> toolReply("REFERENCE_SEARCH", JSONObject().put("query", "partial XOR"), "search")
+                2 -> toolReply("REFERENCE_READ", JSONObject().put("documentId", guide.id)
+                    .put("reason", "Need to verify the offset boundary"), "read")
+                3 -> toolReply("REFERENCE_READ", JSONObject().put("documentId", "xor-alignment")
+                    .put("reason", "Try another guide"), "repeat")
+                else -> JSONObject().put("content", "Checked the reference.")
+            }
+            Reply("200 OK", JSONObject().put("choices", JSONArray().put(JSONObject().put("message", reply))))
+        }.use { server ->
+            val endpoint = checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/v1"))
+            val result = AgentClient(endpoint, "model", "", AgentRequest())
+                .complete(emptyList(), "Which range should be decoded?", runtime, onTool = {})
+            assertEquals("Checked the reference.", result)
+            assertEquals(listOf("REFERENCE_SEARCH", "REFERENCE_READ"), calls)
+            val payloads = List(4) { requests.remove().getJSONArray("messages").toString() }
+            val heading = text.lineSequence().first()
+            assertFalse(payloads[0].contains(heading))
+            assertFalse(payloads[1].contains(heading))
+            assertTrue(payloads[2].contains(heading))
+            assertFalse(payloads[3].contains(heading))
+            assertTrue(payloads[3].contains("consulted"))
+            assertTrue(payloads[3].contains("REFERENCE_LIMIT"))
         }
     }
 
@@ -204,12 +314,17 @@ class AgentClientTest {
                 val runtime = WorkspaceSkillRuntime(McpWorkspace(root), tasks)
                 val skills = runtime.skills()
                 val allowed = AgentPermission.entries.map { it.tools(skills).keys }
-                assertEquals(setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "DETECT_GAME_ENGINE", "VN_INSPECT", "SCAN"), allowed[0])
+                assertEquals(setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "DETECT_GAME_ENGINE", "VN_INSPECT", "SCAN",
+                    "REFERENCE_SEARCH", "REFERENCE_READ"), allowed[0])
                 assertEquals(setOf("COMPRESS", "EXTRACT"), allowed[1] - allowed[0])
                 assertEquals(setOf("WRITE_TEXT", "DELETE_FILE"), allowed[2] - allowed[1])
                 assertEquals(setOf("RUN_UU", "RUN_UUT"), allowed[3] - allowed[2])
                 assertFalse(AgentPermission.FULL_LOCAL.tools(skills).getValue("SCAN")
                     .accepts(JSONObject().put("path", "sample.bin").put("carveHitIndex", 0)))
+                val readReference = AgentPermission.READ_ONLY.tools(skills).getValue("REFERENCE_READ")
+                assertFalse(readReference.accepts(JSONObject().put("documentId", "partial-xor")))
+                assertFalse(readReference.accepts(JSONObject().put("documentId", "partial-xor")
+                    .put("reason", "Check the byte range").put("path", "private.txt")))
                 val requests = java.util.concurrent.LinkedBlockingQueue<JSONObject>()
                 ModelServer { _, request ->
                     requests.add(request)

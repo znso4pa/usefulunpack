@@ -42,6 +42,8 @@ internal class WorkspaceSkillRuntime(
         SCAN("SCAN", "Scan a workspace file for embedded archive and media signatures, or carve a selected hit.", "path"),
         DETECT_GAME_ENGINE("DETECT_GAME_ENGINE", "Identify a game directory from known engine markers. Use . for the workspace root. Reads names and file types only.", "path"),
         VN_INSPECT("VN_INSPECT", "Inspect a visual novel folder for engine markers, possible text sources, compiled files and archive candidates. Returns a bounded report using file names, not contents.", "path"),
+        REFERENCE_SEARCH("reference_search", "Search local guide titles when a user request or unresolved format, encoding or tool problem calls for a guide. Returns up to eight titles and IDs without loading any text.", "query"),
+        REFERENCE_READ("reference_read", "Read one local guide by an exact document ID from reference_search. Give the specific unresolved question in reason. Skip this tool for routine tasks.", "documentId"),
         ARCHIVE_LIST("archive_list", "List entries in an archive without extracting it. Supports optional password and after cursor.", "path"),
         INSPECT_FILE("inspect_file", "Deep GUI-level inspection of a workspace file or archive: detects format by extension and magic, XP3 encryption scheme, text encoding & BOM, TJS2 bytecode, image dimensions (PNG/JPEG/GIF/WebP/BMP), RPG Maker MV/MZ header, and hex/ASCII header preview.", "path"),
         APP_SETTINGS("app_settings", "Read or update UsefulUnpack archive and localization preferences (zip_encoding, text_encoding, zip_level, sz_level, generic_level, compress_split_size, parallel_threads, sort_mode)."),
@@ -96,6 +98,10 @@ internal class WorkspaceSkillRuntime(
                 properties.put("idempotencyKey", JSONObject().put("type", "string"))
                 properties.put("waitMs", JSONObject().put("type", "integer"))
                 required.put("output")
+            }
+            if (this == REFERENCE_READ) {
+                properties.put("reason", JSONObject().put("type", "string"))
+                required.put("reason")
             }
             if (this == INSPECT_FILE) {
                 properties.put("hexBytes", JSONObject().put("type", "integer"))
@@ -237,6 +243,22 @@ internal class WorkspaceSkillRuntime(
             )
             Tool.DETECT_GAME_ENGINE -> detectGameEngine(workspace.resolve(argument(), allowRoot = true).toPath())
             Tool.VN_INSPECT -> inspectVnProject(workspace, argument())
+            Tool.REFERENCE_SEARCH -> {
+                val query = argument().trim()
+                if (query.isEmpty() || query.length > 160) throw mcpInputError("Expected a focused guide query")
+                val matches = AgentReferenceDocument.search(query).map { document ->
+                    JSONObject().put("documentId", document.id).put("title", document.catalogTitle)
+                }
+                JSONObject().put("documents", JSONArray(matches))
+            }
+            Tool.REFERENCE_READ -> {
+                val reason = argument("reason").trim()
+                if (reason.isEmpty() || reason.length > 240) throw mcpInputError("Give a brief reason to read this guide")
+                val id = argument()
+                val document = AgentReferenceDocument.entries.firstOrNull { it.id == id }
+                    ?: throw mcpInputError("Unknown local reference document ID")
+                JSONObject().put("documentId", document.id).put("title", document.catalogTitle).put("text", document.readText())
+            }
             Tool.HELP -> {
                 val allCommands = UuCommands.commandList().map { "${it.usage} — ${it.summary}" } +
                     "uu run [-k] <file.uut> [args...] — Run a UUT script inside the workspace"

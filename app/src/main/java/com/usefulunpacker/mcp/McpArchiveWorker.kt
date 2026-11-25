@@ -685,6 +685,8 @@ internal class McpArchiveWorker(
             cacheDir = cacheDir,
             defaultOutDir = cwd,
             registerCancel = { cancelFn -> task.bindNativeCancel(cancelFn) },
+            scheduleHeadless = true,
+            checkCancelled = task::checkCancelled,
         )
 
     private fun runUuCommand(
@@ -696,17 +698,14 @@ internal class McpArchiveWorker(
         if (argvWithoutUu.firstOrNull() == "run") {
             return runNestedUut(task, argvWithoutUu.drop(1), state, depth)
         }
+        // Legacy UU operations derive paths and may walk trees after resolving argv.
+        workspace.verifyTree(workspace.root, task::checkCancelled)
         val expanded = UuCommands.expandGlobs(
             listOf("uu") + argvWithoutUu,
             state.cwd,
             UuCommands.globSkipIndices(listOf("uu") + argvWithoutUu),
         ).drop(1)
         val cmdName = expanded.firstOrNull().orEmpty()
-        // The legacy dispatcher derives child paths and may walk directories after resolving argv.
-        // Check the workspace tree before handing it to those operations.
-        if (task.trace?.feature?.startsWith("agent_session_") == true) {
-            workspace.verifyTree(workspace.root, task::checkCancelled)
-        }
         val beforeFiles = if (cmdName in setOf("x", "c", "cp", "mv", "rn", "mkdir", "set", "cso", "audio", "video", "enc", "mvdec", "rmd", "add", "dd", "sed", "tr", "img", "b64")) {
             state.cwd.listFiles()?.map { it.name to it.lastModified() }?.toMap().orEmpty()
         } else emptyMap()

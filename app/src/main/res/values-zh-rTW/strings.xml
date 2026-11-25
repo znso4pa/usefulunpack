@@ -801,9 +801,17 @@
     <string name="agent_exchange">你 · %1$s\n\nAgent · %2$s</string>
     <string name="agent_base_url">模型 Base URL，如 https://host/v1</string>
     <string name="agent_model_name">模型名稱</string>
-    <string name="agent_api_key">API 金鑰（選填，僅本次工作階段）</string>
+    <string name="agent_api_key">API 金鑰（選填）</string>
+    <string name="agent_key_storage_notice">API 金鑰加密儲存在本裝置，並與目前的 Base URL 綁定。</string>
+    <string name="agent_key_reveal">顯示 API 金鑰</string>
+    <string name="agent_key_clear">移除已儲存的金鑰</string>
+    <string name="agent_key_clear_pending">儲存後會移除先前儲存的金鑰。</string>
+    <string name="agent_key_invalid">請輸入金鑰本身，移除空格及 Bearer 前綴。</string>
+    <string name="agent_key_read_failed">無法讀取 API 金鑰。請在模型設定中重新輸入。 · %1$s</string>
+    <string name="agent_key_save_failed">無法儲存 API 金鑰。 · %1$s</string>
     <string name="agent_invalid_settings">請輸入模型名稱和 HTTPS Base URL。裝置本機 127.0.0.1 可用 HTTP。</string>
     <string name="agent_sessions">對話</string>
+    <string name="agent_sessions_loading">正在載入對話…</string>
     <string name="agent_new_session">新增對話</string>
     <string name="agent_delete_session">刪除目前對話？</string>
     <string name="agent_delete_session_detail">會刪除這段對話、常駐上下文和對應的本機診斷紀錄。</string>
@@ -818,7 +826,7 @@
     <string name="agent_context_hint">填寫必須閱讀的說明、約定或背景。</string>
     <string name="agent_context_notice">每次請求都會將此上下文傳送給已設定的模型。</string>
     <string name="agent_approval">確認本機操作</string>
-    <string name="agent_approval_detail">這次操作可能在工作區建立、修改或永久刪除檔案。\n\n%1$s\n%2$s</string>
+    <string name="agent_approval_detail">工作區：%1$s\n\n這次操作可能在工作區建立、修改或永久刪除檔案。\n\n%2$s\n%3$s</string>
     <string name="agent_approve">確認執行</string>
     <string name="agent_tool_write">執行中 · %1$s · %2$s</string>
     <string name="agent_storage_failed">對話儲存失敗 · %1$s</string>

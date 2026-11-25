@@ -801,9 +801,17 @@
     <string name="agent_exchange">あなた · %1$s\n\nAgent · %2$s</string>
     <string name="agent_base_url">モデルの Base URL（例 https://host/v1）</string>
     <string name="agent_model_name">モデル名</string>
-    <string name="agent_api_key">API キー（任意、このセッションのみ）</string>
+    <string name="agent_api_key">API キー（任意）</string>
+    <string name="agent_key_storage_notice">API キーはこの端末に暗号化して保存され、現在の Base URL に紐づけられます。</string>
+    <string name="agent_key_reveal">API キーを表示</string>
+    <string name="agent_key_clear">保存済みの API キーを削除</string>
+    <string name="agent_key_clear_pending">設定を保存すると、保存済みのキーが削除されます。</string>
+    <string name="agent_key_invalid">空白や Bearer を除いた API キーを入力してください。</string>
+    <string name="agent_key_read_failed">API キーを読み取れません。モデル設定で再入力してください。 · %1$s</string>
+    <string name="agent_key_save_failed">API キーを保存できませんでした。 · %1$s</string>
     <string name="agent_invalid_settings">モデル名と HTTPS の Base URL を入力してください。127.0.0.1 では HTTP も使えます。</string>
     <string name="agent_sessions">セッション</string>
+    <string name="agent_sessions_loading">セッションを読み込み中…</string>
     <string name="agent_new_session">新規セッション</string>
     <string name="agent_delete_session">現在のセッションを削除しますか？</string>
     <string name="agent_delete_session_detail">この会話、常設コンテキスト、関連するローカル診断ログを削除します。</string>
@@ -818,7 +826,7 @@
     <string name="agent_context_hint">毎回参照する指示や背景を入力してください。</string>
     <string name="agent_context_notice">設定済みのモデルへ毎回このコンテキストを送信します。</string>
     <string name="agent_approval">ローカル操作の確認</string>
-    <string name="agent_approval_detail">作業フォルダ内でファイルを作成、変更、または完全に削除する場合があります。\n\n%1$s\n%2$s</string>
+    <string name="agent_approval_detail">作業フォルダ：%1$s\n\n作業フォルダ内でファイルを作成、変更、または完全に削除する場合があります。\n\n%2$s\n%3$s</string>
     <string name="agent_approve">操作を実行</string>
     <string name="agent_tool_write">実行中 · %1$s · %2$s</string>
     <string name="agent_storage_failed">セッションの保存処理に失敗しました · %1$s</string>

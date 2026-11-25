@@ -806,9 +806,17 @@
     <string name="agent_exchange">你 · %1$s\n\nAgent · %2$s</string>
     <string name="agent_base_url">模型 Base URL，如 https://host/v1</string>
     <string name="agent_model_name">模型名称</string>
-    <string name="agent_api_key">API 密钥（可选，仅本次会话）</string>
+    <string name="agent_api_key">API 密钥（可选）</string>
+    <string name="agent_key_storage_notice">API 密钥加密保存在本设备，并与当前 Base URL 绑定。</string>
+    <string name="agent_key_reveal">显示 API 密钥</string>
+    <string name="agent_key_clear">移除已保存的密钥</string>
+    <string name="agent_key_clear_pending">保存后会移除已保存的密钥。</string>
+    <string name="agent_key_invalid">请输入密钥本身，去掉空格和 Bearer 前缀。</string>
+    <string name="agent_key_read_failed">无法读取 API 密钥。请在模型设置中重新输入。 · %1$s</string>
+    <string name="agent_key_save_failed">无法保存 API 密钥。 · %1$s</string>
     <string name="agent_invalid_settings">请输入模型名称和 HTTPS Base URL。设备本机 127.0.0.1 可用 HTTP。</string>
     <string name="agent_sessions">会话</string>
+    <string name="agent_sessions_loading">正在加载会话…</string>
     <string name="agent_new_session">新会话</string>
     <string name="agent_delete_session">删除当前会话？</string>
     <string name="agent_delete_session_detail">会删除这段会话、常驻上下文和对应的本地诊断记录。</string>
@@ -823,7 +831,7 @@
     <string name="agent_context_hint">填写必须阅读的说明、约定或背景。</string>
     <string name="agent_context_notice">每次请求都会把这段上下文发给已配置的模型。</string>
     <string name="agent_approval">确认本地操作</string>
-    <string name="agent_approval_detail">这次操作可能在工作区创建、修改或永久删除文件。\n\n%1$s\n%2$s</string>
+    <string name="agent_approval_detail">工作区：%1$s\n\n这次操作可能在工作区创建、修改或永久删除文件。\n\n%2$s\n%3$s</string>
     <string name="agent_approve">确认执行</string>
     <string name="agent_tool_write">执行中 · %1$s · %2$s</string>
     <string name="agent_storage_failed">会话存储失败 · %1$s</string>

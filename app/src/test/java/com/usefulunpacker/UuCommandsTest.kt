@@ -3,6 +3,7 @@ package com.usefulunpacker
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -14,6 +15,26 @@ import java.io.File
  * prefs 传 null 即可在纯 JVM 下断言行为。
  */
 class UuCommandsTest {
+    @Test fun headlessArchiveUsesTheSharedFamilySlotAndQueuedCancelIsIsolated() {
+        val running = tryStartOperation("pf6")
+        val callbacks = mutableListOf<() -> Unit>()
+        val toolContext = UuCommands.Ctx(null, java.io.File("."), scheduleHeadless = true,
+            registerCancel = { callbacks.add(it) })
+        try {
+            assertTrue(running.await())
+            val queued = checkNotNull(toolContext.reserveArchive("pfs"))
+            try {
+                assertFalse(queued.isRunning)
+                callbacks.single().invoke()
+                assertFalse(toolContext.awaitArchive(queued))
+                assertTrue(running.isRunning)
+            } finally {
+                queued.release()
+            }
+        } finally {
+            running.release()
+        }
+    }
 
     @get:Rule
     val tmp = TemporaryFolder()
@@ -266,6 +287,10 @@ class UuCommandsTest {
         val r3 = UuCommands.dispatch(listOf("grep", "zzz-nope", "."), c)
         assertEquals(0, r3.exitCode)
         assertTrue(r3.text.contains("!str:"))  // cli_grep_none stub
+        assertNull(r3.failure)
+        val missing = UuCommands.dispatch(listOf("grep", "hello", "missing.txt"), c)
+        assertEquals(1, missing.exitCode)
+        assertEquals(FailureCode.COMMAND, missing.failure?.code)
     }
 
     @Test

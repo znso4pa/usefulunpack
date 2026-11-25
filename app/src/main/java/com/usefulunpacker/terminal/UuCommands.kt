@@ -51,7 +51,22 @@ internal object UuCommands {
          * 命令在拿到 opH/accessors 后注册；终端层在命令结束时清掉。
          */
         val registerCancel: ((() -> Unit) -> Unit)? = null,
+        val scheduleHeadless: Boolean = false,
+        val checkCancelled: (() -> Unit)? = null,
     ) {
+        internal fun reserveArchive(format: String): com.usefulunpacker.archive.OpScheduler.OpHandle? {
+            if (activity == null && !scheduleHeadless) return null
+            return tryStartOperation(format).also { handle ->
+                registerCancel?.invoke { handle.requestCancel() }
+            }
+        }
+
+        internal fun awaitArchive(handle: com.usefulunpacker.archive.OpScheduler.OpHandle?): Boolean {
+            if (handle?.await() == false) return false
+            checkCancelled?.invoke()
+            return true
+        }
+
         fun text(resId: Int, vararg args: Any) = str(resId, arrayOf(*args))
     }
 
@@ -157,7 +172,7 @@ internal object UuCommands {
     /** @param argv 已切分的参数（含命令名本身）。 */
     fun dispatch(argv: List<String>, ctx: Ctx): Result {
         val name = argv.firstOrNull()?.takeIf { token -> table.any { it.name == token } } ?: "unknown"
-        val hasPwFlag = name in setOf("l", "cat", "x", "c", "set", "rmd", "add", "diff")
+        val hasPwFlag = name in setOf("l", "cat", "grep", "x", "c", "set", "rmd", "add", "diff")
         val secrets = listOfNotNull(ctx.password) +
             if (hasPwFlag) argv.drop(1).windowed(2).filter { it[0] in setOf("-p", "--password", "-k", "--key") }.map { it[1] }
             else emptyList()
@@ -165,8 +180,8 @@ internal object UuCommands {
         try {
         val trace = AppDiagnostics.begin("command", secrets)
         val result = AppDiagnostics.withTrace(trace) { dispatchCommand(argv, ctx) }
-        // A missing interactive argument requests a picker; comparisons/no matches use exit 1 normally.
-        val failure = if (result.exitCode != 0 && result.picker == null && !(result.exitCode == 1 && name in setOf("cmp", "diff", "grep")))
+        // A missing interactive argument requests a picker; comparisons use exit 1 for differences.
+        val failure = if (result.exitCode != 0 && result.picker == null && !(result.exitCode == 1 && name in setOf("cmp", "diff")))
             trace.fail(FailureCode.COMMAND, "Command exit=${result.exitCode}") else null
         trace.note("exit=${result.exitCode}")
         return Result(result.text, result.exitCode, result.picker, failure)
@@ -487,10 +502,10 @@ internal object UuCommands {
             ?: return Result(UuText.extractBadFormat(ctx.str, "-"), 1)
         // 密码：先试空密码（大多数包没密码），失败再让用户加 -p。
         // 不弹模态 —— 模态在终端里很怪，而且可阻塞 30s 会冻住输出区。
-        lastListError = ""
+        lastListError.remove()
         val json = listEntriesJsonFor(ctx, fmt, f, pwd)
             ?: return Result(
-                if (lastListError.isNotEmpty()) UuText.listFailedWhy(ctx.str, f.name, lastListError)
+                if (!lastListError.get().isNullOrEmpty()) UuText.listFailedWhy(ctx.str, f.name, lastListError.get().orEmpty())
                 else UuText.listFailed(ctx.str, f.name),
                 1,
             )
@@ -779,12 +794,34 @@ internal object UuCommands {
         return matchEntryPaths(parseEntries(json).map { it.path }, patterns)
     }
 
-    private fun listEntriesJsonFor(ctx: Ctx, fmt: String, f: File, pwd: String): String? {
-        return listEntriesJson(fmt, f, pwd, nestedOnly = false, prefs = ctx.prefs ?: ctx.activity?.prefs) { lastListError = it }
+    private fun listEntriesJsonFor(ctx: Ctx, fmt: String, f: File, pwd: String): String? =
+        ctx.withArchiveSlot(fmt) {
+            listEntriesJson(fmt, f, pwd, nestedOnly = false, prefs = ctx.prefs ?: ctx.activity?.prefs) {
+                lastListError.set(it)
+            }
+        }
+
+    private fun <T> Ctx.withArchiveSlot(format: String, extract: Boolean = false, block: () -> T): T {
+        val handle = reserveArchive(format)
+        try {
+            if (!awaitArchive(handle)) throw java.util.concurrent.CancellationException()
+            if (extract && handle != null) {
+                val accessors = extractAccessors(format)
+                registerCancel?.invoke {
+                    if (handle.isRunning) {
+                        handle.markCancelRequested()
+                        accessors.cancel()
+                    }
+                }
+            }
+            return block()
+        } finally {
+            handle?.release()
+        }
     }
 
     /** Why the last listing failed, when the native layer said so. */
-    private var lastListError: String = ""
+    private val lastListError = ThreadLocal<String>()
 
     /**
      * `uu x <archive> [outdir] [entry...] [-p pw]`。
@@ -899,11 +936,11 @@ internal object UuCommands {
             val selected = selPaths.joinToString("\n")
 
             val act = ctx.activity
-            val opH = act?.let { tryStartOperation(it, fmt) }
+            val opH = ctx.reserveArchive(fmt)
             try {
                 // await()==false = 排队期被取消：必须中止，不能带着取消标记开跑
                 //（Rust 入口的 clear_cancel 会把它清掉）。
-                if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+                if (!ctx.awaitArchive(opH)) return Result(UuText.extractCancelled(ctx.str), 1)
                 val outDir = outDirExplicit
                     ?: uniqueFile(defaultOut(ctx), src0.nameWithoutExtension.ifEmpty { "extracted" })
                 val accessors = extractAccessors(fmt)
@@ -1049,9 +1086,9 @@ internal object UuCommands {
                 return Result(UuText.failed(ctx.str, "-c: $fmt"), 1)
             }
             val outDir = defaultOut(ctx)
-            val opH = ctx.activity?.let { tryStartOperation(it, fmt) }
+            val opH = ctx.reserveArchive(fmt)
             try {
-                if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+                if (!ctx.awaitArchive(opH)) return Result(UuText.extractCancelled(ctx.str), 1)
                 val accessors = compressAccessors(fmt)
                 ctx.registerCancel?.invoke {
                     val running = opH?.isRunning == true
@@ -1192,10 +1229,9 @@ internal object UuCommands {
         }
         val splitBytes = if (splitMb > 0) splitMb * 1024 * 1024 else null
 
-        val act = ctx.activity
-        val opH = act?.let { tryStartOperation(it, fmt) }
+        val opH = ctx.reserveArchive(fmt)
         try {
-            if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+            if (!ctx.awaitArchive(opH)) return Result(UuText.extractCancelled(ctx.str), 1)
             // 拿到槽位后再解析产物名（不变量：排队中的两次打包不能在入队时撞名）。
             val outFile = when {
                 pos.size >= 2 -> UuText.resolve(ctx.cwd, pos[1])
@@ -1593,8 +1629,13 @@ internal object UuCommands {
             val tmpDir = ctx.cacheDir?.let { File(it, "uu_cat/${System.nanoTime()}") }
                 ?: return Result(UuText.needsActivity(ctx.str), 2)
             try {
-                val o = extractByFormat(fmt, archive.path, tmpDir.path, rel, ctx.prefs
-                    ?: throw IllegalStateException("prefs required"), pw)
+                val outcome = ctx.withArchiveSlot(fmt, extract = true) {
+                    extractByFormat(fmt, archive.path, tmpDir.path, rel, ctx.prefs
+                        ?: throw IllegalStateException("prefs required"), pw)
+                }
+                if (!outcome.counts.ok || outcome.counts.total <= 0) {
+                    return Result(UuText.failed(ctx.str, outcome.error ?: archive.name), 1)
+                }
                 val f = File(tmpDir, rel)
                 if (!f.isFile) {
                     return Result(ctx.text(R.string.cli_set_no_entry, pos[1]), 1)
@@ -1634,36 +1675,36 @@ internal object UuCommands {
         // 显式指定的**纯文本文件**直接搜它。此前一律按归档处理，`uu grep alpha
         // a.txt` 会报"不是可解压的归档：-"，等于把合法用法判死（`-` 还是占位符，
         // 用户根本看不出说的是哪个文件）。
-        var explicitFile = false
-        val root: File = if (target.isFile) {
-            val fmt = detectFormat(target) ?: detectFormatByMagic(target)
-            if (fmt == null) {
-                explicitFile = true
+        try {
+            val fmt = if (target.isFile) detectFormat(target) ?: detectFormatByMagic(target) else null
+            val explicitFile = fmt == null && target.isFile
+            val root = if (fmt == null) {
                 target
             } else {
-            val d = ctx.cacheDir?.let { File(it, "uu_grep/${System.nanoTime()}") }
-                ?: return Result(UuText.needsActivity(ctx.str), 2)
-            tempDir = d
-            val json = listEntriesJsonFor(ctx, fmt, target, gpw)
-                ?: return Result(UuText.listFailed(ctx.str, target.name), 1)
-            val entries = parseEntries(json)
-            for (e in entries) {
-                if (e.isDirectory) continue
-                val ext = e.name.substringAfterLast('.').lowercase()
-                if (ext !in TEXT_SEARCH_EXTS) continue
-                val rel = sanitizeEntryPath(e.path) ?: continue
-                extractByFormat(fmt, target.path, d.path, rel, ctx.prefs
-                    ?: throw IllegalStateException("prefs required"), gpw)
+                val d = ctx.cacheDir?.let { File(it, "uu_grep/${System.nanoTime()}") }
+                    ?: return Result(UuText.needsActivity(ctx.str), 2)
+                tempDir = d
+                val json = listEntriesJsonFor(ctx, fmt, target, gpw)
+                    ?: return Result(UuText.listFailed(ctx.str, target.name), 1)
+                for (e in parseEntries(json)) {
+                    if (e.isDirectory || e.name.substringAfterLast('.').lowercase() !in TEXT_SEARCH_EXTS) continue
+                    val rel = sanitizeEntryPath(e.path)
+                        ?: return Result(UuText.failed(ctx.str, e.path), 1)
+                    val outcome = ctx.withArchiveSlot(fmt, extract = true) {
+                        extractByFormat(fmt, target.path, d.path, rel, ctx.prefs
+                            ?: throw IllegalStateException("prefs required"), gpw)
+                    }
+                    if (!outcome.counts.ok || outcome.counts.total <= 0 || !File(d, rel).isFile) {
+                        return Result(UuText.failed(ctx.str, outcome.error ?: e.path), 1)
+                    }
+                }
+                d
             }
-            d
-            }
-        } else target
-
-        try {
             var matches = 0
             var fileName = 0
             val sb = StringBuilder()
             root.walkTopDown().forEach { f ->
+                ctx.checkCancelled?.invoke()
                 if (!f.isFile) return@forEach
                 // 目录搜索只查文本类；归档解出的临时内容已是白名单；
                 // 用户显式点名的文件不设白名单（shell 的 `grep pat file` 语义）
@@ -1973,9 +2014,9 @@ internal object UuCommands {
         // ZIP 快路径：zipModify replace（未动条目字节级保留）
         val isSplitZip = fmt == "zip" && (isVolumeFile(archive) == "zip" || isZipVolumeName(archive.name))
         if (fmt == "zip" && !isSplitZip) {
-            val opH = act?.let { tryStartOperation(it, "zip") }
+            val opH = ctx.reserveArchive("zip")
             try {
-                if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+                if (!ctx.awaitArchive(opH)) return Result(UuText.extractCancelled(ctx.str), 1)
                 val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
                 val tmp = File(parent, "${archive.nameWithoutExtension}.set.zip")
                 val ok = ZipCore.zipModify("", archive.path, tmp.path, "replace|$rel|${srcFile.path}", pw)
@@ -1998,10 +2039,10 @@ internal object UuCommands {
         if (fmt !in COMPRESS_EXT.keys) return Result(UuText.packUnknownKey(ctx.str, fmt), 1)
         val staging = ctx.cacheDir?.let { File(it, "uu_set/${System.nanoTime()}") }
             ?: return Result(UuText.needsActivity(ctx.str), 2)
-        val opH = act?.let { tryStartOperation(it, fmt) }
+        val opH = ctx.reserveArchive(fmt)
         val cancelled = AtomicBoolean(false)
         try {
-            if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+            if (!ctx.awaitArchive(opH)) return Result(UuText.extractCancelled(ctx.str), 1)
             var acc = extractAccessors(fmt)
             ctx.registerCancel?.invoke {
                 val running = opH?.isRunning == true
@@ -2066,11 +2107,10 @@ internal object UuCommands {
         val outF = pos.getOrNull(1)?.let { UuText.resolve(ctx.cwd, it) }
             ?: uniqueFile(defaultOut(ctx), "${src.nameWithoutExtension}.${if (toCso) "cso" else "iso"}")
         if (outF.exists()) return Result(ctx.text(R.string.cli_exists, outF.path), 1)
-        val act = ctx.activity
-        val opH = act?.let { tryStartOperation(it, "cso") }
+        val opH = ctx.reserveArchive("cso")
         val cancelled = AtomicBoolean(false)
         try {
-            if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+            if (!ctx.awaitArchive(opH)) return Result(UuText.extractCancelled(ctx.str), 1)
             val acc = ProgressAccessors(
                 { CsoCore.csoProgressCount() }, { CsoCore.csoProgressTotal() },
                 { CsoCore.csoProgressFileCount() }, { CsoCore.csoProgressFileTotal() },
@@ -2152,13 +2192,13 @@ internal object UuCommands {
         val outDir = pa.values["-o"]?.let { UuText.resolve(ctx.cwd, it) } ?: defaultOut(ctx)
         outDir.mkdirs()
 
-        val opH = ctx.activity?.let { tryStartOperation(it, "audio") }
+        val opH = ctx.reserveArchive("audio")
         val cancelled = AtomicBoolean(false)
         val sb = StringBuilder()
         var ok = 0
         var fail = 0
         try {
-            if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+            if (!ctx.awaitArchive(opH)) return Result(UuText.extractCancelled(ctx.str), 1)
             val acc = ProgressAccessors(
                 { AudioCore.audioProgressCount() }, { AudioCore.audioProgressTotal() },
                 { AudioCore.audioProgressFileCount() }, { AudioCore.audioProgressFileTotal() },
@@ -2249,13 +2289,13 @@ internal object UuCommands {
         val outDir = pa.values["-o"]?.let { UuText.resolve(ctx.cwd, it) } ?: defaultOut(ctx)
         outDir.mkdirs()
 
-        val opH = ctx.activity?.let { tryStartOperation(it, "video") }
+        val opH = ctx.reserveArchive("video")
         val cancelled = AtomicBoolean(false)
         val sb = StringBuilder()
         var ok = 0
         var fail = 0
         try {
-            if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+            if (!ctx.awaitArchive(opH)) return Result(UuText.extractCancelled(ctx.str), 1)
             val acc = ProgressAccessors(
                 { VideoCore.videoProgressCount() }, { VideoCore.videoProgressTotal() },
                 { VideoCore.videoProgressFileCount() }, { VideoCore.videoProgressFileTotal() },
@@ -2382,12 +2422,15 @@ internal object UuCommands {
         var ok = 0
         var fail = 0
         for (p in pa.pos) {
+            ctx.checkCancelled?.invoke()
             val f = UuText.resolve(ctx.cwd, p)
             if (!f.isFile) { fail++; continue }
-            val o = com.usefulunpacker.observedAttempt("UuCommands") {
-                extractByFormat("rpgmv", f.path, outDir.path, "", ctx.prefs
-                    ?: throw IllegalStateException("prefs required"), "")
-            }.getOrNull()
+            val o = ctx.withArchiveSlot("rpgmv", extract = true) {
+                com.usefulunpacker.observedAttempt("UuCommands") {
+                    extractByFormat("rpgmv", f.path, outDir.path, "", ctx.prefs
+                        ?: throw IllegalStateException("prefs required"), "")
+                }.getOrNull()
+            }
             if (o != null && o.counts.ok) ok++ else fail++
         }
         val msg = ctx.text(R.string.cli_ok_count, ok.toString())
@@ -2406,10 +2449,9 @@ internal object UuCommands {
             return Result(ctx.stringZipMulti(), 1)
         }
         val parent = archive.parentFile ?: ctx.cwd
-        val act = ctx.activity
-        val opH = act?.let { tryStartOperation(it, "zip") }
+        val opH = ctx.reserveArchive("zip")
         try {
-            if (opH?.await() == false) return Result(UuText.extractCancelled(ctx.str), 1)
+            if (!ctx.awaitArchive(opH)) return Result(UuText.extractCancelled(ctx.str), 1)
             val outF = uniqueFile(parent, "${archive.nameWithoutExtension}-cn.zip")
             val tmp = File(parent, "${archive.nameWithoutExtension}.edit.zip")
             val ok = com.usefulunpacker.observedAttempt("UuCommands") { ZipCore.zipModify("", archive.path, tmp.path, ops, pw) }

@@ -9,6 +9,31 @@ import java.io.IOException
 class AgentSessionStoreTest {
     @get:Rule val tmp = TemporaryFolder()
 
+    @Test fun changingModelAddressDoesNotCarryConversationContextOrPermissionsAcross() {
+        val saved = AgentSession(
+            workspace = "/example/workspace", permission = AgentPermission.FULL_LOCAL, context = "private context",
+            baseUrl = "https://model.example/one", model = "first",
+            turns = listOf(AgentExchange("question", "answer")),
+        )
+        val next = saved.withModelSettings("https://model.example/two", "second")
+        assertNotEquals(saved.id, next.id)
+        assertNull(next.workspace)
+        assertEquals(AgentPermission.READ_ONLY, next.permission)
+        assertEquals("", next.context)
+        assertTrue(next.turns.isEmpty())
+        val same = saved.withModelSettings("https://model.example/one/", "second")
+        assertEquals(saved.context, same.context)
+        assertEquals(saved.workspace, same.workspace)
+    }
+
+    @Test fun oldSessionViewCannotDeleteNewerRevision() {
+        val store = AgentSessionStore(tmp.newFolder())
+        val original = store.save(AgentSession())
+        val newer = store.save(original.copy(context = "Later edit"))
+        assertThrows(IOException::class.java) { store.delete(original) { error("No log deletion for a stale revision") } }
+        assertEquals(listOf(newer), store.list())
+    }
+
     @Test fun deletesCompressedSessionAndOnlyItsDiagnosticFiles() {
         val directory = tmp.newFolder()
         val store = AgentSessionStore(directory)

@@ -108,6 +108,8 @@ internal enum class AgentReadTool(
 
 internal data class AgentToolEvent(val name: String, val path: String, val failure: String? = null, val readOnly: Boolean = true)
 
+private data class ModelToolCall(val id: String, val name: String, val raw: String, val input: JSONObject?)
+
 internal class AgentClient(
     private val endpoint: URL,
     private val model: String,
@@ -136,30 +138,19 @@ internal class AgentClient(
         repeat(MAX_ROUNDS) {
             val reply = send(messages, schemas)
             val calls = reply.optJSONArray("tool_calls")
+            if (calls == null && !reply.isNull("tool_calls")) throw invalidResponse()
             if (calls == null || calls.length() == 0) {
                 return (reply.opt("content") as? String)?.takeIf { it.isNotBlank() }
                     ?: throw invalidResponse()
             }
-            if (calls.length() > MAX_CALLS) throw invalidResponse()
+            val batch = parseToolCalls(calls)
             // Send back only the fields required to associate calls with their results.
             val assistantCalls = JSONArray()
             val toolReplies = JSONArray()
-            val ids = mutableSetOf<String>()
-            for (index in 0 until calls.length()) {
+            for ((id, name, raw, args) in batch) {
                 request.checkActive()
-                val call = calls.optJSONObject(index) ?: throw invalidResponse()
-                val id = (call.opt("id") as? String)?.takeIf { it.length in 1..256 && ids.add(it) }
-                    ?: throw invalidResponse()
-                val fn = call.optJSONObject("function") ?: throw invalidResponse()
-                val name = (fn.opt("name") as? String)?.takeIf { it.length in 1..64 }
-                    ?: throw invalidResponse()
-                val raw = (fn.opt("arguments") as? String)?.takeIf { it.length <= 4096 }
-                    ?: throw invalidResponse()
-                val args = try { JSONObject(raw) }
-                catch (_: org.json.JSONException) { null }
-                catch (_: StackOverflowError) { null }
                 val tool = tools[name]
-                val payload = if (call.opt("type") == "function" && tool != null && args != null && tool.accepts(args)) {
+                val payload = if (tool != null && args != null && tool.accepts(args)) {
                     execute(tool, args, runtime, confirm, deleteFile, onTool)
                 } else {
                     val failure = AppDiagnostics.begin("tool_policy").fail(FailureCode.INVALID_RESULT,
@@ -176,6 +167,26 @@ internal class AgentClient(
             for (index in 0 until toolReplies.length()) messages.put(toolReplies.getJSONObject(index))
         }
         throw AgentClientException("model_rounds", FailureCode.INVALID_RESULT, "The model reached the tool round limit")
+    }
+
+    private fun parseToolCalls(calls: JSONArray): List<ModelToolCall> {
+        if (calls.length() > MAX_CALLS) throw invalidResponse()
+        val ids = mutableSetOf<String>()
+        return List(calls.length()) { index ->
+            val call = calls.optJSONObject(index) ?: throw invalidResponse()
+            if (call.opt("type") != "function") throw invalidResponse()
+            val id = (call.opt("id") as? String)?.takeIf { it.length in 1..256 && ids.add(it) }
+                ?: throw invalidResponse()
+            val fn = call.optJSONObject("function") ?: throw invalidResponse()
+            val name = (fn.opt("name") as? String)?.takeIf { it.length in 1..64 } ?: throw invalidResponse()
+            val raw = (fn.opt("arguments") as? String)?.takeIf { it.length <= 4096 } ?: throw invalidResponse()
+            val parser = org.json.JSONTokener(raw)
+            val input = try {
+                (parser.nextValue() as? JSONObject)?.takeIf { parser.nextClean() == '\u0000' }
+            } catch (_: org.json.JSONException) { null }
+              catch (_: StackOverflowError) { null }
+            ModelToolCall(id, name, raw, input)
+        }
     }
 
     private fun execute(
@@ -225,11 +236,13 @@ internal class AgentClient(
         try {
             connection.requestMethod = "POST"
             connection.instanceFollowRedirects = false
+            connection.useCaches = false
             connection.connectTimeout = 10_000
             connection.readTimeout = 30_000
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Cache-Control", "no-store")
             if (apiKey.isNotEmpty()) connection.setRequestProperty("Authorization", "Bearer $apiKey")
             val data = JSONObject().put("model", model).put("messages", messages)
                 .put("tools", tools).put("stream", false).toString().toByteArray(Charsets.UTF_8)

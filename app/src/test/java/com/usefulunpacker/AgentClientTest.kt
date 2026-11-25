@@ -14,6 +14,13 @@ import java.net.SocketException
 import kotlin.concurrent.thread
 
 class AgentClientTest {
+    @Test fun approvalDisplaysInvisiblePathCharactersAndPreservesJsonLayout() {
+        val supplementary = String(Character.toChars(0xE0001))
+        assertEquals("dir\\u000a\\u202e\\u{e0001}/档案", visibleAgentText("dir\n\u202e$supplementary/档案"))
+        assertEquals("{\n  \"path\": \"目录\\u2028文件\"\n}",
+            visibleAgentText("{\n  \"path\": \"目录\u2028文件\"\n}", keepNewlines = true))
+    }
+
     @Test fun onlyPermittedMetadataCallsAreDispatched() {
         val requested = mutableListOf<String>()
         val runtime = object : AppSkillRuntime {

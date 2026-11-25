@@ -29,6 +29,18 @@ internal data class AgentSession(
 ) {
     val title: String get() = turns.firstOrNull()?.question?.lineSequence()?.firstOrNull().orEmpty().take(70)
     val feature: String get() = "agent_session_$id"
+
+    fun withModelSettings(url: String, modelName: String): AgentSession {
+        val previousEndpoint = agentEndpoint(baseUrl)?.toExternalForm()
+        val nextEndpoint = agentEndpoint(url)?.toExternalForm()
+        if (previousEndpoint != null && previousEndpoint != nextEndpoint) {
+            return AgentSession(baseUrl = url, model = modelName)
+        }
+        if (turns.isNotEmpty()) {
+            return AgentSession(workspace = workspace, context = context, baseUrl = url, model = modelName)
+        }
+        return copy(baseUrl = url, model = modelName)
+    }
 }
 
 /** One compressed snapshot per session. Only the current revision can update a saved session. */
@@ -74,6 +86,9 @@ internal class AgentSessionStore(private val directory: File) {
     fun delete(session: AgentSession, removeLogs: (String) -> Unit) = synchronized(lock) {
         if (session.id in active) throw IOException("Agent session is running")
         val file = file(session.id)
+        if (!file.isFile || read(file).revision != session.revision) {
+            throw IOException("Agent session was changed or deleted")
+        }
         removeLogs(session.feature)
         Files.deleteIfExists(temporaryFile(session.id).toPath())
         Files.deleteIfExists(file.toPath())

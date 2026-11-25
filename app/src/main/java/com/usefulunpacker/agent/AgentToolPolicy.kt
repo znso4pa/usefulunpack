@@ -51,6 +51,20 @@ internal enum class AgentPermission {
 
 internal data class AgentApproval(val name: String, val input: JSONObject)
 
+/** Show direction-changing and other invisible formatting characters literally in approvals. */
+internal fun visibleAgentText(text: String, keepNewlines: Boolean = false): String = buildString(text.length) {
+    text.codePoints().forEach { codePoint ->
+        val hidden = when (Character.getType(codePoint)) {
+            Character.CONTROL.toInt() -> !(keepNewlines && codePoint == '\n'.code)
+            Character.FORMAT.toInt(), Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt() -> true
+            else -> false
+        }
+        if (!hidden) appendCodePoint(codePoint)
+        else if (codePoint <= 0xffff) append("\\u").append(codePoint.toString(16).padStart(4, '0'))
+        else append("\\u{").append(codePoint.toString(16)).append('}')
+    }
+}
+
 internal data class AgentTool(val name: String, val schema: JSONObject, val read: AgentReadTool? = null) {
     fun accepts(input: JSONObject): Boolean {
         val parameters = schema.getJSONObject("function").getJSONObject("parameters")

@@ -808,9 +808,17 @@
     <string name="agent_exchange">You · %1$s\n\nAgent · %2$s</string>
     <string name="agent_base_url">Model Base URL, e.g. https://host/v1</string>
     <string name="agent_model_name">Model name</string>
-    <string name="agent_api_key">API key (optional, this session only)</string>
+    <string name="agent_api_key">API key (optional)</string>
+    <string name="agent_key_storage_notice">The API key is encrypted on this device and saved for this Base URL.</string>
+    <string name="agent_key_reveal">Show API key</string>
+    <string name="agent_key_clear">Remove saved API key</string>
+    <string name="agent_key_clear_pending">The saved key will be removed when you save.</string>
+    <string name="agent_key_invalid">Enter the API key without spaces or a Bearer prefix.</string>
+    <string name="agent_key_read_failed">Could not read the API key. Re-enter it in model settings. · %1$s</string>
+    <string name="agent_key_save_failed">Could not save the API key. · %1$s</string>
     <string name="agent_invalid_settings">Enter a model name and an HTTPS Base URL, or HTTP on 127.0.0.1.</string>
     <string name="agent_sessions">Sessions</string>
+    <string name="agent_sessions_loading">Loading sessions…</string>
     <string name="agent_new_session">New session</string>
     <string name="agent_delete_session">Delete current session?</string>
     <string name="agent_delete_session_detail">This removes its saved conversation, context, and local diagnostics.</string>
@@ -825,7 +833,7 @@
     <string name="agent_context_hint">Write instructions, conventions or background.</string>
     <string name="agent_context_notice">This context is included in every request to the configured model.</string>
     <string name="agent_approval">Confirm local operation</string>
-    <string name="agent_approval_detail">This operation may create, change or permanently delete files in the workspace.\n\n%1$s\n%2$s</string>
+    <string name="agent_approval_detail">Workspace: %1$s\n\nThis operation may create, change or permanently delete files in the workspace.\n\n%2$s\n%3$s</string>
     <string name="agent_approve">Run operation</string>
     <string name="agent_tool_write">Executing · %1$s · %2$s</string>
     <string name="agent_storage_failed">Session storage failed · %1$s</string>

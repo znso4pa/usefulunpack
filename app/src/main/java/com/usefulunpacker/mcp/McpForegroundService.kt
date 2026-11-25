@@ -22,6 +22,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 internal class McpForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
+    private val startupLock = Any()
+    private var startupGeneration = 0L
     @Volatile private var starting = false
 
     companion object {
@@ -30,6 +32,7 @@ internal class McpForegroundService : Service() {
         internal const val ACTION_START = "com.usefulunpacker.action.MCP_START"
         internal const val ACTION_STOP = "com.usefulunpacker.action.MCP_STOP"
         internal const val EXTRA_WORKSPACE = "workspace_path"
+        private const val EXTRA_REPLACE_LISTENER = "replace_listener"
 
         @Volatile var currentListener: McpListener? = null
             private set
@@ -52,10 +55,11 @@ internal class McpForegroundService : Service() {
             stateListeners.forEach { it() }
         }
 
-        fun start(context: Context, directory: File?) {
+        fun start(context: Context, directory: File?, replaceListener: Boolean = false) {
             val intent = Intent(context, McpForegroundService::class.java).apply {
                 action = ACTION_START
                 if (directory != null) putExtra(EXTRA_WORKSPACE, directory.path)
+                if (replaceListener) putExtra(EXTRA_REPLACE_LISTENER, true)
             }
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
             else context.startService(intent)
@@ -72,10 +76,13 @@ internal class McpForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            getSharedPreferences("bm", MODE_PRIVATE).edit().putBoolean(PREF_MCP_ENABLED, false).apply()
             stopListener()
+            getSharedPreferences("bm", MODE_PRIVATE).edit().putBoolean(PREF_MCP_ENABLED, false).apply()
             runFeatureStop()
             return START_NOT_STICKY
+        }
+        if (intent?.getBooleanExtra(EXTRA_REPLACE_LISTENER, false) == true && !starting) {
+            stopListener(notify = false)
         }
 
         try {
@@ -104,9 +111,12 @@ internal class McpForegroundService : Service() {
             notifyStateChanged()
             return
         }
-        starting = true
-        lastStartError = null
-        lastStartTraceId = null
+        val generation = synchronized(startupLock) {
+            starting = true
+            lastStartError = null
+            lastStartTraceId = null
+            ++startupGeneration
+        }
         val prefs = getSharedPreferences("bm", MODE_PRIVATE)
         val scope = AppDiagnostics.enterIntent("mcp_start", newChain = true)
         try {
@@ -116,49 +126,71 @@ internal class McpForegroundService : Service() {
                     val workspace = openMcpWorkspace(Environment.getExternalStorageDirectory(), targetDir)
                     val worker = McpArchiveWorker(workspace, prefs, strFnOf(this))
                     val journalFile = File(workspace.root, MCP_JOURNAL_FILE)
+                    val token = getOrCreateMcpToken(this, prefs)
                     val tasks = McpTasks(
                         journalFile = journalFile,
                         onActiveCountChanged = ::onActiveTaskCountChanged,
                         execute = worker::execute,
                     )
-                    val preferredPort = savedMcpPort(prefs)
-                    val token = getOrCreateMcpToken(prefs)
                     val listener = try {
                         val version = packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
-                        McpListener(
-                            McpProtocol(WorkspaceSkillRuntime(workspace, tasks, prefs), version),
-                            tasks,
-                            workspace.root,
-                            preferredPort = preferredPort,
-                            fixedToken = token,
-                        )
+                        synchronized(startupLock) {
+                            if (generation != startupGeneration) null
+                            else McpListener(
+                                McpProtocol(WorkspaceSkillRuntime(workspace, tasks, prefs), version),
+                                tasks,
+                                workspace.root,
+                                preferredPort = savedMcpPort(prefs),
+                                fixedToken = token,
+                            ).also {
+                                prefs.edit()
+                                    .putString(PREF_MCP_WORKSPACE, workspace.root.path)
+                                    .putInt(PREF_MCP_PORT, it.port)
+                                    .putBoolean(PREF_MCP_ENABLED, true)
+                                    .apply()
+                                currentListener = it
+                                starting = false
+                            }
+                        }
                     } catch (e: Exception) {
                         tasks.close()
                         throw e
                     }
-                    prefs.edit()
-                        .putString(PREF_MCP_WORKSPACE, workspace.root.path)
-                        .putInt(PREF_MCP_PORT, listener.port)
-                        .putBoolean(PREF_MCP_ENABLED, true)
-                        .apply()
-                    currentListener = listener
-                    starting = false
+                    if (listener == null) {
+                        tasks.close()
+                        scope.trace.cancelled()
+                        return@featureThread
+                    }
                     scope.trace.success()
-                    updateNotification(getString(R.string.mcp_notif_running, listener.url, 0))
+                    synchronized(startupLock) {
+                        if (currentListener === listener) {
+                            try { updateNotification(getString(R.string.mcp_notif_running, listener.url, 0)) }
+                            catch (e: Exception) {
+                                recordMcpFailure("background_status", FailureCode.IO,
+                                    "Could not update MCP background status", e.javaClass.simpleName)
+                            }
+                        }
+                    }
                     notifyStateChanged()
                 } catch (e: Exception) {
-                    val invalid = e is McpInputException
-                    scope.trace.fail(
-                        if (invalid) FailureCode.INVALID_RESULT else FailureCode.IO,
-                        if (invalid) "Cannot use the selected MCP workspace" else "Could not start local MCP listener",
-                        e,
-                        notifyUser = false,
-                    )
-                    lastStartError = getString(if (invalid) R.string.mcp_choose_error else R.string.mcp_start_error)
-                    lastStartTraceId = scope.trace.id
-                    starting = false
-                    notifyStateChanged()
-                    runFeatureStop()
+                    val didFail = synchronized(startupLock) {
+                        if (generation != startupGeneration) false
+                        else {
+                            val invalid = e is McpInputException
+                            scope.trace.fail(
+                                if (invalid) FailureCode.INVALID_RESULT else FailureCode.IO,
+                                if (invalid) "Cannot use the selected MCP workspace" else "Could not start local MCP listener",
+                                e,
+                                notifyUser = false,
+                            )
+                            lastStartError = getString(if (invalid) R.string.mcp_choose_error else R.string.mcp_start_error)
+                            lastStartTraceId = scope.trace.id
+                            starting = false
+                            runFeatureStop()
+                            true
+                        }
+                    }
+                    if (didFail) notifyStateChanged() else scope.trace.cancelled()
                 }
             }
         } finally {
@@ -202,20 +234,23 @@ internal class McpForegroundService : Service() {
         }
     }
 
-    private fun stopListener() {
+    private fun stopListener(notify: Boolean = true) {
+        val listener = synchronized(startupLock) {
+            startupGeneration++
+            starting = false
+            currentListener.also { currentListener = null }
+        }
         try { updateWakeLock(false) }
         catch (e: Exception) {
             recordMcpFailure("stop_wake_lock", FailureCode.CLEANUP, "Could not release the MCP wake lock", e.javaClass.simpleName)
         }
-        val listener = currentListener
-        currentListener = null
         if (listener != null) {
             try { listener.close() }
             catch (e: Exception) {
                 recordMcpFailure("stop_listener", FailureCode.CLEANUP, "Could not close the MCP listener", e.javaClass.simpleName)
             }
         }
-        notifyStateChanged()
+        if (notify) notifyStateChanged()
     }
 
     override fun onDestroy() {

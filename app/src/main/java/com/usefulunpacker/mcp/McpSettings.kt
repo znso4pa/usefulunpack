@@ -3,6 +3,7 @@ package com.usefulunpacker
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
 import android.os.Environment
@@ -17,16 +18,29 @@ internal const val PREF_MCP_TOKEN = "mcp_token"
 internal const val PREF_MCP_WORKSPACE = "mcp_workspace_path"
 internal const val PREF_MCP_ENABLED = "mcp_enabled"
 
-internal fun getOrCreateMcpToken(prefs: SharedPreferences): String {
-    val existing = prefs.getString(PREF_MCP_TOKEN, null)?.trim().orEmpty()
-    if (existing.length >= 32) return existing
-    return rotateMcpToken(prefs)
+private const val MCP_CREDENTIAL_PREFS = "mcp_credentials"
+private val tokenLock = Any()
+
+internal fun getOrCreateMcpToken(context: Context, prefs: SharedPreferences): String = synchronized(tokenLock) {
+    val credentials = context.getSharedPreferences(MCP_CREDENTIAL_PREFS, Context.MODE_PRIVATE)
+    val stored = credentials.getString(PREF_MCP_TOKEN, null)?.trim()?.takeIf { it.length >= 32 }
+    val legacy = prefs.getString(PREF_MCP_TOKEN, null)?.trim()?.takeIf { it.length >= 32 }
+    val token = stored ?: legacy ?: generateMcpToken()
+    if (stored == null && !credentials.edit().putString(PREF_MCP_TOKEN, token).commit()) {
+        throw java.io.IOException("Could not persist MCP credentials")
+    }
+    if (prefs.contains(PREF_MCP_TOKEN) && !prefs.edit().remove(PREF_MCP_TOKEN).commit()) {
+        throw java.io.IOException("Could not remove the legacy MCP credential")
+    }
+    token
 }
 
-internal fun rotateMcpToken(prefs: SharedPreferences): String {
+internal fun rotateMcpToken(context: Context) = synchronized(tokenLock) {
     val fresh = generateMcpToken()
-    prefs.edit().putString(PREF_MCP_TOKEN, fresh).apply()
-    return fresh
+    val credentials = context.getSharedPreferences(MCP_CREDENTIAL_PREFS, Context.MODE_PRIVATE)
+    if (!credentials.edit().putString(PREF_MCP_TOKEN, fresh).commit()) {
+        throw java.io.IOException("Could not persist MCP credentials")
+    }
 }
 
 internal fun savedMcpPort(prefs: SharedPreferences): Int =
@@ -35,7 +49,7 @@ internal fun savedMcpPort(prefs: SharedPreferences): Int =
 internal fun savedMcpWorkspace(prefs: SharedPreferences): File? =
     prefs.getString(PREF_MCP_WORKSPACE, null)?.takeIf { it.isNotBlank() }?.let(::File)?.takeIf { it.isDirectory }
 
-internal fun MainActivity.showLocalMcp() {
+internal fun MainActivity.showLocalMcp(ownerTabId: Int? = null) {
     val lastFailure = prefs.getString(PREF_MCP_FAILURE, null)
     if (lastFailure != null && lastFailure != prefs.getString(PREF_MCP_FAILURE_SHOWN, null)) {
         UuNotice.makeText(this, R.string.mcp_previous_error, Toast.LENGTH_LONG, logId = lastFailure).show()
@@ -65,7 +79,11 @@ internal fun MainActivity.showLocalMcp() {
                 }
             }
             .setPositiveButton(R.string.mcp_start_default) { _, _ -> startLocalMcp(remembered) }
-            .show().also { it.keepTabsTappable() }
+            .create().also {
+                rootDialogToTab(it, ownerTabId)
+                it.show()
+                it.keepTabsTappable()
+            }
         return
     }
 
@@ -100,56 +118,72 @@ internal fun MainActivity.showLocalMcp() {
             bind(getString(R.string.mcp_choose), onClick = {
                 dialog?.dismiss()
                 showFolderPicker(this@showLocalMcp, listener.directory) { directory ->
-                    stopLocalMcp(clearEnabledPref = false)
-                    startLocalMcp(directory)
+                    startLocalMcp(directory, replaceListener = true)
                 }
             })
         })
         addView(UuActionRow(context).apply {
             bind(getString(R.string.mcp_rotate_token), onClick = {
+                try {
+                    rotateMcpToken(this@showLocalMcp)
+                } catch (e: Exception) {
+                    val failure = recordMcpFailure("rotate_token", FailureCode.IO, "Could not save the new MCP token", e.javaClass.simpleName)
+                    UuNotice.persistent(this@showLocalMcp.findViewById(R.id.root), "${getString(R.string.mcp_start_error)} [${failure.logId}]",
+                        R.string.diagnostics_view) { showDiagnostics(failure.logId, mcpOnly = true) }
+                    return@bind
+                }
                 dialog?.dismiss()
                 val dir = listener.directory
-                rotateMcpToken(prefs)
-                stopLocalMcp(clearEnabledPref = false)
-                startLocalMcp(dir)
+                startLocalMcp(dir, replaceListener = true)
             })
         })
     }
     dialog = UuDialogBuilder(this, keepChainOpen = false).setTitle(R.string.mcp_title).setView(UuScrollView(this).apply { addView(body) })
         .setNegativeButton(R.string.action_close, null)
         .setNeutralButton(R.string.mcp_stop) { _, _ -> stopLocalMcp() }
-        .show().also { it.keepTabsTappable() }
+        .create().also {
+            rootDialogToTab(it, ownerTabId)
+            it.show()
+            it.keepTabsTappable()
+        }
 }
 
-internal fun MainActivity.startLocalMcp(directory: File? = null, showDialogOnStart: Boolean = true) {
-    if (isFinishing || isDestroyed || localMcpStarting || McpForegroundService.currentListener?.running == true) return
+internal fun MainActivity.startLocalMcp(
+    directory: File? = null,
+    showDialogOnStart: Boolean = true,
+    replaceListener: Boolean = false,
+) {
+    if (isFinishing || isDestroyed || localMcpStarting ||
+        (!replaceListener && McpForegroundService.currentListener?.running == true)) return
+    val ownerTabId = tabs.getOrNull(activeTabIndex)?.tabId
     localMcpStarting = true
     var stateCallback: (() -> Unit)? = null
+    fun clearStarting() {
+        localMcpStarting = false
+        stateCallback?.let { McpForegroundService.removeStateListener(it) }
+    }
     stateCallback = {
-        runFeatureOnUiThread {
+        runFeatureOnUiThread(onUnavailable = ::clearStarting) {
             if (isFinishing || isDestroyed) return@runFeatureOnUiThread
+            if (!localMcpStarting) return@runFeatureOnUiThread
+            clearStarting()
             val active = McpForegroundService.currentListener?.running == true
             val err = McpForegroundService.lastStartError
-            if (active || err != null) {
-                localMcpStarting = false
-                stateCallback?.let { McpForegroundService.removeStateListener(it) }
-                if (active) {
-                    if (showDialogOnStart) showLocalMcp()
-                } else if (err != null) {
-                    val traceId = McpForegroundService.lastStartTraceId.orEmpty()
-                    UuNotice.persistent(findViewById(R.id.root), "$err [$traceId]", R.string.diagnostics_view) {
-                        showDiagnostics(traceId)
-                    }
+            if (active) {
+                if (showDialogOnStart && tabs.any { it.tabId == ownerTabId }) showLocalMcp(ownerTabId)
+            } else if (err != null) {
+                val traceId = McpForegroundService.lastStartTraceId.orEmpty()
+                UuNotice.persistent(findViewById(R.id.root), "$err [$traceId]", R.string.diagnostics_view) {
+                    showDiagnostics(traceId, mcpOnly = true)
                 }
             }
         }
     }
     McpForegroundService.addStateListener(stateCallback)
     try {
-        McpForegroundService.start(this, directory ?: savedMcpWorkspace(prefs))
+        McpForegroundService.start(this, directory ?: savedMcpWorkspace(prefs), replaceListener)
     } catch (e: Exception) {
-        McpForegroundService.removeStateListener(stateCallback)
-        localMcpStarting = false
+        clearStarting()
         val failure = recordMcpFailure("start", FailureCode.IO, "Could not launch the MCP foreground service", e.javaClass.simpleName)
         UuNotice.persistent(findViewById(R.id.root), "${getString(R.string.mcp_start_error)} [${failure.logId}]", R.string.diagnostics_view) {
             showDiagnostics(failure.logId, mcpOnly = true)

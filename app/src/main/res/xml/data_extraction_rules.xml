@@ -2,8 +2,10 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="file" path="logs" />
+        <exclude domain="sharedpref" path="mcp_credentials.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="logs" />
+        <exclude domain="sharedpref" path="mcp_credentials.xml" />
     </device-transfer>
 </data-extraction-rules>

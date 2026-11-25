@@ -437,6 +437,7 @@
         <item>INT (.int) — 解壓 + 壓縮\nCatSystem2（KIF）封包：條目名逐條置換、位移/大小與內容走 Blowfish，金鑰來自遊戲 exe 裡的 key_code / v_code / v_code2 資源——所以 .int 旁邊必須有那個 exe\n封裝：輸出旁邊有遊戲 exe 時寫**加密變體**（引擎用同一組金鑰，可直接載入），否則寫明文變體（兩個參考讀取器都接受）。條目名保留，可直接替換原封包\n注意：沒有 exe 會明確報錯而不是猜；暫不支援封裝\n已用參考解碼器自帶的真實樣本封包及其 13 個期望輸出逐位元組驗證</item>
     </string-array>
         <string-array name="help_tutorials">
+        <item>檔案 Agent\\n從首頁輸入框或更多選單開啟檔案 Agent。在對話設定選擇工作區，填入模型 Base URL 和模型 ID，再按「測試連線」單獨測試。權限有唯讀、解封與封裝、檔案修改、完全本機（含 UU/UUT）四級。寫入前需要確認。每輪以一張卡片呈現提問、回覆和工具結果，展開「執行詳情」可查看完整記錄及模型傳回的思考。點選「切換對話」可按名稱搜尋、開啟或新增對話，也可以直接重新命名或刪除目前對話。</item>
         <item>壓縮設定\n設定 → 壓縮：壓縮等級（zip/7z/通用）、分割大小（zip/7z）、ZIP 編碼、壓縮密碼；點「確定」一次儲存；工作模式（封包/壓縮）切換後標題欄會更新</item>
         <item>全域搜尋\n頂部選單 → 全域搜尋：檔名 / 內容兩種模式；內容搜尋會先詢問單檔大小上限；點結果可預覽，匹配處高亮並可前後跳轉；結果多時點「繼續掃描」</item>
         <item>封包內搜尋\n開啟封包預覽後，點右上角搜尋圖示：先解出全部文字檔，再進入全域搜尋全文檢索；點結果按需解出原檔預覽</item>
@@ -798,7 +799,6 @@
     <string name="agent_tool_failed">工具呼叫失敗 · %1$s</string>
     <string name="agent_invalid_workspace">請選擇共用儲存空間中的可讀子目錄。</string>
     <string name="agent_failed">Agent 呼叫失敗 · %1$s</string>
-    <string name="agent_exchange">你 · %1$s\n\nAgent · %2$s</string>
     <string name="agent_base_url">模型 Base URL，如 https://host/v1</string>
     <string name="agent_model_name">模型名稱</string>
     <string name="agent_api_key">API 金鑰（選填）</string>
@@ -811,12 +811,10 @@
     <string name="agent_key_save_failed">無法儲存 API 金鑰。 · %1$s</string>
     <string name="agent_invalid_settings">請輸入模型名稱和 HTTPS Base URL。裝置本機 127.0.0.1 可用 HTTP。</string>
     <string name="agent_conversation_settings">對話設定</string>
-    <string name="agent_message_you">你</string>
     <string name="agent_reasoning">模型思考</string>
     <string name="agent_activity_expand">執行詳情</string>
     <string name="agent_activity_collapse">收合詳情</string>
     <string name="agent_tool_result_items">%1$d 項</string>
-    <string name="agent_tool_activity">工具記錄</string>
     <string name="agent_tool_awaiting">等待確認 · %1$s</string>
     <string name="agent_tool_success">已完成 · %1$s</string>
     <string name="agent_tool_cancelled">已取消 · %1$s</string>
@@ -831,7 +829,15 @@
     <string name="agent_connection_format">模型未傳回有效的對話回覆。記錄 %1$s</string>
     <string name="agent_connection_timeout">連線測試逾時。記錄 %1$s</string>
     <string name="agent_connection_network">無法連線至模型端點。記錄 %1$s</string>
-    <string name="agent_sessions">對話</string>
+    <string name="agent_sessions">切換對話</string>
+    <string name="agent_session_current">%1$s · 目前對話</string>
+    <string name="agent_session_draft">%1$s · 有草稿</string>
+    <string name="agent_session_name">對話名稱</string>
+    <string name="agent_session_rename">重新命名對話</string>
+    <string name="agent_session_name_hint">留空會恢復使用第一個提問命名。</string>
+    <string name="agent_session_search">搜尋對話名稱</string>
+    <string name="agent_sessions_no_match">沒有符合的對話</string>
+    <string name="agent_sessions_partial">有 %1$d 個對話無法讀取 · 記錄 %2$s</string>
     <string name="agent_sessions_loading">正在載入對話…</string>
     <string name="agent_new_session">新增對話</string>
     <string name="agent_delete_session">刪除目前對話？</string>

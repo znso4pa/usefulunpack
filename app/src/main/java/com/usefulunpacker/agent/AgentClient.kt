@@ -46,17 +46,33 @@ internal class AgentRequest {
         return (endpoint.openConnection(Proxy.NO_PROXY) as HttpURLConnection).also { active = it }
     }
 
-    @Synchronized fun release(connection: HttpURLConnection) {
-        if (active === connection) active = null
+    fun close(connection: HttpURLConnection) {
+        val ownsConnection = synchronized(this) {
+            if (active !== connection) false
+            else {
+                active = null
+                true
+            }
+        }
+        if (ownsConnection) disconnect(connection)
     }
 
     fun cancel() {
         val connection = synchronized(this) {
+            if (cancelled) return
             cancelled = true
             worker?.interrupt()
-            active
+            active.also { active = null }
         }
-        connection?.disconnect()
+        connection?.let { featureThread { disconnect(it) } }
+    }
+
+    private fun disconnect(connection: HttpURLConnection) {
+        try { connection.disconnect() }
+        catch (e: Exception) {
+            AppDiagnostics.begin("model_disconnect").fail(FailureCode.CLEANUP,
+                "Could not close the model connection (${e.javaClass.simpleName})", notifyUser = false)
+        }
     }
 
     fun checkActive() {
@@ -136,6 +152,7 @@ internal class AgentClient(
     fun testConnection(): Long {
         val started = System.nanoTime()
         val reply = send(JSONArray().put(message("user", "Reply only OK.")), readTimeoutMs = 20_000)
+        request.checkActive()
         if ((reply.opt("content") as? String).isNullOrBlank()) throw invalidResponse()
         return (System.nanoTime() - started) / 1_000_000
     }
@@ -161,17 +178,20 @@ internal class AgentClient(
         val tools = permission.tools(runtime.skills())
         val schemas = JSONArray(tools.values.map { it.schema })
         var nextCallIndex = 0
-        repeat(MAX_ROUNDS) {
+        repeat(MAX_ROUNDS) { round ->
             val reply = send(messages, schemas)
-            val reasoning = (reply.opt("reasoning_content") as? String)?.takeIf { it.isNotBlank() }
-            reasoning?.let { onReasoning(displayText(it, 8192)) }
+            request.checkActive()
             val calls = reply.optJSONArray("tool_calls")
             if (calls == null && !reply.isNull("tool_calls")) throw invalidResponse()
-            if (calls == null || calls.length() == 0) {
-                return (reply.opt("content") as? String)?.takeIf { it.isNotBlank() }
-                    ?: throw invalidResponse()
+            val batch = calls?.let(::parseToolCalls).orEmpty()
+            val answer = (reply.opt("content") as? String)?.takeIf { it.isNotBlank() }
+            if (batch.isEmpty() && answer == null) throw invalidResponse()
+            val reasoning = (reply.opt("reasoning_content") as? String)?.takeIf { it.isNotBlank() }
+            reasoning?.let { onReasoning(displayText(it, 8192)) }
+            if (batch.isEmpty() && answer != null) return answer
+            if (round == MAX_ROUNDS - 1) {
+                throw AgentClientException("model_rounds", FailureCode.INVALID_RESULT, "The model reached the tool round limit")
             }
-            val batch = parseToolCalls(calls)
             // Send back only the fields required to associate calls with their results.
             val assistantCalls = JSONArray()
             val toolReplies = JSONArray()
@@ -357,8 +377,7 @@ internal class AgentClient(
             request.checkActive()
             throw e
         } finally {
-            request.release(connection)
-            connection.disconnect()
+            request.close(connection)
         }
     }
 

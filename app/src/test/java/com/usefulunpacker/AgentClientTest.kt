@@ -14,6 +14,44 @@ import java.net.SocketException
 import kotlin.concurrent.thread
 
 class AgentClientTest {
+    @Test fun cancellationReturnsWhileTheConnectionIsClosingAndClosesItOnce() {
+        val closing = java.util.concurrent.CountDownLatch(1)
+        val allowClose = java.util.concurrent.CountDownLatch(1)
+        val cancelReturned = java.util.concurrent.CountDownLatch(1)
+        val closes = java.util.concurrent.atomic.AtomicInteger()
+        val endpoint = java.net.URL(null, "http://test.invalid", object : java.net.URLStreamHandler() {
+            override fun openConnection(url: java.net.URL): java.net.URLConnection =
+                object : java.net.HttpURLConnection(url) {
+                    override fun connect() = Unit
+                    override fun usingProxy() = false
+                    override fun disconnect() {
+                        closes.incrementAndGet()
+                        closing.countDown()
+                        allowClose.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                    }
+                }
+
+            override fun openConnection(url: java.net.URL, proxy: java.net.Proxy): java.net.URLConnection =
+                openConnection(url)
+        })
+        val request = AgentRequest()
+        val connection = request.connect(endpoint)
+        val caller = thread {
+            request.cancel()
+            cancelReturned.countDown()
+        }
+        try {
+            assertTrue(closing.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            assertTrue(cancelReturned.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            request.close(connection)
+            assertEquals(1, closes.get())
+            assertThrows(java.util.concurrent.CancellationException::class.java) { request.checkActive() }
+        } finally {
+            allowClose.countDown()
+            caller.join(3000)
+        }
+    }
+
     @Test fun modelConnectionProbeSendsOnePromptWithoutToolsAndReportsHttpStatus() {
         val requests = java.util.concurrent.LinkedBlockingQueue<JSONObject>()
         ModelServer { path, request ->
@@ -122,6 +160,40 @@ class AgentClientTest {
             }
             assertEquals("model_http", failure.stage)
             assertEquals(0, redirects.get())
+        }
+    }
+
+    @Test fun finalModelRoundDoesNotStartANewToolBatch() {
+        val root = java.nio.file.Files.createTempDirectory("uu-agent-round-test").toFile()
+        try {
+            McpTasks { _, _ -> error("No asynchronous jobs expected") }.use { tasks ->
+                val runtime = WorkspaceSkillRuntime(McpWorkspace(root), tasks)
+                val replies = java.util.concurrent.atomic.AtomicInteger()
+                ModelServer { _, _ ->
+                    val final = replies.incrementAndGet() == 6
+                    val name = if (final) "WRITE_TEXT" else "WORKSPACE_LIST"
+                    val args = if (final) """{"path":"late.txt","text":"late write"}""" else """{"path":"."}"""
+                    val call = JSONObject().put("id", "tool").put("type", "function").put("function",
+                        JSONObject().put("name", name).put("arguments", args))
+                    Reply("200 OK", JSONObject().put("choices", JSONArray().put(JSONObject().put("message",
+                        JSONObject().put("tool_calls", JSONArray().put(call))))))
+                }.use { server ->
+                    val endpoint = checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/v1"))
+                    val events = mutableListOf<AgentToolEvent>()
+                    val failure = assertThrows(AgentClientException::class.java) {
+                        AgentClient(endpoint, "test-model", "", AgentRequest()).complete(
+                            emptyList(), "Read the directory", runtime, AgentPermission.EDIT_FILES,
+                            confirm = { error("The final round must not ask for approval") }, onTool = events::add,
+                        )
+                    }
+                    assertEquals("model_rounds", failure.stage)
+                    assertEquals(6, replies.get())
+                    assertEquals((0..4).toList(), events.filter { it.stage == AgentToolStage.SUCCESS }.map { it.callIndex })
+                    assertFalse(root.resolve("late.txt").exists())
+                }
+            }
+        } finally {
+            root.deleteRecursively()
         }
     }
 

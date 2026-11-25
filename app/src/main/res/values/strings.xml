@@ -452,6 +452,7 @@
         <item>INT (.int) — Extract &amp; Pack\nCatSystem2 (KIF) archive: entry names are permuted per entry, offsets/sizes and payloads are Blowfish-encrypted, and the key comes from the key_code / v_code / v_code2 resources inside the game\'s executable — so the .exe must sit next to the .int\nPacking writes the **encrypted** variant when the game\'s .exe sits next to the output (the engine derives the same keys), otherwise the plain variant both reference readers accept. Repacking keeps the entry names, so a repacked archive can replace the original\nNote: without the executable the archive is refused with a clear message instead of guessed at; packing is not supported yet\nVerified against the reference decoder\'s own sample archive and its 13 expected outputs, byte for byte</item>
     </string-array>
         <string-array name="help_tutorials">
+        <item>File Agent\\nOpen File Agent from the Home search field or the More menu. In Conversation settings, choose a workspace and enter your model Base URL and model ID. Test connection sends a short request by itself. Choose Read-only, Archives, File edits or Full local, which also allows UU/UUT. Write actions require confirmation. Each turn has one card with the question, answer and tool results. Expand Activity details for the complete tool list and any reasoning the model returned. Use Switch session to search by title and open, create, rename or delete sessions.</item>
         <item>Compression settings\nSettings → Compression: levels (zip/7z/generic), split size (zip/7z), ZIP encoding, password; "OK" saves everything at once; the work mode (archive/compress) updates the title bar</item>
         <item>Global search\nTop menu → Global search: filename / content modes; content search first asks for a per-file size cap; tap a result to preview with match highlighting and prev/next jump; tap "Continue scan" when results are truncated</item>
         <item>Search inside an archive\nOpen an archive preview, tap the search icon: text files are unpacked first, then the global search runs over them; tapping a result extracts the real file on demand</item>
@@ -805,7 +806,6 @@
     <string name="agent_tool_failed">Tool call failed · %1$s</string>
     <string name="agent_invalid_workspace">Choose a readable subdirectory of shared storage.</string>
     <string name="agent_failed">Agent failed · %1$s</string>
-    <string name="agent_exchange">You · %1$s\n\nAgent · %2$s</string>
     <string name="agent_base_url">Model Base URL, e.g. https://host/v1</string>
     <string name="agent_model_name">Model name</string>
     <string name="agent_api_key">API key (optional)</string>
@@ -818,12 +818,10 @@
     <string name="agent_key_save_failed">Could not save the API key. · %1$s</string>
     <string name="agent_invalid_settings">Enter a model name and an HTTPS Base URL, or HTTP on 127.0.0.1.</string>
     <string name="agent_conversation_settings">Conversation settings</string>
-    <string name="agent_message_you">You</string>
     <string name="agent_reasoning">Model reasoning</string>
     <string name="agent_activity_expand">Activity details</string>
     <string name="agent_activity_collapse">Hide details</string>
     <string name="agent_tool_result_items">%1$d items</string>
-    <string name="agent_tool_activity">Tool activity</string>
     <string name="agent_tool_awaiting">Awaiting confirmation · %1$s</string>
     <string name="agent_tool_success">Completed · %1$s</string>
     <string name="agent_tool_cancelled">Cancelled · %1$s</string>
@@ -838,7 +836,15 @@
     <string name="agent_connection_format">The model did not return a valid chat reply. Log %1$s</string>
     <string name="agent_connection_timeout">Connection test timed out. Log %1$s</string>
     <string name="agent_connection_network">Could not reach the model endpoint. Log %1$s</string>
-    <string name="agent_sessions">Sessions</string>
+    <string name="agent_sessions">Switch session</string>
+    <string name="agent_session_current">%1$s · Current</string>
+    <string name="agent_session_draft">%1$s · Draft</string>
+    <string name="agent_session_name">Session name</string>
+    <string name="agent_session_rename">Rename session</string>
+    <string name="agent_session_name_hint">Leave blank to use the first message as the name.</string>
+    <string name="agent_session_search">Search session names</string>
+    <string name="agent_sessions_no_match">No matching sessions</string>
+    <string name="agent_sessions_partial">Could not read %1$d sessions · Log %2$s</string>
     <string name="agent_sessions_loading">Loading sessions…</string>
     <string name="agent_new_session">New session</string>
     <string name="agent_delete_session">Delete current session?</string>

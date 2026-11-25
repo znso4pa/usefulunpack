@@ -88,6 +88,70 @@ class McpListenerTest {
         }
     }
 
+    @Test fun engineCheckUsesKnownMarkersAndDoesNotFollowLinkedDirectories() {
+        val root = tmp.newFolder()
+        val directory = tmp.newFolder()
+        directory.resolve("rmmz_core.js").writeText("marker")
+        Files.createSymbolicLink(root.resolve("js").toPath(), directory.toPath())
+        val nested = root.resolve("www/js").apply { mkdirs() }
+        nested.resolve("rpg_core.js").writeText("marker")
+        McpTasks { _, _ -> error("Engine identification must not start a job") }.use { tasks ->
+            val runtime = WorkspaceSkillRuntime(McpWorkspace(root), tasks)
+            val args = JSONObject().put("path", ".")
+            val result = runtime.invokeSkill("DETECT_GAME_ENGINE", args)
+            assertFalse(result.isError)
+            assertEquals("matched", result.data.getString("status"))
+            val engine = result.data.getJSONArray("matches").getJSONObject(0)
+            assertEquals("RPG Maker MV", engine.getString("engine"))
+            assertEquals("high", engine.getString("confidence"))
+            assertEquals("www/js/rpg_core.js", engine.getJSONArray("evidence").getString(0))
+
+            nested.resolve("rmmz_core.js").writeText("marker")
+            assertEquals("ambiguous", runtime.invokeSkill("DETECT_GAME_ENGINE", args).data.getString("status"))
+            assertTrue(runtime.invokeSkill("DETECT_GAME_ENGINE", JSONObject().put("path", "js")).isError)
+
+            val looseFiles = root.resolve("loose").apply { mkdirs() }
+            looseFiles.resolve("data.xp3").writeText("an extension alone is a clue")
+            val weak = runtime.invokeSkill("DETECT_GAME_ENGINE", JSONObject().put("path", "loose")).data
+                .getJSONArray("matches").getJSONObject(0)
+            assertEquals("KiriKiri", weak.getString("engine"))
+            assertEquals("likely", weak.getString("confidence"))
+        }
+    }
+
+    @Test fun vnInspectionPrefersExistingTranslationsAndReturnsOnlyWorkspaceMetadata() {
+        val root = tmp.newFolder()
+        val project = root.resolve("project").apply { mkdirs() }
+        val marker = project.resolve("renpy").apply { mkdirs() }
+        marker.resolve("__init__.py").writeText("engine module")
+        val game = project.resolve("game").apply { mkdirs() }
+        game.resolve("main.rpy").writeText("script content stays local")
+        game.resolve("main.rpyc").writeText("compiled content stays local")
+        game.resolve("data.rpa").writeText("archive content stays local")
+        val translation = game.resolve("tl/zh").apply { mkdirs() }
+        translation.resolve("dialogue.rpy").writeText("translation content stays local")
+        val outside = tmp.newFolder().apply { resolve("linked.rpy").writeText("outside workspace") }
+        Files.createSymbolicLink(game.resolve("scripts").toPath(), outside.toPath())
+        McpTasks { _, _ -> error("VN inspection must not start an archive task") }.use { tasks ->
+            val runtime = WorkspaceSkillRuntime(McpWorkspace(root), tasks)
+            val report = runtime.invokeSkill("VN_INSPECT", JSONObject().put("path", "project"))
+            assertFalse(report.isError)
+            val data = AgentReadTool.VN_INSPECT.metadata(report.data)
+            assertEquals("inspect_existing_translation", data.getString("next"))
+            assertEquals("Ren'Py", data.getJSONObject("engine").getJSONArray("matches")
+                .getJSONObject(0).getString("engine"))
+            val candidates = data.getJSONArray("candidates")
+            val byKind = (0 until candidates.length()).map(candidates::getJSONObject)
+                .associate { it.getString("kind") to it.getString("path") }
+            assertEquals("project/game/tl/zh/dialogue.rpy", byKind["existing_translation"])
+            assertEquals("project/game/main.rpy", byKind["script_source"])
+            assertEquals("project/game/main.rpyc", byKind["compiled_or_binary"])
+            assertEquals("project/game/data.rpa", byKind["archive"])
+            assertFalse(data.toString().contains("stays local"))
+            assertFalse(data.toString().contains("linked.rpy"))
+        }
+    }
+
     @Test fun commandHelpExposesAllUuCommandsUutSyntaxAndFormats() {
         val root = tmp.newFolder()
         val workspace = McpWorkspace(root)

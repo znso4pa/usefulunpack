@@ -453,6 +453,7 @@
     </string-array>
         <string-array name="help_tutorials">
         <item>File Agent\\nOpen File Agent from the Home search field or the More menu. In Conversation settings, choose a workspace and enter your model Base URL and model ID. Test connection sends a short request by itself. Choose Read-only, Archives, File edits or Full local, which also allows UU/UUT. Write actions require confirmation. Each turn has one card with the question, answer and tool results. Expand Activity details for the complete tool list and any reasoning the model returned. Use Switch session to search by title and open, create, rename or delete sessions.</item>
+        <item>Visual novel workflows and local MCP\\nUse Identify engine locally in Conversation settings to check the selected workspace or choose a game folder without a model request. You can also ask the Agent which engine it uses. The Agent checks known markers and cites the paths it found. For localization planning, ask the Agent to inspect the VN project. It looks for existing translations, script source candidates, compiled files and archives using names and paths only. To use an external Agent, start Local MCP from Settings and use the loopback address and token. Keep the token private.</item>
         <item>Compression settings\nSettings → Compression: levels (zip/7z/generic), split size (zip/7z), ZIP encoding, password; "OK" saves everything at once; the work mode (archive/compress) updates the title bar</item>
         <item>Global search\nTop menu → Global search: filename / content modes; content search first asks for a per-file size cap; tap a result to preview with match highlighting and prev/next jump; tap "Continue scan" when results are truncated</item>
         <item>Search inside an archive\nOpen an archive preview, tap the search icon: text files are unpacked first, then the global search runs over them; tapping a result extracts the real file on demand</item>
@@ -817,6 +818,15 @@
     <string name="agent_key_read_failed">Could not read the API key. Re-enter it in model settings. · %1$s</string>
     <string name="agent_key_save_failed">Could not save the API key. · %1$s</string>
     <string name="agent_invalid_settings">Enter a model name and an HTTPS Base URL, or HTTP on 127.0.0.1.</string>
+    <string name="agent_engine_check">Identify engine locally</string>
+    <string name="agent_engine_checking">Checking game folder…</string>
+    <string name="agent_engine_result">Engine check · %1$s</string>
+    <string name="agent_engine_unknown">No known engine marker found.</string>
+    <string name="agent_engine_multiple">Several engine candidates found.</string>
+    <string name="agent_engine_match">%1$s\nMarkers: %2$s</string>
+    <string name="agent_engine_likely">Likely %1$s\nClues: %2$s</string>
+    <string name="agent_engine_sampled">Only a sample of the directory entries was checked.</string>
+    <string name="agent_engine_failed">Engine check failed · %1$s</string>
     <string name="agent_conversation_settings">Conversation settings</string>
     <string name="agent_reasoning">Model reasoning</string>
     <string name="agent_activity_expand">Activity details</string>

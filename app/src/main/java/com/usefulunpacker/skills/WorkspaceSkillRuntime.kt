@@ -40,6 +40,8 @@ internal class WorkspaceSkillRuntime(
         COMPRESS("COMPRESS", "Pack a file or directory into a supported archive format. Format may be inferred from the output extension.", "source"),
         EXTRACT("EXTRACT", "Extract an archive into a workspace directory, optionally selecting entries.", "archive"),
         SCAN("SCAN", "Scan a workspace file for embedded archive and media signatures, or carve a selected hit.", "path"),
+        DETECT_GAME_ENGINE("DETECT_GAME_ENGINE", "Identify a game directory from known engine markers. Use . for the workspace root. Reads names and file types only.", "path"),
+        VN_INSPECT("VN_INSPECT", "Inspect a visual novel folder for engine markers, possible text sources, compiled files and archive candidates. Returns a bounded report using file names, not contents.", "path"),
         ARCHIVE_LIST("archive_list", "List entries in an archive without extracting it. Supports optional password and after cursor.", "path"),
         INSPECT_FILE("inspect_file", "Deep GUI-level inspection of a workspace file or archive: detects format by extension and magic, XP3 encryption scheme, text encoding & BOM, TJS2 bytecode, image dimensions (PNG/JPEG/GIF/WebP/BMP), RPG Maker MV/MZ header, and hex/ASCII header preview.", "path"),
         APP_SETTINGS("app_settings", "Read or update UsefulUnpack archive and localization preferences (zip_encoding, text_encoding, zip_level, sz_level, generic_level, compress_split_size, parallel_threads, sort_mode)."),
@@ -55,6 +57,9 @@ internal class WorkspaceSkillRuntime(
         WRITE("write_text", "Write a text file in UTF-8, SHIFT-JIS, GBK or UTF-16. Preserves existing encoding and BOM when overwrite is true unless overridden.", "path");
 
         val skillId: String get() = wireName.uppercase(Locale.ROOT)
+        val argumentNames: Set<String> by lazy {
+            inputSchema().getJSONObject("properties").keys().asSequence().toSet()
+        }
 
         fun inputSchema(): JSONObject {
             val properties = JSONObject()
@@ -144,7 +149,8 @@ internal class WorkspaceSkillRuntime(
         action: () -> JSONObject,
     ): AppSkillResult {
         val agentTrace = AppDiagnostics.currentTrace()?.takeIf { it.feature.startsWith("agent_session_") }
-        val scope = if (agentTrace == null && tool in setOf(Tool.ARCHIVE_LIST, Tool.SCAN, Tool.INSPECT_FILE, Tool.WRITE)) {
+        val scope = if (agentTrace == null && tool in setOf(Tool.ARCHIVE_LIST, Tool.SCAN, Tool.DETECT_GAME_ENGINE,
+                Tool.VN_INSPECT, Tool.INSPECT_FILE, Tool.WRITE)) {
             val password = args.opt("password") as? String
             AppDiagnostics.enterIntent("mcp_$stage", secrets = listOfNotNull(password), newChain = true)
         } else null
@@ -209,8 +215,7 @@ internal class WorkspaceSkillRuntime(
     }
 
     private fun call(tool: Tool, args: JSONObject): JSONObject {
-        val properties = tool.inputSchema().getJSONObject("properties")
-        if (args.keys().asSequence().any { !properties.has(it) }) {
+        if (args.keys().asSequence().any { it !in tool.argumentNames }) {
             throw mcpInputError("Unexpected tool arguments")
         }
         fun argument(key: String = tool.key): String = args.opt(key) as? String
@@ -230,6 +235,8 @@ internal class WorkspaceSkillRuntime(
                 if (args.has("output")) argument("output") else null,
                 if (args.has("overwrite")) boolArgument(args, "overwrite") else false,
             )
+            Tool.DETECT_GAME_ENGINE -> detectGameEngine(workspace.resolve(argument(), allowRoot = true).toPath())
+            Tool.VN_INSPECT -> inspectVnProject(workspace, argument())
             Tool.HELP -> {
                 val allCommands = UuCommands.commandList().map { "${it.usage} — ${it.summary}" } +
                     "uu run [-k] <file.uut> [args...] — Run a UUT script inside the workspace"
@@ -533,6 +540,8 @@ internal class WorkspaceSkillRuntime(
             for (entry in entries) {
                 val name = entry.fileName.toString()
                 if (name <= after || name.startsWith(".uu-mcp-")) continue
+                // Once there is another page, later names beyond this page need no file metadata.
+                if (next && name > page.lastKey()) continue
                 val directory = Files.isDirectory(entry, NOFOLLOW_LINKS)
                 if (!directory && !Files.isRegularFile(entry, NOFOLLOW_LINKS)) continue
                 page[name] = directory

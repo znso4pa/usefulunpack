@@ -17,6 +17,7 @@ import androidx.core.widget.doAfterTextChanged
 import java.io.File
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
+import org.json.JSONObject
 
 private const val PREF_AGENT_BASE_URL = "agent_base_url"
 private const val PREF_AGENT_MODEL = "agent_model"
@@ -46,6 +47,7 @@ internal fun MainActivity.showAgent() {
     val sessionRow = UuActionRow(this)
     val sessionNameRow = UuActionRow(this)
     val workspaceRow = UuActionRow(this)
+    val engineRow = UuActionRow(this)
     val modelRow = UuActionRow(this)
     val permissionRow = UuActionRow(this)
     val contextRow = UuActionRow(this)
@@ -71,10 +73,10 @@ internal fun MainActivity.showAgent() {
         setText(R.string.action_cancel)
         visibility = View.GONE
     }
-    val rows = listOf(sessionRow, sessionNameRow, workspaceRow, modelRow, permissionRow, contextRow)
+    val rows = listOf(sessionRow, sessionNameRow, workspaceRow, engineRow, modelRow, permissionRow, contextRow)
     sessionRow.maxLines = 2
     sessionRow.ellipsize = android.text.TextUtils.TruncateAt.END
-    val details = agentSection(sessionNameRow, workspaceRow, modelRow, permissionRow, contextRow)
+    val details = agentSection(sessionNameRow, workspaceRow, engineRow, modelRow, permissionRow, contextRow)
         .apply { visibility = View.GONE }
     val settings = UuButton(this).apply {
         actionStyle = ActionStyle.TEXT
@@ -364,6 +366,53 @@ internal fun MainActivity.showAgent() {
             }
         }
     })
+    fun checkEngine(directory: File) {
+        if (!isOpen()) return
+        val scope = AppDiagnostics.enterIntent("agent_engine_check", newChain = true)
+        val step = AppDiagnostics.begin("detect_game_engine")
+        setBusy(true, cancellable = false)
+        showStatus(getString(R.string.agent_engine_checking))
+        try {
+            featureThread {
+                var notice: String? = null
+                val summary = try {
+                    val workspace = requireAgentWorkspace(storage, directory)
+                    val result = detectGameEngine(workspace.root.toPath())
+                    engineCheckText(result).also { step.success() }
+                } catch (e: AgentClientException) {
+                    val failure = step.fail(e.code, "Cannot read the selected game directory", notifyUser = false)
+                    notice = getString(R.string.agent_engine_failed, failure.logId)
+                    null
+                } catch (e: Exception) {
+                    val failure = step.fail(FailureCode.IO, "Could not identify the game engine", notifyUser = false)
+                    notice = getString(R.string.agent_engine_failed, failure.logId)
+                    null
+                }
+                runFeatureOnUiThread {
+                    if (isFinishing || isDestroyed) return@runFeatureOnUiThread
+                    if (!isOpen()) return@runFeatureOnUiThread
+                    setBusy(false)
+                    if (summary == null) {
+                        notice?.let(::showStatus)
+                        return@runFeatureOnUiThread
+                    }
+                    status.visibility = View.GONE
+                    if (details.visibility == View.VISIBLE) showSettings(false)
+                    val title = getString(R.string.agent_engine_result, visibleAgentText(directory.name))
+                    val answer = addTurn(title).setAnswer(summary)
+                    trimVisibleTurns()
+                    followLatest(answer)
+                }
+            }
+        } finally {
+            AppDiagnostics.leaveIntent(scope)
+        }
+    }
+    engineRow.bind(getString(R.string.agent_engine_check), onClick = {
+        val selected = session.workspace?.let(::File)
+        if (selected != null) checkEngine(selected)
+        else showFolderPickerDialog(this, initialDir, onPick = ::checkEngine)
+    })
     modelRow.bind(getString(R.string.agent_model_settings), navigation = true, onClick = {
         showAgentModelSettings(session.baseUrl, session.model, credentials) { url, modelName, completed ->
             val changed = session.baseUrl != url || session.model != modelName
@@ -605,6 +654,24 @@ private fun requireAgentWorkspace(storage: File, selected: File): McpWorkspace {
             "Choose a readable subdirectory of shared storage")
     }
     return McpWorkspace(directory)
+}
+
+private fun Context.engineCheckText(result: JSONObject): String = buildString {
+    val state = result.getString("status")
+    if (state == "unknown") append(getString(R.string.agent_engine_unknown))
+    if (state == "ambiguous") appendLine(getString(R.string.agent_engine_multiple))
+    val matches = result.getJSONArray("matches")
+    for (index in 0 until matches.length()) {
+        if (index > 0) appendLine()
+        val candidate = matches.getJSONObject(index)
+        val engine = candidate.getString("engine")
+        val evidence = candidate.getJSONArray("evidence")
+        val markers = List(evidence.length()) { visibleAgentText(evidence.getString(it)) }.joinToString(", ")
+        val label = if (candidate.getString("confidence") == "high") R.string.agent_engine_match
+            else R.string.agent_engine_likely
+        append(getString(label, engine, markers))
+    }
+    if (result.optBoolean("truncated")) append("\n").append(getString(R.string.agent_engine_sampled))
 }
 
 private fun MainActivity.showAgentModelSettings(

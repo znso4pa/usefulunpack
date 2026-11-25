@@ -204,7 +204,7 @@ class AgentClientTest {
                 val runtime = WorkspaceSkillRuntime(McpWorkspace(root), tasks)
                 val skills = runtime.skills()
                 val allowed = AgentPermission.entries.map { it.tools(skills).keys }
-                assertEquals(setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "SCAN"), allowed[0])
+                assertEquals(setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "DETECT_GAME_ENGINE", "VN_INSPECT", "SCAN"), allowed[0])
                 assertEquals(setOf("COMPRESS", "EXTRACT"), allowed[1] - allowed[0])
                 assertEquals(setOf("WRITE_TEXT", "DELETE_FILE"), allowed[2] - allowed[1])
                 assertEquals(setOf("RUN_UU", "RUN_UUT"), allowed[3] - allowed[2])

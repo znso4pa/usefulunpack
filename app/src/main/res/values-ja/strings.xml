@@ -431,6 +431,7 @@
     </string-array>
         <string-array name="help_tutorials">
         <item>ファイル Agent\\nホームの入力欄またはその他メニューからファイル Agent を開きます。会話設定で作業フォルダ、モデルの Base URL とモデル ID を指定し、「接続テスト」で確認します。権限は読み取り、展開と圧縮、ファイル編集、完全ローカル（UU/UUT を含む）の4段階です。書き込みには確認が必要です。質問・応答・ツール結果は1ターンにつき1枚のカードにまとまり、「実行の詳細」で全記録とモデルの思考を表示できます。「会話を切り替え」で会話の検索・選択・新規作成ができます。現在の会話名の変更や削除もできます。</item>
+        <item>VN エンジンの判定とローカル MCP\\n会話設定の「ローカルでエンジンを判定」では、モデルに接続せずに作業フォルダや選択したゲームフォルダを調べられます。Agent に質問した場合も、既知の目印を調べて根拠となるパスを示します。翻訳作業の準備では、VN プロジェクトの調査を依頼できます。フォルダ名とファイル名から既存の翻訳、ソース候補、コンパイル済みファイル、アーカイブを探します。外部 Agent は設定からローカル MCP を起動し、ループバックのアドレスとトークンで接続できます。トークンは共有しないでください。</item>
         <item>圧縮設定\n設定 → 圧縮：圧縮レベル（zip/7z/汎用）、分割サイズ（zip/7z）、ZIP エンコーディング、圧縮パスワード；「OK」で一括保存；作業モード（アーカイブ/圧縮）切替でタイトルバー更新</item>
         <item>グローバル検索\n上部メニュー → グローバル検索：ファイル名 / 内容の 2 モード；内容検索は先に単一ファイルのサイズ上限を確認；結果タップでプレビュー、一致箇所ハイライト + 前後移動；結果が多い時は「続行」</item>
         <item>アーカイブ内検索\nアーカイブのプレビューを開き、右上の検索アイコン：テキストを先に解凍してからグローバル検索で全文検索；結果タップで原ファイルを都度解凍してプレビュー</item>
@@ -810,6 +811,15 @@
     <string name="agent_key_read_failed">API キーを読み取れません。モデル設定で再入力してください。 · %1$s</string>
     <string name="agent_key_save_failed">API キーを保存できませんでした。 · %1$s</string>
     <string name="agent_invalid_settings">モデル名と HTTPS の Base URL を入力してください。127.0.0.1 では HTTP も使えます。</string>
+    <string name="agent_engine_check">ローカルでエンジンを判定</string>
+    <string name="agent_engine_checking">ゲームフォルダを確認中…</string>
+    <string name="agent_engine_result">エンジン判定 · %1$s</string>
+    <string name="agent_engine_unknown">既知のエンジンの目印が見つかりませんでした。</string>
+    <string name="agent_engine_multiple">複数のエンジン候補が見つかりました。</string>
+    <string name="agent_engine_match">%1$s\n目印：%2$s</string>
+    <string name="agent_engine_likely">%1$s の可能性があります\n手掛かり：%2$s</string>
+    <string name="agent_engine_sampled">フォルダ項目の一部を確認しました。</string>
+    <string name="agent_engine_failed">エンジン判定に失敗 · %1$s</string>
     <string name="agent_conversation_settings">会話設定</string>
     <string name="agent_reasoning">モデルの思考</string>
     <string name="agent_activity_expand">実行の詳細</string>

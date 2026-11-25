@@ -438,6 +438,7 @@
     </string-array>
         <string-array name="help_tutorials">
         <item>檔案 Agent\\n從首頁輸入框或更多選單開啟檔案 Agent。在對話設定選擇工作區，填入模型 Base URL 和模型 ID，再按「測試連線」單獨測試。權限有唯讀、解封與封裝、檔案修改、完全本機（含 UU/UUT）四級。寫入前需要確認。每輪以一張卡片呈現提問、回覆和工具結果，展開「執行詳情」可查看完整記錄及模型傳回的思考。點選「切換對話」可按名稱搜尋、開啟或新增對話，也可以直接重新命名或刪除目前對話。</item>
+        <item>VN 引擎快查與本機 MCP\\n在對話設定點「本機識別引擎」，可檢查目前的工作區或選擇遊戲資料夾，無需請求模型。也可以直接詢問 Agent 使用哪一種引擎。它會檢查已知標誌檔案並列出依據。規劃在地化時可請 Agent 檢查 VN 專案。它只透過目錄和檔名找出現有翻譯、腳本原始碼候選、編譯檔與封包。外部 Agent 可在設定啟動本機 MCP，使用本機位址和權杖連線。請妥善保管權杖。</item>
         <item>壓縮設定\n設定 → 壓縮：壓縮等級（zip/7z/通用）、分割大小（zip/7z）、ZIP 編碼、壓縮密碼；點「確定」一次儲存；工作模式（封包/壓縮）切換後標題欄會更新</item>
         <item>全域搜尋\n頂部選單 → 全域搜尋：檔名 / 內容兩種模式；內容搜尋會先詢問單檔大小上限；點結果可預覽，匹配處高亮並可前後跳轉；結果多時點「繼續掃描」</item>
         <item>封包內搜尋\n開啟封包預覽後，點右上角搜尋圖示：先解出全部文字檔，再進入全域搜尋全文檢索；點結果按需解出原檔預覽</item>
@@ -810,6 +811,15 @@
     <string name="agent_key_read_failed">無法讀取 API 金鑰。請在模型設定中重新輸入。 · %1$s</string>
     <string name="agent_key_save_failed">無法儲存 API 金鑰。 · %1$s</string>
     <string name="agent_invalid_settings">請輸入模型名稱和 HTTPS Base URL。裝置本機 127.0.0.1 可用 HTTP。</string>
+    <string name="agent_engine_check">本機識別引擎</string>
+    <string name="agent_engine_checking">正在檢查遊戲資料夾…</string>
+    <string name="agent_engine_result">引擎快查 · %1$s</string>
+    <string name="agent_engine_unknown">找不到已知引擎的標誌檔案。</string>
+    <string name="agent_engine_multiple">找到多個可能的引擎。</string>
+    <string name="agent_engine_match">%1$s\n標誌檔案：%2$s</string>
+    <string name="agent_engine_likely">可能是 %1$s\n目錄線索：%2$s</string>
+    <string name="agent_engine_sampled">目錄項目較多，已抽樣檢查。</string>
+    <string name="agent_engine_failed">引擎快查失敗 · %1$s</string>
     <string name="agent_conversation_settings">對話設定</string>
     <string name="agent_reasoning">模型思考</string>
     <string name="agent_activity_expand">執行詳情</string>

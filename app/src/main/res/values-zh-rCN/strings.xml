@@ -443,6 +443,7 @@
     </string-array>
         <string-array name="help_tutorials">
         <item>文件 Agent\\n从首页输入框或更多菜单打开文件 Agent。在会话设置选择工作区，填写模型 Base URL 和模型 ID，再点「测试连接」单独试一次。权限有只读、拆封包、文件删改、完全本地（含 UU/UUT）四档。写操作需要确认。每轮用一张卡片显示提问、回复与工具结果，展开「运行详情」可看全部工具记录和模型返回的思考。点「切换会话」可按名称搜索会话、打开或新建，并可直接重命名或删除当前会话。</item>
+        <item>VN 引擎快查与本地 MCP\\n在会话设置点「本地识别引擎」，可检查当前工作区或选择游戏文件夹，无需请求模型。也可直接问 Agent 使用什么引擎。它会查已知标志文件并给出依据。规划汉化时可让 Agent 检查 VN 项目。它只根据目录和文件名找现有翻译、脚本源码线索、编译文件和归档。外部 Agent 可从设置启动本地 MCP，使用本机地址与令牌连接。请保管好令牌。</item>
         <item>压缩设置\n设置 → 压缩：压缩等级（zip/7z/通用）、分卷大小（zip/7z）、ZIP 编码、压缩密码；点“确定”一次性保存；工作模式（归档/压缩）切换后标题栏会更新</item>
         <item>全局搜索\n顶部菜单 → 全局搜索：文件名 / 内容两种模式；内容搜索会先询问单文件大小上限；点结果可预览，匹配处高亮并可前后跳转；结果多时点“继续扫描”</item>
         <item>归档内搜索\n打开归档预览后，点右上角搜索图标：先解出全部文本文件，再进入全局搜索全文检索；点结果按需解出原文件预览</item>
@@ -815,6 +816,15 @@
     <string name="agent_key_read_failed">无法读取 API 密钥。请在模型设置中重新输入。 · %1$s</string>
     <string name="agent_key_save_failed">无法保存 API 密钥。 · %1$s</string>
     <string name="agent_invalid_settings">请输入模型名称和 HTTPS Base URL。设备本机 127.0.0.1 可用 HTTP。</string>
+    <string name="agent_engine_check">本地识别引擎</string>
+    <string name="agent_engine_checking">正在检查游戏文件夹…</string>
+    <string name="agent_engine_result">引擎快查 · %1$s</string>
+    <string name="agent_engine_unknown">未发现已知引擎的标志文件。</string>
+    <string name="agent_engine_multiple">发现多个可能的引擎。</string>
+    <string name="agent_engine_match">%1$s\n标志文件：%2$s</string>
+    <string name="agent_engine_likely">可能是 %1$s\n目录线索：%2$s</string>
+    <string name="agent_engine_sampled">目录条目较多，已抽样检查。</string>
+    <string name="agent_engine_failed">引擎快查失败 · %1$s</string>
     <string name="agent_conversation_settings">会话设置</string>
     <string name="agent_reasoning">模型思考</string>
     <string name="agent_activity_expand">运行详情</string>

@@ -14,6 +14,31 @@ import java.net.SocketException
 import kotlin.concurrent.thread
 
 class AgentClientTest {
+    @Test fun modelConnectionProbeSendsOnePromptWithoutToolsAndReportsHttpStatus() {
+        val requests = java.util.concurrent.LinkedBlockingQueue<JSONObject>()
+        ModelServer { path, request ->
+            if (path != "/v1/chat/completions") return@ModelServer Reply("404 Not Found")
+            requests.add(request)
+            if (request.getString("model") == "blocked") Reply("403 Forbidden")
+            else Reply("200 OK", JSONObject().put("choices", JSONArray().put(
+                JSONObject().put("message", JSONObject().put("content", "OK")))))
+        }.use { server ->
+            val endpoint = checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/v1"))
+            assertTrue(AgentClient(endpoint, "probe", "", AgentRequest()).testConnection() >= 0L)
+            val probe = requests.remove()
+            assertEquals("probe", probe.getString("model"))
+            assertFalse(probe.has("tools"))
+            assertFalse(probe.getBoolean("stream"))
+            assertEquals(1, probe.getJSONArray("messages").length())
+            assertEquals("Reply only OK.", probe.getJSONArray("messages").getJSONObject(0).getString("content"))
+            val rejected = assertThrows(AgentClientException::class.java) {
+                AgentClient(endpoint, "blocked", "", AgentRequest()).testConnection()
+            }
+            assertEquals(403, rejected.httpStatus)
+            assertEquals(1, requests.size)
+        }
+    }
+
     @Test fun approvalDisplaysInvisiblePathCharactersAndPreservesJsonLayout() {
         val supplementary = String(Character.toChars(0xE0001))
         assertEquals("dir\\u000a\\u202e\\u{e0001}/档案", visibleAgentText("dir\n\u202e$supplementary/档案"))
@@ -45,7 +70,7 @@ class AgentClientTest {
             if (path != "/model/v1/chat/completions") return@ModelServer Reply("404 Not Found")
             requests.add(request)
             val message = if (request.getJSONArray("messages").length() == 2) {
-                JSONObject().put("tool_calls", JSONArray()
+                JSONObject().put("reasoning_content", "List the workspace first.").put("tool_calls", JSONArray()
                     .put(call("a", "SCAN", JSONObject().put("path", "sample.bin").put("carveHitIndex", 0)))
                     .put(call("b", "WRITE_TEXT", JSONObject().put("path", "target.txt")))
                     .put(call("c", "WORKSPACE_LIST", JSONObject().put("path", "."))))
@@ -54,14 +79,21 @@ class AgentClientTest {
         }.use { server ->
             val endpoint = checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/model/v1"))
             val events = mutableListOf<AgentToolEvent>()
+            val reasoning = mutableListOf<String>()
             val result = AgentClient(endpoint, "test-model", "", AgentRequest())
-                .complete(emptyList(), "List my archives", runtime, onTool = events::add)
+                .complete(emptyList(), "List my archives", runtime, onReasoning = reasoning::add, onTool = events::add)
             assertEquals("Listed one archive.", result)
+            assertEquals(listOf("List the workspace first."), reasoning)
             assertEquals(listOf("WORKSPACE_LIST"), requested)
+            val workspaceEvents = events.filter { it.name == "WORKSPACE_LIST" }
+            assertEquals(listOf(AgentToolStage.RUNNING, AgentToolStage.SUCCESS), workspaceEvents.map { it.stage })
+            assertEquals(listOf(2), workspaceEvents.map { it.callIndex }.distinct())
+            assertEquals(1, workspaceEvents.last().resultCount)
             assertEquals(2, events.count { it.failure != null })
             assertFalse(requests.remove().getJSONArray("tools").toString().contains("WRITE_TEXT"))
             val messages = requests.remove().getJSONArray("messages").toString()
             assertTrue(messages.contains("archive.zip"))
+            assertTrue(messages.contains("List the workspace first."))
             assertTrue(messages.contains("TOOL_NOT_ALLOWED"))
             assertFalse(messages.contains("private-content-marker"))
         }

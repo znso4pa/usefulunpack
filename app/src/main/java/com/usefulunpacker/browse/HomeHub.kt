@@ -169,7 +169,7 @@ internal fun buildHomeCards(act: MainActivity, container: LinearLayout, tab: Tab
             topMargin = act.dp(if (spacious) 18 else 8)
         }
         minimumHeight = act.resources.getDimensionPixelSize(R.dimen.touch_target)
-        foreground = ripple(C["ripple"]!!)
+        foreground = ripple(act, C["ripple"]!!)
         isClickable = true
         isFocusable = true
         setOnClickListener { act.showAgent() }
@@ -355,7 +355,7 @@ private fun diskUsageBar(act: MainActivity, roomy: Boolean): View {
 
     return FrameLayout(act).apply {
         background = roundedBg(act.dp(if (spacious) 16 else 14), C["surface_dim"]!!, act.dp(1), C["hairline"]!!)
-        foreground = ripple(C["ripple"]!!)
+        foreground = ripple(act, C["ripple"]!!)
         isClickable = true
         isFocusable = true
         addView(line, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -453,7 +453,7 @@ private fun homeRecentRow(act: MainActivity, tab: TabState, e: RecentsStore.Entr
             act.dp(if (roomy) 16 else 13), act.dp(if (roomy) 12 else 10),
             act.dp(if (roomy) 16 else 13), act.dp(if (roomy) 12 else 10),
         )
-        foreground = ripple(C["ripple"]!!)
+        foreground = ripple(act, C["ripple"]!!)
         isClickable = true
         isFocusable = true
         // v1 先落到归档所在目录（直接在此开预览要接一遍 openKey/互斥，后续再做）。
@@ -534,7 +534,7 @@ private fun homeBookmarksParts(act: MainActivity, tab: TabState, cardBg: Int, ro
                 act.dp(if (roomy) 14 else 11), act.dp(if (roomy) 12 else 10),
                 act.dp(if (roomy) 14 else 11), act.dp(if (roomy) 12 else 10),
             )
-            foreground = ripple(C["ripple"]!!)
+            foreground = ripple(act, C["ripple"]!!)
             isClickable = true
             isFocusable = true
             setOnClickListener { act.enterBrowserAt(tab, File(path)) }

@@ -1,14 +1,18 @@
 package com.usefulunpacker
 
 import android.app.AlertDialog
+import android.content.Context
+import android.graphics.Rect
 import android.os.Environment
 import android.text.InputFilter
 import android.text.InputType
+import android.text.TextUtils
 import android.text.method.PasswordTransformationMethod
 import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.view.doOnLayout
 import androidx.core.widget.doAfterTextChanged
 import java.io.File
 import java.util.concurrent.CancellationException
@@ -31,8 +35,11 @@ internal fun MainActivity.showAgent() {
     var session = newSession()
     var activeRequest: AgentRequest? = null
     var activeApproval: AlertDialog? = null
-    val content = agentForm()
-    val scroll = UuScrollView(this).apply { addView(content) }
+    val conversation = agentForm()
+    val scroll = UuScrollView(this).apply {
+        background = roundedBg(UuMetrics.px(context, R.dimen.corner_card), context.getColor(R.color.bg_surface_dark))
+        addView(conversation)
+    }
     val sessionRow = UuActionRow(this)
     val workspaceRow = UuActionRow(this)
     val modelRow = UuActionRow(this)
@@ -43,17 +50,13 @@ internal fun MainActivity.showAgent() {
     val status = TextView(this).apply {
         UuMetrics.text(this)
         setTextIsSelectable(true)
-        visibility = View.GONE
-    }
-    val transcript = TextView(this).apply {
-        UuMetrics.text(this)
-        setTextIsSelectable(true)
+        accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         visibility = View.GONE
     }
     val prompt = agentField(R.string.agent_prompt, MAX_PROMPT_CHARS).apply {
         inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-        minLines = 2
-        maxLines = 5
+        minLines = 1
+        maxLines = 3
     }
     val send = UuButton(this).apply {
         actionStyle = ActionStyle.PRIMARY
@@ -65,20 +68,66 @@ internal fun MainActivity.showAgent() {
         visibility = View.GONE
     }
     val rows = listOf(sessionRow, workspaceRow, modelRow, permissionRow, contextRow)
-    rows.forEach { content.addView(it) }
-    content.addView(TextView(this).apply {
+    sessionRow.maxLines = 2
+    sessionRow.ellipsize = android.text.TextUtils.TruncateAt.END
+    val details = agentSection(workspaceRow, modelRow, permissionRow, contextRow).apply { visibility = View.GONE }
+    val settings = UuButton(this).apply {
+        actionStyle = ActionStyle.TEXT
+        setText(R.string.agent_conversation_settings)
+    }
+    conversation.addView(details)
+    conversation.addSpaced(TextView(this).apply {
         UuMetrics.text(this)
+        setTextColor(context.getColor(R.color.text_secondary))
         setText(R.string.agent_data_notice)
-    })
-    content.addView(transcript)
-    content.addView(status)
-    content.addView(prompt)
-    content.addView(send)
-    content.addView(stop)
+    }, R.dimen.space_sm)
+    val messages = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    conversation.addView(messages)
+    val panel = agentForm().apply {
+        addView(UuActionBar(context).apply {
+            addView(sessionRow, LinearLayout.LayoutParams(0, WRAP, 1f))
+            addView(settings, LinearLayout.LayoutParams(WRAP, WRAP))
+        })
+        addView(scroll, LinearLayout.LayoutParams(MATCH, 0, 1f).apply {
+            topMargin = UuMetrics.px(context, R.dimen.space_xs)
+        })
+        addSpaced(status, R.dimen.space_sm)
+        addSpaced(UuActionBar(context).apply {
+            addView(prompt, LinearLayout.LayoutParams(0, WRAP, 1f))
+            addView(send, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
+            addView(stop, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
+        }, R.dimen.space_sm)
+    }
     val dialog = UuDialogBuilder(this).setTitle(R.string.agent_title)
-        .setView(scroll).setNegativeButton(R.string.action_close, null).create()
+        .setView(panel).setNegativeButton(R.string.action_close, null).create()
 
     fun isOpen() = dialog.window?.decorView?.isAttachedToWindow == true
+
+    fun showSettings(expanded: Boolean) {
+        details.visibility = if (expanded) View.VISIBLE else View.GONE
+        settings.selectChoice(expanded)
+        if (expanded) scroll.scrollTo(0, 0)
+    }
+
+    settings.setOnClickListener { showSettings(details.visibility != View.VISIBLE) }
+
+    fun followLatest(reply: View? = null) {
+        conversation.doOnLayout {
+            val bottom = (conversation.height - scroll.height).coerceAtLeast(0)
+            val top = if (reply == null) bottom else {
+                if (!reply.isAttachedToWindow) return@doOnLayout
+                val bounds = Rect().also(reply::getDrawingRect)
+                conversation.offsetDescendantRectToMyCoords(reply, bounds)
+                bounds.top.coerceIn(0, bottom)
+            }
+            scroll.scrollTo(0, top)
+        }
+    }
+
+    fun addTurn(question: String): AgentTurnCard = AgentTurnCard(this, question).also { turn ->
+        messages.addSpaced(turn.view, R.dimen.space_sm)
+        if (messages.childCount > 24) messages.removeViewAt(0)
+    }
 
     fun showStatus(text: CharSequence) {
         status.text = text
@@ -107,10 +156,11 @@ internal fun MainActivity.showAgent() {
     fun loadSession(next: AgentSession) {
         session = next
         refreshRows()
-        transcript.text = session.turns.takeLast(8).joinToString("\n\n") { turn ->
-            if (turn.answer.isEmpty()) turn.question else getString(R.string.agent_exchange, turn.question, turn.answer)
-        }.takeLast(24_000)
-        transcript.visibility = if (transcript.text.isEmpty()) View.GONE else View.VISIBLE
+        messages.removeAllViews()
+        for (turn in session.turns.takeLast(8)) {
+            addTurn(turn.question).setAnswer(turn.answer)
+        }
+        followLatest()
         status.visibility = View.GONE
         prompt.text?.clear()
     }
@@ -126,15 +176,11 @@ internal fun MainActivity.showAgent() {
 
     fun setBusy(busy: Boolean, cancellable: Boolean = busy) {
         rows.forEach { it.isEnabled = !busy }
+        settings.isEnabled = !busy
         prompt.isEnabled = !busy
         send.visibility = if (busy) View.GONE else View.VISIBLE
         stop.visibility = if (cancellable) View.VISIBLE else View.GONE
         stop.isEnabled = cancellable
-    }
-
-    fun appendMessage(message: CharSequence) {
-        transcript.text = if (transcript.text.isEmpty()) message else "${transcript.text}\n\n$message".takeLast(24_000)
-        transcript.visibility = View.VISIBLE
     }
 
     fun showSessions(saved: List<AgentSession>) {
@@ -278,6 +324,7 @@ internal fun MainActivity.showAgent() {
             else -> null
         }
         if (missing != null || selected == null || endpoint == null) {
+            if (selected == null || endpoint == null || session.model.isBlank()) showSettings(true)
             showStatus(getString(missing ?: R.string.agent_invalid_settings))
             return@setOnClickListener
         }
@@ -293,8 +340,10 @@ internal fun MainActivity.showAgent() {
         trace.chain?.let { dialogChainTabs[it] = ownerTabId }
         activeRequest = request
         setBusy(true)
+        if (details.visibility == View.VISIBLE) showSettings(false)
         showStatus(getString(R.string.agent_running))
-        appendMessage(question)
+        val turn = addTurn(question)
+        followLatest()
         prompt.text?.clear()
         try {
             featureThread {
@@ -327,15 +376,22 @@ internal fun MainActivity.showAgent() {
                                 previous, question, runtime, running.permission, running.context,
                                 confirm = { approve(it, request) },
                                 deleteFile = { deleteAgentFile(workspace, it) },
+                                onReasoning = { reasoning ->
+                                    runFeatureOnUiThread {
+                                        if (isFinishing || isDestroyed) return@runFeatureOnUiThread
+                                        if (!isOpen() || activeRequest !== request) return@runFeatureOnUiThread
+                                        val follow = !scroll.canScrollVertically(1)
+                                        turn.appendReasoning(reasoning)
+                                        if (follow) followLatest()
+                                    }
+                                },
                             ) { event ->
                                 runFeatureOnUiThread {
                                     if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                                     if (!isOpen() || activeRequest !== request) return@runFeatureOnUiThread
-                                    appendMessage(when {
-                                        event.failure != null -> getString(R.string.agent_tool_failed, event.failure)
-                                        event.readOnly -> getString(R.string.agent_tool_read, event.name, event.path)
-                                        else -> getString(R.string.agent_tool_write, event.name, event.path)
-                                    })
+                                    val follow = !scroll.canScrollVertically(1)
+                                    turn.updateTool(event)
+                                    if (follow) followLatest()
                                 }
                             }
                             answer = (if (key.isEmpty()) response else response.replace(key, "[redacted]"))
@@ -373,7 +429,8 @@ internal fun MainActivity.showAgent() {
                         activeApproval?.dismiss()
                         setBusy(false)
                         updated?.let { session = it; refreshRows() }
-                        answer?.let(::appendMessage)
+                        val follow = !scroll.canScrollVertically(1)
+                        val replyView = answer?.let(turn::setAnswer)
                         val failure = error
                         when {
                             cancelled -> showStatus(getString(R.string.msg_cancelled))
@@ -384,6 +441,7 @@ internal fun MainActivity.showAgent() {
                             })
                             else -> status.visibility = View.GONE
                         }
+                        if (follow && replyView != null) followLatest(replyView)
                     }
                 }
             }
@@ -393,11 +451,13 @@ internal fun MainActivity.showAgent() {
     }
 
     refreshRows()
-    dialog.show()
-    dialog.belowTabs(fitContent = true) {
+    dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
+        WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+    dialog.belowTabs(wide = true) {
         activeRequest?.cancel()
         activeApproval?.dismiss()
     }
+    dialog.show()
 }
 
 private fun MainActivity.showAgentModelSettings(
@@ -426,6 +486,7 @@ private fun MainActivity.showAgentModelSettings(
     val clearing = UuButton(this).apply { actionStyle = ActionStyle.TEXT; setText(R.string.agent_key_clear) }
     val status = TextView(this).apply {
         UuMetrics.text(this)
+        accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         visibility = View.GONE
     }
     var keyEdited = false
@@ -433,16 +494,19 @@ private fun MainActivity.showAgentModelSettings(
     var endpoint = agentEndpoint(baseUrl)
     var readingKey = false
     var saving = false
+    var connectionTest: AgentRequest? = null
 
     fun fillKey(value: String) {
         settingKey = true
         try { keyInput.setText(value) } finally { settingKey = false }
     }
 
-    fun error(message: Int, logId: String) {
-        status.text = getString(message, logId)
+    fun showStatus(message: CharSequence) {
+        status.text = message
         status.visibility = View.VISIBLE
     }
+
+    fun error(message: Int, logId: String) = showStatus(getString(message, logId))
 
     keyInput.doAfterTextChanged { if (!settingKey) keyEdited = true }
     clearing.setOnClickListener {
@@ -452,30 +516,41 @@ private fun MainActivity.showAgentModelSettings(
         status.setText(R.string.agent_key_clear_pending)
         status.visibility = View.VISIBLE
     }
-    body.addView(urlInput)
-    body.addView(modelInput)
-    body.addView(keyInput)
-    body.addView(UuToggleRow(this).apply { bind(getString(R.string.agent_key_reveal), reveal) })
-    body.addView(clearing)
     body.addView(status)
+    body.addSpaced(urlInput, R.dimen.space_sm)
+    body.addSpaced(modelInput, R.dimen.space_sm)
+    body.addSpaced(keyInput, R.dimen.space_md)
+    body.addSpaced(agentSection(
+        UuToggleRow(this).apply { bind(getString(R.string.agent_key_reveal), reveal) }, clearing,
+    ), R.dimen.space_sm)
+    val scroll = UuScrollView(this).apply { addView(body) }
     val dialog = UuDialogBuilder(this).setTitle(R.string.agent_model_settings)
         .setMessage(R.string.agent_key_storage_notice)
-        .setView(UuScrollView(this).apply { addView(body) })
+        .setView(scroll)
         .setNegativeButton(R.string.action_cancel, null)
         .setPositiveButton(R.string.action_save, null)
+        .setNeutralButton(R.string.agent_connection_test, null)
         .create()
     dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
     dialog.show()
     val saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-    dialog.keepTabsTappable { reveal.isChecked = false; fillKey("") }
+    val testButton = dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+    UuMetrics.action(testButton, ActionStyle.SECONDARY)
+    dialog.keepTabsTappable {
+        connectionTest?.cancel()
+        reveal.isChecked = false
+        fillKey("")
+    }
     keyInput.viewTreeObserver.addOnWindowFocusChangeListener { focused -> if (!focused) reveal.isChecked = false }
     fun checkControls() {
-        urlInput.isEnabled = !saving
-        modelInput.isEnabled = !saving
-        keyInput.isEnabled = !saving && !readingKey
-        reveal.isEnabled = !saving && !readingKey
-        clearing.isEnabled = !saving && !readingKey
-        saveButton.isEnabled = !saving
+        val editing = !saving && connectionTest == null
+        urlInput.isEnabled = editing
+        modelInput.isEnabled = editing
+        keyInput.isEnabled = editing && !readingKey
+        reveal.isEnabled = editing && !readingKey
+        clearing.isEnabled = editing && !readingKey
+        testButton.isEnabled = editing && !readingKey
+        saveButton.isEnabled = editing
     }
 
     fun loadKey() {
@@ -514,6 +589,74 @@ private fun MainActivity.showAgentModelSettings(
         }
     }
     loadKey()
+    testButton.onUserIntent("agent_model_test") {
+        val destination = agentEndpoint(urlInput.text.toString())
+        val modelName = modelInput.text.toString().trim()
+        val typedSecret = keyInput.text.toString().trim().takeIf { keyEdited }
+        if (destination == null || modelName.isBlank()) {
+            showStatus(getString(R.string.agent_invalid_settings))
+            scroll.smoothScrollTo(0, 0)
+            return@onUserIntent
+        }
+        if (typedSecret != null && !validAgentKey(typedSecret)) {
+            showStatus(getString(R.string.agent_key_invalid))
+            scroll.smoothScrollTo(0, 0)
+            return@onUserIntent
+        }
+        val request = AgentRequest()
+        connectionTest = request
+        reveal.isChecked = false
+        checkControls()
+        showStatus(getString(R.string.agent_connection_testing))
+        scroll.scrollTo(0, 0)
+        featureThread {
+            request.setWorker(Thread.currentThread())
+            val step = AppDiagnostics.begin("model_probe", listOfNotNull(typedSecret))
+            val result = try {
+                request.checkActive()
+                val secret = typedSecret ?: try { credentials.read(destination).orEmpty() } catch (_: Exception) {
+                    throw AgentClientException("credential_read", FailureCode.IO, "Agent API key could not be read")
+                }
+                val elapsed = AgentClient(destination, modelName, secret, request).testConnection()
+                step.success()
+                getString(R.string.agent_connection_success, elapsed)
+            } catch (_: CancellationException) {
+                step.cancelled()
+                null
+            } catch (e: AgentClientException) {
+                val failure = step.fail(e.code, e.message.orEmpty(), notifyUser = false)
+                val http = e.httpStatus
+                if (http != null) {
+                    val detail = when (http) {
+                        401, 403 -> R.string.agent_connection_access
+                        404, 405 -> R.string.agent_connection_route
+                        429 -> R.string.agent_connection_limit
+                        else -> R.string.agent_connection_provider
+                    }
+                    getString(R.string.agent_connection_http, http, getString(detail), failure.logId)
+                } else getString(
+                    if (e.stage == "credential_read") R.string.agent_key_read_failed else R.string.agent_connection_format,
+                    failure.logId,
+                )
+            } catch (e: java.net.SocketTimeoutException) {
+                val failure = step.fail(FailureCode.IO, "Agent connection test timed out", notifyUser = false)
+                getString(R.string.agent_connection_timeout, failure.logId)
+            } catch (e: Exception) {
+                val failure = step.fail(FailureCode.IO, "Agent connection test failed (${e.javaClass.simpleName})", notifyUser = false)
+                getString(R.string.agent_connection_network, failure.logId)
+            } finally {
+                request.setWorker(null)
+            }
+            runFeatureOnUiThread {
+                if (isFinishing || isDestroyed) return@runFeatureOnUiThread
+                if (dialog.window?.decorView?.isAttachedToWindow != true || connectionTest !== request) return@runFeatureOnUiThread
+                connectionTest = null
+                checkControls()
+                showStatus(result ?: getString(R.string.msg_cancelled))
+                scroll.scrollTo(0, 0)
+            }
+        }
+    }
     saveButton.setOnClickListener {
         val url = urlInput.text.toString().trim()
         val modelName = modelInput.text.toString().trim()
@@ -559,6 +702,116 @@ private fun MainActivity.agentForm() = LinearLayout(this).apply {
     orientation = LinearLayout.VERTICAL
     val gutter = resources.getDimensionPixelSize(R.dimen.space_xl)
     setPadding(gutter, gutter / 2, gutter, gutter / 2)
+}
+
+private class AgentTurnCard(private val context: Context, question: String) {
+    private val rows = linkedMapOf<Int, TextView>()
+    private var expanded = false
+    private val tools = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    private val reasoningTitle = line(R.dimen.text_sm, R.color.accent).apply {
+        setText(R.string.agent_reasoning)
+        visibility = View.GONE
+    }
+    private val reasoning = line(R.dimen.text_sm, R.color.text_secondary).apply {
+        setTextIsSelectable(true)
+        visibility = View.GONE
+    }
+    private val disclosure = UuButton(context).apply {
+        actionStyle = ActionStyle.TEXT
+        setText(R.string.agent_activity_expand)
+        visibility = View.GONE
+        setOnClickListener {
+            expanded = !expanded
+            setText(if (expanded) R.string.agent_activity_collapse else R.string.agent_activity_expand)
+            refreshDetails()
+        }
+    }
+    private val answer = line(R.dimen.text_lg, R.color.text_primary).apply {
+        setTextIsSelectable(true)
+        visibility = View.GONE
+    }
+
+    val view = context.agentSection().apply {
+        val padding = UuMetrics.px(context, R.dimen.space_md)
+        setPadding(padding, padding, padding, padding)
+        addView(line(R.dimen.text_title, R.color.text_primary).apply {
+            text = question
+            setTextIsSelectable(true)
+        })
+        addSpaced(tools, R.dimen.space_xs)
+        tools.visibility = View.GONE
+        addView(disclosure, LinearLayout.LayoutParams(WRAP, WRAP))
+        addView(reasoningTitle)
+        addView(reasoning)
+        addSpaced(answer, R.dimen.space_sm)
+    }
+
+    fun setAnswer(value: String): View = answer.apply {
+        text = value
+        visibility = if (value.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    fun appendReasoning(value: String) {
+        if (reasoning.text.isNotEmpty()) reasoning.append("\n\n")
+        reasoning.append(value)
+        disclosure.visibility = View.VISIBLE
+        refreshDetails()
+    }
+
+    fun updateTool(event: AgentToolEvent) {
+        val row = rows.getOrPut(event.callIndex) {
+            line(R.dimen.text_sm, R.color.text_secondary).also(tools::addView)
+        }
+        val status = when {
+            event.failure != null -> context.getString(R.string.agent_tool_failed, event.failure)
+            event.stage == AgentToolStage.APPROVAL -> context.getString(R.string.agent_tool_awaiting, event.name)
+            event.stage == AgentToolStage.SUCCESS -> context.getString(R.string.agent_tool_success, event.name)
+            event.stage == AgentToolStage.CANCELLED -> context.getString(R.string.agent_tool_cancelled, event.name)
+            event.readOnly -> context.getString(R.string.agent_tool_read, event.name)
+            else -> context.getString(R.string.agent_tool_write, event.name)
+        }
+        row.text = listOfNotNull(
+            event.name.takeIf { event.failure != null && it.isNotEmpty() },
+            status,
+            event.resultCount?.let { context.getString(R.string.agent_tool_result_items, it) },
+            event.resultLabel,
+            event.path.takeIf(String::isNotEmpty),
+        ).joinToString(" · ")
+        row.setTextColor(context.getColor(if (event.failure == null) R.color.text_secondary else R.color.state_error))
+        disclosure.visibility = View.VISIBLE
+        tools.visibility = View.VISIBLE
+        refreshDetails()
+    }
+
+    private fun refreshDetails() {
+        val previewStart = rows.size - 3
+        rows.values.forEachIndexed { index, row ->
+            row.visibility = if (expanded || index >= previewStart) View.VISIBLE else View.GONE
+            row.maxLines = if (expanded) Int.MAX_VALUE else 1
+            row.ellipsize = if (expanded) null else TextUtils.TruncateAt.END
+        }
+        val reasoningVisibility = if (expanded && reasoning.text.isNotEmpty()) View.VISIBLE else View.GONE
+        reasoningTitle.visibility = reasoningVisibility
+        reasoning.visibility = reasoningVisibility
+    }
+
+    private fun line(size: Int, color: Int) = TextView(context).apply {
+        setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, resources.getDimension(size))
+        setTextColor(context.getColor(color))
+    }
+}
+
+private fun Context.agentSection(vararg items: View) = UuActionPanel(this).apply {
+    setPadding(0, 0, 0, 0)
+    background = roundedBg(UuMetrics.px(context, R.dimen.corner_card), context.getColor(R.color.bg_surface),
+        dp(1), context.getColor(R.color.hairline))
+    items.forEach { addView(it) }
+}
+
+private fun LinearLayout.addSpaced(view: View, gap: Int) {
+    addView(view, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+        topMargin = UuMetrics.px(context, gap)
+    })
 }
 
 private fun MainActivity.agentField(hintId: Int, maxChars: Int, initial: String = "") = UuTextField(this).apply {

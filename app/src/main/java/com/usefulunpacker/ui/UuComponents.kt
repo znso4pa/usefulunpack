@@ -128,7 +128,7 @@ internal object UuMetrics {
             setColor(if (filled) accent else if (style == ActionStyle.SECONDARY) ctx.getColor(R.color.accent_soft) else android.graphics.Color.TRANSPARENT)
         }
         view.setPadding(px(ctx, R.dimen.space_md), px(ctx, R.dimen.space_sm), px(ctx, R.dimen.space_md), px(ctx, R.dimen.space_sm))
-        view.foreground = ripple(ctx.getColor(R.color.ripple_light))
+        view.foreground = ripple(ctx, ctx.getColor(R.color.ripple_light))
     }
 }
 
@@ -183,7 +183,8 @@ class UuIconButton @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? 
         scaleType = ImageView.ScaleType.FIT_CENTER
         val padding = UuMetrics.px(ctx, R.dimen.space_md)
         if (width <= 0 || height <= 0) setPadding(padding, padding, padding, padding)
-        background = if (actionStyle == ActionStyle.PRIMARY) roundedBg(ctx.dp(8), ctx.getColor(R.color.accent)) else ripple(ctx.getColor(R.color.ripple_light))
+        background = if (actionStyle == ActionStyle.PRIMARY) roundedBg(ctx.dp(8), ctx.getColor(R.color.accent)) else null
+        foreground = ripple(ctx, ctx.getColor(R.color.ripple_light), compact = true)
         imageTintList = ColorStateList(arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
             intArrayOf(ctx.getColor(R.color.text_disabled), ctx.getColor(when (actionStyle) {
                 ActionStyle.PRIMARY -> R.color.accent_on
@@ -400,7 +401,7 @@ class UuActionRow @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
         minHeight = UuMetrics.px(ctx, R.dimen.row_setting)
         gravity = Gravity.CENTER_VERTICAL
         setPadding(ctx.dp(16), ctx.dp(12), ctx.dp(16), ctx.dp(12))
-        background = ripple(ctx.getColor(R.color.ripple_light))
+        background = ripple(ctx, ctx.getColor(R.color.ripple_light))
         isFocusable = true
     }
     private var rowTitle: CharSequence = ""

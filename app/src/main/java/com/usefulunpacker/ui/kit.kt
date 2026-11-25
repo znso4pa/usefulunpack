@@ -34,9 +34,13 @@ internal fun roundedBg(cornerPx: Int, fill: Int, strokePx: Int = 0, stroke: Int 
         if (strokePx > 0) setStroke(strokePx, stroke)
     }
 
-/** 行 / 卡片的按压涟漪。 */
-internal fun ripple(color: Int): RippleDrawable =
-    RippleDrawable(ColorStateList.valueOf(color), null, null)
+/** Keep press feedback small and clipped even on full-width rows. */
+internal fun ripple(ctx: Context, color: Int, compact: Boolean = false): RippleDrawable {
+    val mask = roundedBg(UuMetrics.px(ctx, R.dimen.corner_input), android.graphics.Color.WHITE)
+    return RippleDrawable(ColorStateList.valueOf(color), null, mask).apply {
+        radius = UuMetrics.px(ctx, if (compact) R.dimen.press_radius_icon else R.dimen.press_radius)
+    }
+}
 
 /** 文本。[bold] 走 `Typeface.BOLD`。 */
 internal fun textView(ctx: Context, s: CharSequence, sp: Float, color: Int, bold: Boolean = false): TextView =
@@ -200,7 +204,7 @@ internal fun heroCard(
 
     return FrameLayout(ctx).apply {
         background = bg
-        foreground = ripple(C["ripple"]!!)
+        foreground = ripple(ctx, C["ripple"]!!)
         isClickable = true
         isFocusable = true
         minimumHeight = d(if (spacious) 78 else 58)
@@ -229,7 +233,7 @@ internal fun miniCard(
         gravity = Gravity.CENTER_VERTICAL
         if (spacious) setPadding(d(15), d(14), d(15), d(14)) else setPadding(d(11), d(8), d(11), d(8))
         background = roundedBg(d(if (spacious) 16 else 14), bg, d(1), C["hairline"]!!)
-        foreground = ripple(C["ripple"]!!)
+        foreground = ripple(ctx, C["ripple"]!!)
         isClickable = true
         isFocusable = true
         // 返回的就是 LinearLayout，布局参数必须是同一族 —— 原先给的是

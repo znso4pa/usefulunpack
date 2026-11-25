@@ -32,10 +32,13 @@
 
     <!-- ═══ 弹窗 / 内容上限 (caps) ═══ -->
     <dimen name="dialog_max_width">600dp</dimen>
+    <dimen name="dialog_conversation_max_width">920dp</dimen>
     <dimen name="dialog_max_height">720dp</dimen>
     <!-- 手机上内容不限宽（用一个很大的值），宽屏再收窄 -->
     <dimen name="content_max_width">10000dp</dimen>
     <dimen name="touch_target">48dp</dimen>
+    <dimen name="press_radius">20dp</dimen>
+    <dimen name="press_radius_icon">14dp</dimen>
     <dimen name="drawer_width">300dp</dimen>
     <dimen name="menu_width">240dp</dimen>
     <dimen name="home_list_row_height">58dp</dimen>

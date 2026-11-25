@@ -14,8 +14,14 @@ private const val MAX_RESPONSE_CHARS = 512 * 1024
 private const val MAX_ROUNDS = 6
 private const val MAX_CALLS = 4
 private const val PAGE_SIZE = 24
+private val DISPLAY_TOOL_NAME = Regex("[A-Z][A-Z0-9_]{0,63}")
 
-internal class AgentClientException(val stage: String, val code: FailureCode, message: String) : IOException(message)
+internal class AgentClientException(
+    val stage: String,
+    val code: FailureCode,
+    message: String,
+    val httpStatus: Int? = null,
+) : IOException(message)
 
 internal fun agentEndpoint(baseUrl: String): URL? {
     val uri = try { URI(baseUrl.trim()) } catch (_: java.net.URISyntaxException) { return null }
@@ -106,7 +112,18 @@ internal enum class AgentReadTool(
     }
 }
 
-internal data class AgentToolEvent(val name: String, val path: String, val failure: String? = null, val readOnly: Boolean = true)
+internal enum class AgentToolStage { APPROVAL, RUNNING, SUCCESS, CANCELLED }
+
+internal data class AgentToolEvent(
+    val callIndex: Int,
+    val name: String,
+    val path: String,
+    val failure: String? = null,
+    val readOnly: Boolean = true,
+    val stage: AgentToolStage = AgentToolStage.RUNNING,
+    val resultCount: Int? = null,
+    val resultLabel: String? = null,
+)
 
 private data class ModelToolCall(val id: String, val name: String, val raw: String, val input: JSONObject?)
 
@@ -116,6 +133,13 @@ internal class AgentClient(
     private val apiKey: String,
     private val request: AgentRequest,
 ) {
+    fun testConnection(): Long {
+        val started = System.nanoTime()
+        val reply = send(JSONArray().put(message("user", "Reply only OK.")), readTimeoutMs = 20_000)
+        if ((reply.opt("content") as? String).isNullOrBlank()) throw invalidResponse()
+        return (System.nanoTime() - started) / 1_000_000
+    }
+
     fun complete(
         history: List<JSONObject>,
         prompt: String,
@@ -124,6 +148,7 @@ internal class AgentClient(
         context: String = "",
         confirm: (AgentApproval) -> Boolean = { false },
         deleteFile: (JSONObject) -> com.usefulunpacker.skills.AppSkillResult = { error("No workspace for deletion") },
+        onReasoning: (String) -> Unit = {},
         onTool: (AgentToolEvent) -> Unit,
     ): String {
         val messages = JSONArray()
@@ -135,8 +160,11 @@ internal class AgentClient(
         messages.put(message("user", prompt))
         val tools = permission.tools(runtime.skills())
         val schemas = JSONArray(tools.values.map { it.schema })
+        var nextCallIndex = 0
         repeat(MAX_ROUNDS) {
             val reply = send(messages, schemas)
+            val reasoning = (reply.opt("reasoning_content") as? String)?.takeIf { it.isNotBlank() }
+            reasoning?.let { onReasoning(displayText(it, 8192)) }
             val calls = reply.optJSONArray("tool_calls")
             if (calls == null && !reply.isNull("tool_calls")) throw invalidResponse()
             if (calls == null || calls.length() == 0) {
@@ -149,25 +177,36 @@ internal class AgentClient(
             val toolReplies = JSONArray()
             for ((id, name, raw, args) in batch) {
                 request.checkActive()
+                val callIndex = nextCallIndex++
                 val tool = tools[name]
                 val payload = if (tool != null && args != null && tool.accepts(args)) {
-                    execute(tool, args, runtime, confirm, deleteFile, onTool)
+                    execute(callIndex, tool, args, runtime, confirm, deleteFile, onTool)
                 } else {
                     val failure = AppDiagnostics.begin("tool_policy").fail(FailureCode.INVALID_RESULT,
                         "Model requested a tool or parameters outside the selected permission", notifyUser = false)
-                    onTool(AgentToolEvent("", "", "${failure.code.name} · ${failure.logId}"))
+                    val label = name.takeIf { DISPLAY_TOOL_NAME.matches(it) }.orEmpty()
+                    onTool(AgentToolEvent(callIndex, label, "", "${failure.code.name} · ${failure.logId}"))
                     JSONObject().put("errorCode", "TOOL_NOT_ALLOWED")
                 }
                 assistantCalls.put(JSONObject().put("id", id).put("type", "function").put("function",
                     JSONObject().put("name", name).put("arguments", raw)))
                 toolReplies.put(message("tool", payload.toString()).put("tool_call_id", id))
             }
-            messages.put(JSONObject().put("role", "assistant").put("content", JSONObject.NULL)
+            messages.put(JSONObject().put("role", "assistant")
+                .put("content", (reply.opt("content") as? String)?.let(::redact) ?: JSONObject.NULL)
+                .put("reasoning_content", reasoning?.let(::redact))
                 .put("tool_calls", assistantCalls))
             for (index in 0 until toolReplies.length()) messages.put(toolReplies.getJSONObject(index))
         }
         throw AgentClientException("model_rounds", FailureCode.INVALID_RESULT, "The model reached the tool round limit")
     }
+
+    private fun displayText(value: String, limit: Int): String {
+        val safe = redact(value)
+        return if (safe.length <= limit) safe else safe.take(limit) + "…"
+    }
+
+    private fun redact(value: String): String = if (apiKey.isEmpty()) value else value.replace(apiKey, "[redacted]")
 
     private fun parseToolCalls(calls: JSONArray): List<ModelToolCall> {
         if (calls.length() > MAX_CALLS) throw invalidResponse()
@@ -190,6 +229,7 @@ internal class AgentClient(
     }
 
     private fun execute(
+        callIndex: Int,
         tool: AgentTool,
         args: JSONObject,
         runtime: AppSkillRuntime,
@@ -198,47 +238,87 @@ internal class AgentClient(
         onTool: (AgentToolEvent) -> Unit,
     ): JSONObject {
         val isRead = tool.read != null
-        if (!isRead && !confirm(AgentApproval(tool.name, args))) {
-            throw CancellationException("User declined the local operation")
+        val target = listOf("path", "source", "archive", "output").mapNotNull { args.opt(it) as? String }
+            .distinct().joinToString(" → ") { visibleAgentText(displayText(it, 256)) }
+        fun event(stage: AgentToolStage, failure: String? = null, count: Int? = null, label: String? = null) =
+            onTool(AgentToolEvent(callIndex, tool.name, target, failure, isRead, stage, count, label))
+        if (!isRead) {
+            event(AgentToolStage.APPROVAL)
+            val approved = try {
+                confirm(AgentApproval(tool.name, args)).also { request.checkActive() }
+            } catch (e: InterruptedException) {
+                event(AgentToolStage.CANCELLED)
+                throw e
+            } catch (e: CancellationException) {
+                event(AgentToolStage.CANCELLED)
+                throw e
+            }
+            if (!approved) {
+                event(AgentToolStage.CANCELLED)
+                throw CancellationException("User declined the local operation")
+            }
         }
         request.checkActive()
-        val path = (args.opt("path") ?: args.opt("output")) as? String ?: ""
-        onTool(AgentToolEvent(tool.name, path, readOnly = isRead))
+        event(AgentToolStage.RUNNING)
         val step = AppDiagnostics.begin(tool.name.lowercase(java.util.Locale.ROOT))
-        var result = AppDiagnostics.withTrace(step) {
-            if (tool.name == "DELETE_FILE") deleteFile(args) else runtime.invokeSkill(tool.name, args)
-        }
-        val taskId = result.data.optString("taskId")
-        while (!result.isError && taskId.isNotEmpty() &&
-            result.data.optString("state") in setOf("QUEUED", "RUNNING", "CANCELLING")) {
+        val result = try {
+            var current = AppDiagnostics.withTrace(step) {
+                if (tool.name == "DELETE_FILE") deleteFile(args) else runtime.invokeSkill(tool.name, args)
+            }
+            val taskId = current.data.optString("taskId")
+            while (!current.isError && taskId.isNotEmpty() &&
+                current.data.optString("state") in setOf("QUEUED", "RUNNING", "CANCELLING")) {
+                request.checkActive()
+                current = runtime.invokeSkill("TASK_STATUS", JSONObject().put("taskId", taskId).put("waitMs", 1000))
+            }
             request.checkActive()
-            result = runtime.invokeSkill("TASK_STATUS", JSONObject().put("taskId", taskId).put("waitMs", 1000))
+            current
+        } catch (e: CancellationException) {
+            event(AgentToolStage.CANCELLED)
+            throw e
+        } catch (e: InterruptedException) {
+            event(AgentToolStage.CANCELLED)
+            throw e
+        } catch (e: Exception) {
+            val failure = step.fail(FailureCode.UNEXPECTED, "Agent tool failed (${e.javaClass.simpleName})", notifyUser = false)
+            event(AgentToolStage.RUNNING, "${failure.code.name} · ${failure.logId}")
+            throw e
         }
-        request.checkActive()
         val state = result.data.optString("state", "SUCCESS")
         if (result.isError || result.data.has("errorCode") || state != "SUCCESS") {
             val code = result.data.optString("errorCode", state.takeUnless { it == "SUCCESS" } ?: "UNEXPECTED")
-            val id = result.data.optString("logId", taskId)
-            onTool(AgentToolEvent(tool.name, path, listOf(code, id).filter { it.isNotEmpty() }.joinToString(" · "), isRead))
+            val id = result.data.optString("logId", result.data.optString("taskId"))
+            event(AgentToolStage.RUNNING, listOf(code, id).filter { it.isNotEmpty() }.joinToString(" · "))
             return JSONObject().put("state", state.takeUnless { it == "SUCCESS" } ?: "FAILED").put("errorCode", code)
         }
         step.success()
-        return tool.read?.metadata(result.data) ?: JSONObject().put("state", state).apply {
+        val payload = tool.read?.metadata(result.data) ?: JSONObject().put("state", state).apply {
             result.data.optJSONArray("outputs")?.let { outputs ->
                 put("outputs", JSONArray(List(minOf(PAGE_SIZE, outputs.length())) { outputs.getString(it) }))
             }
             (result.data.opt("output") as? String)?.let { put("output", it) }
         }
+        val count = when (tool.read) {
+            AgentReadTool.ARCHIVE_LIST -> payload.optInt("totalEntries")
+            AgentReadTool.WORKSPACE_LIST -> payload.optJSONArray("entries")?.length()
+            AgentReadTool.SCAN -> payload.optInt("totalHits")
+            else -> null
+        }
+        val output = (payload.opt("output") as? String ?: payload.optJSONArray("outputs")?.opt(0) as? String)
+            ?.let { visibleAgentText(displayText(it, 256)) }
+            ?.takeUnless { it in target.split(" → ") }
+        event(AgentToolStage.SUCCESS, count = count, label = output)
+        return payload
     }
 
-    private fun send(messages: JSONArray, tools: JSONArray): JSONObject {
+    private fun send(messages: JSONArray, tools: JSONArray? = null, readTimeoutMs: Int = 30_000): JSONObject {
         val connection = request.connect(endpoint)
         try {
             connection.requestMethod = "POST"
             connection.instanceFollowRedirects = false
             connection.useCaches = false
             connection.connectTimeout = 10_000
-            connection.readTimeout = 30_000
+            connection.readTimeout = readTimeoutMs
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             connection.setRequestProperty("Accept", "application/json")
@@ -251,7 +331,7 @@ internal class AgentClient(
             connection.outputStream.use { it.write(data) }
             val status = connection.responseCode
             if (status !in 200..299) {
-                throw AgentClientException("model_http", FailureCode.IO, "Model endpoint returned HTTP $status")
+                throw AgentClientException("model_http", FailureCode.IO, "Model endpoint returned HTTP $status", status)
             }
             val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
                 val buffer = CharArray(4096)

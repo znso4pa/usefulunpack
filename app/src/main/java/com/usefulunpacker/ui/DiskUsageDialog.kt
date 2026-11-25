@@ -262,7 +262,7 @@ private class DiskRowAdapter(
         box.addView(barFrame, LinearLayout.LayoutParams(MATCH, px(3)).apply { topMargin = px(6) })
 
         if (isDir) {
-            box.foreground = ripple(C["ripple"]!!)
+            box.foreground = ripple(box.context, C["ripple"]!!)
             box.isClickable = true
             box.isFocusable = true
             box.setOnClickListener { onDir((row as DiskRow.Dir).node) }

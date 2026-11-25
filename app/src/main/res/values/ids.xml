@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <item name="dialogPresentation" type="id" />
+    <item name="dialogMotionCovered" type="id" />
+    <item name="dialogWideContent" type="id" />
     <!-- Floating operation-progress layer (OpOverlay) -->
     <item name="op_overlay_host" type="id" />
     <item name="op_overlay_cards" type="id" />

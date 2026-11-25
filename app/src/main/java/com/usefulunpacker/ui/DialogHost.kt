@@ -74,7 +74,7 @@ internal fun prepareDialogWindow(dlg: android.app.Dialog) {
                 if (generation == attachmentGeneration && !activity.isFinishing && !activity.isDestroyed &&
                     dlg.isShowing && decor.isAttachedToWindow && view.width > 0 && view.height > 0) {
                     lastViewport = view.width to view.height
-                    DialogMotion.reset(dlg)
+                    DialogMotion.settle(dlg)
                     activity.applyPresentationGeometry(dlg)
                 }
             }
@@ -115,7 +115,7 @@ internal fun prepareDialogWindow(dlg: android.app.Dialog) {
             val viewport = root?.let { it.width to it.height }
             if (generation == attachmentGeneration && !activity.isFinishing && !activity.isDestroyed && dlg.isShowing && view.isAttachedToWindow && viewport != lastViewport) {
                 lastViewport = viewport
-                DialogMotion.reset(dlg)
+                DialogMotion.settle(dlg)
                 activity.applyPresentationGeometry(dlg)
             }
         }
@@ -355,7 +355,7 @@ internal fun MainActivity.syncRootedDialogs() {
         }
         entry.hidden = !shouldShow
         if (attached) {
-            if (!presentation.acceptsInput) DialogMotion.reset(entry.dlg)
+            if (shouldShow) DialogMotion.setCovered(entry.dlg, !presentation.acceptsInput)
             val window = entry.dlg.window ?: continue
             val blocked = android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -469,8 +469,10 @@ internal fun MainActivity.belowTabBar(
     dlg: android.app.Dialog,
     swipeAreaDp: Float = 130f,
     fitContent: Boolean = false,
+    wide: Boolean = false,
     also: (() -> Unit)? = null,
 ) {
+    if (wide) dlg.window?.decorView?.setTag(R.id.dialogWideContent, true)
     registerPlacement(dlg, swipeAreaDp, fitContent)
     applyDialogGeometry(dlg, swipeAreaDp, fitContent)
     // 弹窗一律要护盾（除 tab 栏外全挡）；配对全在 placeDialog 里。
@@ -503,7 +505,10 @@ private fun MainActivity.applyDialogGeometry(
     val rootW = findViewById<View>(R.id.root)?.width?.takeIf { it > 0 } ?: dm.widthPixels
     val landscape = resources.configuration.orientation ==
         android.content.res.Configuration.ORIENTATION_LANDSCAPE
-    val sheetW = if (landscape) {
+    val sheetW = if (w.decorView.getTag(R.id.dialogWideContent) == true) {
+        minOf(rootW - 2 * resources.getDimensionPixelSize(R.dimen.space_lg),
+            resources.getDimensionPixelSize(R.dimen.dialog_conversation_max_width))
+    } else if (landscape) {
         (DIALOG_LANDSCAPE_W_DP * density).toInt()
             .coerceAtMost(rootW - (2 * 16f * density).toInt())
     } else {
@@ -598,12 +603,12 @@ private fun MainActivity.reapplyDialogPlacementsNow() {
         val d = ref.get()
         if (d == null || !d.isShowing) { iter.remove(); continue }
         if (d.context.findMainActivity() !== this) continue
-        DialogMotion.reset(d)
+        DialogMotion.settle(d)
         applyDialogGeometry(d, swipeAreaDp, fitContent)
     }
     dialogDimOwners.filterIsInstance<android.app.Dialog>().forEach { dialog ->
         if (dialog.isShowing && placedDialogs.none { it.first.get() === dialog }) {
-            DialogMotion.reset(dialog)
+            DialogMotion.settle(dialog)
             applyPresentationGeometry(dialog)
         }
     }
@@ -787,7 +792,8 @@ internal fun android.app.Dialog.keepTabsTappable(
 internal fun android.app.Dialog.belowTabs(
     swipeAreaDp: Float = 130f,
     fitContent: Boolean = false,
+    wide: Boolean = false,
     also: (() -> Unit)? = null,
 ) {
-    context.findMainActivity()?.belowTabBar(this, swipeAreaDp, fitContent, also)
+    context.findMainActivity()?.belowTabBar(this, swipeAreaDp, fitContent, wide, also)
 }

@@ -2,7 +2,7 @@
 <resources>
     <item name="dialogPresentation" type="id" />
     <item name="dialogMotionCovered" type="id" />
-    <item name="dialogWideContent" type="id" />
+    <item name="dialogFillViewport" type="id" />
     <!-- Floating operation-progress layer (OpOverlay) -->
     <item name="op_overlay_host" type="id" />
     <item name="op_overlay_cards" type="id" />

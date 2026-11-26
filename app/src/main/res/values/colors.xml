@@ -59,6 +59,10 @@
     <color name="state_error">#ff5252</color>
     <color name="state_success">#69f0ae</color>
 
+    <!-- File Agent activity types -->
+    <color name="agent_tool_accent">#7cdae9</color>
+    <color name="agent_reasoning_accent">#d5b9ff</color>
+
     <!-- ═══ Search highlights ═══ -->
     <color name="search_highlight_selected">#88FFAA00</color>
     <color name="search_highlight_other">#33FFAA00</color>

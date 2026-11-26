@@ -293,7 +293,9 @@ class UuChoiceCell(ctx: Context) : androidx.appcompat.widget.AppCompatTextView(c
         UuMetrics.text(this)
         setTextColor(context.getColor(if (!available) R.color.text_disabled else if (selected) R.color.accent else R.color.text_primary))
         val shape = GradientDrawable().apply {
-            setColor(context.getColor(R.color.bg_surface_raised))
+            val surface = context.getColor(R.color.bg_surface_raised)
+            val accent = context.getColor(R.color.accent)
+            setColor(if (selected && listMode) androidx.core.graphics.ColorUtils.blendARGB(surface, accent, 0.18f) else surface)
             cornerRadius = UuMetrics.px(context, R.dimen.corner_input).toFloat()
             setStroke(context.dp(if (selected) 2 else 1), context.getColor(if (selected) R.color.accent else R.color.divider_subtle))
         }
@@ -513,10 +515,12 @@ internal fun styleDialogSurface(dialog: android.app.Dialog) {
     content.clipToPadding = false
     (dialog.window?.decorView as? ViewGroup)?.clipChildren = false
     val panel = content.getChildAt(0) ?: return
-    panel.setBackgroundResource(R.drawable.dialog_bg_rounded)
+    val fillsViewport = dialog.window?.decorView?.getTag(R.id.dialogFillViewport) == true
+    if (fillsViewport) panel.setBackgroundColor(dialog.context.getColor(R.color.bg_surface_dim))
+    else panel.setBackgroundResource(R.drawable.dialog_bg_rounded)
     panel.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
-    panel.clipToOutline = true
-    panel.elevation = dialog.context.resources.getDimension(R.dimen.dialog_surface_elevation)
+    panel.clipToOutline = !fillsViewport
+    panel.elevation = if (fillsViewport) 0f else dialog.context.resources.getDimension(R.dimen.dialog_surface_elevation)
 }
 
 private fun styleDialog(dialog: AlertDialog, positiveStyle: ActionStyle) {

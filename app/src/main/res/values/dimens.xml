@@ -32,7 +32,6 @@
 
     <!-- ═══ 弹窗 / 内容上限 (caps) ═══ -->
     <dimen name="dialog_max_width">600dp</dimen>
-    <dimen name="dialog_conversation_max_width">920dp</dimen>
     <dimen name="dialog_max_height">720dp</dimen>
     <!-- 手机上内容不限宽（用一个很大的值），宽屏再收窄 -->
     <dimen name="content_max_width">10000dp</dimen>

@@ -53,8 +53,9 @@ internal object DialogMotion {
         if (!ValueAnimator.areAnimatorsEnabled() || panel.getTag(R.id.dialogMotionCovered) == true ||
             panel.width <= 0 || panel.height <= 0) return
         panel.alpha = 0.32f
-        panel.translationY = panel.context.dp(if (menu) -4 else if (sheet) 14 else 5).toFloat()
-        val scale = if (sheet) 1f else 0.98f
+        val fillsViewport = dialog.window?.decorView?.getTag(R.id.dialogFillViewport) == true
+        panel.translationY = panel.context.dp(if (fillsViewport) 0 else if (menu) -4 else if (sheet) 14 else 5).toFloat()
+        val scale = if (sheet || fillsViewport) 1f else 0.98f
         panel.scaleX = scale
         panel.scaleY = scale
         panel.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)

@@ -62,19 +62,15 @@ internal fun MainActivity.showAgentDocumentPicker(ownerTabId: Int, onSelect: (Ag
         override fun getView(position: Int, view: View?, parent: ViewGroup): View {
             val item = getItem(position)
             return (view as? UuActionRow ?: UuActionRow(parent.context)).apply {
-                bind(item.title, item.description)
-                isEnabled = true
-                isFocusable = false
+                bind(item.title, item.description) {
+                    picker.dismiss()
+                    onSelect(item.reference)
+                }
             }
         }
     }
     list.emptyView = empty
     list.adapter = adapter
-    list.setOnItemClickListener { _, _, position, _ ->
-        val reference = adapter.getItem(position).reference
-        picker.dismiss()
-        onSelect(reference)
-    }
     search.doAfterTextChanged { input ->
         val query = input?.toString().orEmpty()
         shown = choices.filter { AgentReferenceDocument.matches(it.searchable, query) }

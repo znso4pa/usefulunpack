@@ -13,6 +13,13 @@ import java.util.zip.GZIPOutputStream
 
 internal const val AGENT_CONTEXT_LIMIT = 8192
 internal const val AGENT_SESSION_NAME_LIMIT = 80
+
+private val standaloneEngineQuestions = setOf(
+    "what engine is this game using", "what engine does this game use", "identify the game engine",
+    "这是什么引擎", "这个游戏是什么引擎", "这个游戏用的是什么引擎", "识别游戏引擎",
+    "這是什麼引擎", "這個遊戲是什麼引擎", "這個遊戲用的是什麼引擎", "辨識遊戲引擎",
+    "このゲームのエンジンは何ですか", "ゲームエンジンを判定して",
+)
 private const val SESSION_LIMIT = 8 * 1024 * 1024
 private const val AGENT_HISTORY_LIMIT = 8
 private const val AGENT_HISTORY_TRIM = 4
@@ -35,10 +42,15 @@ internal data class AgentSession(
     val model: String = "",
     val turns: List<AgentExchange> = emptyList(),
     val customName: String? = null,
+    val maxOutputTokens: Int = DEFAULT_AGENT_OUTPUT_TOKENS,
 ) {
     val title: String get() = customName ?: turns.firstOrNull()?.question?.lineSequence()?.firstOrNull().orEmpty().take(70)
     val feature: String get() = "agent_session_$id"
     val summary: AgentSessionSummary get() = AgentSessionSummary(id, revision, title)
+
+    fun canCheckEngineLocally(question: String, referenceSelected: Boolean): Boolean =
+        turns.isEmpty() && context.isBlank() && !referenceSelected &&
+            question.trim().trimEnd('?', '？', '.', '。').trimEnd().lowercase() in standaloneEngineQuestions
 
     fun withName(name: String): AgentSession = copy(customName = name.lineSequence().joinToString(" ").trim()
         .take(AGENT_SESSION_NAME_LIMIT).dropLastWhile(Char::isHighSurrogate).trimEnd().takeIf(String::isNotBlank))
@@ -55,14 +67,17 @@ internal data class AgentSession(
         return previousEndpoint != agentEndpoint(url)?.toExternalForm()
     }
 
-    fun withModelSettings(url: String, modelName: String): AgentSession {
+    fun withModelSettings(url: String, modelName: String, outputTokens: Int = maxOutputTokens): AgentSession {
+        require(outputTokens in AGENT_OUTPUT_TOKEN_RANGE)
+        if (baseUrl == url && model == modelName) return copy(maxOutputTokens = outputTokens)
         if (changesModelEndpoint(url)) {
-            return AgentSession(baseUrl = url, model = modelName)
+            return AgentSession(baseUrl = url, model = modelName, maxOutputTokens = outputTokens)
         }
         if (turns.isNotEmpty()) {
-            return AgentSession(workspace = workspace, context = context, baseUrl = url, model = modelName)
+            return AgentSession(workspace = workspace, context = context, baseUrl = url, model = modelName,
+                maxOutputTokens = outputTokens)
         }
-        return copy(baseUrl = url, model = modelName)
+        return copy(baseUrl = url, model = modelName, maxOutputTokens = outputTokens)
     }
 }
 
@@ -115,6 +130,7 @@ internal class AgentSessionStore(private val directory: File) {
             .put("n", saved.model)
             .put("h", JSONArray(saved.turns.map { JSONArray().put(it.question).put(it.answer) }))
             .put("t", saved.customName)
+            .put("b", saved.maxOutputTokens.takeUnless { it == DEFAULT_AGENT_OUTPUT_TOKENS })
             .toString().toByteArray(Charsets.UTF_8)
         if (data.size > SESSION_LIMIT) throw IOException("Agent session exceeds the storage limit")
         if (!directory.isDirectory && !directory.mkdirs()) throw IOException("Cannot create Agent session directory")
@@ -184,6 +200,8 @@ internal class AgentSessionStore(private val directory: File) {
             model = data.optString("n"),
             turns = turns,
             customName = (data.opt("t") as? String)?.takeIf(String::isNotBlank),
+            maxOutputTokens = data.optInt("b", DEFAULT_AGENT_OUTPUT_TOKENS)
+                .takeIf { it in AGENT_OUTPUT_TOKEN_RANGE } ?: DEFAULT_AGENT_OUTPUT_TOKENS,
         )
     }
 

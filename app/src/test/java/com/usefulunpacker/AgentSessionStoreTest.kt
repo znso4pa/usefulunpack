@@ -9,6 +9,25 @@ import java.io.IOException
 class AgentSessionStoreTest {
     @get:Rule val tmp = TemporaryFolder()
 
+    @Test fun engineQuestionRoutesLocallyOnlyWithUnambiguousNewSessionInputs() {
+        val question = "What engine does this game use?"
+        val fresh = AgentSession()
+        val vectors = listOf(
+            Triple(fresh, question, true),
+            Triple(fresh, "这个游戏是什么引擎？", true),
+            Triple(fresh, "這個遊戲用的是什麼引擎？", true),
+            Triple(fresh, "このゲームのエンジンは何ですか。", true),
+            Triple(fresh, "$question Also repack the archive.", false),
+            Triple(fresh, "Identify the game engine in subdirectory A.", false),
+            Triple(fresh.copy(context = "Always check the sibling directory."), question, false),
+            Triple(fresh.copy(turns = listOf(AgentExchange("Inspect directory A", "Ready"))), question, false),
+        )
+        for ((session, prompt, expected) in vectors) {
+            assertEquals(prompt, expected, session.canCheckEngineLocally(prompt, referenceSelected = false))
+        }
+        assertFalse(fresh.canCheckEngineLocally(question, referenceSelected = true))
+    }
+
     @Test fun customNameSurvivesSavingAndBlankRestoresTheOriginalTitle() {
         val directory = tmp.newFolder()
         val store = AgentSessionStore(directory)
@@ -83,6 +102,19 @@ class AgentSessionStoreTest {
         assertFalse(saved.changesModelEndpoint("https://model.example/one/"))
         assertEquals(saved.context, same.context)
         assertEquals(saved.workspace, same.workspace)
+    }
+
+    @Test fun changingOutputBudgetKeepsExistingSessionAndPersistsTheOverride() {
+        val directory = tmp.newFolder()
+        val store = AgentSessionStore(directory)
+        val saved = store.save(AgentSession(workspace = "/example/workspace", context = "Preferences",
+            turns = listOf(AgentExchange("Question", "Answer")), permission = AgentPermission.ARCHIVES,
+            baseUrl = "https://model.example/v1", model = "test"))
+        assertEquals(4096, store.open(saved.id).maxOutputTokens)
+        val changed = saved.withModelSettings(saved.baseUrl, saved.model, 8192)
+        assertEquals(saved.copy(maxOutputTokens = 8192), changed)
+        val updated = store.save(changed)
+        assertEquals(updated, AgentSessionStore(directory).open(saved.id))
     }
 
     @Test fun oldSessionViewCannotDeleteNewerRevision() {

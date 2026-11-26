@@ -819,6 +819,7 @@
     <string name="agent_key_save_failed">Could not save the API key. · %1$s</string>
     <string name="agent_invalid_settings">Enter a model name and an HTTPS Base URL, or HTTP on 127.0.0.1.</string>
     <string name="agent_engine_check">Identify engine locally</string>
+    <string name="agent_local_no_model">Local engine detection · 0 model tokens</string>
     <string name="agent_engine_checking">Checking game folder…</string>
     <string name="agent_engine_result">Engine check · %1$s</string>
     <string name="agent_engine_unknown">No known engine marker found.</string>
@@ -829,8 +830,10 @@
     <string name="agent_engine_failed">Engine check failed · %1$s</string>
     <string name="agent_conversation_settings">Conversation settings</string>
     <string name="agent_reasoning">Model reasoning</string>
-    <string name="agent_activity_expand">Activity details</string>
-    <string name="agent_activity_collapse">Hide details</string>
+    <string name="agent_step_expanded">Expanded</string>
+    <string name="agent_step_collapsed">Collapsed</string>
+    <string name="agent_activity_expand">Token usage</string>
+    <string name="agent_activity_collapse">Hide token usage</string>
     <string name="agent_tool_result_items">%1$d items</string>
     <string name="agent_tool_awaiting">Awaiting confirmation · %1$s</string>
     <string name="agent_tool_success">Completed · %1$s</string>
@@ -847,7 +850,7 @@
     <string name="agent_connection_timeout">Connection test timed out. Log %1$s</string>
     <string name="agent_connection_network">Could not reach the model endpoint. Log %1$s</string>
     <string name="agent_sessions">Switch session</string>
-    <string name="agent_session_current">%1$s · Current</string>
+    <string name="agent_session_current">Current · %1$s</string>
     <string name="agent_session_draft">%1$s · Draft</string>
     <string name="agent_session_name">Session name</string>
     <string name="agent_session_rename">Rename session</string>
@@ -1007,4 +1010,9 @@
     <string name="mcp_notif_running">Listening on %1$s · %2$d active</string>
     <string name="uut_external_blocked">Use the built-in terminal or paired Local MCP to run UUT scripts from this app.</string>
     <string name="uut_unsupported_stage">This UUT command is outside the allowed command list.</string>
+    <string name="agent_output_tokens">Output limit (tokens)</string>
+    <string name="agent_output_tokens_hint">Per model request, including reasoning. Range %1$d–%2$d. Default %3$d.</string>
+    <string name="agent_output_tokens_invalid">Enter a number from %1$d to %2$d.</string>
+    <string name="agent_model_usage">%1$d. Input %2$s · Output %3$s · Reasoning %4$s · Cached input %5$s · %6$d ms</string>
+    <string name="agent_budget_failed">The conversation reached its model budget. Shorten the task or start a new session. · %1$s</string>
 </resources>

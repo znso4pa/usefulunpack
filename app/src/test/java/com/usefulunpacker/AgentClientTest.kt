@@ -14,6 +14,142 @@ import java.net.SocketException
 import kotlin.concurrent.thread
 
 class AgentClientTest {
+    @Test fun reasoningAndToolEventsKeepTheirResponseOrder() {
+        val runtime = object : AppSkillRuntime {
+            override fun skills() = listOf(AppSkillDefinition("WORKSPACE_LIST", "List", JSONObject()))
+            override fun invokeSkill(name: String, input: JSONObject) =
+                AppSkillResult(JSONObject().put("entries", JSONArray()))
+        }
+        var requestCount = 0
+        ModelServer { _, _ ->
+            val round = ++requestCount
+            val message = JSONObject().put("reasoning_content", "reasoning $round")
+            if (round < 3) {
+                val function = JSONObject().put("name", "WORKSPACE_LIST")
+                    .put("arguments", JSONObject().put("path", "dir$round").toString())
+                message.put("tool_calls", JSONArray().put(JSONObject()
+                    .put("id", "call$round").put("type", "function").put("function", function)))
+            } else {
+                message.put("content", "Done")
+            }
+            Reply("200 OK", JSONObject().put("choices", JSONArray().put(JSONObject().put("message", message))))
+        }.use { server ->
+            val endpoint = checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/v1"))
+            val events = mutableListOf<String>()
+            val result = AgentClient(endpoint, "test-model", "", AgentRequest())
+                .complete(emptyList(), "Compare two directories", runtime, onReasoning = { events.add(it) }) {
+                    events.add("${it.callIndex}:${it.stage.name}")
+                }
+            assertEquals("Done", result)
+            assertEquals(listOf("reasoning 1", "0:RUNNING", "0:SUCCESS", "reasoning 2",
+                "1:RUNNING", "1:SUCCESS", "reasoning 3"), events)
+        }
+    }
+
+    @Test fun requestFootprintMatrixKeepsStablePrefixAndBoundsHistoryAndTools() {
+        val runtime = object : AppSkillRuntime {
+            override fun skills() = AgentReadTool.entries.map {
+                AppSkillDefinition(it.name, it.description, JSONObject())
+            }
+            override fun invokeSkill(name: String, input: JSONObject): AppSkillResult = error("Unexpected tool call")
+        }
+        val recorded = java.util.concurrent.LinkedBlockingQueue<JSONObject>()
+        ModelServer { _, body ->
+            recorded.add(body)
+            Reply("200 OK", JSONObject().put("choices", JSONArray().put(
+                JSONObject().put("message", JSONObject().put("content", "OK")))))
+        }.use { server ->
+            val endpoint = checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/v1"))
+            val history = listOf(
+                AgentClient.message("user", "exclude-old-" + "旧".repeat(5000)),
+                AgentClient.message("assistant", "old answer"),
+                AgentClient.message("user", "recent question"),
+                AgentClient.message("assistant", "recent answer"),
+            )
+            for (includeHistory in listOf(false, true)) {
+                for (reference in listOf(null, AgentReferenceDocument.RENPY)) {
+                    val client = AgentClient(endpoint, "model", "", AgentRequest())
+                    client.complete(if (includeHistory) history else emptyList(), "List project files", runtime,
+                        context = "Standing preferences", reference = reference, onTool = {})
+                }
+                val plain = recorded.remove()
+                val guide = recorded.remove()
+                val stable = plain.getJSONArray("messages")
+                val attached = guide.getJSONArray("messages")
+                assertEquals(if (includeHistory) 5 else 3, stable.length())
+                assertEquals(stable.length() + 1, attached.length())
+                for (index in 0 until stable.length() - 1) {
+                    assertEquals(stable.getJSONObject(index).toString(), attached.getJSONObject(index).toString())
+                }
+                assertFalse(attached.toString().contains("exclude-old-"))
+                assertEquals(7, plain.getJSONArray("tools").length())
+                assertEquals(plain.getJSONArray("tools").toString(), guide.getJSONArray("tools").toString())
+                assertEquals(4096, guide.getInt("max_tokens"))
+                assertTrue(guide.toString().toByteArray().size > plain.toString().toByteArray().size)
+            }
+        }
+    }
+
+    @Test fun modelRequestsUseABudgetAndNeverReplayKnownCredentialsOrDuplicateReads() {
+        val key = "test-\"provider-key"
+        val pairingToken = "test-local-pairing-token-12345678901"
+        val requests = java.util.concurrent.LinkedBlockingQueue<JSONObject>()
+        var reads = 0
+        val runtime = object : AppSkillRuntime {
+            override fun skills() = listOf(AppSkillDefinition("WORKSPACE_LIST", "List", JSONObject()))
+            override fun invokeSkill(name: String, input: JSONObject): AppSkillResult {
+                reads++
+                assertEquals(".", input.getString("path"))
+                return AppSkillResult(JSONObject().put("entries", JSONArray().put(JSONObject()
+                    .put("name", "entry-$pairingToken").put("directory", false))))
+            }
+        }
+        fun tool(id: String, path: String) = JSONObject().put("tool_calls", JSONArray().put(JSONObject()
+            .put("id", id).put("type", "function").put("function", JSONObject().put("name", "WORKSPACE_LIST")
+                .put("arguments", JSONObject().put("path", path).toString()))))
+        ModelServer { _, request ->
+            requests.add(request)
+            val reply = when (requests.size) {
+                1 -> tool("list", ".")
+                2 -> tool("repeat", ".")
+                3 -> tool("credential", key)
+                else -> JSONObject().put("content", "Done $pairingToken")
+            }
+            val usage = JSONObject().put("prompt_tokens", 1000).put("completion_tokens", 25)
+                .put("completion_tokens_details", JSONObject().put("reasoning_tokens", 10))
+            if (requests.size == 1) usage.put("prompt_cache_hit_tokens", 128)
+            else usage.put("prompt_tokens_details", JSONObject().put("cached_tokens", 512))
+            Reply("200 OK", JSONObject().put("usage", usage)
+                .put("choices", JSONArray().put(JSONObject().put("message", reply))))
+        }.use { server ->
+            val endpoint = checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/v1"))
+            val history = listOf(
+                AgentClient.message("user", "old-history-" + "旧".repeat(5000)),
+                AgentClient.message("assistant", "older answer"),
+                AgentClient.message("user", "recent-history $key"),
+                AgentClient.message("assistant", "recent answer"),
+            )
+            val usage = mutableListOf<AgentModelUsage>()
+            val result = AgentClient(endpoint, "model", key, AgentRequest(), listOf(pairingToken))
+                .complete(history, "List files $pairingToken", runtime, context = "Preferences $key",
+                    maxOutputTokens = 8192, onUsage = { usage.add(it) }, onTool = {})
+            assertEquals("Done [redacted]", result)
+            assertEquals(1, reads)
+            assertEquals(4, requests.size)
+            val bodies = List(4) { requests.remove() }
+            assertTrue(bodies.all { it.getInt("max_tokens") == 8192 })
+            assertEquals(4, usage.size)
+            assertTrue(usage.all { it.input == 1000L && it.output == 25L && it.reasoning == 10L })
+            assertEquals(listOf(128L, 512L, 512L, 512L), usage.map { it.cachedInput })
+            val payloads = bodies.map { it.toString() }
+            assertTrue(payloads.all { !it.contains(pairingToken) && !it.contains("provider-key") })
+            assertFalse(payloads[0].contains("old-history"))
+            assertTrue(payloads[0].contains("recent-history"))
+            assertTrue(payloads[2].contains("reusedFrom"))
+            assertTrue(payloads[3].contains("TOOL_NOT_ALLOWED"))
+        }
+    }
+
     @Test fun catalogCoversEveryRegisteredReadAndPackFormat() {
         val documents = AgentReferenceDocument.entries
         assertTrue(documents.size > 50)
@@ -77,6 +213,7 @@ class AgentClientTest {
             val probe = requests.remove()
             assertEquals("probe", probe.getString("model"))
             assertFalse(probe.has("tools"))
+            assertEquals(256, probe.getInt("max_tokens"))
             assertFalse(probe.getBoolean("stream"))
             assertEquals(1, probe.getJSONArray("messages").length())
             assertEquals("Reply only OK.", probe.getJSONArray("messages").getJSONObject(0).getString("content"))
@@ -176,7 +313,9 @@ class AgentClientTest {
             val result = AgentClient(endpoint, "model", "", AgentRequest())
                 .complete(emptyList(), "Hello", runtime, context = "Standing preferences", onTool = {})
             assertEquals("OK", result)
-            val messages = requests.remove().getJSONArray("messages")
+            val body = requests.remove()
+            assertEquals(4096, body.getInt("max_tokens"))
+            val messages = body.getJSONArray("messages")
             assertEquals(3, messages.length())
             assertTrue(messages.getJSONObject(1).getString("content").endsWith("Standing preferences"))
             AgentReferenceDocument.entries.forEach {

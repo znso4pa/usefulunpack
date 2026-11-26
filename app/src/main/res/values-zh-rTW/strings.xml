@@ -812,6 +812,7 @@
     <string name="agent_key_save_failed">無法儲存 API 金鑰。 · %1$s</string>
     <string name="agent_invalid_settings">請輸入模型名稱和 HTTPS Base URL。裝置本機 127.0.0.1 可用 HTTP。</string>
     <string name="agent_engine_check">本機識別引擎</string>
+    <string name="agent_local_no_model">本機引擎辨識 · 0 模型 tokens</string>
     <string name="agent_engine_checking">正在檢查遊戲資料夾…</string>
     <string name="agent_engine_result">引擎快查 · %1$s</string>
     <string name="agent_engine_unknown">找不到已知引擎的標誌檔案。</string>
@@ -822,8 +823,10 @@
     <string name="agent_engine_failed">引擎快查失敗 · %1$s</string>
     <string name="agent_conversation_settings">對話設定</string>
     <string name="agent_reasoning">模型思考</string>
-    <string name="agent_activity_expand">執行詳情</string>
-    <string name="agent_activity_collapse">收合詳情</string>
+    <string name="agent_step_expanded">已展開</string>
+    <string name="agent_step_collapsed">已收合</string>
+    <string name="agent_activity_expand">Token 用量</string>
+    <string name="agent_activity_collapse">收合用量</string>
     <string name="agent_tool_result_items">%1$d 項</string>
     <string name="agent_tool_awaiting">等待確認 · %1$s</string>
     <string name="agent_tool_success">已完成 · %1$s</string>
@@ -840,7 +843,7 @@
     <string name="agent_connection_timeout">連線測試逾時。記錄 %1$s</string>
     <string name="agent_connection_network">無法連線至模型端點。記錄 %1$s</string>
     <string name="agent_sessions">切換對話</string>
-    <string name="agent_session_current">%1$s · 目前對話</string>
+    <string name="agent_session_current">目前對話 · %1$s</string>
     <string name="agent_session_draft">%1$s · 有草稿</string>
     <string name="agent_session_name">對話名稱</string>
     <string name="agent_session_rename">重新命名對話</string>
@@ -999,4 +1002,9 @@
     <string name="mcp_notif_running">監聽中 %1$s · %2$d 個活動任務</string>
     <string name="uut_external_blocked">外部啟動參數無法執行 UUT。請使用應用程式內的終端機或已配對的本機 MCP。</string>
     <string name="uut_unsupported_stage">這個 UUT 指令超出允許的指令範圍。</string>
+    <string name="agent_output_tokens">生成上限（tokens）</string>
+    <string name="agent_output_tokens_hint">每次模型請求的生成預算，包含思考。範圍 %1$d–%2$d，預設 %3$d。</string>
+    <string name="agent_output_tokens_invalid">請輸入 %1$d 到 %2$d 之間的整數。</string>
+    <string name="agent_model_usage">%1$d. 輸入 %2$s · 輸出 %3$s · 思考 %4$s · 快取命中 %5$s · %6$d ms</string>
+    <string name="agent_budget_failed">對話已達模型預算上限。請縮短這一輪的工作或開啟新對話。 · %1$s</string>
 </resources>

@@ -469,10 +469,10 @@ internal fun MainActivity.belowTabBar(
     dlg: android.app.Dialog,
     swipeAreaDp: Float = 130f,
     fitContent: Boolean = false,
-    wide: Boolean = false,
+    fillViewport: Boolean = false,
     also: (() -> Unit)? = null,
 ) {
-    if (wide) dlg.window?.decorView?.setTag(R.id.dialogWideContent, true)
+    if (fillViewport) dlg.window?.decorView?.setTag(R.id.dialogFillViewport, true)
     registerPlacement(dlg, swipeAreaDp, fitContent)
     applyDialogGeometry(dlg, swipeAreaDp, fitContent)
     // 弹窗一律要护盾（除 tab 栏外全挡）；配对全在 placeDialog 里。
@@ -505,9 +505,9 @@ private fun MainActivity.applyDialogGeometry(
     val rootW = findViewById<View>(R.id.root)?.width?.takeIf { it > 0 } ?: dm.widthPixels
     val landscape = resources.configuration.orientation ==
         android.content.res.Configuration.ORIENTATION_LANDSCAPE
-    val sheetW = if (w.decorView.getTag(R.id.dialogWideContent) == true) {
-        minOf(rootW - 2 * resources.getDimensionPixelSize(R.dimen.space_lg),
-            resources.getDimensionPixelSize(R.dimen.dialog_conversation_max_width))
+    val fillViewport = w.decorView.getTag(R.id.dialogFillViewport) == true
+    val sheetW = if (fillViewport) {
+        rootW
     } else if (landscape) {
         (DIALOG_LANDSCAPE_W_DP * density).toInt()
             .coerceAtMost(rootW - (2 * 16f * density).toInt())
@@ -517,8 +517,12 @@ private fun MainActivity.applyDialogGeometry(
 
     // Window dim/animation policy is configured once by prepareDialogWindow.
     // Reapplying window attributes from pre-draw/insets would keep requesting another layout.
-    val gravity = if (landscape) android.view.Gravity.CENTER else android.view.Gravity.BOTTOM
-    val offset = if (landscape) topInset / 2 else 0
+    val gravity = when {
+        fillViewport -> android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
+        landscape -> android.view.Gravity.CENTER
+        else -> android.view.Gravity.BOTTOM
+    }
+    val offset = if (fillViewport) topInset else if (landscape) topInset / 2 else 0
     if (w.attributes.gravity != gravity || w.attributes.y != offset) {
         w.attributes = w.attributes.apply { this.gravity = gravity; y = offset }
     }
@@ -542,7 +546,8 @@ private fun MainActivity.applyDialogGeometry(
         // Startup may show a dialog before the Activity's first layout. Keep natural size;
         // the root layout listener will size it when the viewport actually exists.
         if (rootH <= topInset) return
-        val availH = (rootH - topInset - (2 * 20f * density).toInt()).coerceAtLeast(1)
+        val margin = if (fillViewport) 0 else (2 * 20f * density).toInt()
+        val availH = (rootH - topInset - margin).coerceAtLeast(1)
         if (!fitContent) {
             // 长内容：给**面板**（AlertDialog 的 android.R.id.content 第一层子）设精确高度，
             // 不碰窗口。窗口是 WRAP，会跟着面板量；面板内部列表带权重，自然分到剩余高度。
@@ -792,8 +797,8 @@ internal fun android.app.Dialog.keepTabsTappable(
 internal fun android.app.Dialog.belowTabs(
     swipeAreaDp: Float = 130f,
     fitContent: Boolean = false,
-    wide: Boolean = false,
+    fillViewport: Boolean = false,
     also: (() -> Unit)? = null,
 ) {
-    context.findMainActivity()?.belowTabBar(this, swipeAreaDp, fitContent, wide, also)
+    context.findMainActivity()?.belowTabBar(this, swipeAreaDp, fitContent, fillViewport, also)
 }

@@ -94,11 +94,12 @@ internal fun MainActivity.showAgentSessionPicker(
     }
     list.emptyView = empty
     list.adapter = adapter
+    val currentPosition = sessions.indexOfFirst { it.current }.coerceAtLeast(0)
     search.doAfterTextChanged {
         val query = it?.toString().orEmpty().trim()
         shown = if (query.isEmpty()) sessions else sessions.filter { item -> item.title.contains(query, ignoreCase = true) }
         adapter.notifyDataSetChanged()
-        list.setSelection(0)
+        list.setSelection(if (query.isEmpty()) currentPosition else 0)
     }
     rename.setOnClickListener { picker.dismiss(); onRename() }
     delete?.setOnClickListener { picker.dismiss(); onDelete?.invoke() }
@@ -108,4 +109,5 @@ internal fun MainActivity.showAgentSessionPicker(
     picker.belowTabs()
     picker.show()
     body.requestFocus()
+    list.setSelection(currentPosition)
 }

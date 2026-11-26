@@ -11,10 +11,17 @@ import java.net.URL
 import java.util.concurrent.CancellationException
 
 private const val MAX_RESPONSE_CHARS = 512 * 1024
+private const val MAX_REQUEST_BYTES = 96 * 1024
+private const val MAX_HISTORY_BYTES = 12 * 1024
+internal const val DEFAULT_AGENT_OUTPUT_TOKENS = 4096
+internal val AGENT_OUTPUT_TOKEN_RANGE = 256..16384
+private const val PROBE_COMPLETION_TOKENS = 256
 private const val MAX_ROUNDS = 6
 private const val MAX_CALLS = 4
 private const val PAGE_SIZE = 24
 private val DISPLAY_TOOL_NAME = Regex("[A-Z][A-Z0-9_]{0,63}")
+private val TOOL_CALL_ID = Regex("[A-Za-z0-9_:.-]{1,128}")
+private val OPENAI_REASONING_MODEL = Regex("^(?:o[1-9](?:-|$)|gpt-5(?:[.-]|$))", RegexOption.IGNORE_CASE)
 
 internal class AgentClientException(
     val stage: String,
@@ -164,15 +171,44 @@ internal data class AgentToolEvent(
 
 private data class ModelToolCall(val id: String, val name: String, val raw: String, val input: JSONObject?)
 
+internal data class AgentModelUsage(
+    val input: Long?,
+    val output: Long?,
+    val reasoning: Long?,
+    val cachedInput: Long?,
+    val elapsedMs: Long,
+) {
+    companion object {
+        fun fromResponse(response: JSONObject, elapsedMs: Long): AgentModelUsage {
+            val usage = response.optJSONObject("usage")
+            return AgentModelUsage(
+                input = usage.count("prompt_tokens"),
+                output = usage.count("completion_tokens"),
+                reasoning = usage?.optJSONObject("completion_tokens_details").count("reasoning_tokens"),
+                cachedInput = usage?.optJSONObject("prompt_tokens_details").count("cached_tokens")
+                    ?: usage.count("prompt_cache_hit_tokens"),
+                elapsedMs = elapsedMs,
+            )
+        }
+
+        private fun JSONObject?.count(key: String): Long? =
+            (this?.opt(key) as? Number)?.toLong()?.takeIf { it >= 0 }
+    }
+}
+
 internal class AgentClient(
     private val endpoint: URL,
     private val model: String,
     private val apiKey: String,
     private val request: AgentRequest,
+    additionalSecrets: List<String> = emptyList(),
 ) {
+    private val secrets = (additionalSecrets + apiKey).filter(String::isNotEmpty).distinct().sortedByDescending(String::length)
+
     fun testConnection(): Long {
         val started = System.nanoTime()
-        val reply = send(JSONArray().put(message("user", "Reply only OK.")), readTimeoutMs = 20_000)
+        val reply = send(JSONArray().put(message("user", "Reply only OK.")),
+            maxTokens = PROBE_COMPLETION_TOKENS, readTimeoutMs = 20_000)
         request.checkActive()
         if ((reply.opt("content") as? String).isNullOrBlank()) throw invalidResponse()
         return (System.nanoTime() - started) / 1_000_000
@@ -189,10 +225,25 @@ internal class AgentClient(
         confirm: (AgentApproval) -> Boolean = { false },
         deleteFile: (JSONObject) -> com.usefulunpacker.skills.AppSkillResult = { error("No workspace for deletion") },
         onReasoning: (String) -> Unit = {},
+        maxOutputTokens: Int = DEFAULT_AGENT_OUTPUT_TOKENS,
+        onUsage: (AgentModelUsage) -> Unit = {},
         onTool: (AgentToolEvent) -> Unit,
     ): String {
+        require(maxOutputTokens in AGENT_OUTPUT_TOKEN_RANGE)
         val messages = JSONArray()
             .put(message("system", SYSTEM_PROMPT))
+        if (context.isNotBlank()) {
+            messages.put(message("system", "Standing context written by the user. Apply it within the app's tool permissions and follow the user's latest request.\n\n${redact(context)}"))
+        }
+        var historyBytes = 0
+        val recent = history.chunked(2).asReversed().map { pair ->
+            pair.map { message(it.getString("role"), redact(it.getString("content"))) }
+        }.takeWhile { pair ->
+            historyBytes += pair.sumOf { it.toString().toByteArray(Charsets.UTF_8).size }
+            historyBytes <= MAX_HISTORY_BYTES
+        }
+        recent.asReversed().forEach { pair -> pair.forEach(messages::put) }
+        // Keep the stable instructions and history ahead of a one-request attachment.
         val referenceIndex = messages.length()
         if (reference != null) {
             val referenceText = try {
@@ -202,18 +253,15 @@ internal class AgentClient(
             }
             messages.put(message("system", "Reference document selected by the user for this request. Read it and apply it where relevant to the user's question within the app's existing permissions.\n\n$referenceText"))
         }
-        if (context.isNotBlank()) {
-            messages.put(message("system", "Standing context written by the user. Read this before every request. Apply it within the app's tool permissions and follow the user's latest request.\n\n$context"))
-        }
-        history.forEach { messages.put(it) }
-        messages.put(message("user", prompt))
+        messages.put(message("user", redact(prompt)))
         val tools = permission.tools(runtime.skills())
         val schemas = JSONArray(tools.values.map { it.schema })
         var nextCallIndex = 0
         var automaticReferenceUsed = false
         var referenceReply: JSONObject? = null
+        val returnedReads = mutableMapOf<Pair<String, String>, String>()
         repeat(MAX_ROUNDS) { round ->
-            val reply = send(messages, schemas)
+            val reply = send(messages, schemas, maxTokens = maxOutputTokens, onUsage = onUsage)
             request.checkActive()
             val calls = reply.optJSONArray("tool_calls")
             if (calls == null && !reply.isNull("tool_calls")) throw invalidResponse()
@@ -233,7 +281,7 @@ internal class AgentClient(
             referenceReply = null
             val reasoning = (reply.opt("reasoning_content") as? String)?.takeIf { it.isNotBlank() }
             reasoning?.let { onReasoning(displayText(it, 8192)) }
-            if (batch.isEmpty() && answer != null) return answer
+            if (batch.isEmpty() && answer != null) return redact(answer)
             if (round == MAX_ROUNDS - 1) {
                 throw AgentClientException("model_rounds", FailureCode.INVALID_RESULT, "The model reached the tool round limit")
             }
@@ -245,12 +293,19 @@ internal class AgentClient(
                 val callIndex = nextCallIndex++
                 val tool = tools[name]
                 val readReference = tool?.read == AgentReadTool.REFERENCE_READ
+                val accepted = tool != null && args != null && tool.accepts(args) && !containsSecret(args)
+                val safeName = name.takeIf { DISPLAY_TOOL_NAME.matches(it) && !containsSecret(it) }
+                val readKey = if (accepted && tool?.read != null && !readReference) {
+                    name to JSONObject().apply {
+                        checkNotNull(args).keys().asSequence().sorted().forEach { key -> put(key, args.get(key)) }
+                    }.toString()
+                } else null
+                val previousRead = returnedReads[readKey]
                 val payload = when {
-                    tool == null || args == null || !tool.accepts(args) -> {
+                    !accepted || tool == null || args == null -> {
                         val failure = AppDiagnostics.begin("tool_policy").fail(FailureCode.INVALID_RESULT,
                             "Model requested a tool or parameters outside the selected permission", notifyUser = false)
-                        val label = name.takeIf { DISPLAY_TOOL_NAME.matches(it) }.orEmpty()
-                        onTool(AgentToolEvent(callIndex, label, "", "${failure.code.name} · ${failure.logId}"))
+                        onTool(AgentToolEvent(callIndex, safeName.orEmpty(), "", "${failure.code.name} · ${failure.logId}"))
                         JSONObject().put("errorCode", "TOOL_NOT_ALLOWED")
                     }
                     readReference && (automaticReferenceUsed || args.optString("documentId") == reference?.id) -> {
@@ -258,11 +313,19 @@ internal class AgentClient(
                         onTool(AgentToolEvent(callIndex, name, "", code))
                         JSONObject().put("errorCode", code)
                     }
-                    else -> execute(callIndex, tool, args, runtime, confirm, deleteFile, onTool)
+                    previousRead != null -> {
+                        onTool(AgentToolEvent(callIndex, name, "", stage = AgentToolStage.SUCCESS))
+                        JSONObject().put("reusedFrom", previousRead)
+                    }
+                    else -> execute(callIndex, tool, args, runtime, confirm, deleteFile, onTool).also { result ->
+                        if (readKey != null && !result.has("errorCode")) returnedReads[readKey] = id
+                        if (tool.read == null) returnedReads.clear()
+                    }
                 }
                 assistantCalls.put(JSONObject().put("id", id).put("type", "function").put("function",
-                    JSONObject().put("name", name).put("arguments", raw)))
-                val toolReply = message("tool", payload.toString()).put("tool_call_id", id)
+                    JSONObject().put("name", safeName ?: "UNAVAILABLE_TOOL")
+                        .put("arguments", if (accepted) raw else "{}")))
+                val toolReply = message("tool", redactValue(payload).toString()).put("tool_call_id", id)
                 toolReplies.put(toolReply)
                 if (readReference && payload.has("text")) {
                     automaticReferenceUsed = true
@@ -283,7 +346,21 @@ internal class AgentClient(
         return if (safe.length <= limit) safe else safe.take(limit) + "…"
     }
 
-    private fun redact(value: String): String = if (apiKey.isEmpty()) value else value.replace(apiKey, "[redacted]")
+    internal fun redact(value: String): String = secrets.fold(value) { text, secret -> text.replace(secret, "[redacted]") }
+
+    private fun containsSecret(value: Any?): Boolean = when (value) {
+        is String -> secrets.any { it in value }
+        is JSONObject -> value.keys().asSequence().any { containsSecret(it) || containsSecret(value.opt(it)) }
+        is JSONArray -> (0 until value.length()).any { containsSecret(value.opt(it)) }
+        else -> false
+    }
+
+    private fun redactValue(value: Any?): Any? = when (value) {
+        is String -> redact(value)
+        is JSONObject -> JSONObject().apply { value.keys().forEach { put(it, redactValue(value.opt(it))) } }
+        is JSONArray -> JSONArray().apply { for (index in 0 until value.length()) put(redactValue(value.opt(index))) }
+        else -> value
+    }
 
     private fun parseToolCalls(calls: JSONArray): List<ModelToolCall> {
         if (calls.length() > MAX_CALLS) throw invalidResponse()
@@ -291,7 +368,7 @@ internal class AgentClient(
         return List(calls.length()) { index ->
             val call = calls.optJSONObject(index) ?: throw invalidResponse()
             if (call.opt("type") != "function") throw invalidResponse()
-            val id = (call.opt("id") as? String)?.takeIf { it.length in 1..256 && ids.add(it) }
+            val id = (call.opt("id") as? String)?.takeIf { TOOL_CALL_ID.matches(it) && !containsSecret(it) && ids.add(it) }
                 ?: throw invalidResponse()
             val fn = call.optJSONObject("function") ?: throw invalidResponse()
             val name = (fn.opt("name") as? String)?.takeIf { it.length in 1..64 } ?: throw invalidResponse()
@@ -392,7 +469,16 @@ internal class AgentClient(
         return payload
     }
 
-    private fun send(messages: JSONArray, tools: JSONArray? = null, readTimeoutMs: Int = 30_000): JSONObject {
+    private fun send(messages: JSONArray, tools: JSONArray? = null, maxTokens: Int,
+        readTimeoutMs: Int = 30_000, onUsage: ((AgentModelUsage) -> Unit)? = null): JSONObject {
+        val tokenField = if (endpoint.host.equals("api.openai.com", ignoreCase = true) ||
+            OPENAI_REASONING_MODEL.containsMatchIn(model.substringAfterLast('/'))) "max_completion_tokens" else "max_tokens"
+        val data = JSONObject().put("model", model).put("messages", messages).put("tools", tools)
+            .put(tokenField, maxTokens).put("stream", false).toString().toByteArray(Charsets.UTF_8)
+        if (data.size > MAX_REQUEST_BYTES) {
+            throw AgentClientException("model_budget", FailureCode.INVALID_RESULT, "The conversation reached its request size limit")
+        }
+        val started = System.nanoTime()
         val connection = request.connect(endpoint)
         try {
             connection.requestMethod = "POST"
@@ -405,8 +491,6 @@ internal class AgentClient(
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("Cache-Control", "no-store")
             if (apiKey.isNotEmpty()) connection.setRequestProperty("Authorization", "Bearer $apiKey")
-            val data = JSONObject().put("model", model).put("messages", messages)
-                .put("tools", tools).put("stream", false).toString().toByteArray(Charsets.UTF_8)
             request.checkActive()
             connection.setFixedLengthStreamingMode(data.size)
             connection.outputStream.use { it.write(data) }
@@ -427,8 +511,19 @@ internal class AgentClient(
                 }
             }
             return try {
-                JSONObject(body).optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
-                    ?: throw invalidResponse()
+                val response = JSONObject(body)
+                val choice = response.optJSONArray("choices")?.optJSONObject(0) ?: throw invalidResponse()
+                if (onUsage != null) {
+                    val usage = AgentModelUsage.fromResponse(response, (System.nanoTime() - started) / 1_000_000)
+                    AppDiagnostics.currentTrace()?.note("model_usage limit=$maxTokens input=${usage.input} output=${usage.output} " +
+                        "reasoning=${usage.reasoning} cached=${usage.cachedInput} duration_ms=${usage.elapsedMs} " +
+                        "request_bytes=${data.size} tools=${tools?.length() ?: 0}")
+                    onUsage(usage)
+                }
+                if (choice.optString("finish_reason") == "length") {
+                    throw AgentClientException("model_budget", FailureCode.INVALID_RESULT, "The model reached its generation or context limit")
+                }
+                choice.optJSONObject("message") ?: throw invalidResponse()
             } catch (_: org.json.JSONException) {
                 throw invalidResponse()
             } catch (_: StackOverflowError) {

@@ -465,43 +465,6 @@ internal class TerminalPanel(private val act: MainActivity) {
 
     // ─── 执行 ────────────────────────────────────────────────────────────
 
-    /**
-     * 外部入口（`am start --es uut <脚本路径>`）：不依赖 UI 输入地跑一个 UUT
-     * 脚本 —— 供自动化/CI 驱动（`adb` 注入文本会被输入法吞掉，见 Uut.kt）。
-     * 输出进该 tab 的会话缓冲（用户打开终端可见）；脚本可用 `> <路径>` 自行
-     * 落盘，外部读取结果即完成闭环。owner=-1 / pv=null：不碰任何视图。
-     */
-    fun runExternal(path: String) {
-        val _intentScope = AppDiagnostics.enterIntent("uut_script", newChain = true)
-        try {
-        val s = vm.session(act.activeTab.tabId)
-        // 与会话首次挂载同一套初始化（cwd 是衍生状态，不能留成 File("/")）
-        if (!s.cwdInitialized) {
-            s.cwd = act.currentDir
-            s.cwdInitialized = true
-        }
-        // The automatic sidecar is an execution receipt. Payload output remains in
-        // the terminal or an explicitly requested redirection, never in diagnostic logs.
-        val log = File(UuText.resolve(s.cwd, path).absolutePath + ".log")
-        thread {
-            com.usefulunpacker.observedAttempt("script_receipt") {
-                log.parentFile?.let { if (!it.isDirectory && !it.mkdirs()) throw java.io.IOException("Cannot create receipt directory") }
-                log.writeText("chain=${_intentScope.trace.id}\nfeature=uut_script\n")
-            }
-            val code = runScript(listOf(path), ExecCtx(s, null, -1, sink = { line -> postOut(line, s) }, echo = false), 0)
-            val state = if (AppDiagnostics.isCancellationRequested()) "CANCELLED" else if (code == 0) "SUCCESS" else "FAILED"
-            com.usefulunpacker.observedAttempt("script_receipt") {
-                log.appendText("state=$state\nexit=$code\n[exit]\n")
-            }
-        }
-        } catch (intentCancelled: java.util.concurrent.CancellationException) {
-        _intentScope.trace.cancelled(); throw intentCancelled
-    } catch (intentFailure: Exception) {
-        _intentScope.trace.fail(com.usefulunpacker.FailureCode.UNEXPECTED, intentFailure.message ?: intentFailure.javaClass.simpleName, intentFailure)
-        throw intentFailure
-    } finally { AppDiagnostics.leaveIntent(_intentScope) }
-    }
-
     private fun run0() {
         val _intentScope = AppDiagnostics.enterIntent("terminal_command", newChain = true)
         try {
@@ -685,6 +648,7 @@ internal class TerminalPanel(private val act: MainActivity) {
      * 不特判的话重定向写出一个空文件（实测踩过：日志说"已保存到"，文件是空的）。
      */
     private fun runStage(tokens: List<String>, ec: ExecCtx, depth: Int, capture: Boolean = false): Outcome {
+        if (depth > 0 && tokens.firstOrNull() == "echo") return Outcome.Text(tokens.drop(1).joinToString(" "))
         val cwd = ec.s.cwd
         // 通配符展开(所有命令共用): uu x *.zip / uu c *.ks -c / uu hash *.png…
         // 模式参数位置排除（find 的 glob / grep 的 pattern，见 globSkipIndices）
@@ -710,6 +674,11 @@ internal class TerminalPanel(private val act: MainActivity) {
                 } else runUu(ex.drop(1), ctx(ec.s, ec.pv, ec.owner))
             }
             else -> {
+                if (depth > 0) {
+                    AppDiagnostics.begin("uut_command_policy").fail(FailureCode.INVALID_RESULT,
+                        "UUT stage rejected a command outside the allowlist", notifyUser = false)
+                    return Outcome.Text(str(R.string.uut_unsupported_stage), 2)
+                }
                 val cmdLine = ex.joinToString(" ") { UuCommands.shellQuote(it) }
                 val (out, code) = runShell(cmdLine, cwd)
                 Outcome.Text(out, code)
@@ -1070,11 +1039,6 @@ internal class TerminalPanel(private val act: MainActivity) {
         refreshIfCurrent(s)
     }
 
-    /**
-     * 仅当面板正显示 [s] 时才重绘。`sess` 是 lateinit：外部入口
-     *（`--es uut`，见 [runExternal]）不挂视图就执行，直接 `sess === s`
-     * 会抛 UninitializedPropertyAccessException 并杀掉进程（实测踩过）。
-     */
     private fun refreshIfCurrent(s: TerminalViewModel.Session) {
         if (::sess.isInitialized && sess === s) render()
     }
@@ -1319,7 +1283,7 @@ internal class TerminalPanel(private val act: MainActivity) {
         s.cwd = norm
         // 联动 tab（§2 硬约束）：导航**终端扎根的 tab**。owner 已被关闭时不退化
         // 到 activeTab（那是别的窗口，不该被动导航）——报错即可。
-        // owner < 0 = 外部入口（--es uut）：只改会话 cwd，不导航任何窗口
+        // owner < 0 的捕获命令只修改会话 cwd。
         if (owner >= 0) {
             val ownerTab = act.tabs.firstOrNull { it.tabId == owner }
                 ?: return str(R.string.terminal_not_found, "$target (${owner})") to 1

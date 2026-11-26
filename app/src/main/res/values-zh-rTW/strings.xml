@@ -997,4 +997,6 @@
     <string name="mcp_previous_error">上次開啟 MCP 有錯誤，請查看日誌。</string>
     <string name="mcp_notif_starting">正在啟動本機 MCP 服務…</string>
     <string name="mcp_notif_running">監聽中 %1$s · %2$d 個活動任務</string>
+    <string name="uut_external_blocked">外部啟動參數無法執行 UUT。請使用應用程式內的終端機或已配對的本機 MCP。</string>
+    <string name="uut_unsupported_stage">這個 UUT 指令超出允許的指令範圍。</string>
 </resources>

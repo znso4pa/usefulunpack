@@ -123,8 +123,8 @@ internal class McpArchiveWorker(
                 else Files.move(staged.toPath(), output.toPath())
             }
         } finally {
-            if (staged.parentFile != staging && !deleteOutputChecked(staged)) task.cleanupFailed()
-            if (!deleteOutputChecked(staging, recursive = true)) task.cleanupFailed()
+            if (staged.parentFile != staging && !removeMcpStaging(staged)) task.cleanupFailed()
+            if (!removeMcpStaging(staging)) task.cleanupFailed()
         }
     }
 
@@ -714,7 +714,7 @@ internal class McpArchiveWorker(
             UuCommands.dispatch(expanded, buildUuCtx(task, state.cwd, tempCache))
         } finally {
             task.bindNativeCancel(null)
-            if (tempCache.exists() && !deleteOutputChecked(tempCache, recursive = true)) {
+            if (!removeMcpStaging(tempCache)) {
                 task.cleanupFailed()
             }
         }

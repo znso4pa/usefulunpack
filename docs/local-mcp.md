@@ -55,6 +55,8 @@
 
 `run_uu` 和 `run_uut` 返回同一个任务 ID 和诊断链 ID。状态为 `QUEUED`、`RUNNING`、`CANCELLING` 或终态 `SUCCESS`、`FAILED`、`CANCELLED`、`PARTIAL_FAILURE`、`INTERRUPTED`。用 `outputs` 查看已发布的产物、用 `stdout` 查看命令或脚本的标准输出。客户端在请求超时后应先确认已有任务，重复提交会产生新任务。
 
+通过 `task_status` 可以读取当前服务中仍保留的标准输出。`task_list` 和应用私有目录中的持久回执只保留任务元数据。启动服务时，旧共享工作区回执会移入应用私有归档，并和新任务记录隔离。无人值守的 UUT 通过已配对的 MCP 提交。
+
 Agent 的错误结果会带 `errorCode`、`stage` 和 `logId`。任务错误也可以通过 `task_status` 查询。用 `task_log` 的 `taskId` 参数传入任务 ID，或本次开放期间返回的 `logId`，即可查看保留的诊断。任务恢复后也可读取仍在磁盘上的日志。若任务账本不可用，任务接口另带 `historyError`，避免把正在运行和无法持久保存混为一谈。
 
 应用把 MCP 失败写入本地诊断。下次打开「本地 MCP」时，会提示「上次开放 MCP 有报错，请查看日志」，同一条记录只提醒一次。可以从该页面点「查看日志」。正常取消和客户端请求可选 SSE 得到的 405 不会触发错误提醒。

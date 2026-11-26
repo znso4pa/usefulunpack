@@ -125,10 +125,11 @@ internal class McpForegroundService : Service() {
                     val targetDir = explicitDir ?: savedMcpWorkspace(prefs)
                     val workspace = openMcpWorkspace(Environment.getExternalStorageDirectory(), targetDir)
                     val worker = McpArchiveWorker(workspace, prefs, strFnOf(this))
-                    val journalFile = File(workspace.root, MCP_JOURNAL_FILE)
+                    val journalFile = privateMcpJournal(noBackupFilesDir, workspace.root)
                     val token = getOrCreateMcpToken(this, prefs)
                     val tasks = McpTasks(
                         journalFile = journalFile,
+                        stagingRoot = workspace.root,
                         onActiveCountChanged = ::onActiveTaskCountChanged,
                         execute = worker::execute,
                     )

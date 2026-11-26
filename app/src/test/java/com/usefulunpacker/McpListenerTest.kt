@@ -666,6 +666,36 @@ class McpListenerTest {
         }
     }
 
+    @Test fun privateTaskHistoryOmitsOutputTextAndCleanupDoesNotFollowLinks() {
+        val root = tmp.newFolder()
+        val appStorage = tmp.newFolder()
+        val sibling = tmp.newFolder()
+        val outside = sibling.resolve("keep.txt").apply { writeText("keep") }
+        val stale = root.resolve(".uu-mcp-stale").apply { mkdir() }
+        Files.createSymbolicLink(stale.resolve("linked-dir").toPath(), sibling.toPath())
+        val legacy = root.resolve(MCP_JOURNAL_FILE).apply { writeText("[]") }
+        val journal = privateMcpJournal(appStorage, root)
+        assertFalse(legacy.exists())
+        assertTrue(journal.toPath().startsWith(appStorage.toPath()))
+        assertEquals(1, journal.parentFile!!.listFiles()!!.count { ".legacy-" in it.name })
+        root.resolve("note.txt").writeText("ephemeral output text")
+        val workspace = McpWorkspace(root)
+        val tasks = McpTasks(journalFile = journal, stagingRoot = root, execute = McpArchiveWorker(workspace)::execute)
+        McpListener(McpProtocol(workspace, tasks, "test"), tasks, root).use { listener ->
+            assertFalse(stale.exists())
+            assertEquals("keep", outside.readText())
+            val job = call(listener, "run_uu", JSONObject()
+                .put("argv", JSONArray(listOf("cat", "note.txt")))
+                .put("waitMs", 3000)).getJSONObject("structuredContent")
+            assertEquals("SUCCESS", job.getString("state"))
+            assertTrue(job.getString("stdout").contains("ephemeral output text"))
+            val list = call(listener, "task_list", JSONObject()).getJSONObject("structuredContent")
+                .getJSONArray("tasks").getJSONObject(0)
+            assertFalse(list.has("stdout"))
+            assertFalse(journal.readText().contains("ephemeral output text"))
+        }
+    }
+
     @Test fun errorsLinkAgentResponsesToLocalLogsWithoutSavingInput() {
         val root = tmp.newFolder()
         val dir = tmp.newFolder()

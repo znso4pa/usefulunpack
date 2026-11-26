@@ -3,10 +3,17 @@ package com.usefulunpacker
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
+import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CountDownLatch
@@ -16,6 +23,54 @@ import java.util.concurrent.TimeUnit
 
 internal const val MCP_MAX_WAIT_MS = 15_000
 internal const val MCP_JOURNAL_FILE = ".uu-mcp-tasks.json"
+private const val MAX_LEGACY_JOURNAL_BYTES = 16L * 1024 * 1024
+
+internal fun privateMcpJournal(noBackupDirectory: File, workspace: File): File {
+    val directory = File(noBackupDirectory, "mcp-history")
+    Files.createDirectories(directory.toPath())
+    val identity = MessageDigest.getInstance("SHA-256").digest(workspace.canonicalPath.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+    val legacy = File(workspace, MCP_JOURNAL_FILE).toPath()
+    if (Files.exists(legacy, NOFOLLOW_LINKS)) {
+        try {
+            val attributes = Files.readAttributes(legacy, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+            if (!attributes.isRegularFile || attributes.size() > MAX_LEGACY_JOURNAL_BYTES) {
+                throw IOException("Shared journal is not a supported regular file")
+            }
+            // Preserve the old file privately, without trusting its task and log IDs.
+            Files.move(legacy, File(directory, "$identity.legacy-${UUID.randomUUID()}.json").toPath())
+        } catch (e: IOException) {
+            recordMcpFailure("journal_migration", FailureCode.IO, "Could not retire the shared MCP journal", e.javaClass.simpleName)
+        }
+    }
+    return File(directory, "$identity.json")
+}
+
+/** Staging lives in shared storage. Delete directory entries without traversing symlinks. */
+internal fun removeMcpStaging(file: File): Boolean {
+    val path = file.toPath()
+    if (!Files.exists(path, NOFOLLOW_LINKS)) return true
+    val trace = AppDiagnostics.begin("staging_cleanup")
+    return try {
+        Files.walkFileTree(path, object : SimpleFileVisitor<Path>() {
+            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                Files.deleteIfExists(file)
+                return FileVisitResult.CONTINUE
+            }
+
+            override fun postVisitDirectory(dir: Path, exc: IOException?): FileVisitResult {
+                if (exc != null) throw exc
+                Files.deleteIfExists(dir)
+                return FileVisitResult.CONTINUE
+            }
+        })
+        trace.success()
+        true
+    } catch (e: IOException) {
+        trace.fail(FailureCode.CLEANUP, "Could not remove MCP staging (${e.javaClass.simpleName})")
+        false
+    }
+}
 
 internal class McpTask(
     val trace: OperationTrace?,
@@ -82,7 +137,6 @@ internal class McpTask(
                 task.restoredFailure = code to stage
                 task.restoredLogId = obj.optString("logId").takeIf { it.isNotEmpty() }
             }
-            task.stdout.append(obj.optString("stdout"))
             task.doneLatch.countDown()
             return task
         }
@@ -179,13 +233,12 @@ internal class McpTask(
     @Synchronized fun done(): Boolean =
         state in setOf("SUCCESS", "PARTIAL_FAILURE", "FAILED", "CANCELLED", "INTERRUPTED")
 
-    @Synchronized fun snapshot(deduplicated: Boolean = false): JSONObject {
-        val liveProgress = if (state == "RUNNING") progressSupplier?.invoke() else null
+    @Synchronized fun snapshot(deduplicated: Boolean = false, includeOutputText: Boolean = true): JSONObject {
+        val liveProgress = if (includeOutputText && state == "RUNNING") progressSupplier?.invoke() else null
         return JSONObject()
             .put("taskId", taskId).put("chainId", taskId).put("state", state)
             .put("completedSteps", maxOf(completedSteps, outputs.size)).put("totalSteps", total)
             .put("outputs", JSONArray(outputs))
-            .put("stdout", stdout.toString())
             .put("exitCode", exitCode)
             .put("cleanupFailed", cleanupFailed)
             .put("deduplicated", deduplicated)
@@ -194,7 +247,10 @@ internal class McpTask(
                 if (summary.isNotEmpty()) put("summary", summary)
                 if (idempotencyKey.isNotEmpty()) put("idempotencyKey", idempotencyKey)
                 if (liveProgress != null) put("progress", liveProgress)
-                error?.let { put("error", AppDiagnostics.redact(it)) }
+                if (includeOutputText) {
+                    put("stdout", stdout.toString())
+                    error?.let { put("error", AppDiagnostics.redact(it)) }
+                }
                 val fault = trace?.chain?.firstFailure()?.let { (code, stage) -> code.name to stage } ?: restoredFailure
                 if (fault != null) {
                     put("errorCode", fault.first).put("stage", fault.second).put("logId", logId)
@@ -203,7 +259,7 @@ internal class McpTask(
     }
 
     @Synchronized fun toJournalJson(): JSONObject =
-        snapshot().put("fingerprint", fingerprint)
+        snapshot(includeOutputText = false).put("fingerprint", fingerprint)
 }
 
 /** One worker per listener, bounded queue and retained receipts. JNI still uses the global scheduler. */
@@ -211,9 +267,10 @@ internal class McpTasks(
     private val journalFile: File? = null,
     private val onActiveCountChanged: ((Int) -> Unit)? = null,
     private val agentFeature: String? = null,
+    private val stagingRoot: File? = journalFile?.parentFile,
     private val execute: (McpTask, McpCommand) -> Unit,
 ) : AutoCloseable {
-    constructor(execute: (McpTask, McpCommand) -> Unit) : this(null, null, null, execute)
+    constructor(execute: (McpTask, McpCommand) -> Unit) : this(null, null, null, null, execute)
     private val records = LinkedHashMap<String, McpTask>()
     private val worker = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(4))
     private var closed = false
@@ -221,7 +278,7 @@ internal class McpTasks(
 
     init {
         if (journalFile != null) {
-            cleanupStaleStaging(journalFile.parentFile)
+            cleanupStaleStaging(stagingRoot)
             loadJournal()
         }
     }
@@ -233,12 +290,12 @@ internal class McpTasks(
             recordMcpFailure("staging_cleanup", FailureCode.CLEANUP, "Could not scan for interrupted task staging files")
             return
         }
-        val stale = entries.filter { it.name.startsWith(".uu-mcp-") && it.name != journalFile?.name }
+        val stale = entries.filter { it.name.startsWith(".uu-mcp-") && it.name != MCP_JOURNAL_FILE }
         if (stale.isEmpty()) return
         val scope = AppDiagnostics.enterIntent("mcp_staging_cleanup",
             newChain = AppDiagnostics.currentTrace()?.feature?.startsWith("mcp_") != true)
         try {
-            stale.forEach { deleteOutputChecked(it, recursive = it.isDirectory) }
+            stale.forEach { removeMcpStaging(it) }
         } finally {
             AppDiagnostics.leaveIntent(scope)
         }
@@ -311,7 +368,7 @@ internal class McpTasks(
             throw mcpInputError("idempotencyKey must be at most 128 printable characters")
         }
         val secrets = commands.flatMap { it.secrets + listOfNotNull(it.password.takeIf(String::isNotEmpty)) }.distinct()
-        val (fingerprint, summary) = fingerprintAndSummarize(commands, script, secrets)
+        val (fingerprint, summary) = fingerprintAndSummarize(commands, script)
         val (task, deduplicated) = synchronized(this) {
             if (closed) throw mcpInputError("MCP listener is stopping")
             // 1. Explicit idempotencyKey deduplicates across both active and finished tasks.
@@ -358,9 +415,9 @@ internal class McpTasks(
     @Synchronized fun list(stateFilter: String = "", limit: Int = 32): JSONObject {
         val filter = stateFilter.trim().uppercase()
         val matched = records.values.reversed()
-            .filter { filter.isEmpty() || it.snapshot().optString("state") == filter }
+            .map { it.snapshot(includeOutputText = false) }
+            .filter { filter.isEmpty() || it.optString("state") == filter }
             .take(limit.coerceIn(1, 32))
-            .map { it.snapshot() }
         return JSONObject()
             .put("totalTracked", records.size)
             .put("tasks", JSONArray(matched))
@@ -458,7 +515,6 @@ internal class McpTasks(
 private fun fingerprintAndSummarize(
     commands: List<McpCommand>,
     script: Boolean,
-    secrets: List<String>,
 ): Pair<String, String> {
     val digest = MessageDigest.getInstance("SHA-256")
     digest.update(if (script) 1.toByte() else 0.toByte())
@@ -477,14 +533,10 @@ private fun fingerprintAndSummarize(
         digest.update(0.toByte())
     }
     val hex = digest.digest().joinToString("") { "%02x".format(it) }
-    var summary = if (!script && commands.size == 1) {
-        val cmd = commands[0]
-        if (cmd.argv.isNotEmpty()) "uu " + cmd.argv.joinToString(" ") else "uu ${cmd.name}"
+    val summary = if (!script && commands.size == 1) {
+        "uu ${commands[0].name}"
     } else {
         "uut (${commands.size} steps): " + commands.take(3).joinToString("; ") { it.name }
-    }
-    for (secret in secrets) {
-        if (secret.isNotEmpty()) summary = summary.replace(secret, "***")
     }
     return hex to summary.take(160)
 }

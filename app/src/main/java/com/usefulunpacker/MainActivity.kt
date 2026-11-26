@@ -359,27 +359,23 @@ class MainActivity : AppCompatActivity() {
 
         loadBookmarks(); nav(currentDir)
         showDisclaimer()
-        // 自动化入口：`am start -n com.usefulunpacker/.MainActivity --es uut <脚本>`
-        // 直接执行 UUT 脚本（绕过输入法，脚本/CI 用；见 terminal/Uut.kt）。
-        handleUutIntent(intent)
+        rejectUutIntent(intent)
     }
 
-    /** resume 已存在的实例（singleTop）时同样接受 UUT 脚本。 */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleUutIntent(intent)
+        rejectUutIntent(intent)
     }
 
-    private fun handleUutIntent(it: Intent?) {
-        val path = it?.getStringExtra("uut") ?: return
-        // 取出即消费：AppCompatDelegate.setApplicationLocales 之类会让 Activity
-        // 重建，onCreate 再跑一次时 intent 里若还留着 extra，脚本会执行两遍
-        //（实测日志里每行都被写两次）。
+    private fun rejectUutIntent(it: Intent?) {
+        if (it?.hasExtra("uut") != true) return
         it.removeExtra("uut")
-        setIntent(it)
-        // nav/restoreSession 都靠 post 排队，等首帧挂好再跑，避免和初始化抢会话。
-        window.decorView.post { terminalPanel.runExternal(path) }
+        userIntent("external_uut") {
+            val failure = AppDiagnostics.begin("launcher_intent").fail(FailureCode.UNSUPPORTED,
+                "External launch requests cannot execute scripts", notifyUser = false)
+            UuNotice.makeText(this, R.string.uut_external_blocked, Toast.LENGTH_LONG, logId = failure.logId).show()
+        }
     }
 
     private val diagnosticsUi by lazy { DiagnosticsUi(this) }

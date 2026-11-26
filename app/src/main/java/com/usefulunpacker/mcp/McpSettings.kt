@@ -21,6 +21,12 @@ internal const val PREF_MCP_ENABLED = "mcp_enabled"
 private const val MCP_CREDENTIAL_PREFS = "mcp_credentials"
 private val tokenLock = Any()
 
+internal fun savedMcpTokens(context: Context, prefs: SharedPreferences): List<String> = synchronized(tokenLock) {
+    val credentials = context.getSharedPreferences(MCP_CREDENTIAL_PREFS, Context.MODE_PRIVATE)
+    listOfNotNull(credentials.getString(PREF_MCP_TOKEN, null), prefs.getString(PREF_MCP_TOKEN, null),
+        McpForegroundService.currentListener?.token).map(String::trim).filter { it.length >= 32 }.distinct()
+}
+
 internal fun getOrCreateMcpToken(context: Context, prefs: SharedPreferences): String = synchronized(tokenLock) {
     val credentials = context.getSharedPreferences(MCP_CREDENTIAL_PREFS, Context.MODE_PRIVATE)
     val stored = credentials.getString(PREF_MCP_TOKEN, null)?.trim()?.takeIf { it.length >= 32 }
@@ -143,6 +149,7 @@ internal fun MainActivity.showLocalMcp(ownerTabId: Int? = null) {
         .setNeutralButton(R.string.mcp_stop) { _, _ -> stopLocalMcp() }
         .create().also {
             rootDialogToTab(it, ownerTabId)
+            it.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
             it.show()
             it.keepTabsTappable()
         }

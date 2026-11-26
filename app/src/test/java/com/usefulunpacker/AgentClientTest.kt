@@ -14,6 +14,223 @@ import java.net.SocketException
 import kotlin.concurrent.thread
 
 class AgentClientTest {
+    @Test fun singleFactorWireAcceptanceMatrix() {
+        val baseline = WireInput()
+        val shortHistory = listOf(AgentClient.message("user", "Preserve script tags"),
+            AgentClient.message("assistant", "I will preserve them"))
+        val oldAnswer = AgentClient.message("assistant", "OK")
+        val historyBoundary = 12 * 1024 - AgentClient.message("user", "").bytes() - oldAnswer.bytes()
+        fun historyAt(size: Int) = listOf(AgentClient.message("user", "A".repeat(size)), oldAnswer)
+        val list = baseline.copy(batches = listOf(listOf(readCall("."))))
+        val write = baseline.copy(permission = AgentPermission.EDIT_FILES, batches = listOf(listOf(
+            WireCall("DELETE_FILE", JSONObject().put("path", "discard.txt")))))
+        val fixtureSecret = "fixture-authentication-marker"
+        val pairs = listOf(
+            WirePair("output_limit", baseline.copy(budget = 2048), baseline) { a, b ->
+                assertEquals(2048, a.first.getInt("max_tokens"))
+                assertEquals(4096, b.first.getInt("max_tokens"))
+                assertEquals(a.first.getJSONArray("messages").toString(), b.first.getJSONArray("messages").toString())
+            },
+            WirePair("history_pair", baseline, baseline.copy(history = shortHistory)) { a, b ->
+                assertEquals(2, a.first.getJSONArray("messages").length())
+                assertEquals(4, b.first.getJSONArray("messages").length())
+            },
+            WirePair("history_boundary", baseline.copy(history = historyAt(historyBoundary)),
+                baseline.copy(history = historyAt(historyBoundary + 1))) { a, b ->
+                assertEquals(4, a.first.getJSONArray("messages").length())
+                assertEquals(2, b.first.getJSONArray("messages").length())
+            },
+            WirePair("standing_context", baseline, baseline.copy(context = "X".repeat(1024))) { a, b ->
+                assertEquals(3, b.first.getJSONArray("messages").length())
+                assertTrue(b.first.bytes() - a.first.bytes() > 1024)
+            },
+            WirePair("utf8_bytes", baseline.copy(context = "A".repeat(256)),
+                baseline.copy(context = "字".repeat(256))) { a, b ->
+                assertEquals(512, b.first.bytes() - a.first.bytes())
+            },
+            WirePair("attached_guide", list, list.copy(guide = AgentReferenceDocument.RENPY)) { a, b ->
+                assertTrue(b.first.bytes() > a.first.bytes())
+                assertEquals(a.bodies[1].bytes(), b.bodies[1].bytes())
+                assertEquals(a.bodies[1].getJSONArray("messages").toString(), b.bodies[1].getJSONArray("messages").toString())
+            },
+            WirePair("permission", baseline.copy(permission = AgentPermission.EDIT_FILES),
+                baseline.copy(permission = AgentPermission.FULL_LOCAL)) { a, b ->
+                assertEquals(11, a.first.getJSONArray("tools").length())
+                assertEquals(13, b.first.getJSONArray("tools").length())
+                assertFalse(a.first.getJSONArray("tools").toString().contains("RUN_UUT"))
+                assertTrue(b.first.getJSONArray("tools").toString().contains("RUN_UUT"))
+            },
+            WirePair("listing_page", list.copy(entries = 24), list.copy(entries = 25)) { a, b ->
+                assertEquals(24, a.receipt.getJSONArray("entries").length())
+                assertEquals(24, b.receipt.getJSONArray("entries").length())
+                assertFalse(a.receipt.has("nextAfter"))
+                assertEquals("file_24.txt", b.receipt.getString("nextAfter"))
+            },
+            WirePair("duplicate_read", list.copy(batches = list.batches + listOf(listOf(readCall(".")))),
+                list.copy(batches = list.batches + listOf(listOf(readCall("different"))))) { a, b ->
+                assertEquals(3, a.bodies.size)
+                assertEquals(3, b.bodies.size)
+                assertEquals(1, a.invocations)
+                assertEquals(2, b.invocations)
+                assertEquals("call-0-0", a.receipt.getString("reusedFrom"))
+            },
+            WirePair("tool_rounds", baseline, baseline.copy(batches = listOf(listOf(readCall(".")), listOf(readCall("different"))))) { a, b ->
+                assertEquals(a.first.bytes(), b.first.bytes())
+                assertEquals(1, a.bodies.size)
+                assertEquals(3, b.bodies.size)
+                assertTrue(b.bodies[2].bytes() > b.bodies[1].bytes())
+            },
+            WirePair("approval", write, write.copy(allowWrite = true)) { a, b ->
+                assertEquals("cancelled", a.outcome)
+                assertEquals(1, a.bodies.size)
+                assertEquals(0, a.invocations)
+                assertEquals("ok", b.outcome)
+                assertEquals(2, b.bodies.size)
+                assertEquals(1, b.invocations)
+            },
+            WirePair("finish_reason", baseline, baseline.copy(finishReason = "length")) { a, b ->
+                assertEquals("ok", a.outcome)
+                assertEquals("model_budget", b.outcome)
+                assertEquals(1, b.usage.size)
+            },
+            WirePair("batch_cap", baseline.copy(batches = listOf(List(4) { readCall(".") })),
+                baseline.copy(batches = listOf(List(5) { readCall(".") }))) { a, b ->
+                assertEquals("ok", a.outcome)
+                assertEquals("model_response", b.outcome)
+                assertEquals(0, b.invocations)
+            },
+            WirePair("secret_in_result", list.copy(filename = "plain", secret = fixtureSecret),
+                list.copy(filename = fixtureSecret, secret = fixtureSecret)) { a, b ->
+                assertFalse(a.bodies.any { fixtureSecret in it.toString() })
+                assertFalse(b.bodies.any { fixtureSecret in it.toString() })
+                assertEquals("[redacted]", b.receipt.getJSONArray("entries").getJSONObject(0).getString("name"))
+            },
+            WirePair("http_status", baseline, baseline.copy(status = "503 Service Unavailable")) { a, b ->
+                assertEquals("ok", a.outcome)
+                assertEquals("model_http", b.outcome)
+                assertTrue(b.usage.isEmpty())
+                assertEquals(1, b.bodies.size)
+            },
+            WirePair("usage_presence", baseline, baseline.copy(usageIncluded = false)) { a, b ->
+                assertEquals(1100L, a.usage.single().input)
+                assertNull(b.usage.single().input)
+                assertNull(b.usage.single().cachedInput)
+            },
+        )
+        val repeatDeltas = mutableMapOf<String, List<Int>>()
+        for (repetition in 1..3) {
+            for (pair in pairs) {
+                val prompt = "Check the synthetic fixture $repetition."
+                val a: WireResult
+                val b: WireResult
+                if (repetition % 2 == 1) {
+                    a = recordWire(pair.a, prompt)
+                    b = recordWire(pair.b, prompt)
+                } else {
+                    b = recordWire(pair.b, prompt)
+                    a = recordWire(pair.a, prompt)
+                }
+                pair.verify(a, b)
+                val totals = listOf(a.first.bytes(), b.first.bytes(), a.totalBytes, b.totalBytes,
+                    a.bodies.size, b.bodies.size, a.invocations, b.invocations)
+                val previous = repeatDeltas.putIfAbsent(pair.factor, totals)
+                if (previous != null) assertEquals("Repeatability for ${pair.factor}", previous, totals)
+                println("WIRE_MATRIX,${pair.factor},$repetition,${totals.joinToString(",")},${a.outcome},${b.outcome}")
+            }
+        }
+    }
+
+    private data class WireCall(val name: String, val args: JSONObject)
+    private fun readCall(path: String) = WireCall("WORKSPACE_LIST", JSONObject().put("path", path))
+
+    private data class WireInput(
+        val budget: Int = 4096,
+        val history: List<JSONObject> = emptyList(),
+        val context: String = "",
+        val guide: AgentReferenceDocument? = null,
+        val permission: AgentPermission = AgentPermission.READ_ONLY,
+        val batches: List<List<WireCall>> = emptyList(),
+        val entries: Int = 1,
+        val allowWrite: Boolean = false,
+        val finishReason: String = "stop",
+        val status: String = "200 OK",
+        val usageIncluded: Boolean = true,
+        val filename: String? = null,
+        val secret: String = "",
+    )
+
+    private data class WirePair(
+        val factor: String, val a: WireInput, val b: WireInput, val verify: (WireResult, WireResult) -> Unit,
+    )
+
+    private data class WireResult(
+        val bodies: List<JSONObject>, val usage: List<AgentModelUsage>, val invocations: Int, val outcome: String,
+    ) {
+        val first: JSONObject get() = bodies.first()
+        val totalBytes: Int get() = bodies.sumOf { it.toString().toByteArray(Charsets.UTF_8).size }
+        val receipt: JSONObject get() {
+            val messages = bodies.last().getJSONArray("messages")
+            return JSONObject(messages.getJSONObject(messages.length() - 1).getString("content"))
+        }
+    }
+
+    private fun JSONObject.bytes() = toString().toByteArray(Charsets.UTF_8).size
+
+    private fun recordWire(input: WireInput, prompt: String): WireResult {
+        val root = java.nio.file.Files.createTempDirectory("uu-wire-matrix").toFile()
+        val bodies = java.util.concurrent.LinkedBlockingQueue<JSONObject>()
+        val usage = mutableListOf<AgentModelUsage>()
+        var invocations = 0
+        try {
+            McpTasks { _, _ -> error("No local jobs should run in the wire matrix") }.use { tasks ->
+                val definitions = WorkspaceSkillRuntime(McpWorkspace(root), tasks).skills()
+                val runtime = object : AppSkillRuntime {
+                    override fun skills() = definitions
+                    override fun invokeSkill(name: String, inputArgs: JSONObject): AppSkillResult {
+                        assertEquals("WORKSPACE_LIST", name)
+                        invocations++
+                        val entries = JSONArray(List(input.entries) { index -> JSONObject()
+                            .put("name", input.filename ?: "file_${index + 1}.txt").put("directory", false) })
+                        return AppSkillResult(JSONObject().put("entries", entries))
+                    }
+                }
+                ModelServer { _, body ->
+                    bodies.add(body)
+                    val round = bodies.size - 1
+                    val batch = input.batches.getOrNull(round)
+                    val message = if (batch == null) JSONObject().put("content", "OK") else JSONObject()
+                        .put("tool_calls", JSONArray(batch.mapIndexed { index, call -> JSONObject()
+                            .put("id", "call-$round-$index").put("type", "function").put("function", JSONObject()
+                                .put("name", call.name).put("arguments", call.args.toString())) }))
+                    val response = JSONObject().put("choices", JSONArray().put(JSONObject().put("message", message)
+                        .put("finish_reason", if (batch == null) input.finishReason else "tool_calls")))
+                    if (input.usageIncluded) response.put("usage", JSONObject().put("prompt_tokens", 1100)
+                        .put("completion_tokens", 17).put("prompt_cache_hit_tokens", 128))
+                    Reply(input.status, response)
+                }.use { server ->
+                    val endpoint = checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/v1"))
+                    val outcome = try {
+                        val result = AgentClient(endpoint, "matrix-model", input.secret, AgentRequest()).complete(
+                            input.history, prompt, runtime, input.permission, context = input.context, reference = input.guide,
+                            maxOutputTokens = input.budget, confirm = { input.allowWrite },
+                            deleteFile = { invocations++; AppSkillResult(JSONObject().put("state", "SUCCESS")) },
+                            onUsage = { usage.add(it) }, onTool = {},
+                        )
+                        assertEquals("OK", result)
+                        "ok"
+                    } catch (e: AgentClientException) {
+                        e.stage
+                    } catch (_: java.util.concurrent.CancellationException) {
+                        "cancelled"
+                    }
+                    return WireResult(bodies.toList(), usage, invocations, outcome)
+                }
+            }
+        } finally {
+            assertTrue(root.deleteRecursively())
+        }
+    }
+
     @Test fun reasoningAndToolEventsKeepTheirResponseOrder() {
         val runtime = object : AppSkillRuntime {
             override fun skills() = listOf(AppSkillDefinition("WORKSPACE_LIST", "List", JSONObject()))

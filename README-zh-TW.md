@@ -156,6 +156,10 @@ bash build.sh
 
 [本機 Markdown 指南](app/src/main/resources/agent-documents)隨應用程式打包，涵蓋已登錄的解包與封包格式及疑難排解。你可以選擇一篇附在下一則訊息，檔案 Agent 遇到具體問題時也可以查閱。本機 MCP 可搜尋同一份文件目錄並讀取指定指南。
 
+## 文件 Agent Token 驗收
+
+[公開 Token 驗收矩陣](docs/agent-token-matrix.md)記錄合成案例、權限邊界，以及實測的輸入、輸出、推論和快取用量。
+
 感謝提供參考的文件作者及維護者。[Ren'Py](https://www.renpy.org/doc/html/translation.html)、[TyranoScript](https://tyrano.jp/tag/)、[吉里吉里／KAG3](https://krkrz.github.io/krkr2doc/kag3doc/contents/Tags.html)、[RPG Maker MV](https://rpgmakerofficial.com/product/MV_Help/page/01_10.html)及 [RPG Maker MZ](https://rpgmakerofficial.com/product/MZ_help-en/01_10.html)。
 
 解包與封包指南也參考了公開的格式說明與實作。[7-Zip](https://www.7-zip.org/7z.html)、[GARbro](https://github.com/morkt/GARbro)及 [YU-RIS 解包工具](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker)。

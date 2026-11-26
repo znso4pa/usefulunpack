@@ -325,6 +325,74 @@ class McpListenerTest {
         }
     }
 
+    @Test fun singleFactorFileAndCommandAcceptanceMatrix() {
+        for (repeat in 1..3) {
+            for (side in if (repeat % 2 == 1) 0..1 else 1 downTo 0) {
+                for (factor in listOf("line_endings", "write_encoding", "uu_hash_input", "uut_replacement")) {
+                    val root = tmp.newFolder()
+                    val workspace = McpWorkspace(root)
+                    val tasks = McpTasks(McpArchiveWorker(workspace)::execute)
+                    McpListener(McpProtocol(workspace, tasks, "test"), tasks, root).use { listener ->
+                        val original = "Hello, {player}!\r\n"
+                        root.resolve("source.ks").writeText(original)
+                        var lineEndingResult = "n/a"
+                        when (factor) {
+                            "line_endings", "write_encoding" -> {
+                                val lineEnding = if (factor == "line_endings" && side == 0) "\n" else "\r\n"
+                                val utf8 = factor == "write_encoding" && side == 0
+                                val encoding = if (utf8) "UTF-8" else "UTF-16"
+                                val content = "Start${lineEnding}Ready, {player}!$lineEnding"
+                                lineEndingResult = if (lineEnding == "\r\n") "CRLF" else "LF"
+                                val reply = call(listener, "write_text", JSONObject().put("path", "result.txt")
+                                    .put("text", content).put("encoding", encoding).put("bom", true))
+                                assertFalse(reply.optBoolean("isError"))
+                                val bom = if (utf8) byteArrayOf(0xef.toByte(), 0xbb.toByte(), 0xbf.toByte())
+                                    else byteArrayOf(0xff.toByte(), 0xfe.toByte())
+                                val expected = bom + content.toByteArray(if (utf8) Charsets.UTF_8 else Charsets.UTF_16LE)
+                                assertArrayEquals(expected, root.resolve("result.txt").readBytes())
+                            }
+                            "uu_hash_input" -> {
+                                if (side == 0) root.resolve("input.txt").writeText(original)
+                                val queued = call(listener, "run_uu",
+                                    JSONObject().put("argv", JSONArray(listOf("hash", "input.txt"))))
+                                    .getJSONObject("structuredContent")
+                                val result = awaitTask(listener, queued.getString("taskId"))
+                                if (side == 0) {
+                                    assertEquals("SUCCESS", result.getString("state"))
+                                    val digest = java.security.MessageDigest.getInstance("SHA-256")
+                                        .digest(original.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+                                    assertTrue(result.getString("stdout").contains(digest, ignoreCase = true))
+                                } else {
+                                    assertEquals("FAILED", result.getString("state"))
+                                }
+                            }
+                            "uut_replacement" -> {
+                                val replacement = if (side == 0) "Bonjour" else "Welcome"
+                                val script = """
+                                    uu mkdir out
+                                    for f in *.ks
+                                      uu cp ${'$'}f out/${'$'}f
+                                      uu sed Hello ${'$'}1 out/${'$'}f -i
+                                    end
+                                """.trimIndent()
+                                val queued = call(listener, "run_uut", JSONObject().put("script", script)
+                                    .put("args", JSONArray(listOf(replacement)))).getJSONObject("structuredContent")
+                                val result = awaitTask(listener, queued.getString("taskId"))
+                                assertEquals("SUCCESS", result.getString("state"))
+                                assertEquals(0, result.getInt("exitCode"))
+                                val modified = root.resolve("out/source.ks").readBytes()
+                                lineEndingResult = if ("\r\n" in modified.toString(Charsets.UTF_8)) "CRLF" else "LF"
+                                assertArrayEquals(original.replace("Hello", replacement).toByteArray(Charsets.UTF_8), modified)
+                            }
+                        }
+                        assertArrayEquals(original.toByteArray(Charsets.UTF_8), root.resolve("source.ks").readBytes())
+                        println("WORKFLOW_MATRIX,$factor,$repeat,${if (side == 0) "A" else "B"},ok,$lineEndingResult")
+                    }
+                }
+            }
+        }
+    }
+
     @Test fun archiveListPaginatesEntriesAndReportsFormatAndEncryption() {
         val root = tmp.newFolder()
         // Write real XP3 11-byte magic so magic sniffing identifies it even with a generic name.

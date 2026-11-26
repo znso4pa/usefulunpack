@@ -136,6 +136,10 @@ bash build.sh
 
 [ローカルの Markdown ガイド](app/src/main/resources/agent-documents)はアプリに同梱され、登録済みの展開・再パック形式とトラブル対処を収録しています。次のメッセージに添える資料を選べるほか、ファイル Agent も個別の問題に応じて参照できます。ローカル MCP からも同じ資料を検索し、必要なものを読み込めます。
 
+## ファイル Agent のトークン検証
+
+[公開トークン検証マトリクス](docs/agent-token-matrix.md)に、合成データのテストケース、権限の検証結果、入力・出力・推論・キャッシュ使用量を記録します。
+
 参照したドキュメントの執筆者とメンテナーに感謝します。[Ren'Py](https://www.renpy.org/doc/html/translation.html)、[ティラノスクリプト](https://tyrano.jp/tag/)、[吉里吉里／KAG3](https://krkrz.github.io/krkr2doc/kag3doc/contents/Tags.html)、[RPGツクール MV](https://rpgmakerofficial.com/product/MV_Help/page/01_10.html)、[RPGツクール MZ](https://rpgmakerofficial.com/product/MZ_help-en/01_10.html)。
 
 展開と再パックのガイドでは、公開された形式の説明や実装も参照しています。[7-Zip](https://www.7-zip.org/7z.html)、[GARbro](https://github.com/morkt/GARbro)、[YU-RIS 展開ツール](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker)。

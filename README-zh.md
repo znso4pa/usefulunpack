@@ -203,6 +203,10 @@ XOR 密钥（0xFF / 0xC9）按文件首条目自动判断。
 
 [本地 Markdown 指南](app/src/main/resources/agent-documents)随应用打包，覆盖已注册的拆封包格式及排障场景。你可以选择一篇随下条消息提供，文件 Agent 遇到具体问题时也可按需查阅。本地 MCP 可检索同一文档目录并读取指定指南。
 
+### 文件 Agent Token 验收
+
+[公开 Token 验收矩阵](docs/agent-token-matrix.md)记录合成用例、权限边界和实测的输入、输出、思考及缓存用量。
+
 感谢为这些指南提供参考的文档作者和维护者。[Ren'Py](https://www.renpy.org/doc/html/translation.html)、[TyranoScript](https://tyrano.jp/tag/)、[吉里吉里／KAG3](https://krkrz.github.io/krkr2doc/kag3doc/contents/Tags.html)、[RPG Maker MV](https://rpgmakerofficial.com/product/MV_Help/page/01_10.html)及 [RPG Maker MZ](https://rpgmakerofficial.com/product/MZ_help-en/01_10.html)。
 
 拆封包指南还参考了公开的格式说明与实现。[7-Zip](https://www.7-zip.org/7z.html)、[GARbro](https://github.com/morkt/GARbro)及 [YU-RIS 解包器](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker)。

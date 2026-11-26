@@ -174,6 +174,17 @@ fun detectBomlessUtf16Le(data: ByteArray): String? {
  */
 fun looksLikeText(data: ByteArray): Boolean {
     if (data.isEmpty()) return false
+    if (detectBomEncoding(data) == "UTF-16") {
+        val charset = if (data[0] == 0xfe.toByte()) Charsets.UTF_16BE else Charsets.UTF_16LE
+        val decoded = try {
+            charset.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(data, 2, data.size - 2))
+        } catch (_: CharacterCodingException) { return false }
+        if (decoded.any { it == '\u0000' }) return false
+        val controls = decoded.count { it < ' ' && it !in "\t\n\r\u000c" }
+        return !tooManyTextControls(controls, decoded.length)
+    }
     if (detectBomlessUtf16Le(data) == null) {
         var ctrl = 0
         for (b in data) {
@@ -186,11 +197,13 @@ fun looksLikeText(data: ByteArray): Boolean {
         // file but 0.0015% of a 64 KiB one, so a bare 1% rule rejected short
         // text outright. Short samples therefore need an absolute floor as well;
         // long ones keep the ratio, which is what catches a decoded binary.
-        val tooMany = if (data.size < 64) ctrl >= 4 else ctrl * 100 > data.size
-        if (tooMany) return false
+        if (tooManyTextControls(ctrl, data.size)) return false
     }
     return detectBestEncoding(data) != null
 }
+
+private fun tooManyTextControls(count: Int, length: Int): Boolean =
+    if (length < 64) count >= 4 else count * 100 > length
 
 /**
  * The ONE text/binary gate for callers that need an encoding rather than a

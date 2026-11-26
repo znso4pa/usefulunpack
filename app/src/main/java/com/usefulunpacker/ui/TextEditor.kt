@@ -250,10 +250,10 @@ private fun openEditorWithContent(
     dlg.setOnShowListener {
         dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             AppDiagnostics.invokeCallback(ownerTrace) {
-                val bytes = encodeText(et.text.toString(), curEncoding, bom)
-                autosaveGen.incrementAndGet()
-                cancelPendingAutosave()
                 try {
+                    val bytes = LineEditEncoding.forSnapshot(curEncoding, rawData, bom).encode(et.text.toString())
+                    autosaveGen.incrementAndGet()
+                    cancelPendingAutosave()
                     synchronized(autosaveLock) {
                         writeOutputAtomically(originalFile) { staged -> staged.writeBytes(bytes); true }
                         deleteOutputChecked(tempFile)
@@ -261,6 +261,9 @@ private fun openEditorWithContent(
                     UuNotice.makeText(activity, activity.getString(R.string.msg_saved), Toast.LENGTH_SHORT).show()
                     onSaved?.invoke()
                     dlg.dismiss()
+                } catch (_: java.nio.charset.CharacterCodingException) {
+                    AppDiagnostics.begin("text_encoding").fail(FailureCode.INVALID_RESULT, "Text cannot be represented in the selected encoding")
+                    UuNotice.failure(activity, activity.getString(R.string.line_edit_unmappable), Toast.LENGTH_LONG).show()
                 } catch (failure: Exception) {
                     AppDiagnostics.failure("text_save", failure)
                     // Keep the editor and its live text open if saving failed.

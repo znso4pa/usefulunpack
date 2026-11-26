@@ -85,7 +85,9 @@ internal class AgentChangeCapture(private val root: File) {
         if (!enabled || finished != null) return
         val output = target
         if (output != null && file != output && !file.toPath().startsWith(output.toPath())) return
-        try { capture(file) } catch (_: IOException) { captureFailure() }
+        try { capture(file) }
+        catch (_: IOException) { captureFailure() }
+        catch (_: java.nio.file.DirectoryIteratorException) { captureFailure() }
     }
 
     private fun captureFailure() {
@@ -98,7 +100,7 @@ internal class AgentChangeCapture(private val root: File) {
         incomplete = true
     }
 
-    private fun allowed(file: File): Boolean = file != root && file.toPath().startsWith(root.toPath()) &&
+    private fun allowed(file: File): Boolean = file.toPath().startsWith(root.toPath()) &&
         root.toPath().relativize(file.toPath()).none { it.toString().startsWith(".uu-mcp-") } &&
         !Files.isSymbolicLink(file.toPath()) && file.canonicalFile == file
 
@@ -108,8 +110,12 @@ internal class AgentChangeCapture(private val root: File) {
         originals[file] = snapshot(file)
         if (file.isDirectory) {
             directories.add(file)
-            val children = file.listFiles() ?: throw IOException("Cannot inspect change directory")
-            for (child in children) capture(child)
+            Files.newDirectoryStream(file.toPath()).use { children ->
+                for (child in children) {
+                    if (originals.size >= 128) { limit("PATH_COUNT"); break }
+                    capture(child.toFile())
+                }
+            }
         }
     }
 
@@ -149,14 +155,17 @@ internal class AgentChangeCapture(private val root: File) {
             while (pending.isNotEmpty()) {
                 val dir = pending.removeFirst()
                 if (!seen.add(dir) || !allowed(dir)) continue
-                val children = if (dir.exists()) dir.listFiles() ?: throw IOException("Cannot inspect output directory") else emptyArray()
-                for (child in children) {
-                    if (!allowed(child)) continue
-                    if (child !in originals) {
-                        if (originals.size >= 128) { limit("PATH_COUNT"); continue }
-                        originals[child] = Snapshot(false, false, 0, 0, null, "")
+                if (!dir.exists()) continue
+                Files.newDirectoryStream(dir.toPath()).use { children ->
+                    for (entry in children) {
+                        val child = entry.toFile()
+                        if (!allowed(child)) continue
+                        if (child !in originals) {
+                            if (originals.size >= 128) { limit("PATH_COUNT"); break }
+                            originals[child] = Snapshot(false, false, 0, 0, null, "")
+                        }
+                        if (child.isDirectory) pending.add(child)
                     }
-                    if (child.isDirectory) pending.add(child)
                 }
             }
             for ((file, before) in originals) {
@@ -166,10 +175,11 @@ internal class AgentChangeCapture(private val root: File) {
                     if (before.hash != null || after.hash != null) before.hash == after.hash else before.stamp == after.stamp
                 if (unchanged) continue
                 val diff = if (before.text != null && after.text != null) agentTextDiff(before.text, after.text) else null
-                result.add(AgentFileChange(root.toPath().relativize(file.toPath()).toString(), before.exists, after.exists,
+                result.add(AgentFileChange(root.toPath().relativize(file.toPath()).toString().ifEmpty { "." }, before.exists, after.exists,
                     before.size, after.size, diff.orEmpty(), diff == null || diff.none { it.kind != 0 }))
             }
         } catch (_: IOException) { captureFailure() }
+        catch (_: java.nio.file.DirectoryIteratorException) { captureFailure() }
         return result.toList().also { finished = it }
     }
 }

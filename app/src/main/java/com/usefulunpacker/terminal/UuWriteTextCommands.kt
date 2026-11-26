@@ -49,7 +49,13 @@ internal fun UuCommands.enc(args: List<String>, ctx: Ctx): Result {
             "${f.nameWithoutExtension}-${encShort(to)}.${f.extension.ifEmpty { "txt" }}")
     if (out.exists()) return Result(ctx.text(R.string.cli_exists, out.path), 1)
     // BOM 保真：源有 BOM 且目标支持（UTF-8/UTF-16）时保留
-    out.writeBytes(encodeText(text, to, hasBom(bytes)))
+    val encoded = try {
+        LineEditEncoding.forSnapshot(srcEnc, bytes).verifySource(bytes)
+        LineEditEncoding.forSnapshot(to, bytes).encode(text)
+    } catch (_: java.nio.charset.CharacterCodingException) {
+        return Result(ctx.text(R.string.line_edit_unmappable), 1)
+    }
+    writeOutputAtomically(out, replaceExisting = false) { it.writeBytes(encoded); true }
     return Result(ctx.text(R.string.cli_enc_done, f.name, out.name, srcEnc, to))
 }
 
@@ -143,13 +149,22 @@ internal fun UuCommands.sed(args: List<String>, ctx: Ctx): Result {
                     // 引入 U+FFFD，编回去就不是原字节 —— 那等于悄悄改了一堆没人要求改的
                     // 字节。宁可拒绝（`--bytes` 是逃生口），也不产出这种文件。
                     // 只查 `-i`：写 stdout 时原文件没被碰，用户能先看再决定用不用。
-                    if (inPlace && !encodeText(text, enc, hasBom(raw)).contentEquals(raw)) {
-                        fail++
-                        out.append(ctx.text(R.string.cli_sed_lossy, src.name, enc)).append('\n')
-                        continue
-                    }
+                    if (inPlace) {
+                        val encoding = LineEditEncoding.forSnapshot(enc, raw)
+                        val faithful = try { encoding.encode(text).contentEquals(raw) }
+                            catch (_: java.nio.charset.CharacterCodingException) { false }
+                        if (!faithful) {
+                            fail++
+                            out.append(ctx.text(R.string.cli_sed_lossy, src.name, enc)).append('\n')
+                            continue
+                        }
+                        replaced = try { encoding.encode(newText) } catch (_: java.nio.charset.CharacterCodingException) {
+                            fail++
+                            out.append(ctx.text(R.string.line_edit_unmappable)).append('\n')
+                            continue
+                        }
+                    } else replaced = raw
                     textOut = newText
-                    replaced = encodeText(newText, enc, hasBom(raw))
                 }
             }
 

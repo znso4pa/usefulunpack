@@ -46,7 +46,7 @@ internal class McpWorkspace(directory: File, private val onResolve: ((File) -> U
 
     fun resolve(path: String, allowRoot: Boolean = false): File {
         if (root.canonicalFile != root || !root.isDirectory) throw mcpInputError("Workspace is unavailable")
-        if (allowRoot && path == ".") return root
+        if (allowRoot && path == ".") return root.also { onResolve?.invoke(it) }
         val parts = path.split('/')
         if (path.length > 1024 || parts.any { it.isEmpty() || it == "." || it == ".." } ||
             path.any { it == '\\' || it.isISOControl() }) {
@@ -70,7 +70,7 @@ internal class McpWorkspace(directory: File, private val onResolve: ((File) -> U
             throw mcpInputError("Use a relative workspace path without parent segments")
         }
         if (path.startsWith("/")) {
-            if (path == root.path) return root
+            if (path == root.path) return root.also { onResolve?.invoke(it) }
             if (path.startsWith(root.path + "/")) {
                 return resolve(path.removePrefix(root.path + "/"), allowRoot = true)
             }
@@ -81,7 +81,7 @@ internal class McpWorkspace(directory: File, private val onResolve: ((File) -> U
             cwd.path.startsWith(root.path + "/") -> resolve(cwd.path.removePrefix(root.path + "/"), allowRoot = true)
             else -> throw mcpInputError("Current directory is outside the MCP workspace")
         }
-        if (path == ".") return base
+        if (path == ".") return base.also { onResolve?.invoke(it) }
         val normalized = if (path.startsWith("./")) path.removePrefix("./") else path
         val parts = normalized.split('/')
         if (parts.any { it.isEmpty() || it == "." || it == ".." }) {

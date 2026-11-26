@@ -69,14 +69,11 @@ internal fun UuCommands.copy(raw: List<String>, ctx: Ctx): Result {
             val name = if (srcTemp != null) "carved" else src.name
             dst = File(dst, name)
         }
+        if (overlappingFileOperation(src, dst)) return Result(ctx.text(R.string.cli_failed, dst.path), 1)
         if (dst.exists()) {
             if (!force) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
             // -f 覆盖：先删再拷（目录也整棵换掉 —— 幂等脚本的写法）
             if (!com.usefulunpacker.deleteOutputChecked(dst, recursive = true, cleanup = false)) return Result(ctx.text(R.string.cli_failed, dst.path), 1)
-        }
-        // 目录拷贝进自己（cp mydir mydir/inner）→ 无限自嵌套直到路径爆掉
-        if (src.isDirectory && dst.canonicalPath.startsWith(src.canonicalPath + File.separator)) {
-            return Result(ctx.text(R.string.cli_failed, dst.path), 1)
         }
         if (src.isDirectory) src.copyRecursively(dst, overwrite = false)
         else {
@@ -154,12 +151,10 @@ internal fun UuCommands.mv(raw: List<String>, ctx: Ctx): Result {
     if (!src.exists()) return Result(UuText.notFound(ctx.str, pa.pos[0]), 1)
     var dst = UuText.resolve(ctx.cwd, pa.pos[1])
     if (dst.isDirectory) dst = File(dst, src.name)
+    if (overlappingFileOperation(src, dst)) return Result(ctx.text(R.string.cli_failed, dst.path), 1)
     if (dst.exists()) {
         if (!force) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
         if (!com.usefulunpacker.deleteOutputChecked(dst, recursive = true, cleanup = false)) return Result(ctx.text(R.string.cli_failed, dst.path), 1)
-    }
-    if (src.isDirectory && dst.canonicalPath.startsWith(src.canonicalPath + File.separator)) {
-        return Result(ctx.text(R.string.cli_failed, dst.path), 1)
     }
     if (src.renameTo(dst)) {
         ctx.onOutput?.invoke(dst)
@@ -177,6 +172,13 @@ internal fun UuCommands.mv(raw: List<String>, ctx: Ctx): Result {
     if (!deleteOutputChecked(src, recursive = src.isDirectory)) return Result(ctx.text(R.string.cli_failed, src.path), 1)
     ctx.onOutput?.invoke(dst)
     return Result(ctx.text(R.string.cli_mv_done, src.name, dst.path))
+}
+
+/** Validate both ancestry directions before a force operation can delete any destination. */
+private fun overlappingFileOperation(source: File, destination: File): Boolean {
+    val input = source.canonicalFile.toPath()
+    val output = destination.canonicalFile.toPath()
+    return input == output || input.startsWith(output) || source.isDirectory && output.startsWith(input)
 }
 
 /** `uu tree [dir] [depth]` — 目录树（默认深 3，最多 TREE_MAX 行）。 */

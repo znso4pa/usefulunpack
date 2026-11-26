@@ -100,8 +100,8 @@ internal class LineEditEncoding private constructor(val charset: Charset, privat
 
     companion object {
         /** Keep the source byte order when UTF-16 is retained, including big-endian files. */
-        fun forSnapshot(encoding: String, original: ByteArray): LineEditEncoding {
-            val bom = detectBomEncoding(original) != null
+        fun forSnapshot(encoding: String, original: ByteArray, bomOverride: Boolean? = null): LineEditEncoding {
+            val bom = bomOverride ?: (detectBomEncoding(original) != null)
             val charset = when {
                 encoding == "UTF-16" && detectBomEncoding(original) == "UTF-16" &&
                     original[0] == 0xfe.toByte() -> Charsets.UTF_16BE

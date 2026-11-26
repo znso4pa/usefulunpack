@@ -531,7 +531,11 @@ internal class WorkspaceSkillRuntime(
         }
         val targetBom = (bomArg ?: (existingSample != null && hasBom(existingSample))) &&
             targetEncoding in setOf("UTF-8", "UTF-16")
-        val encodedBytes = encodeText(text, targetEncoding, targetBom)
+        val encodedBytes = try {
+            LineEditEncoding.forSnapshot(targetEncoding, existingSample ?: ByteArray(0), targetBom).encode(text)
+        } catch (_: java.nio.charset.CharacterCodingException) {
+            throw mcpInputError("Text cannot be represented in the selected encoding")
+        }
         val trace = checkNotNull(AppDiagnostics.currentTrace())
         val temp = Files.createTempFile(parent.toPath(), ".uu-mcp-", ".tmp").toFile()
         try {

@@ -45,6 +45,7 @@ object OpScheduler {
         @Volatile var cancelRequested = false
             private set
         private val chainTrace = com.usefulunpacker.AppDiagnostics.currentTrace()
+        internal val chainId get() = chainTrace?.id
         fun markCancelRequested() { cancelRequested = true; chainTrace?.cancelled() }
         internal var runStartedAt = 0L
         internal val gate = Object()
@@ -92,6 +93,14 @@ object OpScheduler {
             synchronized(gate) { gate.notifyAll() }
         }
 
+        /** The native cancellation flag must still belong to this handle when it is set. */
+        internal fun cancelFromOwner(cancelNative: () -> Unit) = synchronized(schedLock) {
+            if (state == S.RUNNING) {
+                markCancelRequested()
+                cancelNative()
+            } else requestCancel()
+        }
+
         /** Token release — pairs with a successful [await]. Idempotent-ish:
          *  releasing a non-RUNNING handle is a no-op (defensive). */
         fun release() {
@@ -136,6 +145,10 @@ object OpScheduler {
             }
         }
         return h
+    }
+
+    internal fun queuedChains(): Set<String> = synchronized(schedLock) {
+        queue.mapNotNullTo(HashSet()) { it.chainId }
     }
 
     // ── internals (all callers hold schedLock) ──

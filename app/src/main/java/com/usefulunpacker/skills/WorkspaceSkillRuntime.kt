@@ -650,6 +650,7 @@ internal class WorkspaceSkillRuntime(
             if (workspace.resolve(path) != output) throw mcpInputError("Output path changed")
             if (overwrite) Files.move(temp.toPath(), output.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
             else Files.move(temp.toPath(), output.toPath())
+            trace.publishOutput(output)
             trace.success()
         } finally {
             deleteOutputChecked(temp)

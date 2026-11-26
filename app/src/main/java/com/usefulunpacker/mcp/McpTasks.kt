@@ -80,6 +80,8 @@ internal class McpTask(
     val summary: String = "",
     val createdAtMs: Long = System.currentTimeMillis(),
     val taskId: String = trace?.id ?: "",
+    private val workspaceRoot: File? = null,
+    private val parentTrace: OperationTrace? = null,
 ) {
     private var state = "QUEUED"
     @Volatile private var cancelled = false
@@ -95,6 +97,7 @@ internal class McpTask(
     private var restoredLogId: String? = null
     val logId: String get() = restoredLogId ?: taskId
     private var cleanupFailed = false
+    internal var centerControl: AutoCloseable? = null
     internal var uutState: Any? = null
 
     companion object {
@@ -172,11 +175,17 @@ internal class McpTask(
     @Synchronized fun publish(output: String, move: () -> Unit) {
         checkCancelled()
         move()
-        if (output.isNotEmpty() && output !in outputs) outputs.add(output)
+        recordOutput(output)
     }
 
     @Synchronized fun recordOutput(output: String) {
-        if (output.isNotEmpty() && output !in outputs) outputs.add(output)
+        if (output.isEmpty() || output in outputs) return
+        outputs.add(output)
+        if (workspaceRoot != null) {
+            val file = File(workspaceRoot, output)
+            trace?.publishOutput(file)
+            parentTrace?.publishOutput(file)
+        }
     }
 
     @Synchronized fun appendStdout(text: String) {
@@ -219,7 +228,13 @@ internal class McpTask(
         trace?.release()
     }
 
-    fun markSettled() { doneLatch.countDown() }
+    @Synchronized fun centerState(): String = state
+
+    fun markSettled() {
+        centerControl?.close()
+        centerControl = null
+        doneLatch.countDown()
+    }
 
     fun awaitDone(waitMs: Int) {
         if (waitMs <= 0) return
@@ -268,9 +283,10 @@ internal class McpTasks(
     private val onActiveCountChanged: ((Int) -> Unit)? = null,
     private val agentFeature: String? = null,
     private val stagingRoot: File? = journalFile?.parentFile,
+    private val workspaceRoot: File? = stagingRoot,
     private val execute: (McpTask, McpCommand) -> Unit,
 ) : AutoCloseable {
-    constructor(execute: (McpTask, McpCommand) -> Unit) : this(null, null, null, null, execute)
+    constructor(execute: (McpTask, McpCommand) -> Unit) : this(null, null, null, null, null, execute)
     private val records = LinkedHashMap<String, McpTask>()
     private val worker = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(4))
     private var closed = false
@@ -390,8 +406,13 @@ internal class McpTasks(
                 idempotencyKey = cleanKey,
                 fingerprint = fingerprint,
                 summary = summary,
+                workspaceRoot = workspaceRoot,
+                parentTrace = AppDiagnostics.currentTrace()?.takeIf { agentFeature != null && it.feature == agentFeature },
             )
             records[trace.id] = fresh
+            fresh.centerControl = TaskCenterControls.register(trace.id, fresh::centerState) {
+                featureThread(trace = null) { cancelTask(fresh) }
+            }
             val rejected = try {
                 worker.execute(QueuedTask(fresh, commands))
                 false
@@ -493,13 +514,28 @@ internal class McpTasks(
     @Synchronized fun canReadLog(id: String): Boolean =
         id in records || records.values.any { it.logId == id }
 
-    fun cancel(id: String): JSONObject {
-        val task = get(id)
+    fun cancel(id: String): JSONObject = cancelTask(get(id))
+
+    private fun cancelTask(task: McpTask): JSONObject {
         val queued = task.cancel()
         if (queued) worker.queue.removeIf { it is QueuedTask && it.task === task }
         synchronized(this) { persistJournalLocked() }
         try { notifyActive() } finally { if (queued) task.markSettled() }
         return task.snapshot()
+    }
+
+    /** Agent receipts must observe the final filesystem state after native cleanup settles. Call on a worker. */
+    fun closeAndAwait() {
+        close()
+        var interrupted = Thread.interrupted()
+        try {
+            while (!worker.isTerminated) {
+                try { worker.awaitTermination(1, TimeUnit.SECONDS) }
+                catch (_: InterruptedException) { interrupted = true }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt()
+        }
     }
 
     @Synchronized override fun close() {

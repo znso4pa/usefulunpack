@@ -832,7 +832,10 @@ internal fun MainActivity.mergeIntoArchive(
                     }
                     // 失败/取消清半成品（产物名可能是 root.pfs）。
                     if (cancelled.get() || !ok) deleteOutputChecked(outF)
-                    if (cancelled.get()) trace.cancelled() else if (ok) trace.success()
+                    if (cancelled.get()) trace.cancelled() else if (ok) {
+                        recordPackedTaskOutput(outF)
+                        trace.success()
+                    }
                     runFeatureOnUiThread {
                         if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                         prog.dismiss()
@@ -1065,7 +1068,11 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
                 onResult = { o ->
                     // 失败也要清残留：zip/7z/rar 分支清了，非 zip 分支不清会让
                     // 半成品目录留在归档旁。
-                    if (o.counts.ok) { showExtractSuccess(src.name, out.name, o.counts); navTab(ownerTab, ownerTab.currentDir) }
+                    if (o.counts.ok) {
+                        recordTaskOutput(out)
+                        showExtractSuccess(src.name, out.name, o.counts)
+                        navTab(ownerTab, ownerTab.currentDir)
+                    }
                     else { cleanupCancelledOutput(out, existedBefore); toast(friendlyExtractError(this, o.error)) }
                 },
                 ownerTab = ownerTab
@@ -1109,6 +1116,7 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
                     try {
                         val result = doSel(pwd)
                         val ok = result.counts.ok
+                        if (ok && !cancelled) recordTaskOutput(out)
                         runFeatureOnUiThread {
                             if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                             prog.dismiss()
@@ -1146,6 +1154,7 @@ internal fun MainActivity.extractSelected(src: File, out: File, paths: List<Stri
                                             if (!opH2.await()) return@thread
                                             try {
                                                 val o2 = doSel(p2)
+                                                if (o2.counts.ok && !cancelled2) recordTaskOutput(out)
                                                 runFeatureOnUiThread {
                                                     if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                                                     prog2.dismiss()

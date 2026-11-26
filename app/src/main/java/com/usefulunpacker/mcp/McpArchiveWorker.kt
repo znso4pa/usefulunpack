@@ -197,10 +197,11 @@ internal class McpArchiveWorker(
             if (!handle.await()) throw CancellationException()
             task.checkCancelled()
             task.bindNativeCancel {
-                handle.markCancelRequested()
-                try { observedAttempt("mcp_native_cancel", accessors.cancel) }
-                catch (_: LinkageError) {
-                    AppDiagnostics.begin("mcp_native_cancel").fail(FailureCode.UNSUPPORTED, "Native cancellation is unavailable")
+                handle.cancelFromOwner {
+                    try { observedAttempt("mcp_native_cancel", accessors.cancel) }
+                    catch (_: LinkageError) {
+                        AppDiagnostics.begin("mcp_native_cancel").fail(FailureCode.UNSUPPORTED, "Native cancellation is unavailable")
+                    }
                 }
             }
             task.bindProgress {
@@ -687,6 +688,7 @@ internal class McpArchiveWorker(
             registerCancel = { cancelFn -> task.bindNativeCancel(cancelFn) },
             scheduleHeadless = true,
             checkCancelled = task::checkCancelled,
+            onOutput = { task.recordOutput(workspace.relativePath(it)) },
         )
 
     private fun runUuCommand(

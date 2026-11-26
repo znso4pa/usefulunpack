@@ -53,10 +53,13 @@ fun MainActivity.copyWithProgress(
     // one, but a file-scope mutable would survive a finished copy and could be
     // flipped by a stale card from a destroyed window.
     val state = CopyState()
+    val cancel = { _intentScope.trace.cancelled(); state.cancelled = true }
+    val taskControl = TaskCenterControls.register(_intentScope.trace.id,
+        state = { if (state.cancelled) "CANCELLING" else "RUNNING" }, cancel = cancel)
     // The card belongs to the window that started the copy.
     val card = OpOverlay.addCard(
         this, getString(R.string.msg_copying), getString(R.string.action_cancel),
-        { _intentScope.trace.cancelled(); state.cancelled = true }, ownerTabId
+        cancel, ownerTabId
     )
 
     thread {
@@ -71,6 +74,7 @@ fun MainActivity.copyWithProgress(
         } finally {
             // Release on EVERY exit, including an unexpected throw: the copy
             // must not wedge every later file operation behind a held lock.
+            taskControl.close()
             OperationLock.release()
         }
     }
@@ -135,6 +139,7 @@ private fun MainActivity.copyInto(
         }
         when (outcome) {
             CopyOutcome.Done -> {
+                recordTaskOutput(plan.dest)
                 copied++; doneBytes += plan.bytes
             }
             CopyOutcome.Cancelled -> {

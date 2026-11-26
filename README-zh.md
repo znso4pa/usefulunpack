@@ -207,6 +207,10 @@ XOR 密钥（0xFF / 0xC9）按文件首条目自动判断。
 
 [公开 Token 验收矩阵](docs/agent-token-matrix.md)记录合成用例、权限边界和实测的输入、输出、思考及缓存用量。
 
+在文件 Agent 输入区上方可以选通用、文件查询、拆封包、VN 汉化或 UU／UUT。模式与会话权限共同决定模型可调用的工具，写入仍需逐次确认。可从更多菜单、设置或 Agent 的会话设置打开任务中心，查看界面、Agent 和本地 MCP 的任务状态、诊断和本次运行记录的产物。
+
+Agent 完成本轮操作后，会显示本地捕获的文件改动入口。单文件可直接查看，多文件展开清单。差异页替换当前 Agent 的内容区，返回时保留对话与草稿。同一会话中，同文件的新改动会替换旧入口。小型文本显示逐行增删，二进制、较大文件或超出对比上限时显示状态与大小。记录有容量和路径数量上限，未能完整捕获时会提示。差异记录随本地会话保存，不加入模型请求上下文。
+
 感谢为这些指南提供参考的文档作者和维护者。[Ren'Py](https://www.renpy.org/doc/html/translation.html)、[TyranoScript](https://tyrano.jp/tag/)、[吉里吉里／KAG3](https://krkrz.github.io/krkr2doc/kag3doc/contents/Tags.html)、[RPG Maker MV](https://rpgmakerofficial.com/product/MV_Help/page/01_10.html)及 [RPG Maker MZ](https://rpgmakerofficial.com/product/MZ_help-en/01_10.html)。
 
 拆封包指南还参考了公开的格式说明与实现。[7-Zip](https://www.7-zip.org/7z.html)、[GARbro](https://github.com/morkt/GARbro)及 [YU-RIS 解包器](https://github.com/mwzzhang/python-YU-RIS-package-file-unpacker)。

@@ -102,7 +102,9 @@ internal fun MainActivity.batchDirectExtract(archives: List<File>, fmt: String) 
                                     val o = extractByFormat(fmt, archives[i].path, out.path, "", prefs, pwd ?: "")
                                     ok = o.counts.ok; if (!ok) { err = o.error; break }
                                     if (w == 0) doneUntil = i + 1
+                                    else if (!cancelled) recordTaskOutput(out)
                                 }
+                                if (!cancelled && w == 0) outDirs.take(doneUntil).forEach(::recordTaskOutput)
                                 runFeatureOnUiThread {
                                     if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                                     prog.dismiss()
@@ -448,8 +450,10 @@ internal fun MainActivity.showBatchPreviewDialog(all: List<Pair<File, List<Archi
                                 for ((src, paths) in byArchive) {
                                     if (cancelled) break
                                     val pwd = pwds[src] ?: continue
-                                    val o = extractByFormat(fmt, src.path, uniqueFile(src.parentFile ?: currentDir, src.nameWithoutExtension).path, paths.joinToString("\n"), prefs, pwd)
+                                    val out = uniqueFile(src.parentFile ?: currentDir, src.nameWithoutExtension)
+                                    val o = extractByFormat(fmt, src.path, out.path, paths.joinToString("\n"), prefs, pwd)
                                     if (!o.counts.ok) { ok2 = false; err = o.error; break }
+                                    if (!cancelled) recordTaskOutput(out)
                                 }
                                 runFeatureOnUiThread {
                                     if (isFinishing || isDestroyed) return@runFeatureOnUiThread

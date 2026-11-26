@@ -235,9 +235,7 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
     // nothing is confident.
     var curEncoding = detectBestEncoding(data)
         ?: prefs?.getString("text_encoding", "UTF-8") ?: "UTF-8"
-    val encLabels = arrayOf(
-        activity.getString(R.string.encoding_utf8), activity.getString(R.string.encoding_sjis),
-        activity.getString(R.string.encoding_gbk), activity.getString(R.string.encoding_utf16))
+
 
     fun decode(): String = com.usefulunpacker.observedAttempt("PreviewDialogs") { decodeTextStrict(data, curEncoding) }
         .getOrElse { activity.getString(R.string.cannot_read_file, it.message ?: "") }
@@ -255,24 +253,10 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
     // Encoding switch row: re-decode instantly so a wrong-pick preview fixes
     // itself (and persists the choice as the new default) without leaving the
     // dialog — the classic "GBK file read as UTF-8" flow.
-    val encRow = UuActionRow(activity)
-    encRow.apply {
-        navigation = true
-        text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)]
-        isClickable = true
-        setOnClickListener {
-            com.usefulunpacker.UuDialogBuilder(activity)
-                .setTitle(activity.getString(R.string.settings_text_encoding))
-                .setSingleChoiceItems(encLabels, TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)) { d, w ->
-                    curEncoding = TEXT_ENCODINGS[w]
-                    encRow.text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[w]
-                    prefs?.edit()?.putString("text_encoding", curEncoding)?.apply()
-                    d.dismiss()
-                    refreshContent()
-                }
-                .setNegativeButton(R.string.action_cancel, null)
-                .show().also { it.keepTabsTappable() }
-        }
+    val encRow = textEncodingRow(activity, curEncoding) { chosen ->
+        curEncoding = chosen
+        prefs?.edit()?.putString("text_encoding", chosen)?.apply()
+        refreshContent()
     }
 
     lateinit var contentRoot: LinearLayout
@@ -568,9 +552,7 @@ private fun openEditorWithContent(
     editHistory.pushState(content)
     var curEncoding = encoding
     
-    val encLabels = arrayOf(
-        activity.getString(R.string.encoding_utf8), activity.getString(R.string.encoding_sjis),
-        activity.getString(R.string.encoding_gbk), activity.getString(R.string.encoding_utf16))
+
     
     // 用于抑制程序化setText触发的TextWatcher
     var suppressWatcher = false
@@ -641,24 +623,8 @@ private fun openEditorWithContent(
         }
     })
     
-    val encRow = UuActionRow(activity)
-    encRow.apply {
-        navigation = true
-        text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)]
-        isClickable = true
-        setOnClickListener {
-            com.usefulunpacker.UuDialogBuilder(activity)
-                .setTitle(activity.getString(R.string.settings_text_encoding))
-                .setSingleChoiceItems(encLabels, TEXT_ENCODINGS.indexOf(curEncoding).coerceAtLeast(0)) { d, w ->
-                    curEncoding = TEXT_ENCODINGS[w]
-                    encRow.text = "🔤 " + activity.getString(R.string.settings_text_encoding) + ": " + encLabels[w]
-                    d.dismiss()
-                }
-                .setNegativeButton(R.string.action_cancel, null)
-                .show().also { it.keepTabsTappable() }
-        }
-    }
-    
+    val encRow = textEncodingRow(activity, curEncoding) { curEncoding = it }
+
     // 撤销/重做按钮
     val undoRedoRow = LinearLayout(activity).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -696,11 +662,18 @@ private fun openEditorWithContent(
     }
     
     editHistory.setOnChangeListener { updateUndoRedoButtons() }
+
+    val lineEdit = UuActionRow(activity).apply {
+        bind(activity.getString(R.string.line_edit_title), navigation = true) {
+            showLineEditor(activity, originalFile, et.text.toString(), rawData, encoding, curEncoding)
+        }
+    }
     
     val body = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
         setBackgroundColor(C["surface_dark"]!!)
         addView(encRow)
+        addView(lineEdit)
         addView(undoRedoRow)
         val dragBar = DragScrollBar(activity).apply { attach(et) }
         val frame = FrameLayout(activity).apply {

@@ -388,6 +388,7 @@ private fun runCompress(
             // rather than writing something the game silently ignores.
             val (finalFile, renamed) = resolveRgssOutName(outFile, gameNaming, ext)
             val ok = compressDispatch(dir, finalFile, fmt, level, if (isMvPackKey(fmt)) mvKey else password, prefs, splitSize, xp3Enc)
+            if (ok && !cancelled) recordPackedTaskOutput(finalFile)
             // Which scheme an encrypted pack actually used is only known once it
             // has run; the native side reports it for the result message.
             val encNote = if (ok && xp3Enc == "cxdec") encNoteText(strFnOf(activity)) else ""

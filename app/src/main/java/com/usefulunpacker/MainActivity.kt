@@ -626,6 +626,7 @@ class MainActivity : AppCompatActivity() {
                         action(1, R.string.msg_search_global) { globalSearch() }
                         action(2, R.string.nav_bookmarks) { drawer.open() }
                         action(4, R.string.agent_title) { showAgent() }
+                        action(5, R.string.task_center_title) { showTaskCenter() }
                         action(3, R.string.settings) { settings() }
                         show()
                     }
@@ -665,7 +666,7 @@ class MainActivity : AppCompatActivity() {
         tabAdapter.notifyDataSetChanged()
     }
 
-    internal fun addTab() {
+    internal fun addTab(directory: File? = null) {
         if (tabs.size >= MAX_TABS) {
             toast(getString(R.string.msg_max_tabs))
             return
@@ -674,10 +675,10 @@ class MainActivity : AppCompatActivity() {
         // OpOverlay/DeleteProgress 的卡片按 tabId 归属会张冠李戴。
         val tab = TabState((tabs.maxOfOrNull { it.tabId } ?: -1) + 1)
         // New windows start at the external storage root, like the original app.
-        tab.currentDir = android.os.Environment.getExternalStorageDirectory()
+        tab.currentDir = directory ?: android.os.Environment.getExternalStorageDirectory()
         // 新窗口落在主界面（hub）—— 它是每页的入口；恢复会话的 tab 不置位，
         // 直接回到上次所在的目录（homeVisible 默认 false）。见 browse/HomeHub.kt。
-        tab.homeVisible = true
+        tab.homeVisible = directory == null
         tabs.add(tab)
         rebuildPager()
         viewPager.post { viewPager.currentItem = tabs.size - 1 }
@@ -890,7 +891,7 @@ class MainActivity : AppCompatActivity() {
     internal val rootedDialogs = mutableListOf<RootedDialog>()
 
     companion object {
-        const val MAX_TABS = 4
+        const val MAX_TABS = 6
         private const val GIB_F = 1024f * 1024f * 1024f
         private const val MIB_F = 1024f * 1024f
     }

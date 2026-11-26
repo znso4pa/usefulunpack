@@ -13,6 +13,89 @@ import java.util.concurrent.TimeUnit
 class DiagnosticsTest {
     @get:Rule val temp = TemporaryFolder()
 
+    @Test fun privateOutputReceiptSurvivesFailedChainAndIsRemovedWithSessionLogs() {
+        val dir = temp.newFolder()
+        val previous = AppDiagnostics.store
+        val store = DiagnosticStore(dir)
+        val feature = "agent_session_${"a".repeat(32)}"
+        val output = File(temp.newFolder(), "private-output.zip").apply { writeText("fixture") }
+        AppDiagnostics.store = store
+        try {
+            val scope = AppDiagnostics.enterIntent(feature, newChain = true)
+            try {
+                scope.trace.publishOutput(output)
+                scope.trace.publishOutput(output)
+                scope.trace.fail(FailureCode.IO, "A later model request failed", notifyUser = false)
+            } finally {
+                AppDiagnostics.leaveIntent(scope)
+            }
+            store.flush()
+            assertFalse(File(dir, "${scope.trace.id}.log").readText().contains(output.name))
+            DiagnosticStore(dir).useForTest { reopened ->
+                val item = reopened.snapshot(includeOutputs = true).single()
+                assertEquals("FAILED", item.status)
+                assertEquals(listOf(output.absolutePath), item.outputs)
+                reopened.deleteAgentSession(feature)
+                assertTrue(reopened.snapshot(includeOutputs = true).isEmpty())
+                assertTrue(output.exists())
+                assertFalse(File(dir, "${scope.trace.id}.outputs").exists())
+            }
+        } finally {
+            AppDiagnostics.store = previous
+            store.close()
+        }
+    }
+
+    private fun DiagnosticStore.useForTest(block: (DiagnosticStore) -> Unit) {
+        try { block(this) } finally { close() }
+    }
+
+    @Test fun outputLocatorRejectsPathsOutsideStorageAndSymbolicLinks() {
+        val root = temp.newFolder()
+        val outside = temp.newFile()
+        val output = File(root, "output.txt").apply { writeText("fixture") }
+        val link = File(root, "link")
+        java.nio.file.Files.createSymbolicLink(link.toPath(), outside.toPath())
+        assertEquals(output.canonicalFile, taskOutputInStorage(root, output.path))
+        assertNull(taskOutputInStorage(root, outside.path))
+        assertNull(taskOutputInStorage(root, link.path))
+    }
+
+    @Test fun agentChildTaskPublishesReceiptEvenIfTheParentLaterFails() {
+        val work = temp.newFolder()
+        val store = DiagnosticStore(temp.newFolder())
+        val previous = AppDiagnostics.store
+        AppDiagnostics.store = store
+        val feature = "agent_session_${"b".repeat(32)}"
+        val scope = AppDiagnostics.enterIntent(feature, newChain = true)
+        val file = File(work, "artifact.zip")
+        val childId: String
+        try {
+            McpTasks(agentFeature = feature, workspaceRoot = work, execute = { task, _ ->
+                task.publish(file.name) { file.writeText("synthetic output") }
+            }).use { tasks ->
+                val result = tasks.submit(listOf(McpCommand(null, "", "", name = "test")), script = false, waitMs = 5000)
+                childId = result.getString("taskId")
+                assertEquals("SUCCESS", result.getString("state"))
+                assertFalse(TaskCenterControls.canCancel(childId))
+            }
+            scope.trace.fail(FailureCode.IO, "Model response failed after publication", notifyUser = false)
+        } finally {
+            AppDiagnostics.leaveIntent(scope)
+            AppDiagnostics.store = previous
+        }
+        try {
+            val entries = store.snapshot(includeOutputs = true).associateBy { it.id }
+            assertEquals("FAILED", entries.getValue(scope.trace.id).status)
+            assertEquals("SUCCESS", entries.getValue(childId).status)
+            for (id in listOf(scope.trace.id, childId)) {
+                assertEquals(listOf(file.absolutePath), entries.getValue(id).outputs)
+            }
+        } finally {
+            store.close()
+        }
+    }
+
     @Test fun concurrentWritesKeepTheFailureAndEveryMessage() {
         val dir = temp.newFolder()
         val store = DiagnosticStore(dir)

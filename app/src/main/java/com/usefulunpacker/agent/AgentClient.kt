@@ -41,6 +41,7 @@ internal fun agentEndpoint(baseUrl: String): URL? {
 
 internal class AgentRequest {
     @Volatile private var cancelled = false
+    internal val cancellationRequested: Boolean get() = cancelled
     private var active: HttpURLConnection? = null
     private var worker: Thread? = null
 
@@ -227,6 +228,7 @@ internal class AgentClient(
         onReasoning: (String) -> Unit = {},
         maxOutputTokens: Int = DEFAULT_AGENT_OUTPUT_TOKENS,
         onUsage: (AgentModelUsage) -> Unit = {},
+        mode: AgentTaskMode = AgentTaskMode.GENERAL,
         onTool: (AgentToolEvent) -> Unit,
     ): String {
         require(maxOutputTokens in AGENT_OUTPUT_TOKEN_RANGE)
@@ -254,7 +256,7 @@ internal class AgentClient(
             messages.put(message("system", "Reference document selected by the user for this request. Read it and apply it where relevant to the user's question within the app's existing permissions.\n\n$referenceText"))
         }
         messages.put(message("user", redact(prompt)))
-        val tools = permission.tools(runtime.skills())
+        val tools = permission.tools(runtime.skills(), mode)
         val schemas = JSONArray(tools.values.map { it.schema })
         var nextCallIndex = 0
         var automaticReferenceUsed = false

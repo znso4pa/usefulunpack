@@ -26,7 +26,17 @@ private const val AGENT_HISTORY_TRIM = 4
 private const val SESSION_SUMMARY_CACHE_LIMIT = 256
 private val SESSION_ID = Regex("[a-f0-9]{32}")
 
-internal data class AgentExchange(val question: String, val answer: String = "")
+internal data class AgentExchange(
+    val question: String, val answer: String = "", val activity: List<AgentActivityRecord> = emptyList(),
+    val changes: List<AgentFileChange> = emptyList(), val changesIncomplete: Boolean = false,
+)
+
+/** A newer change to a path replaces the old clickable receipt, while retaining previous answers. */
+internal fun AgentSession.completeTurn(exchange: AgentExchange): AgentSession {
+    val paths = exchange.changes.map { it.path }.toSet()
+    val earlier = turns.dropLast(1).map { turn -> turn.copy(changes = turn.changes.filterNot { it.path in paths }) }
+    return copy(turns = earlier + exchange)
+}
 
 internal data class AgentSessionSummary(val id: String, val revision: Long, val title: String)
 
@@ -43,13 +53,14 @@ internal data class AgentSession(
     val turns: List<AgentExchange> = emptyList(),
     val customName: String? = null,
     val maxOutputTokens: Int = DEFAULT_AGENT_OUTPUT_TOKENS,
+    val taskMode: AgentTaskMode = AgentTaskMode.GENERAL,
 ) {
     val title: String get() = customName ?: turns.firstOrNull()?.question?.lineSequence()?.firstOrNull().orEmpty().take(70)
     val feature: String get() = "agent_session_$id"
     val summary: AgentSessionSummary get() = AgentSessionSummary(id, revision, title)
 
     fun canCheckEngineLocally(question: String, referenceSelected: Boolean): Boolean =
-        turns.isEmpty() && context.isBlank() && !referenceSelected &&
+        taskMode.includes("DETECT_GAME_ENGINE") && turns.isEmpty() && context.isBlank() && !referenceSelected &&
             question.trim().trimEnd('?', '？', '.', '。').trimEnd().lowercase() in standaloneEngineQuestions
 
     fun withName(name: String): AgentSession = copy(customName = name.lineSequence().joinToString(" ").trim()
@@ -75,7 +86,7 @@ internal data class AgentSession(
         }
         if (turns.isNotEmpty()) {
             return AgentSession(workspace = workspace, context = context, baseUrl = url, model = modelName,
-                maxOutputTokens = outputTokens)
+                maxOutputTokens = outputTokens, taskMode = taskMode)
         }
         return copy(baseUrl = url, model = modelName, maxOutputTokens = outputTokens)
     }
@@ -128,9 +139,17 @@ internal class AgentSessionStore(private val directory: File) {
             .put("c", saved.context)
             .put("u", saved.baseUrl)
             .put("n", saved.model)
-            .put("h", JSONArray(saved.turns.map { JSONArray().put(it.question).put(it.answer) }))
+            .put("h", JSONArray(saved.turns.map { JSONArray().put(it.question).put(it.answer).apply {
+                if (it.activity.isNotEmpty() || it.changes.isNotEmpty() || it.changesIncomplete) {
+                    put(JSONArray(it.activity.take(96).map(AgentActivityRecord::json)))
+                }
+                if (it.changes.isNotEmpty() || it.changesIncomplete) {
+                    put(JSONObject().put("f", JSONArray(it.changes.map(AgentFileChange::json))).put("i", it.changesIncomplete))
+                }
+            } }))
             .put("t", saved.customName)
             .put("b", saved.maxOutputTokens.takeUnless { it == DEFAULT_AGENT_OUTPUT_TOKENS })
+            .put("j", saved.taskMode.name.takeUnless { saved.taskMode == AgentTaskMode.GENERAL })
             .toString().toByteArray(Charsets.UTF_8)
         if (data.size > SESSION_LIMIT) throw IOException("Agent session exceeds the storage limit")
         if (!directory.isDirectory && !directory.mkdirs()) throw IOException("Cannot create Agent session directory")
@@ -186,7 +205,12 @@ internal class AgentSessionStore(private val directory: File) {
         val records = data.getJSONArray("h")
         val turns = List(records.length()) { index ->
             val turn = records.getJSONArray(index)
-            AgentExchange(turn.getString(0), turn.optString(1))
+            val changeData = turn.optJSONObject(3)
+            val changeFiles = changeData?.optJSONArray("f")
+            AgentExchange(turn.getString(0), turn.optString(1), turn.optJSONArray(2)?.let { events ->
+                List(minOf(events.length(), 96)) { AgentActivityRecord.read(events.getJSONObject(it)) }
+            }.orEmpty(), changeFiles?.let { files -> List(minOf(files.length(), 128)) { AgentFileChange.read(files.getJSONObject(it)) } }.orEmpty(),
+                changeData?.optBoolean("i") == true)
         }
         val permission = AgentPermission.entries.firstOrNull { it.name == data.optString("m") }
             ?: AgentPermission.READ_ONLY
@@ -202,6 +226,7 @@ internal class AgentSessionStore(private val directory: File) {
             customName = (data.opt("t") as? String)?.takeIf(String::isNotBlank),
             maxOutputTokens = data.optInt("b", DEFAULT_AGENT_OUTPUT_TOKENS)
                 .takeIf { it in AGENT_OUTPUT_TOKEN_RANGE } ?: DEFAULT_AGENT_OUTPUT_TOKENS,
+            taskMode = AgentTaskMode.entries.firstOrNull { it.name == data.optString("j") } ?: AgentTaskMode.GENERAL,
         )
     }
 

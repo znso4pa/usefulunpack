@@ -14,6 +14,32 @@ import java.net.SocketException
 import kotlin.concurrent.thread
 
 class AgentClientTest {
+    @Test fun taskModesNarrowSchemasAndRejectUnlistedCallsBeforeRuntime() {
+        val runtime = object : AppSkillRuntime {
+            override fun skills() = listOf(AppSkillDefinition("WORKSPACE_LIST", "List", JSONObject()),
+                AppSkillDefinition("DETECT_GAME_ENGINE", "Engine", JSONObject()))
+            override fun invokeSkill(name: String, input: JSONObject): AppSkillResult = error("No call should run")
+        }
+        val requests = java.util.concurrent.LinkedBlockingQueue<JSONObject>()
+        ModelServer { _, body ->
+            requests.add(body)
+            val call = JSONObject().put("id", "denied").put("type", "function").put("function",
+                JSONObject().put("name", "DETECT_GAME_ENGINE").put("arguments", """{"path":"."}"""))
+            val message = if (requests.size == 1) JSONObject().put("tool_calls", JSONArray().put(call))
+                else JSONObject().put("content", "Done")
+            Reply("200 OK", JSONObject().put("choices", JSONArray().put(JSONObject().put("message", message))))
+        }.use { server ->
+            val endpoint = checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/v1"))
+            val result = AgentClient(endpoint, "model", "", AgentRequest())
+                .complete(emptyList(), "Check the workspace", runtime, mode = AgentTaskMode.ARCHIVES,
+                    onTool = {})
+            assertEquals("Done", result)
+            val schemas = requests.remove().getJSONArray("tools")
+            assertEquals(1, schemas.length())
+            assertEquals("WORKSPACE_LIST", schemas.getJSONObject(0).getJSONObject("function").getString("name"))
+            assertTrue(requests.remove().getJSONArray("messages").toString().contains("TOOL_NOT_ALLOWED"))
+        }
+    }
     @Test fun singleFactorWireAcceptanceMatrix() {
         val baseline = WireInput()
         val shortHistory = listOf(AgentClient.message("user", "Preserve script tags"),

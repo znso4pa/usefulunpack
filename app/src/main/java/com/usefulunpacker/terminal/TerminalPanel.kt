@@ -628,6 +628,7 @@ internal class TerminalPanel(private val act: MainActivity) {
             val ok = com.usefulunpacker.observedAttempt("TerminalPanel") {
                 f.parentFile?.mkdirs()
                 if (redir.second) f.appendText(payload) else f.writeText(payload)
+                recordTaskOutput(f)
                 true
             }.getOrDefault(false)
             ec.emit(
@@ -1069,6 +1070,7 @@ internal class TerminalPanel(private val act: MainActivity) {
         },
         // x/c 不加路径时的默认输出位置（单独路径，产品要求）
         defaultOutDir = File(android.os.Environment.getExternalStorageDirectory(), "uu_cli"),
+        onOutput = ::recordTaskOutput,
         // 命令侧拿到 opH/accessors 后注册取消（进度行可点）
         registerCancel = { thunk ->
             val ownerTrace = AppDiagnostics.currentTrace()

@@ -10,7 +10,10 @@ import java.util.concurrent.CancellationException
 enum class FailureCode { IO, INVALID_RESULT, PARTIAL_FAILURE, UNSUPPORTED, CLEANUP, COMMAND, UNEXPECTED, INTERRUPTED }
 
 data class AppFailure(val code: FailureCode, val stage: String, val detail: String, val logId: String)
-data class DiagnosticEntry(val id: String, val feature: String, val text: String, val failed: Boolean, val live: Boolean = true) {
+data class DiagnosticEntry(
+    val id: String, val feature: String, val text: String, val failed: Boolean, val live: Boolean = true,
+    val outputs: List<String> = emptyList(),
+) {
     val status: String get() = Regex("(?m)^\\d+ CHAIN_END chain=${Regex.escape(id)} state=(\\w+)").findAll(text).lastOrNull()
         ?.groupValues?.get(1) ?: if (id == "application") "DIAGNOSTIC" else if (live) "RUNNING" else "UNFINISHED"
     val cleanupFailed: Boolean get() = text.contains("cleanup_failed=true") || text.contains("code=CLEANUP")
@@ -34,15 +37,18 @@ class DiagnosticStore(
     private val retiredAgentSessions = mutableSetOf<String>()
     private var draining = false
 
-    fun append(id: String, stage: String, message: String, failed: Boolean = false) {
+    fun append(id: String, stage: String, message: String, failed: Boolean = false, output: String? = null) {
         require(id.matches(Regex("[A-Za-z0-9_-]+")))
         synchronized(entries) {
             if (stage in retiredAgentSessions) return
             val previous = entries[id]
+            val outputs = previous?.outputs.orEmpty()
+            if (output != null && (output in outputs || outputs.size >= 64)) return
             val combined = (previous?.text ?: "") + "${System.currentTimeMillis()} $message\n"
             val marker = "[earlier diagnostic entries truncated]\n".take(maxChars)
             val text = if (combined.length <= maxChars) combined else marker + combined.takeLast(maxChars - marker.length)
-            entries[id] = DiagnosticEntry(id, stage, text, failed || previous?.failed == true)
+            entries[id] = DiagnosticEntry(id, stage, text, failed || previous?.failed == true,
+                outputs = if (output == null) outputs else outputs + output)
             if (failed && previous?.failed != true) onNewFailure(id, stage)
             while (entries.size > maxFiles) {
                 val expired = entries.keys.first()
@@ -67,8 +73,10 @@ class DiagnosticStore(
             try {
                 if (!directory.isDirectory && !directory.mkdirs()) throw IOException("Cannot create diagnostic directory")
                 File(directory, "${entry.id}.log").writeText("feature=${entry.feature}\nfailed=${entry.failed}\n${entry.text}", Charsets.UTF_8)
+                if (entry.outputs.isNotEmpty()) writeTaskOutputs(directory, entry.id, entry.outputs)
                 val files = directory.listFiles { f -> f.extension == "log" } ?: throw IOException("Cannot list diagnostic directory")
                 files.sortedByDescending { it.lastModified() }.drop(maxFiles).forEach {
+                    deleteTaskOutputs(directory, it.nameWithoutExtension)
                     if (!it.delete() && it.exists()) throw IOException("Cannot rotate diagnostic log")
                 }
                 storageError = null
@@ -87,21 +95,22 @@ class DiagnosticStore(
     }
 
     /** Call from a worker: waits for earlier writes, then reads bounded previews. */
-    fun snapshot(): List<DiagnosticEntry> {
+    fun snapshot(includeOutputs: Boolean = false): List<DiagnosticEntry> {
         try { flush() } catch (e: Exception) { storageFailed(e) }
         val memory = synchronized(entries) { entries.toMap() }
         val disk = try {
-            directory.listFiles { f -> f.extension == "log" }?.sortedByDescending { it.lastModified() }?.take(maxFiles)?.map { f ->
-                readDiskEntry(f)
-            } ?: emptyList()
+            directory.listFiles { f -> f.extension == "log" && f.nameWithoutExtension !in memory }
+                ?.sortedByDescending { it.lastModified() }
+                ?.take(maxFiles - memory.size)
+                ?.map { readDiskEntry(it, includeOutputs) }.orEmpty()
         } catch (e: Exception) {
             storageFailed(e)
             emptyList()
         }
-        return (memory.values.reversed() + disk).distinctBy { it.id }.take(maxFiles)
+        return memory.values.reversed() + disk
     }
 
-    private fun readDiskEntry(file: File): DiagnosticEntry {
+    private fun readDiskEntry(file: File, includeOutputs: Boolean = false): DiagnosticEntry {
         val text = file.inputStream().reader(Charsets.UTF_8).use { reader ->
             val chars = CharArray(maxChars + 256)
             var count = 0
@@ -113,8 +122,14 @@ class DiagnosticStore(
             String(chars, 0, count)
         }
         val first = text.lineSequence().firstOrNull().orEmpty()
+        val outputs = if (includeOutputs) try {
+            readTaskOutputs(directory, file.nameWithoutExtension)
+        } catch (e: IOException) {
+            storageFailed(e, file.nameWithoutExtension)
+            emptyList()
+        } else emptyList()
         return DiagnosticEntry(file.nameWithoutExtension, first.removePrefix("feature=").removePrefix("stage="),
-            text, text.lineSequence().drop(1).firstOrNull() == "failed=true", live = false)
+            text, text.lineSequence().drop(1).firstOrNull() == "failed=true", live = false, outputs = outputs)
     }
 
     /** A restarted client can fetch a single retained chain without reading all logs. */
@@ -145,7 +160,10 @@ class DiagnosticStore(
                         ?: throw IOException("Cannot list diagnostic directory")
                     files.forEach { file ->
                         val header = file.bufferedReader(Charsets.UTF_8).use { it.readLine() }
-                        if (header == "feature=$feature") java.nio.file.Files.deleteIfExists(file.toPath())
+                        if (header == "feature=$feature") {
+                            deleteTaskOutputs(directory, file.nameWithoutExtension)
+                            java.nio.file.Files.deleteIfExists(file.toPath())
+                        }
                     }
                 }
             }
@@ -222,6 +240,10 @@ class OperationTrace internal constructor(
         "[chain=$id seq=$sequence span=$spanId parent=${parentSpan ?: "root"} step=$stage] $it"
     }
     fun note(message: String) { event(safe(message)) }
+    internal fun publishOutput(file: File) {
+        if (chain == null || chain.isEnded() || !file.isAbsolute) return
+        AppDiagnostics.store?.append(id, feature, line("OUTPUT_PUBLISHED"), output = file.absolutePath)
+    }
     /** Typed metadata is trusted: secret redaction must never mutate chain IDs, states or codes. */
     internal fun event(message: String, failed: Boolean = false) { AppDiagnostics.store?.append(id, feature, line(message), failed) }
     fun fail(
@@ -242,6 +264,10 @@ class OperationTrace internal constructor(
     }
     fun cancelled() { chain?.cancel(); event("STEP_END state=CANCELLED elapsed_ms=${(System.nanoTime() - started) / 1_000_000} code=CANCELLED") }
     fun success() = event("STEP_END state=SUCCESS elapsed_ms=${(System.nanoTime() - started) / 1_000_000} code=OK")
+    internal fun rejectForRetry(code: FailureCode, detail: String) = event(
+        "STEP_END state=FAILED elapsed_ms=${(System.nanoTime() - started) / 1_000_000} code=$code retryable=true: ${safe(detail)}",
+        failed = true,
+    )
     fun skipped() = event("STEP_END state=SKIPPED elapsed_ms=${(System.nanoTime() - started) / 1_000_000} code=NOT_APPLICABLE")
     fun retain() { chain?.retain() }
     fun release() { chain?.release() }

@@ -5,6 +5,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class OpSchedulerTest {
+    @Test fun taskCenterCancelDoesNotSignalAnUnownedNativeSlot() {
+        val first = OpScheduler.obtain("zip")
+        val queued = OpScheduler.obtain("zip")
+        try {
+            queued.cancelFromOwner { fail("Queued task must not signal native cancellation") }
+            assertFalse(queued.await())
+            first.release()
+            val next = OpScheduler.obtain("zip")
+            try {
+                first.cancelFromOwner { fail("Released handle must not signal the replacement") }
+                assertTrue(next.isRunning)
+            } finally { next.release() }
+        } finally {
+            queued.requestCancel()
+            first.release()
+        }
+    }
     @Test fun compositeReservesBothLibrariesAndConsumesOnlyOneSlot() {
         val handles = mutableListOf<OpScheduler.OpHandle>()
         fun obtain(label: String, vararg resources: String) = OpScheduler.obtain(label, resources.toSet()).also { handles.add(it) }

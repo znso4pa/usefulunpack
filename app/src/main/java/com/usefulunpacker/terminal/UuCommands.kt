@@ -53,6 +53,7 @@ internal object UuCommands {
         val registerCancel: ((() -> Unit) -> Unit)? = null,
         val scheduleHeadless: Boolean = false,
         val checkCancelled: (() -> Unit)? = null,
+        val onOutput: ((File) -> Unit)? = null,
     ) {
         internal fun reserveArchive(format: String): com.usefulunpacker.archive.OpScheduler.OpHandle? {
             if (activity == null && !scheduleHeadless) return null
@@ -704,6 +705,7 @@ internal object UuCommands {
                 dst.parentFile?.mkdirs()
                 src.copyTo(dst, overwrite = false)
             }
+            ctx.onOutput?.invoke(dst)
             return Result(ctx.text(R.string.cli_copy_done, src.path, dst.path))
         } finally {
             srcTemp?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }  // fN 区间临时 carve 用完即清
@@ -719,6 +721,7 @@ internal object UuCommands {
         val dst = UuText.resolve(ctx.cwd, args[1])
         if (dst.exists()) return Result(ctx.text(R.string.cli_exists, dst.path), 1)
         if (!src.renameTo(dst)) return Result(UuText.failed(ctx.str, args[0]), 1)
+        ctx.onOutput?.invoke(dst)
         return Result(ctx.text(R.string.cli_rename_done, src.name, dst.name))
     }
 
@@ -808,10 +811,7 @@ internal object UuCommands {
             if (extract && handle != null) {
                 val accessors = extractAccessors(format)
                 registerCancel?.invoke {
-                    if (handle.isRunning) {
-                        handle.markCancelRequested()
-                        accessors.cancel()
-                    }
+                    handle.cancelFromOwner(accessors.cancel)
                 }
             }
             return block()
@@ -945,9 +945,7 @@ internal object UuCommands {
                     ?: uniqueFile(defaultOut(ctx), src0.nameWithoutExtension.ifEmpty { "extracted" })
                 val accessors = extractAccessors(fmt)
                 ctx.registerCancel?.invoke {
-                    val running = opH?.isRunning == true
-                    opH?.requestCancel()
-                    if (running) { opH?.markCancelRequested(); cancelled.set(true); accessors.cancel() }
+                    opH?.cancelFromOwner { cancelled.set(true); accessors.cancel() }
                 }
                 val done = AtomicBoolean(false)
                 val poller = if (ctx.progress != null) thread {
@@ -974,6 +972,7 @@ internal object UuCommands {
                               else (o.error ?: "failed")
                     return Result(msg, 1)
                 }
+                ctx.onOutput?.invoke(outDir)
                 // 解压产物可能就在当前窗口的目录里，刷新让用户直接看到。
                 // 必须回 UI 线程：refreshTab→navTab 摸视图，后台线程直接调会抛
                 // CalledFromWrongThreadException（"Main thread (tid 2), calling
@@ -1091,9 +1090,7 @@ internal object UuCommands {
                 if (!ctx.awaitArchive(opH)) return Result(UuText.extractCancelled(ctx.str), 1)
                 val accessors = compressAccessors(fmt)
                 ctx.registerCancel?.invoke {
-                    val running = opH?.isRunning == true
-                    opH?.requestCancel()
-                    if (running) { opH?.markCancelRequested(); cancelled.set(true); accessors.cancel() }
+                    opH?.cancelFromOwner { cancelled.set(true); accessors.cancel() }
                 }
                 val done = AtomicBoolean(false)
                 val poller = if (ctx.progress != null) thread {
@@ -1133,6 +1130,7 @@ internal object UuCommands {
                                 if (batchSplit > 0) batchSplit * 1024 * 1024 else null, enc)
                             if (ok) okCount++ else failCount++
                             if (ok) {
+                                ctx.onOutput?.invoke(packedTaskOutput(outF))
                                 val note = if (enc.isNotEmpty()) encNoteText(ctx.str) else ""
                                 packResultLines.add(ctx.text(R.string.cli_pack_ok, outF.name) +
                                     if (note.isEmpty()) "" else " $note")
@@ -1164,7 +1162,10 @@ internal object UuCommands {
                                     ?: throw IllegalStateException("prefs required"),
                                     if (batchSplit > 0) batchSplit * 1024 * 1024 else null, enc)
                                 if (ok) okCount++ else failCount++
-                                if (ok) packResultLines.add(ctx.text(R.string.cli_pack_ok, outF.name))
+                                if (ok) {
+                                    ctx.onOutput?.invoke(packedTaskOutput(outF))
+                                    packResultLines.add(ctx.text(R.string.cli_pack_ok, outF.name))
+                                }
                             } finally {
                                 wrapDir?.let { com.usefulunpacker.deleteOutputChecked(it, recursive = true) }
                             }
@@ -1243,9 +1244,7 @@ internal object UuCommands {
 
             val accessors = compressAccessors(fmt)
             ctx.registerCancel?.invoke {
-                val running = opH?.isRunning == true
-                opH?.requestCancel()
-                if (running) { opH?.markCancelRequested(); cancelled.set(true); accessors.cancel() }
+                opH?.cancelFromOwner { cancelled.set(true); accessors.cancel() }
             }
             val done = AtomicBoolean(false)
             val poller = if (ctx.progress != null) thread {
@@ -1292,6 +1291,7 @@ internal object UuCommands {
                 applyPost(ctx, outFile, postPipeline)?.let { return it }
                 postNote = "\n" + ctx.text(R.string.cli_post_done, postPipeline.text())
             }
+            ctx.onOutput?.invoke(packedTaskOutput(outFile))
             return Result(ctx.text(R.string.cli_pack_ok, outFile.name) +
                 (if (encNote.isEmpty()) "" else "\n$encNote") + postNote + "\n" +
                 ctx.text(R.string.cli_all_set))
@@ -1769,7 +1769,10 @@ internal object UuCommands {
         var fail = 0
         for (p in args) {
             val f = UuText.resolve(ctx.cwd, p)
-            if (f.isDirectory || f.mkdirs()) ok++ else fail++
+            if (f.isDirectory) ok++ else if (f.mkdirs()) {
+                ctx.onOutput?.invoke(f)
+                ok++
+            } else fail++
         }
         val msg = ctx.text(R.string.cli_mkdir_done, ok.toString())
         return if (fail == 0) Result(msg)
@@ -1794,7 +1797,10 @@ internal object UuCommands {
         if (src.isDirectory && dst.canonicalPath.startsWith(src.canonicalPath + File.separator)) {
             return Result(ctx.text(R.string.cli_failed, dst.path), 1)
         }
-        if (src.renameTo(dst)) return Result(ctx.text(R.string.cli_mv_done, src.name, dst.path))
+        if (src.renameTo(dst)) {
+            ctx.onOutput?.invoke(dst)
+            return Result(ctx.text(R.string.cli_mv_done, src.name, dst.path))
+        }
         try {
             if (src.isDirectory) {
                 if (!src.copyRecursively(dst, overwrite = false)) throw java.io.IOException("Incomplete move copy")
@@ -1805,6 +1811,7 @@ internal object UuCommands {
             return Result(UuText.failed(ctx.str, e.message ?: src.name), 1)
         }
         if (!deleteOutputChecked(src, recursive = src.isDirectory)) return Result(ctx.text(R.string.cli_failed, src.path), 1)
+        ctx.onOutput?.invoke(dst)
         return Result(ctx.text(R.string.cli_mv_done, src.name, dst.path))
     }
 
@@ -2045,9 +2052,7 @@ internal object UuCommands {
             if (!ctx.awaitArchive(opH)) return Result(UuText.extractCancelled(ctx.str), 1)
             var acc = extractAccessors(fmt)
             ctx.registerCancel?.invoke {
-                val running = opH?.isRunning == true
-                opH?.requestCancel()
-                if (running) { cancelled.set(true); acc.cancel() }
+                opH?.cancelFromOwner { cancelled.set(true); acc.cancel() }
             }
             val done = AtomicBoolean(false)
             val poller = if (ctx.progress != null) thread {
@@ -2117,9 +2122,7 @@ internal object UuCommands {
                 { CsoCore.csoProgressName() }, { CsoCore.csoCancel() }
             )
             ctx.registerCancel?.invoke {
-                val running = opH?.isRunning == true
-                opH?.requestCancel()
-                if (running) { cancelled.set(true); acc.cancel() }
+                opH?.cancelFromOwner { cancelled.set(true); acc.cancel() }
             }
             val done = AtomicBoolean(false)
             val poller = if (ctx.progress != null) thread {
@@ -2205,9 +2208,7 @@ internal object UuCommands {
                 { AudioCore.audioProgressName() }, { AudioCore.audioCancel() }
             )
             ctx.registerCancel?.invoke {
-                val running = opH?.isRunning == true
-                opH?.requestCancel()
-                if (running) { cancelled.set(true); acc.cancel() }
+                opH?.cancelFromOwner { cancelled.set(true); acc.cancel() }
             }
 
             for (arg in srcs) {
@@ -2302,9 +2303,7 @@ internal object UuCommands {
                 { VideoCore.videoProgressName() }, { VideoCore.videoCancel() }
             )
             ctx.registerCancel?.invoke {
-                val running = opH?.isRunning == true
-                opH?.requestCancel()
-                if (running) { cancelled.set(true); acc.cancel() }
+                opH?.cancelFromOwner { cancelled.set(true); acc.cancel() }
             }
 
             for (arg in srcs) {

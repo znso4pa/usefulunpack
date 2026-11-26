@@ -37,7 +37,9 @@ internal class DiagnosticsUi(private val activity: MainActivity) {
     }
 }
 
-internal fun MainActivity.showDiagnostics(selectedId: String? = null, feature: String? = null, mcpOnly: Boolean = false) {
+internal fun MainActivity.showDiagnostics(
+    selectedId: String? = null, feature: String? = null, mcpOnly: Boolean = false, ownerTabId: Int? = null,
+) {
     thread {
         val store = AppDiagnostics.store
         val allEntries = store?.snapshot().orEmpty()
@@ -48,7 +50,7 @@ internal fun MainActivity.showDiagnostics(selectedId: String? = null, feature: S
         runFeatureOnUiThread {
             if (isFinishing || isDestroyed) return@runFeatureOnUiThread
             val selected = entries.firstOrNull { it.id == selectedId }
-            if (selected != null) showDiagnosticEntry(selected)
+            if (selected != null) showDiagnosticEntry(selected, ownerTabId)
             else UuDialogBuilder(this)
                 .setTitle(getString(R.string.diagnostics_title) + if (feature == null) "" else " · $feature")
                 .setMessage(when {
@@ -70,7 +72,7 @@ internal fun MainActivity.showDiagnostics(selectedId: String? = null, feature: S
     }
 }
 
-private fun MainActivity.showDiagnosticEntry(entry: DiagnosticEntry) {
+private fun MainActivity.showDiagnosticEntry(entry: DiagnosticEntry, ownerTabId: Int? = null) {
     val text = TextView(this).apply {
         text = entry.text + if (AppDiagnostics.store?.storageError != null) "\n${getString(R.string.diagnostics_storage_failed)}" else ""
         setTextIsSelectable(true)
@@ -99,5 +101,9 @@ private fun MainActivity.showDiagnosticEntry(entry: DiagnosticEntry) {
             }
             }
         }
-        .setNegativeButton(R.string.action_close, null).show().also { it.belowTabs(fitContent = true) }
+        .setNegativeButton(R.string.action_close, null).create().also {
+            rootDialogToTab(it, ownerTabId)
+            it.belowTabs(fitContent = true)
+            it.show()
+        }
 }

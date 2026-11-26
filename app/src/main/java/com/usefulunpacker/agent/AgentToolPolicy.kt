@@ -7,10 +7,22 @@ import org.json.JSONObject
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 
+/** A session's task mode narrows the tool list after permission checks. */
+internal enum class AgentTaskMode(val labelId: Int, private val names: Set<String>? = null) {
+    GENERAL(R.string.agent_mode_general),
+    LOOKUP(R.string.agent_mode_lookup, setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "DETECT_GAME_ENGINE", "SCAN")),
+    ARCHIVES(R.string.agent_mode_archives, setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "SCAN", "EXTRACT", "COMPRESS")),
+    LOCALIZATION(R.string.agent_mode_localization, setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "DETECT_GAME_ENGINE",
+        "VN_INSPECT", "REFERENCE_SEARCH", "REFERENCE_READ", "WRITE_TEXT", "EXTRACT", "COMPRESS")),
+    SCRIPTS(R.string.agent_mode_scripts, setOf("WORKSPACE_LIST", "REFERENCE_SEARCH", "REFERENCE_READ", "RUN_UU", "RUN_UUT"));
+
+    fun includes(name: String) = names == null || name in names
+}
+
 internal enum class AgentPermission {
     READ_ONLY, ARCHIVES, EDIT_FILES, FULL_LOCAL;
 
-    fun tools(skills: List<AppSkillDefinition>): Map<String, AgentTool> {
+    fun tools(skills: List<AppSkillDefinition>, mode: AgentTaskMode = AgentTaskMode.GENERAL): Map<String, AgentTool> {
         val registered = skills.associateBy { it.name }
         val tools = AgentReadTool.entries.filter { it.name in registered }.map { read ->
             AgentTool(read.name, read.schema(), read = read)
@@ -29,7 +41,7 @@ internal enum class AgentPermission {
             add(tools, registered, "RUN_UU", setOf("argv"))
             add(tools, registered, "RUN_UUT", setOf("script", "args"), required = setOf("script"))
         }
-        return tools.associateBy { it.name }
+        return tools.filter { mode.includes(it.name) }.associateBy { it.name }
     }
 
     private fun add(

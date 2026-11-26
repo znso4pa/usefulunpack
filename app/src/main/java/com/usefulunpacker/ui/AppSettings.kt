@@ -346,6 +346,7 @@ internal fun MainActivity.settings() {
         R.string.settings_compress to { showCompressionSettings() },
         R.string.disk_usage to { showFolderPicker(this, android.os.Environment.getExternalStorageDirectory()) { showDiskUsage(it) } },
         R.string.settings_other to { showOtherSettings() },
+        R.string.task_center_title to { showTaskCenter() },
         R.string.diagnostics_title to { showDiagnostics() },
         R.string.components_title to { showComponentCatalog() },
         R.string.mcp_title to { showLocalMcp() },

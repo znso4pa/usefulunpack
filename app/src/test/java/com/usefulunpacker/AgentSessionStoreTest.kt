@@ -9,6 +9,42 @@ import java.io.IOException
 class AgentSessionStoreTest {
     @get:Rule val tmp = TemporaryFolder()
 
+    @Test fun activityHistoryRestoresChronologyWithoutEnteringModelHistory() {
+        val history = AgentActivityHistory()
+        history.reasoning("Inspect the local folder")
+        history.tool(AgentToolEvent(0, "WORKSPACE_LIST", "."))
+        history.tool(AgentToolEvent(0, "WORKSPACE_LIST", ".", stage = AgentToolStage.SUCCESS, resultCount = 2))
+        history.reasoning("Enough evidence")
+        history.usage(AgentModelUsage(100, 30, null, 20, 42))
+        val turn = AgentExchange("Inspect", "Done", history.snapshot())
+        val directory = tmp.newFolder()
+        val saved = AgentSessionStore(directory).save(AgentSession(turns = listOf(turn)))
+        val restored = AgentSessionStore(directory).open(saved.id)
+        assertEquals(turn, restored.turns.single())
+        assertEquals(4, turn.activity.size)
+        assertEquals(AgentToolStage.SUCCESS, turn.activity[1].tool?.stage)
+        assertEquals(listOf("Inspect", "Done"), restored.historyWindow().flatMap { listOf(it.question, it.answer) })
+    }
+
+    @Test fun legacyTwoFieldExchangeStillLoadsWithEmptyActivity() {
+        val directory = tmp.newFolder()
+        val store = AgentSessionStore(directory)
+        val saved = store.save(AgentSession(turns = listOf(AgentExchange("Earlier", "Answer"))))
+        val file = directory.resolve("${saved.id}.gz")
+        val json = java.util.zip.GZIPInputStream(file.inputStream()).bufferedReader().use { org.json.JSONObject(it.readText()) }
+        assertEquals(2, json.getJSONArray("h").getJSONArray(0).length())
+        assertEquals(emptyList<AgentActivityRecord>(), AgentSessionStore(directory).open(saved.id).turns.single().activity)
+    }
+
+    @Test fun taskModeIsSavedPerSessionAndDefaultsToGeneral() {
+        val store = AgentSessionStore(tmp.newFolder())
+        val legacy = store.save(AgentSession())
+        val scoped = store.save(AgentSession(taskMode = AgentTaskMode.ARCHIVES))
+        assertEquals(AgentTaskMode.GENERAL, store.open(legacy.id).taskMode)
+        assertEquals(AgentTaskMode.ARCHIVES, store.open(scoped.id).taskMode)
+        assertFalse(store.open(scoped.id).canCheckEngineLocally("What engine does this game use?", false))
+    }
+
     @Test fun engineQuestionRoutesLocallyOnlyWithUnambiguousNewSessionInputs() {
         val question = "What engine does this game use?"
         val fresh = AgentSession()

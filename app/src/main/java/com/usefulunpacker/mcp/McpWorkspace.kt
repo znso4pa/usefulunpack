@@ -41,7 +41,7 @@ internal fun openMcpWorkspace(sharedStorage: File, selected: File?): McpWorkspac
 }
 
 /** Workspace paths are relative to the directory the user selected for this session. */
-internal class McpWorkspace(directory: File) {
+internal class McpWorkspace(directory: File, private val onResolve: ((File) -> Unit)? = null) {
     val root: File = directory.canonicalFile.also { require(it.isDirectory) }
 
     fun resolve(path: String, allowRoot: Boolean = false): File {
@@ -59,6 +59,7 @@ internal class McpWorkspace(directory: File) {
                 throw mcpInputError("Symbolic links are outside the supported workspace")
             }
         }
+        onResolve?.invoke(file)
         return file
     }
 
@@ -93,6 +94,7 @@ internal class McpWorkspace(directory: File) {
                 throw mcpInputError("Symbolic links are outside the supported workspace")
             }
         }
+        onResolve?.invoke(file)
         return file
     }
 

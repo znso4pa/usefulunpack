@@ -316,6 +316,7 @@ class PollingProgressDialog(
     private var card: OpOverlay.Card? = null
     private val titleText = title
     private var handleRef: OpScheduler.OpHandle? = queuedHandle
+    private var taskControl: AutoCloseable? = null
 
     /** Routes a UI update onto the card (no-op when headless/gone). */
     private fun postUi(update: (OpOverlay.Card) -> Unit) {
@@ -327,62 +328,80 @@ class PollingProgressDialog(
     }
 
     fun start() {
-        card = OpOverlay.addCard(activity, titleText, cancelLabel, {
+        val cancel = {
             stopped = true
             cancelQueuedThenNotify()
             dismiss()
-        }, ownerTab?.tabId)
+        }
+        card = OpOverlay.addCard(activity, titleText, cancelLabel, cancel, ownerTab?.tabId)
+        val trace = AppDiagnostics.currentTrace()
+        val handle = handleRef
+        val control = if (trace != null && handle != null && cancelLabel != null) {
+            TaskCenterControls.register(trace.id, state = {
+                when {
+                    handle.cancelRequested -> "CANCELLING"
+                    handle.isRunning -> "RUNNING"
+                    handle.position() > 0 -> "QUEUED"
+                    else -> null
+                }
+            }, cancel = cancel)
+        } else null
+        taskControl = control
         thread {
-            var last = 0L
-            var lastQueueLabel: String? = null
-            while (!stopped) {
-                Thread.sleep(200)
-                // Activity 已销毁时的自救退出：调用方的完成回调按项目不变量是
-                // 「守卫在前、dismiss 在后」，守卫 return 会跳过 dismiss()——不
-                // 在这里退出的话，200ms 轮询线程会持有死 Activity 永远空转。
-                if (activity.isFinishing || activity.isDestroyed) break
-                // Queued phase: the format statics belong to whoever ran last —
-                // show live position/ETA until this op actually starts.
-                val q = handleRef
-                if (q != null && !q.isRunning) {
-                    val label = queuedLabelText(q)
-                    if (label != lastQueueLabel || last != -1L) {
-                        lastQueueLabel = label
-                        last = -1L
+            try {
+                var last = 0L
+                var lastQueueLabel: String? = null
+                while (!stopped) {
+                    Thread.sleep(200)
+                    // Activity 已销毁时的自救退出：调用方的完成回调按项目不变量是
+                    // 「守卫在前、dismiss 在后」，守卫 return 会跳过 dismiss()——不
+                    // 在这里退出的话，200ms 轮询线程会持有死 Activity 永远空转。
+                    if (activity.isFinishing || activity.isDestroyed) break
+                    // Queued phase: the format statics belong to whoever ran last —
+                    // show live position/ETA until this op actually starts.
+                    val q = handleRef
+                    if (q != null && !q.isRunning) {
+                        val label = queuedLabelText(q)
+                        if (label != lastQueueLabel || last != -1L) {
+                            lastQueueLabel = label
+                            last = -1L
+                            postUi { c ->
+                                c.overallBar.isIndeterminate = true
+                                c.overallText.text = ""
+                                c.fileBar.visibility = View.GONE
+                                c.fileText.visibility = View.GONE
+                                c.msg.text = label
+                            }
+                        }
+                        continue
+                    }
+                    if (last == -1L) {
+                        // Just left the queued phase — restore both bars.
                         postUi { c ->
-                            c.overallBar.isIndeterminate = true
-                            c.overallText.text = ""
-                            c.fileBar.visibility = View.GONE
-                            c.fileText.visibility = View.GONE
-                            c.msg.text = label
+                            c.fileBar.visibility = View.VISIBLE
+                            c.fileText.visibility = View.VISIBLE
                         }
                     }
-                    continue
-                }
-                if (last == -1L) {
-                    // Just left the queued phase — restore both bars.
-                    postUi { c ->
-                        c.fileBar.visibility = View.VISIBLE
-                        c.fileText.visibility = View.VISIBLE
+                    val cur = accessors.getCount()
+                    val tot = accessors.getTotal()
+                    val fc = accessors.getFileCount()
+                    val ft = accessors.getFileTotal()
+                    val name = accessors.getName() ?: ""
+                    if (cur < last) last = 0
+                    if (cur != last) {
+                        last = cur
+                        postUi { c ->
+                            c.overallBar.max = 100
+                            c.overallBar.isIndeterminate = tot <= 0
+                            c.overallBar.progress = if (tot > 0) (cur * 100 / tot).coerceAtMost(100).toInt() else 0
+                            c.overallText.text = if (tot > 0) "${fmt(cur)} / ${fmt(tot)}" else fmt(cur)
+                            c.msg.text = if (name.isNotEmpty()) messageFn(name, cur, tot) else titleText
+                            updateFileBar(c, fc, ft, name)
+                        }
                     }
                 }
-                val cur = accessors.getCount()
-                val tot = accessors.getTotal()
-                val fc = accessors.getFileCount()
-                val ft = accessors.getFileTotal()
-                val name = accessors.getName() ?: ""
-                if (cur < last) last = 0
-                if (cur != last) {
-                    last = cur
-                    postUi { c ->
-                        c.overallBar.max = 100
-                        c.overallBar.isIndeterminate = tot <= 0
-                        c.overallBar.progress = if (tot > 0) (cur * 100 / tot).coerceAtMost(100).toInt() else 0
-                        c.overallText.text = if (tot > 0) "${fmt(cur)} / ${fmt(tot)}" else fmt(cur)
-                        c.msg.text = if (name.isNotEmpty()) messageFn(name, cur, tot) else titleText
-                        updateFileBar(c, fc, ft, name)
-                    }
-                }
+            } finally {
+                control?.close()
             }
         }
     }
@@ -399,10 +418,7 @@ class PollingProgressDialog(
             onCancel()
             return
         }
-        val wasRunning = q.isRunning
-        q.requestCancel() // no-op once running; dequeues while queued
-        // Promotion may land between the read and the dequeue attempt.
-        if (wasRunning || q.isRunning) { q.markCancelRequested(); onCancel() }
+        q.cancelFromOwner(onCancel)
     }
 
     /** "⏳ 排队中 第N位" (+ ETA when duration history exists for this format). */
@@ -434,6 +450,8 @@ class PollingProgressDialog(
 
     fun dismiss() {
         stopped = true
+        taskControl?.close()
+        taskControl = null
         val c = card
         card = null
         if (c != null) OpOverlay.removeCard(activity, c)

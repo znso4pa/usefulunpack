@@ -57,6 +57,7 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                     var result: ExtractOutcome? = null
                     try {
                         result = doExtract(pwd)
+                        if (result.counts.ok && !cancelled) recordTaskOutput(destFile)
                     } finally {
                         opH.release()
                     }
@@ -102,6 +103,7 @@ internal fun MainActivity.extractAll(destFile: File, src: File, format: String, 
                                         if (!opH2.await()) return@thread
                                         try {
                                             val result2 = doExtract(pwd2)
+                                            if (result2.counts.ok && !cancelled2) recordTaskOutput(destFile)
                                             runFeatureOnUiThread {
                                                 if (isFinishing || isDestroyed) return@runFeatureOnUiThread
                                                 prog2.dismiss()

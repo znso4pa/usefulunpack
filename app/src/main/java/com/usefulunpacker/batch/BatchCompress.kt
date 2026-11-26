@@ -100,6 +100,7 @@ internal fun MainActivity.compressMerged(items: List<File>) {
                                 // clears the cancel flag on entry, so honor the
                                 // Kotlin-side flag here instead.
                                 val ok = if (cancelled) false else compressDispatch(tmpDir, outF, fmt, level, password, prefs, chosenSplit, xp3Enc)
+                                if (ok && !cancelled) recordPackedTaskOutput(outF)
                                 com.usefulunpacker.deleteOutputChecked(tmpDir, recursive = true)
                                 // 失败/取消必须清掉半成品：产物名可能是 root.pfs，
                                 // 留个截断的 root.pfs 会被游戏当分层补丁挂载。
@@ -218,6 +219,7 @@ internal fun MainActivity.compressSeparate(items: List<File>) {
                                 result
                             }
                             if (!ok2) { com.usefulunpacker.deleteOutputChecked(outF); ok = false; break }
+                            if (!cancelled) recordPackedTaskOutput(outF)
                         }
                         runFeatureOnUiThread {
                             if (isFinishing || isDestroyed) return@runFeatureOnUiThread

@@ -68,7 +68,8 @@ internal class LineEditDocument(private val source: String) {
     }
 
     companion object {
-        private val protected = Regex("""\\\\|\\[nr]|\{[A-Za-z_][\w.]*}""")
+        // Android ICU requires both literal braces to be escaped; the host JDK accepts a bare closing brace.
+        private val protected = Regex("""\\\\|\\[nr]|\{[A-Za-z_][\w.]*\}""")
         private fun markers(text: String) = protected.findAll(text).map { it.value }.sorted().toList()
     }
 }

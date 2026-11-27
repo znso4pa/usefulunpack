@@ -45,7 +45,7 @@ internal class WorkspaceSkillRuntime(
     ): AppSkillResult {
         val agentTrace = AppDiagnostics.currentTrace()?.takeIf { it.feature.startsWith("agent_session_") }
         val scope = if (agentTrace == null && tool in setOf(Tool.ARCHIVE_LIST, Tool.SCAN, Tool.DETECT_GAME_ENGINE,
-                Tool.VN_INSPECT, Tool.LOCALIZATION_CHECK, Tool.INSPECT_FILE, Tool.WRITE)) {
+                Tool.VN_INSPECT, Tool.LOCALIZATION_CHECK, Tool.COMPARE_DIRECTORY, Tool.INSPECT_FILE, Tool.WRITE)) {
             val password = args.opt("password") as? String
             AppDiagnostics.enterIntent("mcp_$stage", secrets = listOfNotNull(password), newChain = true)
         } else null
@@ -116,6 +116,17 @@ internal class WorkspaceSkillRuntime(
         fun argument(key: String = tool.key): String = args.opt(key) as? String
             ?: throw McpInputException("Expected string argument $key")
         return when (tool) {
+            Tool.COMPARE_DIRECTORY -> {
+                val after = if (args.has("after")) argument("after") else ""
+                val offset = if (after.isEmpty()) 0 else after.toIntOrNull()?.takeIf { it in 0..2000 }
+                    ?: throw mcpInputError("Invalid comparison cursor")
+                val limit = if (args.has("limit")) intArgument(args, "limit", 1, 50) else 20
+                val report = DirectoryComparator.compare(workspace.resolve(argument(), allowRoot = true),
+                    workspace.resolve(argument("target"), allowRoot = true), maxReadBytes = 128L * 1024 * 1024, maxDurationMs = 5000)
+                if (!report.complete) AppDiagnostics.begin("directory_compare").fail(FailureCode.PARTIAL_FAILURE,
+                    "Directory comparison incomplete", notifyUser = false)
+                report.json(offset, limit)
+            }
             Tool.COMPRESS -> submitArchive(
                 McpCommand.Action.PACK, argument("source"), argument("output"), args,
             )
@@ -186,7 +197,7 @@ internal class WorkspaceSkillRuntime(
                         "Positional args: \$1..\$n, \$argc, \$args; last exit code: \$? / \$errorlevel",
                         "Chaining: cmd1 && cmd2 | cmd1 || cmd2 | cmd1 ; cmd2",
                         "Pipes & redirection: cmd | grep/head/tail/wc/sort > file.txt (or >> file.txt)",
-                        "Allowed script commands: uu <any of 39 subcommands | run>, ls, cd, pwd, help, echo",
+                        "Allowed script commands: uu <any registered subcommand | run>, ls, cd, pwd, help, echo",
                     )))
                     .put("scriptRules", "Use .uut scripts for multi-step archive/localization workflows. Pass a workspace .uut path or inline script text to validate_uut and run_uut.")
             }

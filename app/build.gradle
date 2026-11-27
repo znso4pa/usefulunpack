@@ -78,6 +78,14 @@ android {
         }
     }
 
+    if (providers.gradleProperty('inspectionSmoke').isPresent()) {
+        testBuildType 'release'
+        defaultConfig {
+            testApplicationId "com.usefulunpacker.inspectionsmoke.test"
+            testInstrumentationRunner "com.usefulunpacker.InspectionSmokeInstrumentation"
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17

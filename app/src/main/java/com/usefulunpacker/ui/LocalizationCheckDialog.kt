@@ -13,9 +13,9 @@ import java.io.File
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 
-internal fun showLocalizationCheck(activity: AppCompatActivity, source: File) {
+internal fun showLocalizationCheck(activity: AppCompatActivity, source: File, translation: File? = null) {
     val scope = AppDiagnostics.enterIntent("localization_check", newChain = true)
-    try { LocalizationCheckDialog(activity, source).show() }
+    try { LocalizationCheckDialog(activity, source, translation).show() }
     catch (e: Exception) {
         scope.trace.fail(FailureCode.UNEXPECTED, "Cannot open localization check (${e.javaClass.simpleName})")
         UuNotice.failure(activity, activity.getString(R.string.localization_failed), Toast.LENGTH_LONG).show()
@@ -23,9 +23,9 @@ internal fun showLocalizationCheck(activity: AppCompatActivity, source: File) {
 }
 
 /** One tab-owned sheet switches between setup and a bounded finding list. Files are never changed. */
-private class LocalizationCheckDialog(private val activity: AppCompatActivity, source: File) {
+private class LocalizationCheckDialog(private val activity: AppCompatActivity, source: File, translation: File?) {
     private var original = source
-    private var translated: File? = null
+    private var translated: File? = translation
     private var sourceEncoding = "auto"
     private var translationEncoding = "auto"
     private var targetEncoding = "translation"

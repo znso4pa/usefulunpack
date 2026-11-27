@@ -12,6 +12,7 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 
 | Feature | Description |
 |---------|-------------|
+| **Directory comparison / UU checks** | Long-press a folder → Compare with another directory. Read-only byte comparison, filtered changes and in-window text differences. Shared `COMPARE_DIRECTORY`, `uu dircmp` / `uu check`, and UUT support. [Rules and exits](docs/directory-comparison.md). |
 | **Localization check** | Text preview → Localization check. Conservative, local, read-only encoding checks; opt-in Python format-field / POSIX printf argument rules for confirmed matching lines. Coverage and paged metadata are shared with Agent/MCP. [Rules and limits](docs/localization-check.md). |
 | **Diagnostics and shared controls** | Settings → Logs and diagnostics / UI components. Operations share a short chain ID across UI and local logs; cancellation and cleanup failures remain visible. Logs are shared only on request. |
 | 📁 **XP3** | Pack & unpack Kirikiri `.xp3` archives; **cxdec content filter** (classic) detected, shown (preview title / scan / `uu l`) and written back — repacking a cxdec game keeps its encryption |

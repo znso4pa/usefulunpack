@@ -10,10 +10,10 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 /** A session's task mode narrows the tool list after permission checks. */
 internal enum class AgentTaskMode(val labelId: Int, private val names: Set<String>? = null) {
     GENERAL(R.string.agent_mode_general),
-    LOOKUP(R.string.agent_mode_lookup, setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "DETECT_GAME_ENGINE", "SCAN")),
+    LOOKUP(R.string.agent_mode_lookup, setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "DETECT_GAME_ENGINE", "SCAN", "COMPARE_DIRECTORY")),
     ARCHIVES(R.string.agent_mode_archives, setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "SCAN", "EXTRACT", "COMPRESS")),
     LOCALIZATION(R.string.agent_mode_localization, setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "DETECT_GAME_ENGINE",
-        "VN_INSPECT", "LOCALIZATION_CHECK", "REFERENCE_SEARCH", "REFERENCE_READ", "WRITE_TEXT", "EXTRACT", "COMPRESS")),
+        "VN_INSPECT", "LOCALIZATION_CHECK", "COMPARE_DIRECTORY", "REFERENCE_SEARCH", "REFERENCE_READ", "WRITE_TEXT", "EXTRACT", "COMPRESS")),
     SCRIPTS(R.string.agent_mode_scripts, setOf("WORKSPACE_LIST", "REFERENCE_SEARCH", "REFERENCE_READ", "RUN_UU", "RUN_UUT"));
 
     fun includes(name: String) = names == null || name in names

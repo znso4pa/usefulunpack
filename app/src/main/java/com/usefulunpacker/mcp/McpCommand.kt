@@ -3,7 +3,7 @@ package com.usefulunpacker
 
 /**
  * Represents a validated MCP `uu` command or top-level `.uut` statement.
- * Supports all 39 `uu` commands in [UuCommands] plus `uu run` and full `.uut` scripts,
+ * Supports all registered `uu` commands in [UuCommands] plus `uu run` and full `.uut` scripts,
  * while never allowing arbitrary system shell execution.
  */
 internal data class McpCommand(
@@ -191,6 +191,8 @@ internal data class McpCommand(
             "cmp" -> setOf("-n")
             "strings" -> setOf("-e", "-n")
             "img" -> setOf("-o", "-q")
+            "dircmp" -> INSPECTION_VALUE_FLAGS.toSet()
+            "check" -> LOCALIZATION_VALUE_FLAGS.toSet()
             else -> emptySet()
         }
 
@@ -205,12 +207,13 @@ internal data class McpCommand(
             "sed" -> setOf("-i", "--bytes")
             "b64" -> setOf("-d")
             "run" -> setOf("-k")
+            "dircmp", "check" -> setOf("-j")
             else -> emptySet()
         }
 
         private fun minPositionalOf(cmdName: String): Int = when (cmdName) {
             "fmt", "help", "docs", "tree", "fd" -> 0
-            "grep", "cp", "mv", "rn", "audio", "rmd", "add", "diff", "dd", "cmp", "tr", "img" -> 2
+            "grep", "cp", "mv", "rn", "audio", "rmd", "add", "diff", "dd", "cmp", "tr", "img", "dircmp", "check" -> 2
             "set", "enc", "sed" -> 3
             else -> 1
         }
@@ -277,6 +280,7 @@ internal data class McpCommand(
                     listOfNotNull(pos.getOrNull(0), pos.getOrNull(1))
                 }
                 "rmd" -> listOfNotNull(pos.firstOrNull())
+                "dircmp", "check" -> pos.take(2)
                 "enc" -> listOfNotNull(pos.getOrNull(0), pos.getOrNull(3))
                 "sed" -> pos.drop(2)
                 "dd" -> pos.mapNotNull {
@@ -445,7 +449,7 @@ internal data class McpCommand(
                                     ?: throw McpInputException("Line $lineNo: expected a uu subcommand")
                                 if (!sub.startsWith('$')) {
                                     if (!UuCommands.isKnownCommand(sub)) {
-                                        throw McpInputException("Line $lineNo: unknown uu command '$sub' (call command_help for all 39 uu commands)")
+                                        throw McpInputException("Line $lineNo: unknown uu command '$sub' (call command_help for all registered uu commands)")
                                     }
                                     try {
                                         secrets.addAll(extractSecrets(sub, stage.drop(2)))

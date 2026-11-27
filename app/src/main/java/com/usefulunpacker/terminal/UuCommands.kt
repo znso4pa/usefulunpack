@@ -97,7 +97,7 @@ internal object UuCommands {
     internal enum class Kind {
         LIST_FORMATS, HELP, DOCS, INFO, LIST, CAT, HASH, GREP, COPY, MV, RENAME, RM, MKDIR,
         TREE, DU, STAT, EXTRACT, PACK, SET, SCAN, CSO, AUDIO, VIDEO,
-        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, DD, CMP, STRINGS, SED, TR, GUESS, IMG, FD, B64
+        ENC, MVDEC, RMD, ADD, FIND, DIFF, HEX, DD, CMP, STRINGS, SED, TR, GUESS, IMG, FD, B64, DIRCMP, CHECK
     }
 
     internal class Cmd(val name: String, val kind: Kind, val summary: String, val usage: String)
@@ -149,6 +149,8 @@ internal object UuCommands {
         Cmd("add",    Kind.ADD,          "Add a file to a ZIP (name-cn copy)",             "uu add <zip> <local> [name] [-p pw]"),
         Cmd("find",   Kind.FIND,         "Find files by name under a folder",              "uu find [dir] <glob> [depth]"),
         Cmd("diff",   Kind.DIFF,         "Compare entry lists of two archives (size-based)", "uu diff <a> <b> [-p pw]"),
+        Cmd("dircmp", Kind.DIRCMP, "Read-only directory comparison by relative path and actual bytes", "uu dircmp <source> <target> [-j] [--after N] [--limit N]"),
+        Cmd("check", Kind.CHECK, "Local translation checks; optional confirmed named/printf grammar", "uu check <source> <translation> [-j] [--profile name] [options]"),
         Cmd("hex",    Kind.HEX,          "Hex dump a byte range",                         "uu hex <file> [offset] [len]"),
         Cmd("dd",     Kind.DD,           "Copy a byte range, or splice one into a file",  "uu dd if=<src> of=<dst> [skip=N] [count=N] [seek=N] [-f]"),
         Cmd("cmp",    Kind.CMP,          "Compare two files byte by byte",                "uu cmp <a> <b> [-l] [-s] [-n N]"),
@@ -176,7 +178,7 @@ internal object UuCommands {
         val trace = AppDiagnostics.begin("command", secrets)
         val result = AppDiagnostics.withTrace(trace) { dispatchCommand(argv, ctx) }
         // A missing interactive argument requests a picker; comparisons use exit 1 for differences.
-        val failure = if (result.exitCode != 0 && result.picker == null && !(result.exitCode == 1 && name in setOf("cmp", "diff")))
+        val failure = if (result.exitCode != 0 && result.picker == null && !(result.exitCode == 1 && name in setOf("cmp", "diff", "dircmp", "check")))
             trace.fail(FailureCode.COMMAND, "Command exit=${result.exitCode}") else null
         trace.note("exit=${result.exitCode}")
         return Result(result.text, result.exitCode, result.picker, failure)
@@ -224,6 +226,8 @@ internal object UuCommands {
                 Kind.ADD -> add(args, ctx)
                 Kind.FIND -> find(args, ctx)
                 Kind.DIFF -> diff(args, ctx)
+                Kind.DIRCMP -> inspect(args, ctx, localization = false)
+                Kind.CHECK -> inspect(args, ctx, localization = true)
                 Kind.HEX -> hex(args, ctx)
                 Kind.DD -> dd(args, ctx)
                 Kind.CMP -> cmp(args, ctx)
@@ -314,7 +318,13 @@ internal object UuCommands {
             "-e <enc>      " to "source text encoding (uu cat) · ascii | utf16le (uu strings)",
             "-o <dir>      " to "output directory (uu x / mvdec / img; for uu x the entries then follow unambiguously)",
             "-i            " to "case-insensitive search (uu grep) · edit the file in place (uu sed)",
-            "-j            " to "raw entry JSON for scripts (uu l): n/s/d/e keys",
+            "-j            " to "raw entry JSON (uu l): n/s/d/e; structured reports (uu dircmp / check)",
+            "--after <N>   " to "issue/change cursor returned by the previous report (uu dircmp / check)",
+            "--limit <N>   " to "report page size 1-50, default 20 (uu dircmp / check)",
+            "--profile <name> " to "encoding (default), named or printf; confirm grammar and line correspondence (uu check)",
+            "--source-encoding <ENC> " to "source read encoding, default auto (BOM or valid UTF-8 only; uu check)",
+            "--translation-encoding <ENC> " to "translation read encoding, default auto (uu check)",
+            "--target-encoding <ENC> " to "required output charset, default translation; source or UTF-8/SHIFT-JIS/CP932/GBK/GB18030/UTF-16/UTF-16LE/UTF-16BE (uu check)",
             "-t            " to "tree view (uu l)",
             "-S            " to "sort by size (uu l)",
             "-n <N>        " to "compare only the first N bytes (uu cmp) · print at most N strings (uu strings) · list the N biggest files (uu du)",

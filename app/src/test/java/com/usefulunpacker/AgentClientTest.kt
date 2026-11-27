@@ -736,6 +736,40 @@ class AgentClientTest {
         }
     }
 
+    @Test fun partialDirectoryComparisonsKeepTheirCoverageAndPathsInTheModelReply() {
+        val runtime = object : AppSkillRuntime {
+            override fun skills() = listOf(AppSkillDefinition("COMPARE_DIRECTORY", "Compare", JSONObject()))
+            override fun invokeSkill(name: String, input: JSONObject): AppSkillResult {
+                assertEquals("COMPARE_DIRECTORY", name)
+                return AppSkillResult(JSONObject().put("status", "INCOMPLETE").put("complete", false)
+                    .put("errorCode", "PARTIAL_FAILURE").put("logId", "synthetic-log")
+                    .put("entries", JSONArray().put(JSONObject().put("path", "large.bin")
+                        .put("state", "SKIPPED").put("reason", "SCAN_BUDGET"))))
+            }
+        }
+        var round = 0
+        var payload: JSONObject? = null
+        val events = mutableListOf<AgentToolEvent>()
+        ModelServer { _, body ->
+            val message = if (round++ == 0) JSONObject().put("tool_calls", JSONArray().put(JSONObject()
+                .put("id", "compare-1").put("type", "function").put("function", JSONObject()
+                    .put("name", "COMPARE_DIRECTORY").put("arguments", """{"source":"a","target":"b"}"""))))
+            else {
+                val messages = body.getJSONArray("messages")
+                payload = JSONObject(messages.getJSONObject(messages.length() - 1).getString("content"))
+                JSONObject().put("content", "Incomplete comparison")
+            }
+            Reply("200 OK", JSONObject().put("choices", JSONArray().put(JSONObject().put("message", message))))
+        }.use { server ->
+            AgentClient(checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/v1")), "model", "", AgentRequest())
+                .complete(emptyList(), "Compare directories", runtime, mode = AgentTaskMode.LOOKUP, onTool = events::add)
+        }
+        assertEquals("INCOMPLETE", payload!!.getString("status"))
+        assertFalse(payload!!.getBoolean("complete"))
+        assertEquals("large.bin", payload!!.getJSONArray("entries").getJSONObject(0).getString("path"))
+        assertTrue(events.any { it.failure == "PARTIAL_FAILURE" })
+    }
+
     private data class Reply(val status: String, val body: JSONObject? = null, val location: String? = null)
 
     private class ModelServer(reply: (String, JSONObject) -> Reply) : AutoCloseable {

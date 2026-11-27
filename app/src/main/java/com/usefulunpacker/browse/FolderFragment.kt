@@ -210,6 +210,7 @@ class FolderFragment : Fragment() {
             }
             items += act.getString(R.string.action_delete) to { act.confirmDeleteSingle(tab, f) }
             items += act.getString(R.string.action_select) to { act.enterMultiSelect(tab, f) }
+            if (f.isDirectory) items += act.getString(R.string.directory_menu) to { showDirectoryComparison(act, f); Unit }
             items += act.getString(R.string.action_file_info) to {
                 if (f.isDirectory) {
                     // Count on a worker thread — a huge folder's top

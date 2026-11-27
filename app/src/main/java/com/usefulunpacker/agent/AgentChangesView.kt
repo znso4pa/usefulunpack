@@ -42,11 +42,12 @@ internal class AgentChangesView(context: Context, onBack: () -> Unit) : LinearLa
         addView(list, LayoutParams(MATCH, 0, 1f))
     }
 
-    fun show(change: AgentFileChange) {
+    fun show(change: AgentFileChange, note: String? = null) {
         title.text = context.agentChangeLabel(change)
         summary.text = context.getString(R.string.agent_change_sizes, change.beforeSize, change.afterSize) +
             if (change.limited) "\n" + context.getString(R.string.agent_changes_metadata)
             else "\n" + context.getString(R.string.agent_changes_columns)
+        if (!note.isNullOrEmpty()) summary.append("\n$note")
         val rows = change.lines
         list.adapter = object : RecyclerView.Adapter<DiffRow>() {
             override fun getItemCount() = rows.size

@@ -64,7 +64,7 @@ internal class McpArchiveWorker(
                     noteExit(state.vars, out.exitCode)
                     task.recordExitCode(out.exitCode)
                     if (out.text.isNotEmpty()) task.appendStdout(out.text)
-                    if (out.exitCode != 0) {
+                    if (out.exitCode != 0 && !(out.exitCode == 1 && command.name in setOf("dircmp", "check"))) {
                         throw McpInputException(out.text.ifEmpty { "uu ${command.name} failed (exit ${out.exitCode})" },
                             FailureCode.COMMAND, "Command exited with code ${out.exitCode}")
                     }

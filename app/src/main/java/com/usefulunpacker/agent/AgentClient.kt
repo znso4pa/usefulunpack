@@ -98,6 +98,9 @@ internal enum class AgentReadTool(
 ) {
     WORKSPACE_LIST("List workspace directory entries. Use . for the root.",
         setOf("path", "after"), "entries", setOf("name", "directory")),
+    COMPARE_DIRECTORY("Compare workspace directories read-only by paths and bytes. Paged metadata only. Direct calls have a 5-second/128-MiB read budget; INCOMPLETE/limited is not identical. Full scans use GUI or asynchronous UU tasks. No copy/sync/delete.",
+        setOf("source", "target", "after"), "entries", setOf("path", "state", "directory", "sourceSize", "targetSize", "reason"),
+        taskModes = setOf(AgentTaskMode.LOOKUP, AgentTaskMode.LOCALIZATION)),
     ARCHIVE_LIST("List archive entries without extracting them.",
         setOf("path", "after"), "entries", setOf("name", "size", "directory", "encrypted")),
     DETECT_GAME_ENGINE("Identify the engine of a game directory from markers. Use first for engine questions; use . for the workspace root.",
@@ -138,6 +141,11 @@ internal enum class AgentReadTool(
         }
         return JSONObject().put(arrayKey, page).apply {
             when (this@AgentReadTool) {
+                COMPARE_DIRECTORY -> {
+                    for (key in listOf("status", "complete", "limited", "visited", "bytesRead", "unchanged", "counts", "nextAfter", "errorCode", "logId")) {
+                        if (data.has(key)) put(key, data.get(key))
+                    }
+                }
                 LOCALIZATION_CHECK -> {
                     for (key in listOf("status", "profile", "aligned", "lineChecks", "skippedLines", "checkedLines", "placeholderLines", "sourceLines", "translationLines", "sourceEncoding",
                         "translationEncoding", "targetEncoding", "totalIssues", "errors", "warnings", "limited", "nextAfter")) {
@@ -410,7 +418,7 @@ internal class AgentClient(
         onTool: (AgentToolEvent) -> Unit,
     ): JSONObject {
         val isRead = tool.read != null
-        val target = listOf("path", "source", "translation", "archive", "output", "documentId").mapNotNull { args.opt(it) as? String }
+        val target = listOf("path", "source", "target", "translation", "archive", "output", "documentId").mapNotNull { args.opt(it) as? String }
             .distinct().joinToString(" → ") { visibleAgentText(displayText(it, 256)) }
         fun event(stage: AgentToolStage, failure: String? = null, count: Int? = null, label: String? = null) =
             onTool(AgentToolEvent(callIndex, tool.name, target, failure, isRead, stage, count, label))
@@ -457,13 +465,15 @@ internal class AgentClient(
             throw e
         }
         val state = result.data.optString("state", "SUCCESS")
-        if (result.isError || result.data.has("errorCode") || state != "SUCCESS") {
+        val partialComparison = !result.isError && tool.read == AgentReadTool.COMPARE_DIRECTORY &&
+            result.data.optString("status") == "INCOMPLETE" && result.data.optString("errorCode") == "PARTIAL_FAILURE"
+        if (!partialComparison && (result.isError || result.data.has("errorCode") || state != "SUCCESS")) {
             val code = result.data.optString("errorCode", state.takeUnless { it == "SUCCESS" } ?: "UNEXPECTED")
             val id = result.data.optString("logId", result.data.optString("taskId"))
             event(AgentToolStage.RUNNING, listOf(code, id).filter { it.isNotEmpty() }.joinToString(" · "))
             return JSONObject().put("state", state.takeUnless { it == "SUCCESS" } ?: "FAILED").put("errorCode", code)
         }
-        step.success()
+        if (partialComparison) step.fail(FailureCode.PARTIAL_FAILURE, "Directory comparison incomplete", notifyUser = false) else step.success()
         val payload = tool.read?.metadata(result.data) ?: JSONObject().put("state", state).apply {
             result.data.optJSONArray("outputs")?.let { outputs ->
                 put("outputs", JSONArray(List(minOf(PAGE_SIZE, outputs.length())) { outputs.getString(it) }))
@@ -483,7 +493,7 @@ internal class AgentClient(
         val output = (engine ?: payload.opt("output") as? String ?: payload.optJSONArray("outputs")?.opt(0) as? String)
             ?.let { visibleAgentText(displayText(it, 256)) }
             ?.takeUnless { it in target.split(" → ") }
-        event(AgentToolStage.SUCCESS, count = count, label = output)
+        event(AgentToolStage.SUCCESS, failure = if (partialComparison) "PARTIAL_FAILURE" else null, count = count, label = output)
         return payload
     }
 

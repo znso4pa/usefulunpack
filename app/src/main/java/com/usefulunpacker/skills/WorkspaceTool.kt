@@ -5,7 +5,8 @@ import org.json.JSONObject
 import java.util.Locale
 
 internal enum class WorkspaceTool(val wireName: String, val detail: String, val key: String = "", val kind: String = "string") {
-    HELP("command_help", "Show all 39 uu commands, full .uut script syntax, supported archive formats, XP3 schemes and text encodings."),
+    COMPARE_DIRECTORY("COMPARE_DIRECTORY", "Read-only byte comparison by relative path; paged metadata, never file content. Direct calls have 5-second/128-MiB read budgets and 50000-node/2000-detail bounds. Skipped/unreadable/changing trees and limits are INCOMPLETE, never identical. Full scans use GUI or asynchronous RUN_UU dircmp tasks with status/cancel.", "source"),
+    HELP("command_help", "Show all registered uu commands, full .uut script syntax, supported archive formats, XP3 schemes and text encodings."),
     COMPRESS("COMPRESS", "Pack a file or directory into a supported archive format. Format may be inferred from the output extension.", "source"),
     EXTRACT("EXTRACT", "Extract an archive into a workspace directory, optionally selecting entries.", "archive"),
     SCAN("SCAN", "Scan a workspace file for embedded archive and media signatures, or carve a selected hit.", "path"),
@@ -17,7 +18,7 @@ internal enum class WorkspaceTool(val wireName: String, val detail: String, val 
     ARCHIVE_LIST("archive_list", "List entries in an archive without extracting it. Supports optional password and after cursor.", "path"),
     INSPECT_FILE("inspect_file", "Deep GUI-level inspection of a workspace file or archive: detects format by extension and magic, XP3 encryption scheme, text encoding & BOM, TJS2 bytecode, image dimensions (PNG/JPEG/GIF/WebP/BMP), RPG Maker MV/MZ header, and hex/ASCII header preview.", "path"),
     APP_SETTINGS("app_settings", "Read or update UsefulUnpack archive and localization preferences (zip_encoding, text_encoding, zip_level, sz_level, generic_level, compress_split_size, parallel_threads, sort_mode)."),
-    RUN("run_uu", "Queue any uu command (all 39 commands plus uu run). Pass argv as separate strings, using workspace-relative paths.", "argv", "array"),
+    RUN("run_uu", "Queue any uu command (all registered commands plus uu run). Pass argv as separate strings, using workspace-relative paths.", "argv", "array"),
     VALIDATE("validate_uut", "Validate a .uut script (by workspace path or inline script text), supporting full UUT syntax (set, if/else, for, while, pipes, redirections and all uu commands).", "path"),
     SCRIPT("run_uut", "Queue and execute a .uut script (by workspace path or inline script text) with optional positional args (\$1..\$n), idempotencyKey and waitMs. Automatically deduplicates identical in-flight scripts.", "path"),
     STATUS("task_status", "Read the task state, chain ID, stdout, exitCode, live progress and published output paths. Pass optional waitMs (0..15000) to long-poll.", "taskId"),
@@ -43,6 +44,12 @@ internal enum class WorkspaceTool(val wireName: String, val detail: String, val 
             if (this != VALIDATE && this != SCRIPT) required.put(key)
         }
         if (this == LIST) properties.put("after", JSONObject().put("type", "string"))
+        if (this == COMPARE_DIRECTORY) {
+            properties.put("target", JSONObject().put("type", "string"))
+            required.put("target")
+            properties.put("after", JSONObject().put("type", "string"))
+            properties.put("limit", JSONObject().put("type", "integer"))
+        }
         if (this == LOCALIZATION_CHECK) {
             properties.put("translation", JSONObject().put("type", "string"))
             required.put("translation")

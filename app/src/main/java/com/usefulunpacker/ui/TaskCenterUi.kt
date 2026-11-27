@@ -132,6 +132,8 @@ private fun MainActivity.openTaskOutput(path: String, tab: TabState, anchor: Vie
 private fun MainActivity.taskLabel(item: TaskCenterItem): String {
     val source = when {
         item.feature == "text_line_edit" -> R.string.line_edit_title
+        item.feature in setOf("directory_compare", "uu_dircmp", "mcp_COMPARE_DIRECTORY") -> R.string.directory_title
+        item.feature in setOf("localization_check", "uu_check", "mcp_LOCALIZATION_CHECK") -> R.string.localization_title
         item.feature.startsWith("agent_") -> R.string.agent_title
         item.feature.startsWith("mcp_") -> R.string.task_center_mcp
         item.feature.contains("extract") -> R.string.task_center_extract

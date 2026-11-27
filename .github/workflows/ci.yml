@@ -4,14 +4,23 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: cargo test
+  checks:
+    name: Resource and UI contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -19,6 +28,66 @@ jobs:
         run: |
           python3 scripts/check_ui_components.py --self-test
           python3 scripts/check_ui_components.py
+
+      - name: Four-locale resources and help structure
+        run: |
+          python3 scripts/check_resources.py --self-test
+          python3 scripts/check_resources.py
+
+  android:
+    name: Android host tests and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;34.0.0'
+
+      - name: Set up Gradle cache and wrapper validation
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/main' }}
+
+      - name: Generate independent localization oracles
+        run: |
+          python3 scripts/localization_oracle.py --check-printf > "$RUNNER_TEMP/uu-localization-oracle.json"
+          echo "UU_LOCALIZATION_ORACLE=$RUNNER_TEMP/uu-localization-oracle.json" >> "$GITHUB_ENV"
+
+      # Host checks need neither release signing nor JNI binaries. This debug
+      # assembly checks packaging only; it is not a distributable native app.
+      - name: Unit tests, lint and debug assembly
+        run: >-
+          ./gradlew --no-daemon --max-workers=2
+          '-Dorg.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8 -XX:ActiveProcessorCount=2'
+          -Pkotlin.compiler.execution.strategy=in-process
+          :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+
+      - name: Upload test and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-host-reports
+          retention-days: 14
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testDebugUnitTest/
+            app/build/reports/lint-results-debug.*
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
 
       # `crates/video-core` path-depends on the sibling v2video repo
       # (`../../../../v2video/crates/vc1` from the crate directory), which

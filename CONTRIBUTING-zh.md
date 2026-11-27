@@ -2,7 +2,7 @@
 
 [**English**](CONTRIBUTING.md) | [**中文**](CONTRIBUTING-zh.md)
 
-> **太长不看** — `bash build.sh` 构建；每次 PR 前 `cargo test --workspace` + `./gradlew lintDebug`；
+> **太长不看** — `bash build.sh` 构建；每次 PR 前 `cargo test --workspace` + `./gradlew :app:testDebugUnitTest :app:lintDebug`；
 > 标题使用约定式前缀；**通读一遍[多窗口与并行架构](#多窗口与并行架构必读)**——v5.14 起引入真并行，有几条契约不能破坏。
 
 ## PR / Issue 格式
@@ -65,7 +65,7 @@ usefulunpack/
 │   │                                       #   bzip2 xz zstd lzma brotli cso scan-core
 │   └── vendor/                             # 内置 fork（rars、sevenz-rust、isomage、zip）+ 补丁
 ├── build.sh                                # 一条命令：Rust 三 ABI 交叉编译 + Gradle APK
-└── .github/workflows/ci.yml                # cargo test --workspace + clippy（非致命）
+└── .github/workflows/ci.yml                # 资源/UI 契约 + Android 单测/Lint + Rust 测试/Clippy
 ```
 
 每个格式是独立 `.so`，经 `System.loadLibrary` 加载。Kotlin `<X>Core.kt` 对象声明 `external fun`，与对应 crate 中 `#[no_mangle]` 的 JNI 函数一一对应。
@@ -115,7 +115,8 @@ thread {
   ```
 - **Android NDK**（r28+）：设置 `ANDROID_NDK_HOME` 或放在 `ANDROID_HOME/ndk/`
 - **cargo-ndk**：`cargo install cargo-ndk`
-- **Android SDK**：API 34+
+- **JDK**：17；使用仓库自带 Gradle Wrapper（8.9）
+- **Android SDK**：API 35 平台和 Build Tools 34.0.0
 
 ### 构建
 
@@ -156,11 +157,13 @@ bash build.sh
 
 ## 测试
 
-CI 跑 `cargo test --workspace`（+ clippy，非致命）。开 PR 前本地先跑：
+CI 检查资源/UI 契约、Android 主机单测/Lint/Debug 打包及 Rust 测试/Clippy，见 [CI 范围](docs/ci.md)。开 PR 前本地先跑：
 
 ```bash
 cargo test --workspace          # Rust 全套（见下）
-./gradlew lintDebug             # 基线：0 errors / 271 warnings —— 不要新增 errors
+python3 scripts/check_resources.py
+python3 scripts/check_ui_components.py
+./gradlew :app:testDebugUnitTest :app:lintDebug  # 单测全通过，Lint 无 errors
 bash build.sh                   # 完整 APK（需 NDK）；纯 Kotlin 改动可只跑 :app:assembleRelease
 ```
 
@@ -174,7 +177,7 @@ Rust 测试覆盖面（保持全绿的理由）：
 
 ### 合成夹具是必要条件，不是充分条件
 
-手造的夹具会和被验证的代码共享同一个错误假设，于是两者一起错，测试照样是绿的。三个曾 shipped-green、只被真文件抓出来的例子：M4A 夹具带着错误的 `ftyp` 小版本（`0.0.2.0`，真文件是 `0.0.0.0`）、probe 窗口差一个字节够不到 `moov` box、以及密文夹具的 16 字节头与真实 `RPGMV` 头不匹配。优先用**字节恒等**当 oracle —— 重新封包真文件必须精确复现它 —— 并且校验必须**可证伪**：绝不要去检查「自己刚推导出来的位置」上是否有什么结构。
+手造的夹具会和被验证的代码共享同一个错误假设，于是两者一起错，测试照样是绿的。三个曾 shipped-green、只被真文件抓出来的例子：M4A 夹具带着错误的 `ftyp` 小版本（`0.0.2.0`，真文件是 `0.0.0.0`）、probe 窗口差一个字节够不到 `moov` box、以及密文夹具的 16 字节头与真实 `RPGMV` 头不匹配。优先对照独立 oracle 检查解出成员的字节；要求字节保真的编解码器须精确复现原文件。XP3 重封会规范化索引并存储明文 ADLR，因此验收内容等价，不要求容器字节相同。校验必须**可证伪**：绝不要去检查「自己刚推导出来的位置」上是否有什么结构。
 
 真机回归要点（UI/ROM 敏感改动合入前）：
 
@@ -186,7 +189,7 @@ Rust 测试覆盖面（保持全绿的理由）：
 ## 提交 PR 前
 
 1. 所有 crate `cargo check` 干净；`cargo test --workspace` 全绿
-2. `./gradlew lintDebug` 不新增 errors
+2. `./gradlew :app:testDebugUnitTest :app:lintDebug` 不新增 errors
 3. `build.sh` 完成（需 NDK）
 4. 若解决了 TODO.md 所列问题，更新对应条目；并在当前开发段落加一行说明
 5. 一个 PR 一件事；不顺手重排无关代码
@@ -199,3 +202,7 @@ Rust 测试覆盖面（保持全绿的理由）：
 ## 许可证
 
 提交贡献即表示同意其以 MIT 许可证发布。
+
+## 持续集成
+
+见 [CI 范围与可复现的本地检查](docs/ci.md)。每次 push / PR 执行资源与 UI 契约检查、带独立汉化参考数据的 Android JVM 单测、Lint、Debug 打包和 Rust 测试。失败时仍保留测试与 Lint 报告 14 天。检查不需要发布签名、提供商凭据、私人游戏样本或预编译 JNI 库；CI 的 Debug 打包仅验证打包链路。真机与真实文件验收仍是独立的发布要求。

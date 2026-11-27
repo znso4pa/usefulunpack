@@ -2,7 +2,7 @@
 
 [**English**](CONTRIBUTING.md) | [**中文**](CONTRIBUTING-zh.md)
 
-> **TL;DR** — `bash build.sh` to build, `cargo test --workspace` + `./gradlew lintDebug` before every PR,
+> **TL;DR** — `bash build.sh` to build, `cargo test --workspace` + `./gradlew :app:testDebugUnitTest :app:lintDebug` before every PR,
 > conventional-commit prefixes on titles, and **read the [Multi-window & Concurrency](#multi-window--concurrency-architecture-must-read) section once** — v5.14 introduced real parallelism and there are contracts you must not break.
 
 ## PR / Issue Format
@@ -64,8 +64,8 @@ usefulunpack/
 │   ├── <fmt>-core/ …                       # xp3 pfs nsa iso ypf zip sevenz rar tar ksd lz4 gzip rgss
 │   │                                       #   bzip2 xz zstd lzma brotli cso scan-core
 │   └── vendor/                             # vendored forks (rars, sevenz-rust, isomage, zip) + patches
-├── build.sh                                # One command: Rust cross-compile (3 ABIs) + Gradle APK
-└── .github/workflows/ci.yml                # cargo test --workspace + clippy (non-fatal)
+├── build.sh                                # One command: Rust cross-compile (2 ABIs) + Gradle APK
+└── .github/workflows/ci.yml                # resource/UI contracts + Android host tests/lint + Rust tests/clippy
 ```
 
 Each format is an independent `.so` loaded via `System.loadLibrary`. Kotlin `<X>Core.kt` objects declare `external fun` matched by `#[no_mangle]` JNI functions in the corresponding crate.
@@ -115,7 +115,8 @@ Always go through `PollingProgressDialog` — since v5.14 it renders onto a shar
   ```
 - **Android NDK** (r28+): Set `ANDROID_NDK_HOME` or place under `ANDROID_HOME/ndk/`
 - **cargo-ndk**: `cargo install cargo-ndk`
-- **Android SDK**: API 34+
+- **JDK**: 17; use the checked-in Gradle wrapper (8.9)
+- **Android SDK**: platform API 35 and Build Tools 34.0.0
 
 ### Build
 
@@ -156,11 +157,13 @@ This cross-compiles all Rust workspace crates for `arm64-v8a` and `armeabi-v7a`,
 
 ## Testing
 
-CI runs `cargo test --workspace` (+ clippy, non-fatal). Run locally before opening a PR:
+CI checks resource/UI contracts, Android host tests/Lint/debug assembly and Rust tests/Clippy. See [CI coverage](docs/ci.md). Run locally before opening a PR:
 
 ```bash
 cargo test --workspace          # Rust suite (see below)
-./gradlew lintDebug             # baseline: 0 errors / 271 warnings — do not add errors
+python3 scripts/check_resources.py
+python3 scripts/check_ui_components.py
+./gradlew :app:testDebugUnitTest :app:lintDebug  # tests pass; no Lint errors
 bash build.sh                   # full APK (needs NDK); Kotlin-only: :app:assembleRelease
 ```
 
@@ -174,7 +177,7 @@ What the Rust tests cover (keep it green):
 
 ### Synthetic fixtures are necessary, not sufficient
 
-A hand-made fixture encodes the same assumption as the code under test, so both are wrong together and the test stays green. Three examples that shipped green and were caught only by real files: an M4A fixture carrying the wrong `ftyp` minor version (`0.0.2.0`; real files use `0.0.0.0`), a probe window one byte too short to reach the `moov` box, and an obfuscated fixture whose 16-byte header did not match the real `RPGMV` header. Prefer byte-identity as the oracle — re-packing a real file must reproduce it exactly — and keep validators *falsifiable*: never check for a structure at a position your own derivation implies.
+A hand-made fixture encodes the same assumption as the code under test, so both are wrong together and the test stays green. Three examples that shipped green and were caught only by real files: an M4A fixture carrying the wrong `ftyp` minor version (`0.0.2.0`; real files use `0.0.0.0`), a probe window one byte too short to reach the `moov` box, and an obfuscated fixture whose 16-byte header did not match the real `RPGMV` header. Compare extracted member bytes against an independent oracle. Byte-preserving codecs must reproduce the original; XP3 repacking normalizes the index and stores plaintext ADLR, so require content equivalence rather than identical container bytes. Keep validators *falsifiable*: never check for a structure at a position your own derivation implies.
 
 Real-device points before merging UI/ROM-sensitive changes:
 
@@ -186,7 +189,7 @@ Real-device points before merging UI/ROM-sensitive changes:
 ## Before Submitting a PR
 
 1. `cargo check` clean for all crates; `cargo test --workspace` green
-2. `./gradlew lintDebug` introduces no new errors
+2. `./gradlew :app:testDebugUnitTest :app:lintDebug` introduces no new errors
 3. `build.sh` completes (requires NDK) — note it, not `:app:assembleRelease`, is what refreshes the root `UsefulUnpack.apk`
 4. Update `TODO.md` if you addressed a listed issue; add a bullet under the current dev section
 5. One feature/bugfix per PR; no unrelated reformatting
@@ -199,3 +202,7 @@ The top of [TODO.md](TODO.md) tracks live plans — good entry points include th
 ## License
 
 By contributing, you agree that your contributions will be licensed under the MIT License.
+
+## Continuous integration
+
+See [CI coverage and reproducible local checks](docs/ci.md). Every push and pull request runs resource/UI contracts, Android JVM tests with independent localization oracles, Lint, debug assembly and Rust tests. Test and Lint reports are retained for 14 days, including failed runs. These checks require no release signing key, provider credentials, private game samples or prebuilt JNI libraries; debug assembly in CI is a packaging check, not an installable native release. Real-device and real-file validation remain separate release requirements.

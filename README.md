@@ -1,5 +1,7 @@
 # UsefulUnpack
 
+> Development version: **7.1.0** · `versionCode 37`. This README describes `main`; downloadable builds are listed in [Releases](https://github.com/znso4pa/usefulunpack/releases). [CI coverage and local checks](docs/ci.md).
+
 [**中文**](README-zh.md) | [**English**](README.md) | [**繁體中文**](README-zh-TW.md) | [**日本語**](README-ja.md)
 
 A lightweight Android file manager and archive packing/unpacking tool.
@@ -12,6 +14,7 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 
 | Feature | Description |
 |---------|-------------|
+| **File Agent / task center** | Open from Home or the overflow menu. Four permission levels, task modes, local sessions, on-demand guides and change receipts. File tools run locally; model conversations and permitted tool results go to your configured Base URL. [MCP](docs/local-mcp.md) · [Token acceptance](docs/agent-token-matrix.md). |
 | **Directory comparison / UU checks** | Long-press a folder → Compare with another directory. Read-only byte comparison, filtered changes and in-window text differences. Shared `COMPARE_DIRECTORY`, `uu dircmp` / `uu check`, and UUT support. [Rules and exits](docs/directory-comparison.md). |
 | **Localization check** | Text preview → Localization check. Conservative, local, read-only encoding checks; opt-in Python format-field / POSIX printf argument rules for confirmed matching lines. Coverage and paged metadata are shared with Agent/MCP. [Rules and limits](docs/localization-check.md). |
 | **Diagnostics and shared controls** | Settings → Logs and diagnostics / UI components. Operations share a short chain ID across UI and local logs; cancellation and cleanup failures remain visible. Logs are shared only on request. |
@@ -50,12 +53,12 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 📋 **Grouped Format Picker** | Scrollable, grouped format selection (generic / single-file / other) for extract, batch and compress |
 | 📄 **Single-File Compress FAB** | In compress mode, tap any file to get a bottom-right compress button |
 | 📦 **Batch Compress Picker** | Merge / separate batch compress both ask for a format; merge excludes single-file formats |
-| ✂️ **File Operations** | Long-press to rename, move, delete (irreversible), create folder |
+| ✂️ **File Operations** | Long-press to rename, move, delete (Recycle Bin by default; permanent deletion is explicit or configurable), create folder |
 | ☑️ **Batch Multi-Select** | Multi-select mode for batch extract/compress/delete/move |
 | 📂 **Batch Preview** | Preview multiple archives at once, select files across all of them |
 | 📂 **Local File Preview** | Tap any previewable file in the browser to view directly |
 | 🗂 **File Browser** | ZArchiver-style UI with path breadcrumb, fast scroll, folder ⭐ bookmarks |
-| 🪟 **Multi-Window Tabs** | Up to 3 independent windows (ViewPager2 swipe, add/close). Each window keeps its own path, selected file, multi-select state, batch bar and paste/move state — fully isolated. **Long-press a tab label to rename it**; Chrome-style top tab bar (active tab highlighted with a rounded pill) |
+| 🪟 **Multi-Window Tabs** | Up to 6 independent windows (ViewPager2 swipe, add/close). Each window keeps its own path, selected file, multi-select state, batch bar and paste/move state — fully isolated. **Long-press a tab label to rename it**; Chrome-style top tab bar (active tab highlighted with a rounded pill) |
 | 📦 **In-Window Archive Preview** | FAB preview renders INSIDE the current window (no modal), so **you can swipe between windows while previewing**; bottom bar has Extract all / Extract selected / Merge (the merge button greys out when no merge target exists, so you never hit a dead end), top bar has Search + a **⋮ overflow menu** (Edit / ZIP-manage / ISO-convert, shown per format, toast when not applicable). Entering global search from a preview returns to the preview when closed |
 | 🔀 **Cross-Archive Merge** | In a preview, select entries → "Merge" → pick a target from **this folder or an archive another window has open** (grouped list, annotated with the window name) → the target is unpacked first, then the source's selected entries are unpacked over the same staging dir (so matching paths are overwritten by the source), and the result is repacked into a `target-cn.ext` copy next to the target. The target is only ever read and the original is never touched, so merging into an archive another window is previewing is safe. The button is greyed out when there is nothing to merge into |
 | 📍 **Path/File Picker Mode** | General settings toggle: "Open path picker dialog" (default) or "Pick in a new window" — the latter opens a new window to browse and pick, then closes it and returns to the origin window (applies to search scope / extract target / ZIP add / compress target) |
@@ -72,7 +75,7 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 🎨 **Image Editor** | Open from the image preview **⋮** menu: watercolor/highlighter brush (color palette + opacity + width — each stroke keeps the opacity it was drawn at, so lowering it never restyles earlier work), **rectangular crop** (drag → tap Crop again to confirm), **stretch to 1:1 / 4:3 / 3:4 / 16:9 / 9:16**, **pixel eyedropper** (drag to auto-sample, tap the readout to copy HEX/RGB), **two-finger pinch zoom (1–8×) + pan**, undo / reset. Saves a `name-edit.png` copy — original untouched (~2048px working cap, rotation-safe autosave with restore prompt) |
 | 🔄 **Image Format Conversion** | From the image preview **⋮** menu: convert static **JPG/PNG/WebP** between each other, and animated **GIF/WebP → a static first frame** (JPG/PNG/WebP). Saves a copy, original untouched |
 | 📤 **Share** | Long-press any file → **Share**: hands it to another app via FileProvider + `ACTION_SEND` — no network permission, no manifest change |
-| 💾 **Session Restore** | Settings → **Other settings** → "Restore last session": on launch reopen the previous windows/folders **and the archive previews that were open** for up to 3 tabs (toast if more). The Recycle-bin settings live under Other settings too |
+| 💾 **Session Restore** | Settings → **General settings** → "Restore last session": on launch reopen the previous windows/folders **and the archive previews that were open** for up to 6 tabs (toast if more). Recycle Bin settings have their own entry in Settings |
 | 🎨 **Redesigned UI** | Unified design tokens (corner radii / spacing / type / row heights), a **⋮ overflow menu** in every preview, capped dialogs on tablets/landscape, and a **wide-screen master-detail layout** (file list left + in-window preview right on ≥600dp) |
 | 🖱️ **Draggable Scroll** | Long lists (archive preview, scan results, script lists, browser, search) get an always-visible draggable fast-scroll handle; text preview/editor get a custom draggable scrollbar (Honor/EMUI-safe) |
 | 🔄 **Auto-Refresh** | A background watcher on the current folder refreshes the file list automatically — rename/move/delete/extract/compress and external changes (adb push, USB) appear without re-entering the path |
@@ -83,8 +86,8 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 | 🎨 **Per-format Icons** | Material vector icons, color-coded per archive format (zip blue, 7z purple, rar red, xp3 orange, …) |
 | 🛡️ **Tap Debounce** | 800ms cooldown prevents accidental duplicate dialogs |
 | 🌙 **Dark Theme** | Eye-friendly dark theme matching ZArchiver's color scheme |
-| 🦀 **Rust Core** | JNI-powered native `.so` — one per format for isolation (17 formats incl. signature scan) |
-| 🔒 **Minimal Permissions** | Storage access for file operations. The optional local MCP endpoint uses the loopback interface. |
+| 🦀 **Rust Core** | JNI-powered native `.so` cores per format family (26 native cores, including signature scanning and media conversion) |
+| 🔒 **Permissions and network** | File tools use storage access; optional MCP binds to loopback. Agent conversations and permitted tool results go to the configured model Base URL |
 
 ## Multi-Window FAQ
 
@@ -147,7 +150,7 @@ Minimum Android 8.0 (API 26). Requires "All files access" permission on Android 
   ```
 - [Android NDK](https://developer.android.com/ndk) (r28+)
 - [cargo-ndk](https://github.com/bbqsrc/cargo-ndk): `cargo install cargo-ndk`
-- Android SDK with API 34+
+- JDK 17; Android SDK platform 35 and Build Tools 34.0.0
 
 ### Build
 

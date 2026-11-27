@@ -11,6 +11,7 @@ internal enum class WorkspaceTool(val wireName: String, val detail: String, val 
     SCAN("SCAN", "Scan a workspace file for embedded archive and media signatures, or carve a selected hit.", "path"),
     DETECT_GAME_ENGINE("DETECT_GAME_ENGINE", "Identify a game directory from known engine markers. Use . for the workspace root. Reads names and file types only.", "path"),
     VN_INSPECT("VN_INSPECT", "Inspect a visual novel folder for engine markers, possible text sources, compiled files and archive candidates. Returns a bounded report using file names, not contents.", "path"),
+    LOCALIZATION_CHECK("LOCALIZATION_CHECK", "Read-only local text safety check. Default profile encoding only checks strict decoding and representability in targetEncoding (default translation, not source). Opt-in profiles named (simple Python format fields) or printf (POSIX argument types) require known physical-line correspondence. Unknown grammar or unequal line counts skip line checks. No engine or translation-quality verdict. Paged metadata only. Limit 2 MiB/20000 lines per file.", "source"),
     REFERENCE_SEARCH("reference_search", "Search local guide titles when a user request or unresolved format, encoding or tool problem calls for a guide. Returns up to eight titles and IDs without loading any text.", "query"),
     REFERENCE_READ("reference_read", "Read one local guide by an exact document ID from reference_search. Give the specific unresolved question in reason. Skip this tool for routine tasks.", "documentId"),
     ARCHIVE_LIST("archive_list", "List entries in an archive without extracting it. Supports optional password and after cursor.", "path"),
@@ -42,6 +43,14 @@ internal enum class WorkspaceTool(val wireName: String, val detail: String, val 
             if (this != VALIDATE && this != SCRIPT) required.put(key)
         }
         if (this == LIST) properties.put("after", JSONObject().put("type", "string"))
+        if (this == LOCALIZATION_CHECK) {
+            properties.put("translation", JSONObject().put("type", "string"))
+            required.put("translation")
+            for (field in listOf("sourceEncoding", "translationEncoding", "targetEncoding", "profile", "after")) {
+                properties.put(field, JSONObject().put("type", "string"))
+            }
+            properties.put("limit", JSONObject().put("type", "integer"))
+        }
         if (this == ARCHIVE_LIST) {
             properties.put("password", JSONObject().put("type", "string"))
             properties.put("after", JSONObject().put("type", "string"))

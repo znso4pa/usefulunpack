@@ -94,6 +94,7 @@ internal enum class AgentReadTool(
     val fields: Set<String>,
     val arrayKey: String,
     val metadataFields: Set<String>,
+    val taskModes: Set<AgentTaskMode>? = null,
 ) {
     WORKSPACE_LIST("List workspace directory entries. Use . for the root.",
         setOf("path", "after"), "entries", setOf("name", "directory")),
@@ -103,6 +104,9 @@ internal enum class AgentReadTool(
         setOf("path"), "matches", setOf("engine", "confidence", "evidence")),
     VN_INSPECT("Plan VN localization from engine markers, script source candidates, compiled data and archives. Use . for the workspace root. Does not read or change file contents.",
         setOf("path"), "candidates", setOf("path", "kind", "format")),
+    LOCALIZATION_CHECK("Local text checks. Defaults: profile=encoding, sourceEncoding/translationEncoding=auto (BOM or valid UTF-8 only), targetEncoding=translation. Use named/printf profiles only when the user confirms simple Python format/POSIX printf grammar and physical-line correspondence. No translation-quality or engine verdict. Unknown grammar skips the line. Findings are paged metadata, never script text.",
+        setOf("source", "translation", "sourceEncoding", "translationEncoding", "targetEncoding", "profile", "after"), "issues", setOf("code", "severity", "line"),
+        taskModes = setOf(AgentTaskMode.LOCALIZATION)),
     REFERENCE_SEARCH("Find at most eight local guide titles when the user asks or a specific format, encoding or tool issue is unresolved. No guide text is returned.",
         setOf("query"), "documents", setOf("documentId", "title")),
     REFERENCE_READ("Read one matching guide by exact ID if it is needed for a specific unresolved question. State that question in reason. Skip for routine tasks.",
@@ -116,7 +120,8 @@ internal enum class AgentReadTool(
         return JSONObject().put("type", "function").put("function", JSONObject()
             .put("name", name).put("description", description)
             .put("parameters", JSONObject().put("type", "object").put("properties", properties)
-                .put("required", JSONArray((fields - "after").toList())).put("additionalProperties", false)))
+                .put("required", JSONArray((if (this == LOCALIZATION_CHECK) setOf("source", "translation") else fields - "after").toList()))
+                .put("additionalProperties", false)))
     }
 
     fun metadata(data: JSONObject): JSONObject {
@@ -133,6 +138,12 @@ internal enum class AgentReadTool(
         }
         return JSONObject().put(arrayKey, page).apply {
             when (this@AgentReadTool) {
+                LOCALIZATION_CHECK -> {
+                    for (key in listOf("status", "profile", "aligned", "lineChecks", "skippedLines", "sourceLines", "translationLines", "sourceEncoding",
+                        "translationEncoding", "targetEncoding", "totalIssues", "errors", "warnings", "limited", "nextAfter")) {
+                        if (data.has(key)) put(key, data.get(key))
+                    }
+                }
                 SCAN -> put("totalHits", data.optInt("totalHits"))
                 DETECT_GAME_ENGINE -> {
                     put("status", data.optString("status", "unknown"))
@@ -394,7 +405,7 @@ internal class AgentClient(
         onTool: (AgentToolEvent) -> Unit,
     ): JSONObject {
         val isRead = tool.read != null
-        val target = listOf("path", "source", "archive", "output", "documentId").mapNotNull { args.opt(it) as? String }
+        val target = listOf("path", "source", "translation", "archive", "output", "documentId").mapNotNull { args.opt(it) as? String }
             .distinct().joinToString(" → ") { visibleAgentText(displayText(it, 256)) }
         fun event(stage: AgentToolStage, failure: String? = null, count: Int? = null, label: String? = null) =
             onTool(AgentToolEvent(callIndex, tool.name, target, failure, isRead, stage, count, label))

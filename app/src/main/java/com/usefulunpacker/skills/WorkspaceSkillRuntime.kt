@@ -45,7 +45,7 @@ internal class WorkspaceSkillRuntime(
     ): AppSkillResult {
         val agentTrace = AppDiagnostics.currentTrace()?.takeIf { it.feature.startsWith("agent_session_") }
         val scope = if (agentTrace == null && tool in setOf(Tool.ARCHIVE_LIST, Tool.SCAN, Tool.DETECT_GAME_ENGINE,
-                Tool.VN_INSPECT, Tool.INSPECT_FILE, Tool.WRITE)) {
+                Tool.VN_INSPECT, Tool.LOCALIZATION_CHECK, Tool.INSPECT_FILE, Tool.WRITE)) {
             val password = args.opt("password") as? String
             AppDiagnostics.enterIntent("mcp_$stage", secrets = listOfNotNull(password), newChain = true)
         } else null
@@ -132,6 +132,22 @@ internal class WorkspaceSkillRuntime(
             )
             Tool.DETECT_GAME_ENGINE -> detectGameEngine(workspace.resolve(argument(), allowRoot = true).toPath())
             Tool.VN_INSPECT -> inspectVnProject(workspace, argument())
+            Tool.LOCALIZATION_CHECK -> {
+                val after = if (args.has("after")) argument("after") else ""
+                val offset = if (after.isEmpty()) 0 else after.toIntOrNull()?.takeIf { it in 0..1000 }
+                    ?: throw mcpInputError("Invalid localization issue cursor")
+                val limit = if (args.has("limit")) intArgument(args, "limit", 1, 50) else 20
+                val report = try {
+                    LocalizationChecker.check(workspace.resolve(argument()), workspace.resolve(argument("translation")),
+                        if (args.has("sourceEncoding")) argument("sourceEncoding") else "auto",
+                        if (args.has("translationEncoding")) argument("translationEncoding") else "auto",
+                        if (args.has("targetEncoding")) argument("targetEncoding") else "translation",
+                        if (args.has("profile")) argument("profile") else "encoding")
+                } catch (e: LocalizationCheckException) {
+                    throw mcpInputError("LOCALIZATION_${e.reason}")
+                }
+                report.json(offset, limit)
+            }
             Tool.REFERENCE_SEARCH -> {
                 val query = argument().trim()
                 if (query.isEmpty() || query.length > 160) throw mcpInputError("Expected a focused guide query")

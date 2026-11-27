@@ -13,7 +13,7 @@ internal enum class AgentTaskMode(val labelId: Int, private val names: Set<Strin
     LOOKUP(R.string.agent_mode_lookup, setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "DETECT_GAME_ENGINE", "SCAN")),
     ARCHIVES(R.string.agent_mode_archives, setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "SCAN", "EXTRACT", "COMPRESS")),
     LOCALIZATION(R.string.agent_mode_localization, setOf("WORKSPACE_LIST", "ARCHIVE_LIST", "DETECT_GAME_ENGINE",
-        "VN_INSPECT", "REFERENCE_SEARCH", "REFERENCE_READ", "WRITE_TEXT", "EXTRACT", "COMPRESS")),
+        "VN_INSPECT", "LOCALIZATION_CHECK", "REFERENCE_SEARCH", "REFERENCE_READ", "WRITE_TEXT", "EXTRACT", "COMPRESS")),
     SCRIPTS(R.string.agent_mode_scripts, setOf("WORKSPACE_LIST", "REFERENCE_SEARCH", "REFERENCE_READ", "RUN_UU", "RUN_UUT"));
 
     fun includes(name: String) = names == null || name in names
@@ -24,7 +24,7 @@ internal enum class AgentPermission {
 
     fun tools(skills: List<AppSkillDefinition>, mode: AgentTaskMode = AgentTaskMode.GENERAL): Map<String, AgentTool> {
         val registered = skills.associateBy { it.name }
-        val tools = AgentReadTool.entries.filter { it.name in registered }.map { read ->
+        val tools = AgentReadTool.entries.filter { it.name in registered && (it.taskModes == null || mode in it.taskModes) }.map { read ->
             AgentTool(read.name, read.schema(), read = read)
         }.toMutableList()
         if (this >= ARCHIVES) {

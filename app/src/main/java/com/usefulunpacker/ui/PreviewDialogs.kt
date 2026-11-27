@@ -262,6 +262,9 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
     val root = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
         addView(encRow, LinearLayout.LayoutParams(MATCH, WRAP))
+        addView(UuActionRow(activity).apply {
+            bind(activity.getString(R.string.localization_title), navigation = true) { showLocalizationCheck(activity, file) }
+        }, LinearLayout.LayoutParams(MATCH, WRAP))
         if (isRich) addView(richRow, LinearLayout.LayoutParams(MATCH, WRAP))
         addView(contentRoot, LinearLayout.LayoutParams(MATCH, 0, 1f))
     }

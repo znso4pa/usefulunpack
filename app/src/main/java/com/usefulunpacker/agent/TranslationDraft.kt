@@ -85,7 +85,7 @@ internal class TranslationDraft(snapshot: TranslationSnapshot) {
         }
         return TranslationTurn(this, rows, rows.map { versions[it] }, rows.map { document.original(it) }, rows.map(::value), changed)
     }
-    @Synchronized internal fun propose(turn: TranslationTurn, values: List<String>) {
+    @Synchronized internal fun propose(turn: TranslationTurn, values: List<String>): Int {
         if (values.size != turn.rows.size) throw TranslationProblem("ROW_COUNT_MISMATCH")
         if (turn.rows.indices.any { versions[turn.rows[it]] != turn.versions[it] }) throw TranslationProblem("STALE_DRAFT")
         val updates = turn.rows.zip(values).toMap()
@@ -93,7 +93,9 @@ internal class TranslationDraft(snapshot: TranslationSnapshot) {
         if (values.any { '\u0000' in it }) throw TranslationProblem("NOT_TEXT")
         val invalid = document.validate(updates, encoding)
         if (invalid != null) throw TranslationProblem(invalid.problem.name)
+        val changed = updates.count { (row, text) -> value(row) != text }
         apply(updates, null)
+        return changed
     }
     private fun apply(updates: Map<Int, String>, human: Int?) {
         if (updates.keys.any { it !in 0 until document.size } || updates.values.any { it.length > 65536 }) throw TranslationProblem("DRAFT_LIMIT")
@@ -181,10 +183,10 @@ internal class TranslationTurn internal constructor(private val draft: Translati
         }
         if (name != PROPOSE || !read || proposed || args.optString("revision") != token) throw TranslationProblem("INVALID_BATCH")
         val values = args.getJSONArray("translations")
-        draft.propose(this, List(values.length()) { values.getString(it) })
+        val changedRows = draft.propose(this, List(values.length()) { values.getString(it) })
         proposed = true
         changed()
-        return JSONObject().put("state", "SUCCESS").put("draftOnly", true).put("updatedRows", rows.size)
+        return JSONObject().put("state", "SUCCESS").put("draftOnly", true).put("submittedRows", rows.size).put("updatedRows", changedRows)
     }
     companion object { const val READ = "READ_TRANSLATION_ROWS"; const val PROPOSE = "PROPOSE_TRANSLATION_ROWS" }
 }

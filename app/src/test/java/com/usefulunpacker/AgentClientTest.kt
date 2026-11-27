@@ -770,7 +770,7 @@ class AgentClientTest {
         assertTrue(events.any { it.failure == "PARTIAL_FAILURE" })
     }
 
-    @Test fun translationTurnExposesOnlyDraftToolsAndSendsSelectedTextOnce() {
+    @Test fun translationTurnKeepsSelectedSourceThroughFinalVerificationWithoutRereading() {
         val root=java.nio.file.Files.createTempDirectory("translation-wire-").toFile().canonicalFile
         try {
             val file=root.resolve("script.txt").apply { writeText("private other row\nHello {name}\r\n") }
@@ -789,7 +789,14 @@ class AgentClientTest {
                     1 -> call(TranslationTurn.READ,JSONObject()).put("reasoning_content","Read selected rows")
                     2 -> call(TranslationTurn.PROPOSE,JSONObject().put("revision",turn.token).put("translations",JSONArray(listOf("你好 {name}"))))
                         .put("reasoning_content","Fill draft only")
-                    else -> JSONObject().put("content","Draft ready")
+                    else -> {
+                        val history=body.getJSONArray("messages")
+                        val reads=(0 until history.length()).map { history.getJSONObject(it) }
+                            .filter { it.optString("role")=="tool" }
+                            .map { JSONObject(it.getString("content")) }.filter { it.has("rows") }
+                        val source=reads.singleOrNull()?.getJSONArray("rows")?.getJSONObject(0)?.optString("original")
+                        JSONObject().put("content",if(source=="Hello {name}") "Draft ready" else "Cannot verify without source")
+                    }
                 }
                 Reply("200 OK",JSONObject().put("choices",JSONArray().put(JSONObject().put("message",message))))
             }.use { server ->
@@ -806,7 +813,7 @@ class AgentClientTest {
                 assertFalse(request.toString().contains("private other row"));assertFalse(request.toString().contains(file.path))
             }
             assertTrue(requests[1].toString().contains("Hello {name}"))
-            assertFalse(requests[2].toString().contains("Hello {name}"))
+            assertTrue(requests[2].toString().contains("Hello {name}"))
             assertEquals(listOf("reason:Read selected rows","${TranslationTurn.READ}:RUNNING","${TranslationTurn.READ}:SUCCESS",
                 "reason:Fill draft only","${TranslationTurn.PROPOSE}:RUNNING","${TranslationTurn.PROPOSE}:SUCCESS"),events)
         } finally { root.deleteRecursively() }

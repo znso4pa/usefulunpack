@@ -286,17 +286,9 @@ internal class AgentClient(
         var nextCallIndex = 0
         var automaticReferenceUsed = false
         var referenceReply: JSONObject? = null
-        var translationReply: JSONObject? = null
         val returnedReads = mutableMapOf<Pair<String, String>, String>()
         repeat(MAX_ROUNDS) { round ->
             val reply = send(messages, schemas, maxTokens = maxOutputTokens, onUsage = onUsage)
-            translationReply?.let { delivered ->
-                val receipt = JSONObject(delivered.getString("content"))
-                receipt.remove("rows")
-                receipt.put("consulted", true)
-                delivered.put("content", receipt.toString())
-            }
-            translationReply = null
             request.checkActive()
             val calls = reply.optJSONArray("tool_calls")
             if (calls == null && !reply.isNull("tool_calls")) throw invalidResponse()
@@ -361,7 +353,8 @@ internal class AgentClient(
                             val value = translation.invoke(name, args)
                             request.checkActive()
                             step.success()
-                            onTool(AgentToolEvent(callIndex, name, "", readOnly = read, stage = AgentToolStage.SUCCESS, resultCount = translation.rows.size))
+                            onTool(AgentToolEvent(callIndex, name, "", readOnly = read, stage = AgentToolStage.SUCCESS,
+                                resultCount = if (read) translation.rows.size else value.optInt("updatedRows")))
                             value
                         } catch (e: CancellationException) {
                             step.cancelled()
@@ -383,7 +376,6 @@ internal class AgentClient(
                         .put("arguments", if (accepted) raw else "{}")))
                 val toolReply = message("tool", redactValue(payload).toString()).put("tool_call_id", id)
                 toolReplies.put(toolReply)
-                if (translation != null && name == TranslationTurn.READ && payload.has("rows")) translationReply = toolReply
                 if (readReference && payload.has("text")) {
                     automaticReferenceUsed = true
                     referenceReply = toolReply

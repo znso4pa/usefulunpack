@@ -139,6 +139,18 @@ class TranslationDraftTest {
             assertEquals(0,draft.changedCount())
         }
     }
+    @Test fun receiptsDistinguishSubmittedRowsFromActuallyChangedRows() {
+        val draft=draft("Hello {name}\r\nWelcome back.\\nNext page.\r\n\r\nKeep this line unchanged.\r\n")
+        val turn=draft.begin(0,4);turn.invoke(TranslationTurn.READ,JSONObject())
+        val result=turn.invoke(TranslationTurn.PROPOSE,JSONObject().put("revision",turn.token).put("translations",
+            JSONArray(listOf("你好 {name}","欢迎回来。\\n下一页。","","保持这一行不变。"))))
+        assertEquals(4,result.getInt("submittedRows"));assertEquals(3,result.getInt("updatedRows"))
+        assertEquals(3,draft.changedCount())
+        val again=draft.begin(0,4);again.invoke(TranslationTurn.READ,JSONObject())
+        val unchanged=again.invoke(TranslationTurn.PROPOSE,JSONObject().put("revision",again.token).put("translations",
+            JSONArray(listOf("你好 {name}","欢迎回来。\\n下一页。","","保持这一行不变。"))))
+        assertEquals(0,unchanged.getInt("updatedRows"));assertEquals(3,draft.changedCount())
+    }
     @Test fun translationLeaseIsExclusiveAndOldOwnersCannotReleaseANewLease() {
         val a=Any();val b=Any();val id="synthetic-session"
         assertTrue(TranslationEditors.claim(id,a));assertTrue(TranslationEditors.claim(id,a))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate an independent simple-field oracle with Python's standard Formatter.
+"""Generate an independent field-dependency oracle with Python's standard Formatter.
 
 Usage: python3 scripts/localization_oracle.py > /tmp/uu-localization-oracle.json
 Then set UU_LOCALIZATION_ORACLE to that file when running the Kotlin host tests.
@@ -11,7 +11,41 @@ import shutil
 import subprocess
 import sys
 from string import Formatter
-from types import SimpleNamespace
+
+class Marker:
+    def __init__(self, path):
+        self.path = path
+
+    def __getattr__(self, name):
+        return Marker(self.path + (("attribute", name),))
+
+    def __getitem__(self, key):
+        return Marker(self.path + (("item", type(key).__name__, key),))
+
+
+class Dependencies(Formatter):
+    """Leave parsing, automatic numbering and nested specs to the independent standard library."""
+    def __init__(self):
+        self.fields = set()
+
+    def get_value(self, key, args, kwargs):
+        return Marker((("root", type(key).__name__, key),))
+
+    def convert_field(self, value, conversion):
+        if conversion is not None and conversion not in "rsa":
+            raise ValueError("Unknown conversion")
+        return value
+
+    def format_field(self, value, format_spec):
+        self.fields.add(value.path)
+        # Only argument dependencies are checked, not the object's formatting mini-language.
+        return "1"
+
+
+def required(text):
+    formatter = Dependencies()
+    formatter.vformat(text, (), {})
+    return formatter.fields
 
 
 def check_printf():
@@ -52,23 +86,17 @@ def main():
     parser.add_argument("--check-printf", action="store_true", help="Also validate the printf reference pairs with Clang")
     if parser.parse_args().check_printf:
         check_printf()
-    formatter = Formatter()
-    arguments = [f"positional:{index}" for index in range(10)]
-    keywords = {"name": "named:name", "count": "named:count", "player": SimpleNamespace(name="named:player.name")}
-
-    def required(text):
-        fields = set()
-        for _, field, specification, conversion in formatter.parse(text):
-            if field is None:
-                continue
-            assert not specification and conversion is None
-            value, _ = formatter.get_field(field, arguments, keywords)
-            fields.add(value)
-        return fields
-
     texts = ["plain", "{name}", "{count}", "{0}", "{00}", "{player.name}",
              "{name} {count}", "{count} {name}", "{name} {name}",
-             "{{literal}} {name}", "{{{name}}}", "\\{name}"]
+             "{{literal}} {name}", "{{{name}}}", "\\{name}",
+             "{name!r}", "{name!s:>20}", "{name!a}", "{count:04d}",
+             "{value:{width}}", "{value:{width}.{precision}f}", "{value:{width!r}}",
+             "{items[0]}", "{items[00]}", "{items[name]}", "{items.name}",
+             "{player.name[0]}", "{0.name}", "{00.name}",
+             "{}", "{} {}", "{0} {1}", "{} {name}", "{0} {name}",
+             "{:{}}", "{0:{1}}", "{:{}} {}", "{0:{1}} {2}",
+             "{name:{{}}}", "{value:{{{width}}}}", "{{}}", "{0.real!r}",
+             "{data[key][0].name}"]
     rows = [{"source": a, "translation": b, "different": required(a) != required(b)}
             for a in texts for b in texts]
     print(json.dumps(rows, ensure_ascii=False))

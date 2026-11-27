@@ -3,34 +3,111 @@ package com.usefulunpacker
 /** Null means unsupported/ambiguous grammar: skip the whole line, never compare a partial parse. */
 internal fun localizationArguments(text: String, profile: String, active: () -> Unit = {}): Map<String, String>? =
     when (profile) {
-        "named" -> namedArguments(text, active)
+        "named" -> NamedArguments(text, active).parse()
         "printf" -> printfArguments(text, active)
         else -> null
     }
 
-private val simpleField = Regex("\\{([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*|[0-9]{1,6})}")
+private val fieldPart = Regex("[A-Za-z_][A-Za-z0-9_]{0,127}")
+private val fieldIndex = Regex("[0-9]{1,6}")
 
-/** Explicit simple Python format fields only. Conversions, indexing and format specs need another profile. */
-private fun namedArguments(text: String, active: () -> Unit): Map<String, String>? {
-    val fields = linkedMapOf<String, String>()
-    var index = 0
-    while (index < text.length) {
-        if (index % 1024 == 0) active()
-        when {
-            text.startsWith("{{", index) || text.startsWith("}}", index) -> index += 2
-            text[index] == '{' -> {
-                val match = simpleField.matchAt(text, index) ?: return null
-                if (match.value.length > 130) return null
-                val field = match.groupValues[1]
-                fields[if (field.all(Char::isDigit)) field.toInt().toString() else field] = "field"
-                index += match.value.length
+/** Bounded Python-format dependency parser. It never evaluates attributes, indexes or expressions. */
+private class NamedArguments(private val text: String, private val active: () -> Unit) {
+    private val fields = linkedMapOf<String, String>()
+    private var automatic = 0
+    private var numbering: Boolean? = null // true: automatic; false: explicit numeric
+
+    fun parse(): Map<String, String>? = if (template(0, text.length, 0)) fields else null
+
+    private fun template(start: Int, end: Int, depth: Int): Boolean {
+        var index = start
+        while (index < end) {
+            if (index % 1024 == 0) active()
+            when (text[index]) {
+                '{', '}' -> {
+                    if (index + 1 < end && text[index + 1] == text[index]) { index += 2; continue }
+                    if (text[index] == '}' || depth >= 2) return false
+                    index = field(index + 1, end, depth) ?: return false
+                }
+                else -> index++
             }
-            text[index] == '}' -> return null
-            else -> index++
         }
+        return true
     }
-    // Repeating a named field or changing its order does not require a different argument.
-    return fields
+
+    private fun field(start: Int, end: Int, depth: Int): Int? {
+        active()
+        var index = start
+        while (index < end && text[index] !in "!:}") {
+            if (text[index] == '{' || index - start > 512) return null
+            index++
+        }
+        if (index == end) return null
+        val name = canonical(text.substring(start, index)) ?: return null
+        fields[name] = "field"
+        if (fields.size > 256) return null
+        if (text[index] == '!') {
+            index++
+            if (index >= end || text[index] !in "rsa") return null
+            index++
+            if (index >= end || text[index] !in ":}") return null
+        }
+        if (text[index] == '}') return index + 1
+        // Locate the complete format spec first; escaped braces are interpreted by its own template.
+        val specStart = ++index
+        var braces = 0
+        while (index < end) {
+            if (index % 1024 == 0) active()
+            when (text[index]) {
+                '{' -> braces++
+                '}' -> if (braces == 0) {
+                    return if (template(specStart, index, depth + 1)) index + 1 else null
+                } else braces--
+            }
+            index++
+        }
+        return null
+    }
+
+    private fun canonical(raw: String): String? {
+        if (raw.isEmpty()) {
+            if (numbering == false) return null
+            numbering = true
+            return (automatic++).toString()
+        }
+        var end = raw.indexOfFirst { it == '.' || it == '[' }.let { if (it < 0) raw.length else it }
+        val root = raw.substring(0, end)
+        val numeric = fieldIndex.matches(root)
+        if (!numeric && !fieldPart.matches(root)) return null
+        if (numeric) {
+            if (numbering == true) return null
+            numbering = false
+        }
+        val result = StringBuilder(if (numeric) root.toInt().toString() else root)
+        while (end < raw.length) {
+            val start = end + 1
+            when (raw[end]) {
+                '.' -> {
+                    end = start
+                    while (end < raw.length && raw[end] != '.' && raw[end] != '[') end++
+                    val attr = raw.substring(start, end)
+                    if (!fieldPart.matches(attr)) return null
+                    result.append('.').append(attr)
+                }
+                '[' -> {
+                    end = raw.indexOf(']', start)
+                    if (end < 0) return null
+                    val key = raw.substring(start, end)
+                    val number = fieldIndex.matches(key)
+                    if (!number && !fieldPart.matches(key)) return null
+                    result.append('[').append(if (number) key.toInt().toString() else key).append(']')
+                    end++
+                }
+                else -> return null
+            }
+        }
+        return result.toString()
+    }
 }
 
 private val cConversion = Regex("%([0-9]{1,6}\\$)?([-+#0 ]{0,8})([0-9]{1,6}|\\*(?:[0-9]{1,6}\\$)?)?(?:\\.([0-9]{0,6}|\\*(?:[0-9]{1,6}\\$)?))?(hh|ll|[hlLjzt])?([diuoxXfFeEgGaAcspn])")

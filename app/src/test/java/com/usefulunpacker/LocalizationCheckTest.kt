@@ -70,8 +70,62 @@ class LocalizationCheckTest {
         assertEquals("REVIEW_REQUIRED", report.json().getString("status"))
     }
 
+    @Test fun formatConversionsIndexesAndNestedWidthsPreserveDependenciesWithoutFalseFindings() {
+        for ((source, translation) in listOf(
+            "{name!r:>20}" to "{name!s:<12}",
+            "{items[00].name!a}" to "{items[0].name}",
+            "{0.name}" to "{00.name}",
+            "{} {}" to "{1} {0}",
+            "{:{}} {}" to "{2} {0:{1}}",
+            "{value:{width}.{precision}f}" to "{value:{width}.{precision}g}",
+            "{name:{{}}}" to "{name}",
+            "{value:{{{width}}}}" to "{width} {value}",
+        )) {
+            val report = check(source, translation, "named")
+            assertEquals(source, 0, report.totalIssues)
+            assertEquals(source, 0, report.skippedLines)
+            assertEquals(1, report.checkedLines)
+            assertEquals(1, report.placeholderLines)
+        }
+    }
+
+    @Test fun missingDynamicFormatArgumentsAreDetectedButPresentationChangesAreNot() {
+        val report = check("{value:{width}.{precision}f}", "{value:.2f}", "named")
+        assertEquals(LocalizationRule.PLACEHOLDERS_CHANGED, report.issues.single().rule)
+        assertEquals(0, report.errors)
+        assertEquals(0, report.skippedLines)
+    }
+
+    @Test fun unsupportedLinesHaveBoundedLocalExcerptsAndMetadataOnlySkipExamples() {
+        val report = check("{value!q}\n{name}\nplain", "{other!q}\n{other!q}\n普通文字", "named")
+        assertEquals(0, report.totalIssues)
+        assertEquals(2, report.skippedLines)
+        assertEquals(1, report.checkedLines)
+        assertEquals(0, report.placeholderLines)
+        assertEquals(listOf("BOTH", "TRANSLATION"), report.skippedExamples.map { it.side })
+        assertEquals(listOf(1, 2), report.skippedExamples.map { it.line })
+        assertTrue(report.skippedExamples.first().original!!.contains("value"))
+        val json = report.json()
+        assertFalse(json.toString().contains("{value"))
+        assertFalse(json.toString().contains("{other"))
+        assertEquals("INCOMPLETE", json.getString("status"))
+        val allSkipped = check("{value!q}\n".repeat(100), "{other!q}\n".repeat(100), "named")
+        assertEquals(20, allSkipped.skippedExamples.size)
+        assertEquals(5, allSkipped.json().getJSONArray("skippedExamples").length())
+        val malicious = JSONObject(json.toString())
+        malicious.getJSONArray("skippedExamples").getJSONObject(0).put("original", "private text")
+        assertFalse(AgentReadTool.LOCALIZATION_CHECK.metadata(malicious).toString().contains("private text"))
+    }
+
+    @Test fun clippedFindingExcerptsDoNotSplitSurrogatePairs() {
+        val prefix = "x".repeat(239) + "📝"
+        val excerpt = check(prefix + "{name}", prefix + "{other}", "named").issues.single().original!!
+        assertEquals("x".repeat(239) + "…", excerpt)
+        assertFalse(excerpt.any { it.isSurrogate() })
+    }
+
     @Test fun unsupportedBraceGrammarSkipsWholeLinesRatherThanComparingPartialTokens() {
-        for (source in listOf("{name!r} {kept}", "{name:>20}", "{items[0]}", "{value:{width}}", "{}", "broken {name", "single }")) {
+        for (source in listOf("{name!q} {kept}", "{name[has space]}", "{value:{width:{depth}}}", "{} {0}", "{0} {}", "broken {name", "single }")) {
             val report = check(source, "{other}", "named")
             assertEquals(source, 0, report.totalIssues)
             assertEquals(source, 1, report.skippedLines)
@@ -143,6 +197,33 @@ class LocalizationCheckTest {
         assertEquals("INVALID_ENCODING", assertThrows(LocalizationCheckException::class.java) { LocalizationChecker.check(a, b) }.reason)
     }
 
+    @Test fun exactVendorAndSupplementaryEncodingsUseIndependentByteVectors() {
+        val (a, b) = pair("plain", "plain")
+        // Byte sequences independently produced by Python codecs, not by the encoder being checked.
+        a.writeBytes(byteArrayOf(0x87.toByte(), 0x40)) // CP932 extension: U+2460
+        b.writeText("①")
+        val vendor = LocalizationChecker.check(a, b, sourceEncoding = "CP932", targetEncoding = "CP932")
+        assertEquals(0, vendor.totalIssues)
+        assertEquals("INVALID_ENCODING", assertThrows(LocalizationCheckException::class.java) {
+            LocalizationChecker.check(a, b, sourceEncoding = "SHIFT-JIS")
+        }.reason)
+        a.writeBytes(byteArrayOf(0x95.toByte(), 0x34, 0xb2.toByte(), 0x35)) // GB18030: U+20BB7
+        b.writeText("𠮷")
+        assertEquals(0, LocalizationChecker.check(a, b, sourceEncoding = "GB18030", targetEncoding = "GB18030").totalIssues)
+        assertEquals(1, LocalizationChecker.check(a, b, sourceEncoding = "GB18030", targetEncoding = "GBK").errors)
+    }
+
+    @Test fun explicitUtf16ByteOrdersSupportBomlessTextAndRejectConflictingUnicodeBoms() {
+        val (a, b) = pair("", "{name}")
+        a.writeBytes("{name}".toByteArray(Charsets.UTF_16BE))
+        assertEquals(0, LocalizationChecker.check(a, b, sourceEncoding = "UTF-16BE", profile = "named").totalIssues)
+        a.writeBytes(byteArrayOf(0xfe.toByte(), 0xff.toByte()) + a.readBytes())
+        assertEquals("BOM_ENCODING_CONFLICT", assertThrows(LocalizationCheckException::class.java) {
+            LocalizationChecker.check(a, b, sourceEncoding = "UTF-16LE")
+        }.reason)
+        assertEquals(0, LocalizationChecker.check(a, b, sourceEncoding = "UTF-16BE", profile = "named").totalIssues)
+    }
+
     @Test fun legacyEncodingsRequireExplicitSelectionInsteadOfHeuristicGuessing() {
         val (a, b) = pair("source", "translation")
         a.writeBytes("日本語".toByteArray(charset("SHIFT-JIS")))
@@ -152,7 +233,7 @@ class LocalizationCheckTest {
         assertEquals("INVALID_ENCODING", assertThrows(LocalizationCheckException::class.java) {
             LocalizationChecker.check(a, b, sourceEncoding = "UTF-8")
         }.reason)
-        for (unsupported in listOf("CP932", "GB18030")) {
+        for (unsupported in listOf("CP1252", "unknown-encoding")) {
             assertEquals("UNSUPPORTED_ENCODING", assertThrows(LocalizationCheckException::class.java) {
                 LocalizationChecker.check(a, b, sourceEncoding = unsupported)
             }.reason)
@@ -206,6 +287,10 @@ class LocalizationCheckTest {
             LocalizationChecker.check(a, b, profile = "named") { ++polls > 15 }
         }
         assertTrue(polls > 15)
+        Thread.currentThread().interrupt()
+        try {
+            assertThrows(CancellationException::class.java) { LocalizationChecker.check(a, b) { false } }
+        } finally { Thread.interrupted() }
     }
 
     @Test fun workspaceToolSharesRulesAndRejectsOutsidePathsAndInvalidParameters() {
@@ -239,7 +324,7 @@ class LocalizationCheckTest {
         val path = System.getenv("UU_LOCALIZATION_ORACLE")
         assumeTrue("Generate the optional Python Formatter corpus with scripts/localization_oracle.py", path != null)
         val rows = JSONArray(File(checkNotNull(path)).readText())
-        assertTrue(rows.length() >= 100)
+        assertTrue(rows.length() >= 1500)
         for (index in 0 until rows.length()) {
             val row = rows.getJSONObject(index)
             val before = localizationArguments(row.getString("source"), "named")

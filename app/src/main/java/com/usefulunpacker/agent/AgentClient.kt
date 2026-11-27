@@ -104,7 +104,7 @@ internal enum class AgentReadTool(
         setOf("path"), "matches", setOf("engine", "confidence", "evidence")),
     VN_INSPECT("Plan VN localization from engine markers, script source candidates, compiled data and archives. Use . for the workspace root. Does not read or change file contents.",
         setOf("path"), "candidates", setOf("path", "kind", "format")),
-    LOCALIZATION_CHECK("Local text checks. Defaults: profile=encoding, sourceEncoding/translationEncoding=auto (BOM or valid UTF-8 only), targetEncoding=translation. Use named/printf profiles only when the user confirms simple Python format/POSIX printf grammar and physical-line correspondence. No translation-quality or engine verdict. Unknown grammar skips the line. Findings are paged metadata, never script text.",
+    LOCALIZATION_CHECK("Local text checks. Defaults: profile=encoding, sourceEncoding/translationEncoding=auto (BOM or valid UTF-8 only), targetEncoding=translation. Explicit encodings: UTF-8, SHIFT-JIS, CP932, GBK, GB18030, UTF-16, UTF-16LE, UTF-16BE. Use named/printf only after confirming Python format/POSIX printf grammar and physical-line correspondence. No translation-quality or engine verdict. Unknown grammar skips the line. Returns bounded metadata and coverage, never script text.",
         setOf("source", "translation", "sourceEncoding", "translationEncoding", "targetEncoding", "profile", "after"), "issues", setOf("code", "severity", "line"),
         taskModes = setOf(AgentTaskMode.LOCALIZATION)),
     REFERENCE_SEARCH("Find at most eight local guide titles when the user asks or a specific format, encoding or tool issue is unresolved. No guide text is returned.",
@@ -139,10 +139,15 @@ internal enum class AgentReadTool(
         return JSONObject().put(arrayKey, page).apply {
             when (this@AgentReadTool) {
                 LOCALIZATION_CHECK -> {
-                    for (key in listOf("status", "profile", "aligned", "lineChecks", "skippedLines", "sourceLines", "translationLines", "sourceEncoding",
+                    for (key in listOf("status", "profile", "aligned", "lineChecks", "skippedLines", "checkedLines", "placeholderLines", "sourceLines", "translationLines", "sourceEncoding",
                         "translationEncoding", "targetEncoding", "totalIssues", "errors", "warnings", "limited", "nextAfter")) {
                         if (data.has(key)) put(key, data.get(key))
                     }
+                    val skipped = data.optJSONArray("skippedExamples") ?: JSONArray()
+                    put("skippedExamples", JSONArray((0 until minOf(5, skipped.length())).map { index ->
+                        val row = skipped.getJSONObject(index)
+                        JSONObject().apply { for (key in listOf("line", "side", "code")) if (row.has(key)) put(key, row.get(key)) }
+                    }))
                 }
                 SCAN -> put("totalHits", data.optInt("totalHits"))
                 DETECT_GAME_ENGINE -> {

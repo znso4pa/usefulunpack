@@ -20,11 +20,22 @@ internal data class LocalizationIssue(val rule: LocalizationRule, val line: Int?
         .apply { line?.let { put("line", it) } }
 }
 
+internal data class LocalizationSkip(val line: Int, val side: String, val original: String?, val translation: String?) {
+    fun json() = JSONObject().put("line", line).put("side", side).put("code", "UNSUPPORTED_GRAMMAR")
+}
+
+private fun localizationExcerpt(text: String): String {
+    if (text.length <= 240) return text
+    val end = if (text[239].isHighSurrogate()) 239 else 240
+    return text.take(end) + "…"
+}
+
 internal data class LocalizationReport(
     val sourceLines: Int, val translationLines: Int,
     val sourceEncoding: String, val translationEncoding: String, val targetEncoding: String,
     val issues: List<LocalizationIssue>, val totalIssues: Int, val errors: Int,
     val profile: String, val skippedLines: Int,
+    val checkedLines: Int, val placeholderLines: Int, val skippedExamples: List<LocalizationSkip>,
 ) {
     val aligned: Boolean get() = sourceLines == translationLines
     val limited: Boolean get() = totalIssues > issues.size
@@ -45,6 +56,8 @@ internal data class LocalizationReport(
                 skippedLines > 0 -> "PARTIAL_GRAMMAR"
                 else -> "APPLIED"
             }).put("skippedLines", skippedLines)
+            .put("checkedLines", checkedLines).put("placeholderLines", placeholderLines)
+            .put("skippedExamples", JSONArray(skippedExamples.take(5).map(LocalizationSkip::json)))
             .put("sourceLines", sourceLines).put("translationLines", translationLines)
             .put("sourceEncoding", sourceEncoding).put("translationEncoding", translationEncoding)
             .put("targetEncoding", targetEncoding).put("totalIssues", totalIssues)
@@ -70,26 +83,29 @@ internal object LocalizationChecker {
         cancelled: () -> Boolean = { Thread.currentThread().isInterrupted },
     ): LocalizationReport {
         if (profile !in setOf("encoding", "named", "printf")) throw LocalizationCheckException("UNSUPPORTED_PROFILE")
-        fun active() { if (cancelled()) throw CancellationException() }
+        fun active() { if (cancelled() || Thread.currentThread().isInterrupted) throw CancellationException() }
         val before = read(source, sourceEncoding, ::active)
         val after = read(translation, translationEncoding, ::active)
         val output = when (targetEncoding) {
             "source" -> before.encoding
             "translation" -> after.encoding
-            else -> explicitEncoding(targetEncoding)
+            else -> targetEncoding.also { localizationCharset(it) }
         }
-        val encoder = LineEditEncoding.forSnapshot(output, before.bytes).charset.newEncoder()
+        val encoder = localizationCharset(output, if (targetEncoding == "source") before.bytes else after.bytes).newEncoder()
         val issues = ArrayList<LocalizationIssue>()
         var total = 0
         var errors = 0
         var skipped = 0
+        var checked = 0
+        var placeholderLines = 0
+        val skippedExamples = ArrayList<LocalizationSkip>()
         val aligned = before.document.size == after.document.size
         fun issue(rule: LocalizationRule, line: Int? = null) {
             total++
             if (rule == LocalizationRule.TARGET_UNMAPPABLE) errors++
             if (issues.size < MAX_ISSUES) {
                 fun excerpt(document: LineEditDocument): String? = line?.let { document.original(it - 1) }
-                    ?.let { if (it.length > 240) it.take(240) + "…" else it }
+                    ?.let(::localizationExcerpt)
                 issues.add(LocalizationIssue(rule, line, if (aligned) excerpt(before.document) else null, excerpt(after.document)))
             }
         }
@@ -102,12 +118,21 @@ internal object LocalizationChecker {
             val original = before.document.original(index)
             val expected = localizationArguments(original, profile, ::active)
             val actual = localizationArguments(translated, profile, ::active)
-            if (expected == null || actual == null) { skipped++; continue }
+            if (expected == null || actual == null) {
+                skipped++
+                if (skippedExamples.size < 20) {
+                    val side = if (expected == null) { if (actual == null) "BOTH" else "SOURCE" } else "TRANSLATION"
+                    skippedExamples.add(LocalizationSkip(index + 1, side, localizationExcerpt(original), localizationExcerpt(translated)))
+                }
+                continue
+            }
+            checked++
+            if (expected.isNotEmpty() || actual.isNotEmpty()) placeholderLines++
             if (expected != actual) issue(LocalizationRule.PLACEHOLDERS_CHANGED, index + 1)
         }
         active()
         return LocalizationReport(before.document.size, after.document.size, before.encoding, after.encoding,
-            output, issues, total, errors, profile, skipped)
+            output, issues, total, errors, profile, skipped, checked, placeholderLines, skippedExamples)
     }
 
     private fun read(file: File, selected: String, active: () -> Unit): Text {
@@ -135,15 +160,11 @@ internal object LocalizationChecker {
         val encoding = if (selected == "auto") {
             if (bytes.isEmpty()) "UTF-8" else detectBomEncoding(bytes) ?: "UTF-8".takeIf { looksLikeUtf8(bytes) }
                 ?: throw LocalizationCheckException("CHOOSE_ENCODING")
-        } else explicitEncoding(selected)
-        val layout = LineEditEncoding.forSnapshot(encoding, bytes)
-        val skip = when {
-            encoding == "UTF-8" && detectBomEncoding(bytes) == "UTF-8" -> 3
-            encoding == "UTF-16" && detectBomEncoding(bytes) == "UTF-16" -> 2
-            else -> 0
-        }
+        } else selected
+        val charset = localizationCharset(encoding, bytes)
+        val skip = localizationBomSize(encoding, bytes)
         val value = try {
-            layout.charset.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+            charset.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT)
                 .decode(ByteBuffer.wrap(bytes, skip, bytes.size - skip)).toString()
         } catch (_: CharacterCodingException) { throw LocalizationCheckException("INVALID_ENCODING") }
@@ -166,12 +187,6 @@ internal object LocalizationChecker {
         val document = LineEditDocument(value)
         if (document.size > MAX_LINES) throw LocalizationCheckException("TEXT_LIMIT")
         return Text(document, encoding, bytes)
-    }
-
-    /** Do not silently narrow CP932 to Shift-JIS or GB18030 to GBK in a validation tool. */
-    private fun explicitEncoding(value: String): String {
-        if (value !in TEXT_ENCODINGS) throw LocalizationCheckException("UNSUPPORTED_ENCODING")
-        return value
     }
 
 }

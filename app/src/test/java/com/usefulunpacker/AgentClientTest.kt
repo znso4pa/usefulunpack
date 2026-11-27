@@ -770,6 +770,74 @@ class AgentClientTest {
         assertTrue(events.any { it.failure == "PARTIAL_FAILURE" })
     }
 
+    @Test fun translationTurnExposesOnlyDraftToolsAndSendsSelectedTextOnce() {
+        val root=java.nio.file.Files.createTempDirectory("translation-wire-").toFile().canonicalFile
+        try {
+            val file=root.resolve("script.txt").apply { writeText("private other row\nHello {name}\r\n") }
+            val draft=TranslationDraft.open(file,"UTF-8","UTF-8")
+            val turn=draft.begin(1,1)
+            val requests=mutableListOf<JSONObject>();val events=mutableListOf<String>()
+            val runtime=object: AppSkillRuntime {
+                override fun skills()=emptyList<AppSkillDefinition>()
+                override fun invokeSkill(name:String,input:JSONObject):AppSkillResult=error("No workspace tools permitted")
+            }
+            fun call(name:String,input:JSONObject)=JSONObject().put("tool_calls",JSONArray().put(JSONObject().put("id","c${requests.size}").put("type","function")
+                .put("function",JSONObject().put("name",name).put("arguments",input.toString()))))
+            ModelServer { _,body ->
+                requests.add(JSONObject(body.toString()))
+                val message=when(requests.size) {
+                    1 -> call(TranslationTurn.READ,JSONObject()).put("reasoning_content","Read selected rows")
+                    2 -> call(TranslationTurn.PROPOSE,JSONObject().put("revision",turn.token).put("translations",JSONArray(listOf("你好 {name}"))))
+                        .put("reasoning_content","Fill draft only")
+                    else -> JSONObject().put("content","Draft ready")
+                }
+                Reply("200 OK",JSONObject().put("choices",JSONArray().put(JSONObject().put("message",message))))
+            }.use { server ->
+                val client=AgentClient(checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/v1")),"model","",AgentRequest())
+                assertEquals("Draft ready",client.complete(emptyList(),"Translate",runtime,permission=AgentPermission.FULL_LOCAL,
+                    translation=turn,onReasoning={events.add("reason:$it")},confirm={error("Draft proposal needs no file-write approval")},
+                    onTool={events.add("${it.name}:${it.stage}")}))
+            }
+            assertEquals("你好 {name}",draft.value(1));assertEquals("private other row\nHello {name}\r\n",file.readText())
+            assertEquals(3,requests.size)
+            for (request in requests) {
+                val tools=request.getJSONArray("tools")
+                assertEquals(2,tools.length());assertFalse(tools.toString().contains("WRITE_TEXT"))
+                assertFalse(request.toString().contains("private other row"));assertFalse(request.toString().contains(file.path))
+            }
+            assertTrue(requests[1].toString().contains("Hello {name}"))
+            assertFalse(requests[2].toString().contains("Hello {name}"))
+            assertEquals(listOf("reason:Read selected rows","${TranslationTurn.READ}:RUNNING","${TranslationTurn.READ}:SUCCESS",
+                "reason:Fill draft only","${TranslationTurn.PROPOSE}:RUNNING","${TranslationTurn.PROPOSE}:SUCCESS"),events)
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun staleTranslationStopsWithoutRetryingOrOverwritingHumanEdits() {
+        val root=java.nio.file.Files.createTempDirectory("translation-stale-").toFile().canonicalFile
+        try {
+            val file=root.resolve("script.txt").apply { writeText("Original") }
+            val draft=TranslationDraft.open(file,"UTF-8","UTF-8");val turn=draft.begin(0,1)
+            var requests=0
+            val runtime=object: AppSkillRuntime {
+                override fun skills()=emptyList<AppSkillDefinition>()
+                override fun invokeSkill(name:String,input:JSONObject):AppSkillResult=error("No file tools")
+            }
+            ModelServer { _,_ ->
+                requests++
+                val name=if(requests==1) TranslationTurn.READ else TranslationTurn.PROPOSE
+                if(requests==2) draft.edit(0,"Human edit")
+                val input=if(requests==1) JSONObject() else JSONObject().put("revision",turn.token).put("translations",JSONArray(listOf("AI edit")))
+                Reply("200 OK",JSONObject().put("choices",JSONArray().put(JSONObject().put("message",JSONObject().put("tool_calls",JSONArray().put(
+                    JSONObject().put("id","c$requests").put("type","function").put("function",JSONObject().put("name",name).put("arguments",input.toString()))))))))
+            }.use { server ->
+                val client=AgentClient(checkNotNull(agentEndpoint("http://127.0.0.1:${server.port}/v1")),"model","",AgentRequest())
+                val error=assertThrows(AgentClientException::class.java) { client.complete(emptyList(),"Translate",runtime,translation=turn,onTool={}) }
+                assertEquals("translation_batch",error.stage);assertEquals("STALE_DRAFT",error.message)
+            }
+            assertEquals(2,requests);assertEquals("Human edit",draft.value(0));assertEquals("Original",file.readText())
+        } finally { root.deleteRecursively() }
+    }
+
     private data class Reply(val status: String, val body: JSONObject? = null, val location: String? = null)
 
     private class ModelServer(reply: (String, JSONObject) -> Reply) : AutoCloseable {

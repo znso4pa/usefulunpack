@@ -107,7 +107,7 @@ internal class LineEditEncoding private constructor(val charset: Charset, privat
                 encoding == "UTF-16" && detectBomEncoding(original) == "UTF-16" &&
                     original[0] == 0xfe.toByte() -> Charsets.UTF_16BE
                 encoding == "UTF-16" -> Charsets.UTF_16LE
-                else -> Charset.forName(encoding)
+                else -> if (encoding in LOCALIZATION_ENCODINGS) localizationCharset(encoding, original) else Charset.forName(encoding)
             }
             val prefix = if (bom) when (charset) {
                 Charsets.UTF_16BE -> byteArrayOf(0xfe.toByte(), 0xff.toByte())

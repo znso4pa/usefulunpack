@@ -14,6 +14,7 @@
 
 | 功能 | 說明 |
 |------|------|
+| **Agent 翻譯工作台** | 從文字預覽進入，左欄原文唯讀、右欄 AI 分批填寫草稿；支援手改、復原、預覽及對話還原，第三級權限確認後儲存副本。[使用與真機測試](docs/agent-translation.md)。 |
 | **檔案 Agent / 任務中心** | 從首頁或更多選單進入。四級權限、任務模式、本機對話、按需文件與變更回執。檔案工具在本機執行；模型對話及獲准工具結果傳送至使用者設定的 Base URL。[本機 MCP](docs/local-mcp.md) · [Token 驗收](docs/agent-token-matrix.md)。 |
 | **目錄比對 / UU 檢查** | 長按資料夾 → 與另一個目錄比對。唯讀比較實際位元組、篩選變化，在原視窗查看文字增刪。共用 `COMPARE_DIRECTORY`、`uu dircmp` / `uu check`，UUT 可直接呼叫。[規則與結束碼](docs/directory-comparison.md)。 |
 | **漢化檢查** | 文字預覽 → 漢化檢查。完全本機唯讀，預設僅嚴格編碼；確認語法與逐行對應後可啟用 Python 格式欄位 / POSIX printf 參數檢查。明確顯示跳過範圍，Agent/MCP 共用分頁摘要。[規則與限制](docs/localization-check.md)。 |

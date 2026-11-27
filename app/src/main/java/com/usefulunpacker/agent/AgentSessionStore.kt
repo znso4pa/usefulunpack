@@ -54,6 +54,7 @@ internal data class AgentSession(
     val customName: String? = null,
     val maxOutputTokens: Int = DEFAULT_AGENT_OUTPUT_TOKENS,
     val taskMode: AgentTaskMode = AgentTaskMode.GENERAL,
+    val translation: Boolean = false,
 ) {
     val title: String get() = customName ?: turns.firstOrNull()?.question?.lineSequence()?.firstOrNull().orEmpty().take(70)
     val feature: String get() = "agent_session_$id"
@@ -82,11 +83,12 @@ internal data class AgentSession(
         require(outputTokens in AGENT_OUTPUT_TOKEN_RANGE)
         if (baseUrl == url && model == modelName) return copy(maxOutputTokens = outputTokens)
         if (changesModelEndpoint(url)) {
-            return AgentSession(baseUrl = url, model = modelName, maxOutputTokens = outputTokens)
+            return AgentSession(baseUrl = url, model = modelName, maxOutputTokens = outputTokens,
+                translation = translation, workspace = workspace.takeIf { translation }, taskMode = if (translation) AgentTaskMode.LOCALIZATION else AgentTaskMode.GENERAL)
         }
         if (turns.isNotEmpty()) {
             return AgentSession(workspace = workspace, context = context, baseUrl = url, model = modelName,
-                maxOutputTokens = outputTokens, taskMode = taskMode)
+                maxOutputTokens = outputTokens, taskMode = taskMode, translation = translation)
         }
         return copy(baseUrl = url, model = modelName, maxOutputTokens = outputTokens)
     }
@@ -126,7 +128,7 @@ internal class AgentSessionStore(private val directory: File) {
         read(file).also { summaries[file.absoluteFile] = CachedSummary(file.stamp(), it.summary) }
     }
 
-    fun save(session: AgentSession, inFlight: Boolean = false): AgentSession = synchronized(lock) {
+    fun save(session: AgentSession, inFlight: Boolean = false, translation: TranslationSnapshot? = null): AgentSession = synchronized(lock) {
         if (!inFlight && session.id in active) throw IOException("Agent session is running")
         val file = file(session.id)
         val revision = if (file.isFile) read(file).revision else 0L
@@ -150,9 +152,14 @@ internal class AgentSessionStore(private val directory: File) {
             .put("t", saved.customName)
             .put("b", saved.maxOutputTokens.takeUnless { it == DEFAULT_AGENT_OUTPUT_TOKENS })
             .put("j", saved.taskMode.name.takeUnless { saved.taskMode == AgentTaskMode.GENERAL })
+            .put("x", saved.translation.takeIf { it })
             .toString().toByteArray(Charsets.UTF_8)
         if (data.size > SESSION_LIMIT) throw IOException("Agent session exceeds the storage limit")
         if (!directory.isDirectory && !directory.mkdirs()) throw IOException("Cannot create Agent session directory")
+        if (translation != null) {
+            if (!saved.translation) throw IOException("Translation session required")
+            writeTranslationSnapshot(translationFile(session.id), translation)
+        }
         val temp = temporaryFile(session.id)
         try {
             GZIPOutputStream(temp.outputStream()).use { it.write(data) }
@@ -176,6 +183,18 @@ internal class AgentSessionStore(private val directory: File) {
 
     fun finish(id: String) { synchronized(lock) { active.remove(id) } }
 
+    fun openTranslation(session: AgentSession): TranslationDraft? = synchronized(lock) {
+        if (session.translation && session.id in active) throw IOException("Translation session is running")
+        if (!session.translation) null else TranslationDraft(readTranslationSnapshot(translationFile(session.id)))
+    }
+
+    fun saveTranslation(id: String, snapshot: TranslationSnapshot) = synchronized(lock) {
+        val owner = file(id)
+        if (!owner.isFile) throw java.util.concurrent.CancellationException("Translation session was deleted")
+        if (!read(owner).translation) throw IOException("Translation session required")
+        writeTranslationSnapshot(translationFile(id), snapshot)
+    }
+
     fun delete(session: AgentSession, removeLogs: (String) -> Unit) = synchronized(lock) {
         if (session.id in active) throw IOException("Agent session is running")
         val file = file(session.id)
@@ -184,6 +203,8 @@ internal class AgentSessionStore(private val directory: File) {
         }
         removeLogs(session.feature)
         Files.deleteIfExists(temporaryFile(session.id).toPath())
+        Files.deleteIfExists(File(directory, "${session.id}.translation.gz.tmp").toPath())
+        Files.deleteIfExists(translationFile(session.id).toPath())
         Files.deleteIfExists(file.toPath())
         summaries.remove(file.absoluteFile)
         Unit
@@ -227,6 +248,7 @@ internal class AgentSessionStore(private val directory: File) {
             maxOutputTokens = data.optInt("b", DEFAULT_AGENT_OUTPUT_TOKENS)
                 .takeIf { it in AGENT_OUTPUT_TOKEN_RANGE } ?: DEFAULT_AGENT_OUTPUT_TOKENS,
             taskMode = AgentTaskMode.entries.firstOrNull { it.name == data.optString("j") } ?: AgentTaskMode.GENERAL,
+            translation = data.optBoolean("x", false),
         )
     }
 
@@ -236,6 +258,7 @@ internal class AgentSessionStore(private val directory: File) {
     }
 
     private fun temporaryFile(id: String) = File(directory, "$id.tmp")
+    private fun translationFile(id: String): File { file(id); return File(directory, "$id.translation.gz") }
 
     private data class FileStamp(val modified: Long, val length: Long)
     private data class CachedSummary(val stamp: FileStamp, val summary: AgentSessionSummary)

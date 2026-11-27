@@ -30,10 +30,10 @@ private const val MAX_PROMPT_CHARS = 4096
 
 private data class AgentDraft(val text: String, val unsavedSession: AgentSession?)
 
-internal fun MainActivity.showAgent() {
+internal fun MainActivity.showAgent(initialTranslation: TranslationDraft? = null, openingTabId: Int = activeTab.tabId) {
     val storage = Environment.getExternalStorageDirectory()
     val initialDir = currentDir
-    val ownerTabId = activeTab.tabId
+    val ownerTabId = openingTabId
     val store = AgentSessionStore(File(noBackupFilesDir, "agent-sessions"))
     val credentials = AgentCredentials(File(noBackupFilesDir, "agent-credentials"))
     fun newSession() = AgentSession(
@@ -42,7 +42,17 @@ internal fun MainActivity.showAgent() {
         maxOutputTokens = prefs.getInt(PREF_AGENT_OUTPUT_TOKENS, DEFAULT_AGENT_OUTPUT_TOKENS)
             .takeIf { it in AGENT_OUTPUT_TOKEN_RANGE } ?: DEFAULT_AGENT_OUTPUT_TOKENS,
     )
-    var session = newSession()
+    var translation = initialTranslation
+    var session = newSession().let { if (initialTranslation == null) it else it.copy(
+        workspace = initialTranslation.source.parent, taskMode = AgentTaskMode.LOCALIZATION, translation = true)
+        .withName(getString(R.string.translation_session, initialTranslation.source.name)) }
+    var translationView: TranslationWorkspaceView? = null
+    var persistTranslation: () -> Unit = {}
+    var exportTranslation: () -> Unit = {}
+    val translationOwner = Any()
+    var claimedTranslation: String? = null
+    var releaseTranslation: () -> Unit = {}
+    val translationHost = FrameLayout(this).apply { isVisible = false }
     val drafts = mutableMapOf<String, AgentDraft>()
     var pendingReference: AgentReferenceDocument? = null
     var activeRequest: AgentRequest? = null
@@ -108,6 +118,7 @@ internal fun MainActivity.showAgent() {
         actionStyle = ActionStyle.TEXT
         setText(R.string.action_close)
     }
+    val workbench = UuButton(this).apply { actionStyle = ActionStyle.TEXT; setText(R.string.translation_tab); isVisible = initialTranslation != null }
     conversation.addView(details)
     conversation.addSpaced(TextView(this).apply {
         UuMetrics.text(this)
@@ -121,6 +132,7 @@ internal fun MainActivity.showAgent() {
         setBackgroundColor(context.getColor(R.color.bg_surface_raised))
         addView(sessionRow, LinearLayout.LayoutParams(0, WRAP, 1f))
         addView(settings, LinearLayout.LayoutParams(WRAP, WRAP))
+        addView(workbench, LinearLayout.LayoutParams(WRAP, WRAP))
         addView(close, LinearLayout.LayoutParams(WRAP, WRAP))
     }
     lateinit var changeView: AgentChangesView
@@ -128,6 +140,8 @@ internal fun MainActivity.showAgent() {
         changeView.isVisible = false
         scroll.isVisible = true
         conversationHeader.isVisible = true
+        translationHost.isVisible = false
+        workbench.setText(R.string.translation_tab)
     }
     val composer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     changeView = AgentChangesView(this) {
@@ -139,6 +153,7 @@ internal fun MainActivity.showAgent() {
         prompt.clearFocus()
         changeView.show(change)
         changeView.isVisible = true
+        translationHost.isVisible = false
         scroll.isVisible = false
         conversationHeader.isVisible = false
         composer.isVisible = false
@@ -149,6 +164,7 @@ internal fun MainActivity.showAgent() {
         addView(FrameLayout(context).apply {
             addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
             addView(changeView, FrameLayout.LayoutParams(MATCH, MATCH))
+            addView(translationHost, FrameLayout.LayoutParams(MATCH, MATCH))
         }, LinearLayout.LayoutParams(MATCH, 0, 1f))
         addView(composer.apply {
             val inset = UuMetrics.px(context, R.dimen.space_sm)
@@ -165,9 +181,9 @@ internal fun MainActivity.showAgent() {
     }
     val dialog = UuDialogBuilder(this).setView(panel).create()
     dialog.setOnKeyListener { _, key, event ->
-        if (key == KeyEvent.KEYCODE_BACK && changeView.isVisible) {
+        if (key == KeyEvent.KEYCODE_BACK && (changeView.isVisible || translationHost.isVisible)) {
             if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) {
-                returnToConversation()
+                if (!translationHost.isVisible || translationView?.backToTable() != true) returnToConversation()
                 composer.isVisible = true
             }
             true
@@ -192,15 +208,39 @@ internal fun MainActivity.showAgent() {
     }
     close.setOnClickListener { dialog.dismiss() }
 
+    fun showTranslation() {
+        if (translationView == null) return
+        scroll.isVisible = false; changeView.isVisible = false; translationHost.isVisible = true
+        conversationHeader.isVisible = true; composer.isVisible = true
+        workbench.setText(R.string.translation_chat)
+    }
+    workbench.setOnClickListener { if (translationHost.isVisible) returnToConversation() else showTranslation() }
+    fun bindTranslation() {
+        translationHost.removeAllViews()
+        workbench.isVisible = translation != null
+        if (translation != null && !TranslationEditors.claim(session.id, translationOwner)) {
+            translationView = null
+            status.setText(R.string.translation_busy); status.isVisible = true
+            return
+        }
+        if (translation != null) claimedTranslation = session.id
+        translationView = translation?.let { draft -> TranslationWorkspaceView(this, draft, { persistTranslation() }, {
+            if (prompt.text.isNullOrBlank()) prompt.setText(getString(R.string.translation_prompt))
+            send.performClick()
+        }, { exportTranslation() }).also { translationHost.addView(it, FrameLayout.LayoutParams(MATCH, MATCH)) } }
+        if (translationView != null) showTranslation()
+    }
+
     fun isOpen() = dialog.window?.decorView?.isAttachedToWindow == true
 
     fun showSettings(expanded: Boolean) {
+        if (expanded && translationHost.isVisible) returnToConversation()
         details.visibility = if (expanded) View.VISIBLE else View.GONE
         settings.isSelected = expanded
         if (expanded) scroll.scrollTo(0, 0)
     }
 
-    settings.setOnClickListener { showSettings(details.visibility != View.VISIBLE) }
+    settings.setOnClickListener { showSettings(translationHost.isVisible || details.visibility != View.VISIBLE) }
 
     fun setReference(document: AgentReferenceDocument?) {
         pendingReference = document
@@ -267,6 +307,33 @@ internal fun MainActivity.showAgent() {
 
     fun storageFailure() = showStatus(getString(R.string.agent_storage_failed, recordStorageFailure(session.feature).logId))
 
+    var pendingDraftSave: Runnable? = null
+    fun flushTranslation(release: Boolean = false) {
+        pendingDraftSave?.let(panel::removeCallbacks)
+        pendingDraftSave = null
+        val draft = translation ?: return
+        val owner = session.id
+        if (claimedTranslation != owner) return
+        val snapshot = draft.snapshot()
+        featureThread {
+            try { store.saveTranslation(owner, snapshot) }
+            catch (_: CancellationException) { AppDiagnostics.begin("translation_autosave").cancelled() }
+            catch (_: Exception) {
+                val failure = recordStorageFailure("agent_session_$owner")
+                runFeatureOnUiThread {
+                    if (isFinishing || isDestroyed) return@runFeatureOnUiThread
+                    if (isOpen() && session.id == owner) showStatus(getString(R.string.agent_storage_failed, failure.logId))
+                    else UuNotice.failure(this, getString(R.string.agent_storage_failed, failure.logId), android.widget.Toast.LENGTH_LONG).show()
+                }
+            } finally { if (release) TranslationEditors.release(owner, translationOwner) }
+        }
+    }
+    releaseTranslation = { flushTranslation(release = true); claimedTranslation = null }
+    persistTranslation = {
+        pendingDraftSave?.let(panel::removeCallbacks)
+        pendingDraftSave = Runnable { flushTranslation() }.also { panel.postDelayed(it, 750) }
+    }
+
     fun sessionTitle(item: AgentSession): String =
         item.title.ifBlank { getString(R.string.agent_new_session) }
 
@@ -282,7 +349,7 @@ internal fun MainActivity.showAgent() {
     }
 
     fun applySession(next: AgentSession) {
-        if (next.id != session.id) setReference(null)
+        if (next.id != session.id) { releaseTranslation(); setReference(null) }
         session = next
         refreshRows()
     }
@@ -293,6 +360,8 @@ internal fun MainActivity.showAgent() {
         }
     }
     fun loadSession(next: AgentSession, clearDraft: Boolean = true) {
+        if (next.id != session.id) releaseTranslation()
+        if (!next.translation) translation = null
         returnToConversation()
         composer.isVisible = true
         turnCards.clear()
@@ -314,17 +383,20 @@ internal fun MainActivity.showAgent() {
         followLatest()
         status.visibility = View.GONE
         if (clearDraft) prompt.text?.clear()
+        bindTranslation()
     }
 
-    fun switchSession(next: AgentSession) {
+    fun switchSession(next: AgentSession, nextTranslation: TranslationDraft? = null) {
         if (next.id == session.id) {
             if (next.revision > session.revision) loadSession(next, clearDraft = false)
             return
         }
         val draft = prompt.text.toString()
+        releaseTranslation()
         if (draft.isNotBlank()) {
             drafts[session.id] = AgentDraft(draft, session.takeIf { it.revision == 0L })
         }
+        translation = nextTranslation
         loadSession(next)
         drafts.remove(next.id)?.let {
             prompt.setText(it.text)
@@ -339,6 +411,8 @@ internal fun MainActivity.showAgent() {
         send.visibility = if (busy) View.GONE else View.VISIBLE
         stop.visibility = if (cancellable) View.VISIBLE else View.GONE
         stop.isEnabled = cancellable
+        if (session.translation) { workspaceRow.isEnabled = false; engineRow.isEnabled = false; mode.isEnabled = false }
+        translationView?.setGenerating(busy)
     }
 
     fun saveSettings(
@@ -346,10 +420,12 @@ internal fun MainActivity.showAgent() {
         saved: (AgentSession) -> Unit = {},
         failed: (AppFailure) -> Unit = {},
     ) {
+        if (next.translation && claimedTranslation != session.id) { showStatus(getString(R.string.translation_busy)); return }
+        val snapshot = if (next.translation) translation?.snapshot() else null
         setBusy(true, cancellable = false)
         featureThread {
             var failure: AppFailure? = null
-            val updated = try { store.save(next) } catch (_: Exception) {
+            val updated = try { store.save(next, translation = snapshot) } catch (_: Exception) {
                 failure = recordStorageFailure(next.feature)
                 null
             }
@@ -405,6 +481,7 @@ internal fun MainActivity.showAgent() {
 
     fun deleteSession() {
         val target = session
+        if (TranslationEditors.heldByOther(target.id, translationOwner)) { showStatus(getString(R.string.translation_busy)); return }
         UuDialogBuilder(this).setTitle(R.string.agent_delete_session)
             .setMessage(R.string.agent_delete_session_detail)
             .setNegativeButton(R.string.action_cancel, null)
@@ -433,7 +510,8 @@ internal fun MainActivity.showAgent() {
         setBusy(true, cancellable = false)
         showStatus(getString(R.string.agent_sessions_loading))
         featureThread {
-            val opened = try { store.open(choice.id) } catch (_: Exception) { null }
+            var openedTranslation: TranslationDraft? = null
+            val opened = try { store.open(choice.id).also { openedTranslation = store.openTranslation(it) } } catch (_: Exception) { null }
             runFeatureOnUiThread {
                 if (isFinishing || isDestroyed || !isOpen()) return@runFeatureOnUiThread
                 setBusy(false)
@@ -442,7 +520,7 @@ internal fun MainActivity.showAgent() {
                     showStatus(getString(R.string.agent_storage_failed, failure.logId))
                 } else {
                     status.visibility = View.GONE
-                    switchSession(opened)
+                    switchSession(opened, openedTranslation)
                 }
             }
         }
@@ -623,6 +701,42 @@ internal fun MainActivity.showAgent() {
         return choice.get()
     }
 
+    exportTranslation = export@ {
+        val draft = translation ?: return@export
+        if (claimedTranslation != session.id) { showStatus(getString(R.string.translation_busy)); return@export }
+        if (activeRequest != null) return@export
+        if (session.permission < AgentPermission.EDIT_FILES) {
+            showSettings(true); showStatus(getString(R.string.translation_permission)); return@export
+        }
+        val owner = session.id
+        val snapshot = draft.snapshot()
+        UuDialogBuilder(this).setTitle(R.string.line_edit_save_copy)
+            .setMessage(getString(R.string.translation_export_notice, visibleAgentText(draft.source.name), snapshot.edits.size))
+            .setNegativeButton(R.string.action_cancel, null).setPositiveButton(R.string.action_save) { _, _ ->
+                if (!isOpen() || session.id != owner || session.permission < AgentPermission.EDIT_FILES || activeRequest != null) return@setPositiveButton
+                val scope = AppDiagnostics.enterIntent("translation_export", newChain = true)
+                setBusy(true, cancellable = false)
+                try {
+                    featureThread {
+                        var failure: AppFailure? = null
+                        val output = try {
+                            TranslationDraft(snapshot).export().also { scope.trace.publishOutput(it); scope.trace.success() }
+                        } catch (e: Exception) {
+                            failure = scope.trace.fail(FailureCode.IO, (e as? TranslationProblem)?.reason ?: "TRANSLATION_EXPORT_FAILED", notifyUser = false)
+                            null
+                        }
+                        runFeatureOnUiThread {
+                            if (isFinishing || isDestroyed) return@runFeatureOnUiThread
+                            if (!isOpen() || session.id != owner) return@runFeatureOnUiThread
+                            setBusy(false)
+                            if (output != null) showStatus(getString(R.string.translation_saved, visibleAgentText(output.name)))
+                            else showStatus(getString(R.string.translation_failed, failure?.detail.orEmpty(), failure?.logId.orEmpty()))
+                        }
+                    }
+                } finally { AppDiagnostics.leaveIntent(scope) }
+            }.show()
+    }
+
     stop.setOnClickListener {
         activeRequest?.cancel()
         activeApproval?.dismiss()
@@ -634,7 +748,7 @@ internal fun MainActivity.showAgent() {
         val endpoint = agentEndpoint(session.baseUrl)
         val question = prompt.text.toString().trim()
         val reference = pendingReference
-        val localEngine = session.canCheckEngineLocally(question, reference != null)
+        val localEngine = !session.translation && session.canCheckEngineLocally(question, reference != null)
         val missing = when {
             selected == null -> R.string.agent_choose_workspace
             !localEngine && (endpoint == null || session.model.isBlank()) -> R.string.agent_model_missing
@@ -647,6 +761,24 @@ internal fun MainActivity.showAgent() {
             return@setOnClickListener
         }
         val originalSession = session
+        val attachedTranslation = translation
+        val translationTurn = try {
+            if (originalSession.translation && (attachedTranslation == null || translationView == null || claimedTranslation != originalSession.id)) throw TranslationProblem("MISSING_DRAFT")
+            translationView?.begin {
+                try { store.saveTranslation(originalSession.id, checkNotNull(attachedTranslation).snapshot()) }
+                finally {
+                    runFeatureOnUiThread {
+                        if (isFinishing || isDestroyed) return@runFeatureOnUiThread
+                        if (isOpen() && session.id == originalSession.id) translationView?.refreshRange()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            val reason = (e as? TranslationProblem)?.reason ?: "INVALID_DRAFT"
+            val failure = AppDiagnostics.begin("translation_batch").fail(FailureCode.INVALID_RESULT, reason, notifyUser = false)
+            showStatus(getString(R.string.translation_failed, reason, failure.logId))
+            return@setOnClickListener
+        }
         val request = AgentRequest()
         val scope = AppDiagnostics.enterIntent(originalSession.feature, newChain = true)
         val trace = scope.trace
@@ -740,6 +872,7 @@ internal fun MainActivity.showAgent() {
                                     deleteFile = { deleteAgentFile(workspace, it) },
                                     maxOutputTokens = running.maxOutputTokens,
                                     mode = running.taskMode,
+                                    translation = translationTurn,
                                     onUsage = { usage ->
                                         activityHistory.usage(usage)
                                         runFeatureOnUiThread {
@@ -839,9 +972,10 @@ internal fun MainActivity.showAgent() {
                                 failure.stage == "session_storage" -> getString(R.string.agent_storage_failed, failure.logId)
                                 failure.stage == "detect_game_engine" -> getString(R.string.agent_engine_failed, failure.logId)
                                 failure.stage == "model_budget" -> getString(R.string.agent_budget_failed, failure.logId)
+                                failure.stage == "translation_batch" -> getString(R.string.translation_failed, failure.detail, failure.logId)
                                 else -> getString(R.string.agent_failed, "${failure.code.name} · ${failure.logId}")
                             })
-                            else -> status.visibility = View.GONE
+                            else -> if (translationTurn != null && !translationTurn.applied) showStatus(getString(R.string.translation_no_proposal)) else status.visibility = View.GONE
                         }
                         if (follow && replyView != null) followLatest(replyView)
                     }
@@ -855,11 +989,15 @@ internal fun MainActivity.showAgent() {
     refreshRows()
     dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
         WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+    rootDialogToTab(dialog, ownerTabId)
     dialog.belowTabs(fillViewport = true) {
         activeRequest?.cancel()
+        releaseTranslation()
         activeApproval?.dismiss()
     }
     dialog.show()
+    bindTranslation()
+    if (initialTranslation != null) saveSettings(session)
 }
 
 private fun requireAgentWorkspace(storage: File, selected: File): McpWorkspace {

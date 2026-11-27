@@ -14,6 +14,7 @@ Supports **XP3** (Kirikiri), **PFS** (Artemis), **NSA/SAR** (NScripter), **YPF**
 
 | Feature | Description |
 |---------|-------------|
+| **Agent translation workbench** | Text preview → Agent translation workbench. Immutable original / editable translation columns, AI batches, local drafts, undo and preview. Save a copy after file-edit permission and confirmation. [Usage and device checks](docs/agent-translation.md). |
 | **File Agent / task center** | Open from Home or the overflow menu. Four permission levels, task modes, local sessions, on-demand guides and change receipts. File tools run locally; model conversations and permitted tool results go to your configured Base URL. [MCP](docs/local-mcp.md) · [Token acceptance](docs/agent-token-matrix.md). |
 | **Directory comparison / UU checks** | Long-press a folder → Compare with another directory. Read-only byte comparison, filtered changes and in-window text differences. Shared `COMPARE_DIRECTORY`, `uu dircmp` / `uu check`, and UUT support. [Rules and exits](docs/directory-comparison.md). |
 | **Localization check** | Text preview → Localization check. Conservative, local, read-only encoding checks; opt-in Python format-field / POSIX printf argument rules for confirmed matching lines. Coverage and paged metadata are shared with Agent/MCP. [Rules and limits](docs/localization-check.md). |

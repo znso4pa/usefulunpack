@@ -476,6 +476,7 @@
         <item>Terminal &amp; uu commands\nThe ⋋ overflow in the toolbar opens a full-screen terminal rooted to the current window: switch tabs and it hides, switch back and the session (output, history, cd) is untouched. Type "uu help" for the command set: uu fmt (supported formats), uu info &lt;file&gt; (one-line format key), uu l &lt;archive&gt; [-a] (list entries), uu scan &lt;file&gt; (signature scan). "ls" tags every file with an fN descriptor (numbered in the app\'s sort order, files only) and each scan hit registers as an fN byte-range descriptor — "uu l f0" lists an embedded ZIP without carving it out first; the descriptor goes stale if the host file changes. Built-ins: ls / pwd / cd (navigates the rooted window) / help; any other line runs in the system shell. "uu x &lt;archive&gt; [-o outdir] [entries] [-p pw]" extracts (entries accept wildcards matched against the full entry path, e.g. "uu x game.xp3 \"*.png\"", and "-j" on "uu l" prints the raw entry JSON) (progress is rendered inside the terminal itself — a walking bar with bytes, current file and entry counts, no dialogs) and ends with an all-set line; "uu c &lt;src&gt; &lt;out.ext&gt; [-f key] [level] [splitMB] [-p pw]" packs (out.pfs needs -f pfs or -f pf6). uu hash prints MD5 + SHA-256; uu cp / mv / rn / rm work on files (rm uses the recycle bin, -f deletes); uu cat prints a file inside an archive ("-e shift-jis"/"utf-8"/"utf-16"/"gbk" forces the encoding), uu grep -i searches text in folders or archives, uu set replaces one entry (saved as a -cn copy); a Kirikiri archive\'s cxdec encryption is reported by "uu l" (and by the preview title) and can be reproduced when packing ("uu c ... -e cxdec", needs xp3filter.tjs/.tpm or an encrypted .xp3 in the folder); tree / du / stat / mkdir / cso round out the rest, and wildcards work everywhere (uu x *.zip). Pipes work too — "uu l a.zip | grep main", "uu l a.zip > list.txt", "cd sub &amp;&amp; uu x *.zip" — and "uu run script.uut" runs a UUT script — variables ("set v = text"), script arguments ("uu run x.uut a b" → $1/$2/$argc/$args), output capture ("set v = $(uu info a.zip)", then "if v = xp3 then uu x a.zip"), inline and block branches ("if v = xp3" … "else" … "end"), loops ("for a in *.zip" … "end", counted "for i in 1..5"), file tests ("if exist out/"), "$?" (exit code of the previous command, works inside "a ; echo rc=$?"), "while" loops with "break" / "continue", "else if" chains, integer arithmetic ("set n = $n + 1"), numeric comparisons ("if n &gt; 3"), "||" chaining and "for x in $(command)" iterating output lines, plus "return [code]" to stop early. "uu l -t" shows archive entries as a tree, "uu l -S" sorts by size, "uu cat" also prints plain text files, "uu rmd" takes globs; "uu cp / uu mv -f" overwrite for repeatable scripts; UUT lines accept trailing "# comments"; filters add "sort [-r]"; only uu / ls / cd / pwd / help / echo may appear in a script, so it can never become a shell. Errors stop the script ("-k" keeps going) and each line is echoed. "uu img &lt;src...&gt; &lt;jpg|png|webp&gt; [-o dir] [-q n]" converts images (never overwrites, prints the real output path) and "uu fd [fN...]" lists the fN descriptors with size, offset and freshness. A script can also be started without typing anything: "am start --es uut /sdcard/x.uut" runs it headlessly and also writes &lt;script&gt;.log. Tap the progress line to cancel a running operation</item>
         <item>Localization check\nOpen a text preview and choose Localization check. Select source and translation files. Default: strict encoding only; BOM/newline/encoding changes are not errors. Enable Python format-field or POSIX printf rules only for known grammar and matching physical lines. Unknown grammar skips the line. Results show coverage and read-only excerpts; files are never changed. This does not grade translation quality or guarantee engine compatibility.</item>
         <item>Directory comparison and UU checks\nLong-press a folder → Compare with another directory. Choose another open tab or browse for a directory. Read-only byte comparison reports added, removed, modified and type changes; skipped/unreadable or changing files remain incomplete. Click a text entry for in-window line differences or Localization check. UU/UUT: uu dircmp a b -j; uu check a.txt b.txt --profile named -j. Exit 0 = no findings, 1 = differences/review, 2 = incomplete/error; use || or uu run -k when a script must handle differences.</item>
+        <item>Agent translation workbench\nText preview → Agent translation workbench. Choose output encoding, confirm plain-text rows, then set the start line and a batch of 1–8 rows. AI fills only the right-hand draft; chat keeps explanations and tool activity. Undo, restore a row and preview before saving a copy. Saving requires the third permission level. Drafts resume with their sessions; deleting a session deletes its draft.</item>
     </string-array>
 
 
@@ -1155,4 +1156,36 @@
     <string name="directory_open_source">Source</string>
     <string name="directory_open_target">Target</string>
     <string name="directory_byte_only">Bytes differ but decoded text lines are equal (for example, BOM, encoding or line endings).</string>
+
+    <!-- Agent translation draft workbench -->
+    <string name="translation_title">Agent translation workbench</string>
+    <string name="translation_tab">Translations</string>
+    <string name="translation_chat">Chat</string>
+    <string name="translation_session">Translation · %1$s</string>
+    <string name="translation_output">Output encoding</string>
+    <string name="translation_notice">Originals stay read-only. AI fills a private draft; selected original and current rows go to your configured model Base URL. Use physically aligned plain text; commands and script structure require manual review. Saving a copy requires file-edit permission and confirmation.</string>
+    <string name="translation_ack">Confirm plain text, one physical line per row</string>
+    <string name="translation_start">Start line (1-based)</string>
+    <string name="translation_count">Rows (1–8)</string>
+    <string name="translation_next">Next</string>
+    <string name="translation_generate">Ask AI</string>
+    <string name="translation_undo">Undo</string>
+    <string name="translation_reset_row">Restore this row</string>
+    <string name="translation_reset_all">Reset draft</string>
+    <string name="translation_reset_notice">Discard all translations in this draft and clear its undo history? Source and saved copies stay intact.</string>
+    <string name="translation_preview">Preview</string>
+    <string name="translation_table">Table</string>
+    <string name="translation_original">Original · read-only</string>
+    <string name="translation_target">Translation draft · editable</string>
+    <string name="translation_summary">%1$s · %2$d / %3$d rows changed · %4$s</string>
+    <string name="translation_preview_limit">Showing the first 65,536 characters. Saving includes the entire file.</string>
+    <string name="translation_prompt">Translate the selected plain-text rows into Simplified Chinese. Preserve placeholders, escapes and physical lines. Fill only the right-hand draft via the translation tools; explain problems in chat.</string>
+    <string name="translation_permission">Drafting is available; saving requires the third permission level (file editing) or higher.</string>
+    <string name="translation_export_notice">Save a new copy of %1$s with %2$d changed rows? Encoding and line endings follow this draft. The original stays intact.</string>
+    <string name="translation_saved">Copy saved: %1$s. Draft and undo remain available.</string>
+    <string name="translation_failed">Translation workbench: %1$s · %2$s</string>
+    <string name="translation_busy">This translation session is open in another window or is still saving.</string>
+    <string name="translation_no_proposal">No draft update was submitted this turn. Check the chat for the explanation.</string>
+    <string name="translation_start_short">From line</string>
+    <string name="translation_count_short">Rows</string>
 </resources>

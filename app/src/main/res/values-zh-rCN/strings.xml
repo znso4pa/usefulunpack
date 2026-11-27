@@ -466,6 +466,7 @@
         <item>终端与 uu 命令\n工具栏 ⋋ 打开全屏终端，扎根于当前窗口：切走隐藏、切回时输出/历史/cd 原样还在。输入 "uu help" 查看命令集：uu fmt（支持的格式）、uu info &lt;文件&gt;（单行格式 key）、uu l &lt;归档&gt; [-a]（列条目）、uu scan &lt;文件&gt;（签名扫描）。ls 会按应用的排序方式给每个文件发一个 fN 标签（只编文件）；每个扫描命中注册为 fN 字节区间描述符——"uu l f0" 无需落盘直接列内嵌 ZIP；宿主文件被改动后描述符失效。内建命令：ls / pwd / cd（导航扎根的窗口）/ help；其余命令由系统 shell 执行。"uu x &lt;归档&gt; [-o 输出目录] [条目] [-p 密码]" 解压（条目支持通配符，按完整条目路径匹配，例如「uu x game.xp3 "*.png"」；「uu l -j」输出原始条目 JSON）（进度直接画在终端里——滚动的进度条 + 字节数 + 当前文件名 + 条目计数，不弹对话框），完成输出 all set；"uu c &lt;源&gt; &lt;产物.ext&gt; [-f key] [等级] [分卷MB] [-p 密码]" 封包（out.pfs 需 -f pfs 或 -f pf6）。uu hash 输出 MD5 + SHA-256；uu cp / mv / rn / rm 管文件（rm 默认进回收站，-f 永久删）；uu cat 看包内文本（-e shift-jis/utf-8/utf-16/gbk 强制编码）、uu grep -i 搜目录或归档里的文本、uu set 替换包内单个条目（存为 -cn 副本）；吉里吉里归档的 cxdec 加密状态由「uu l」与预览标题报出，封包时可用「uu c ... -e cxdec」还原（需目录内有 xp3filter.tjs/.tpm 或一份已加密的 .xp3）；tree / du / stat / mkdir / cso 补齐其余，通配符全命令可用（uu x *.zip）。也支持管道与串联：「uu l a.zip | grep main」「uu l a.zip > list.txt」「cd sub &amp;&amp; uu x *.zip」，以及「uu run 脚本.uut」执行 UUT 脚本——变量（"set v = 文本"）、脚本参数（"uu run x.uut a b" → $1/$2/$argc/$args）、捕获输出（"set v = $(uu info a.zip)"，随后 "if v = xp3 then uu x a.zip"）、行内与块式分支（"if v = xp3" … "else" … "end"）、循环（"for a in *.zip" … "end"，计数用 "for i in 1..5"）、文件测试（"if exist out/"）、「上一条命令的退出码」"$?"（"a ; echo rc=$?" 里也能读到）、带 "break"/"continue" 的 "while" 循环、"else if" 链、整数算术（"set n = $n + 1"）、数值比较（"if n &gt; 3"）、"||" 串联、按行遍历命令输出的 "for x in $(命令)"，以及提前结束的 "return [退出码]"。「uu l -t」把归档条目画成树、「uu l -S」按大小排序、「uu cat」可直接读纯文本文件、「uu rmd」条目通配；「uu cp / uu mv -f」可覆盖（脚本可重复跑）；UUT 行尾支持 "# 注释"；管道过滤器新增 "sort [-r]"；脚本里只允许 uu / ls / cd / pwd / help / echo，所以它永远不会变成 shell。出错即停（"-k" 继续），每行都有回显。「uu img &lt;源…&gt; &lt;jpg|png|webp&gt; [-o 目录] [-q 1-100]」转换图片（永不覆盖，逐条打印实际输出路径），「uu fd [fN…]」列出 fN 描述符（含大小、偏移与新鲜度）。也可以一个字都不敲就跑脚本："am start --es uut /sdcard/x.uut" 无界面执行，并同时落一份 &lt;脚本&gt;.log。运行中点进度行可取消</item>
         <item>汉化检查\n打开文本预览 → 汉化检查，选择原文和译文。默认仅严格编码，BOM、换行和编码变化本身不算问题。仅在确认语法且逐行对应时启用 Python 格式字段或 POSIX printf 规则；未知语法跳过整行。结果显示覆盖范围和只读文本片段，不会修改文件，不评价翻译质量，也不保证引擎兼容。</item>
         <item>目录对比与 UU 检查\n长按文件夹 → 与另一个目录对比，可选已有 Tab 目录或浏览选择。只读比较实际字节，列出新增、删除、修改和类型变化；跳过、不可读或变化中的文件标为未完成。点击文本在本窗口看逐行增删，也可进入汉化检查。UU/UUT：uu dircmp a b -j；uu check a.txt b.txt --profile named -j。退出码 0 为无发现，1 为差异或待确认，2 为未完成或错误；脚本需处理差异时可使用 || 或 uu run -k。</item>
+        <item>Agent 翻译工作台\n文本预览 → Agent 翻译工作台，选择输出编码并确认逐行纯文本。指定起始行与 1–8 行批次，AI 仅填写右侧草稿，解释与工具活动留在对话区。支持撤销、单行还原和预览；第三档权限确认后保存副本。草稿随会话恢复，删除会话也删除草稿。</item>
     </string-array>
 
 
@@ -1152,4 +1153,36 @@
     <string name="directory_open_source">查看原文件</string>
     <string name="directory_open_target">查看目标文件</string>
     <string name="directory_byte_only">字节不同，但解码后的文本行相同（例如 BOM、编码或换行差异）。</string>
+
+    <!-- Agent translation draft workbench -->
+    <string name="translation_title">Agent 翻译工作台</string>
+    <string name="translation_tab">译文</string>
+    <string name="translation_chat">对话</string>
+    <string name="translation_session">翻译 · %1$s</string>
+    <string name="translation_output">选择输出编码</string>
+    <string name="translation_notice">原文保持只读，AI 仅填写本地草稿。选中的原文与当前译文会发送到你配置的模型 Base URL。适用于按物理行对应的纯文本，命令与脚本结构需人工判断。保存副本需要文件删改权限并确认。</string>
+    <string name="translation_ack">确认按纯文本逐行处理</string>
+    <string name="translation_start">起始行（从 1 开始）</string>
+    <string name="translation_count">本批行数（1–8）</string>
+    <string name="translation_next">下一批</string>
+    <string name="translation_generate">交给 AI</string>
+    <string name="translation_undo">撤销</string>
+    <string name="translation_reset_row">还原此行</string>
+    <string name="translation_reset_all">还原全部</string>
+    <string name="translation_reset_notice">还原本草稿的全部译文并清空撤销记录？原文和已保存的副本不受影响。</string>
+    <string name="translation_preview">预览</string>
+    <string name="translation_table">返回双栏</string>
+    <string name="translation_original">原文 · 只读</string>
+    <string name="translation_target">译文草稿 · 可编辑</string>
+    <string name="translation_summary">%1$s · 已修改 %2$d / %3$d 行 · %4$s</string>
+    <string name="translation_preview_limit">仅预览前 65,536 个字符；保存副本包含整个文件。</string>
+    <string name="translation_prompt">请把当前选中的纯文本行翻译成简体中文，保留占位符、转义和物理行。通过翻译工具仅填写右侧草稿，遇到问题在聊天区说明。</string>
+    <string name="translation_permission">可以填写草稿；保存副本需要第三档（文件删改）或更高权限。</string>
+    <string name="translation_export_notice">将 %1$s 的 %2$d 行改动保存为新副本？使用本草稿的输出编码并保留换行，原文件保持不变。</string>
+    <string name="translation_saved">已保存副本：%1$s。草稿和撤销记录仍保留。</string>
+    <string name="translation_failed">翻译工作台：%1$s · %2$s</string>
+    <string name="translation_busy">此翻译会话已在其他窗口打开或仍在保存，请稍后重试。</string>
+    <string name="translation_no_proposal">本轮尚未提交草稿改动，请查看聊天中的说明。</string>
+    <string name="translation_start_short">从行</string>
+    <string name="translation_count_short">行数</string>
 </resources>

@@ -160,6 +160,17 @@ internal fun prepareDialogWindow(dlg: android.app.Dialog) {
     })
 }
 
+/** AlertController disables IME when show() initially contains no editors (e.g. async RecyclerView rows).
+ * A late editor enables IME on its own window only; tab/nested-modal input shields stay authoritative. */
+internal fun View.enableOwningDialogEditorInput() {
+    val activity = context.findMainActivity() ?: return
+    if (activity.isFinishing || activity.isDestroyed) return
+    val window = activity.rootedDialogs.lastOrNull { it.dlg.window?.decorView === rootView }?.dlg?.window ?: return
+    if (window.attributes.flags and android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM != 0) {
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+    }
+}
+
 private val anchoredMenus = java.util.WeakHashMap<android.app.Dialog, java.lang.ref.WeakReference<View>>()
 
 internal fun MainActivity.anchorMenu(dialog: android.app.Dialog, anchor: View) {

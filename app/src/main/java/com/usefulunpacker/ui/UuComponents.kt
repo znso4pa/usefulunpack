@@ -196,7 +196,10 @@ class UuIconButton @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? 
 
 class UuTextField @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = null) : androidx.appcompat.widget.AppCompatEditText(ctx, attrs) {
     init { applyStyle() }
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); applyStyle(); UuMetrics.ensureTarget(this) }
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow(); applyStyle(); UuMetrics.ensureTarget(this)
+        enableOwningDialogEditorInput()
+    }
     private fun applyStyle() {
         val ctx = context
         UuMetrics.text(this)

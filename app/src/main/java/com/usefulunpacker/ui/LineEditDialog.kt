@@ -31,13 +31,14 @@ internal fun showLineEditor(
     sourceBytes: ByteArray,
     sourceEncoding: String,
     outputEncoding: String,
-) {
+): AlertDialog? {
     val scope = AppDiagnostics.enterIntent("text_line_edit", newChain = true)
-    try {
+    return try {
         LineEditDialog(activity, file, snapshot, sourceBytes, sourceEncoding, outputEncoding, scope.trace).show()
     } catch (e: Exception) {
         scope.trace.fail(FailureCode.UNEXPECTED, "Cannot open line editor (${e.javaClass.simpleName})")
         UuNotice.failure(activity, activity.getString(R.string.line_edit_open_failed), android.widget.Toast.LENGTH_LONG).show()
+        null
     } finally {
         AppDiagnostics.leaveIntent(scope)
     }
@@ -114,7 +115,7 @@ private class LineEditDialog(
     private val chainLabel = lineLabel(activity, activity.getString(R.string.line_edit_chain, trace.id), R.color.text_secondary)
     private val controls = UuActionBar(activity)
 
-    fun show() {
+    fun show(): AlertDialog {
         val heading = lineLabel(activity, activity.getString(R.string.line_edit_title), R.color.text_primary).apply {
             UuMetrics.text(this, title = true)
         }
@@ -191,6 +192,7 @@ private class LineEditDialog(
             render()
             dialog.show()
             root.requestFocus()
+            return dialog
         } catch (e: Exception) {
             finishTrace()
             throw e
@@ -433,14 +435,17 @@ private class LineEditDialog(
     }
 }
 
-private class LineEditAdapter(
+internal class LineEditAdapter(
     private val activity: AppCompatActivity,
     private val document: LineEditDocument,
     private val draft: Map<Int, String>,
     private val issue: () -> LineEditIssue?,
     private val onEdit: (Int, String, String) -> Unit,
+    private val value: ((Int) -> String)? = null,
+    private val onReset: ((Int) -> Unit)? = null,
+    private val selected: ((Int) -> Boolean)? = null,
 ) : RecyclerView.Adapter<LineEditAdapter.Row>() {
-    class Row(val root: View, val number: TextView, val source: TextView, val input: UuTextField, val mark: TextView) :
+    class Row(val root: View, val number: TextView, val source: TextView, val input: UuTextField, val mark: TextView, val reset: UuButton?) :
         RecyclerView.ViewHolder(root) {
         var watcher: android.text.TextWatcher? = null
     }
@@ -449,7 +454,10 @@ private class LineEditAdapter(
 
     override fun onCreateViewHolder(parent: android.view.ViewGroup, viewType: Int): Row {
         val number = lineLabel(activity, "", R.color.text_secondary).apply { typeface = Typeface.MONOSPACE }
-        val source = lineLabel(activity, "", R.color.text_primary).apply { setTextIsSelectable(true) }
+        val source = lineLabel(activity, "", R.color.text_primary).apply {
+            setTextIsSelectable(true)
+            if (onReset != null) { maxLines = 6; ellipsize = android.text.TextUtils.TruncateAt.END }
+        }
         val original = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, UuMetrics.px(activity, R.dimen.space_sm), 0, 0)
@@ -465,10 +473,12 @@ private class LineEditAdapter(
             setHint(R.string.line_edit_blank)
         }
         val mark = lineLabel(activity, "", R.color.state_success)
+        val reset = onReset?.let { UuButton(activity).apply { actionStyle = ActionStyle.TEXT; setText(R.string.translation_reset_row) } }
         val edits = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             addView(input, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(mark)
+            reset?.let { addView(it) }
         }
         val row = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
@@ -480,25 +490,29 @@ private class LineEditAdapter(
             addView(View(activity).apply { setBackgroundColor(activity.getColor(R.color.hairline)) },
                 LinearLayout.LayoutParams(MATCH, 1))
         }
-        return Row(row, number, source, input, mark)
+        return Row(row, number, source, input, mark, reset)
     }
 
     override fun onBindViewHolder(holder: Row, position: Int) {
         holder.watcher?.let(holder.input::removeTextChangedListener)
         val original = document.original(position)
         holder.number.text = activity.getString(R.string.line_edit_row, position + 1)
+        holder.number.setTextColor(activity.getColor(if (selected?.invoke(position) == true) R.color.accent else R.color.text_secondary))
         holder.source.text = original.ifEmpty { activity.getString(R.string.line_edit_blank) }
         holder.source.setTextColor(activity.getColor(if (original.isEmpty()) R.color.text_hint else R.color.text_primary))
         holder.input.contentDescription = activity.getString(R.string.line_edit_row_input, position + 1)
-        holder.input.setText(draft[position] ?: original)
+        val current = value?.invoke(position) ?: draft[position] ?: original
+        holder.input.setText(current)
         fun paint(value: String) {
             val rowIssue = issue()?.takeIf { it.row == position }
             holder.mark.isVisible = rowIssue != null || value != original
             holder.mark.setTextColor(activity.getColor(if (rowIssue != null) R.color.state_error else R.color.state_success))
             holder.mark.text = rowIssue?.message(activity) ?: activity.getString(
                 if (value.isEmpty()) R.string.line_edit_cleared else R.string.line_edit_changed)
+            holder.reset?.isVisible = value != original
         }
-        paint(draft[position] ?: original)
+        paint(current)
+        holder.reset?.setOnClickListener { onReset?.invoke(position) }
         holder.watcher = holder.input.doAfterTextChanged {
             val value = it?.toString().orEmpty()
             onEdit(position, original, value)
@@ -514,13 +528,13 @@ private fun LineEditIssue.message(context: Context): String = context.getString(
         LineEditProblem.UNMAPPABLE_TEXT -> R.string.line_edit_unmappable
     }))
 
-private fun lineLabel(context: Context, label: CharSequence, color: Int) = TextView(context).apply {
+internal fun lineLabel(context: Context, label: CharSequence, color: Int) = TextView(context).apply {
     UuMetrics.text(this)
     setTextColor(context.getColor(color))
     text = label
 }
 
-private fun lineColumns(context: Context, original: View, edits: View) = LinearLayout(context).apply {
+internal fun lineColumns(context: Context, original: View, edits: View) = LinearLayout(context).apply {
     gravity = Gravity.TOP
     addView(original, LinearLayout.LayoutParams(0, WRAP, 1f))
     addView(edits, LinearLayout.LayoutParams(0, WRAP, 1f).apply {

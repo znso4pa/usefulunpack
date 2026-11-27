@@ -14,6 +14,7 @@
 
 | 功能 | 说明 |
 |------|------|
+| **Agent 翻译工作台** | 文本预览进入，左栏原文只读、右栏 AI 分批填写草稿；支持手改、撤销、预览及会话恢复，第三档权限确认后保存副本。[使用与真机测试](docs/agent-translation.md)。 |
 | **文件 Agent / 任务中心** | 从首页或更多菜单进入。四档权限、任务模式、本地会话、按需文档和改动回执。文件工具在本地执行；模型会话及获准工具结果发送到用户配置的 Base URL。[本地 MCP](docs/local-mcp.md) · [Token 验收](docs/agent-token-matrix.md)。 |
 | **目录对比 / UU 检查** | 长按文件夹 → 与另一个目录对比。只读比较真实字节、筛选变化，在原窗口查看文本增删。共享 `COMPARE_DIRECTORY`、`uu dircmp` / `uu check`，UUT 可直接调用。[规则与退出码](docs/directory-comparison.md)。 |
 | **汉化检查** | 文本预览 → 汉化检查。完全本地只读，默认仅严格编码；确认语法与逐行对应后可启用 Python 格式字段 / POSIX printf 参数检查。明确显示跳过范围，Agent/MCP 共享分页摘要。[规则与限制](docs/localization-check.md)。 |

@@ -265,6 +265,11 @@ private fun showTextPreviewLoaded(activity: AppCompatActivity, file: File, data:
         addView(UuActionRow(activity).apply {
             bind(activity.getString(R.string.localization_title), navigation = true) { showLocalizationCheck(activity, file) }
         }, LinearLayout.LayoutParams(MATCH, WRAP))
+        (activity as? MainActivity)?.let { host ->
+            addView(UuActionRow(activity).apply {
+                bind(activity.getString(R.string.translation_title), navigation = true) { host.showTranslationAgent(file, curEncoding) }
+            }, LinearLayout.LayoutParams(MATCH, WRAP))
+        }
         if (isRich) addView(richRow, LinearLayout.LayoutParams(MATCH, WRAP))
         addView(contentRoot, LinearLayout.LayoutParams(MATCH, 0, 1f))
     }
